@@ -1,0 +1,82 @@
+name: Docker Image CI & CD for Emby Actor Processor
+
+# 触发条件
+on:
+  push:
+    branches:
+      - main  # 当 main 分支有推送时触发 (用于构建 :latest 镜像)
+    tags:
+      - 'v*.*.*' # 当 vX.Y.Z 格式的标签被推送时触发 (用于构建版本化镜像)
+  # (可选) 手动触发
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest # 使用最新的Ubuntu运行器
+
+    permissions: # 确保Job有权限读取内容和写入Packages（如果用GitHub Packages）
+      contents: read
+      packages: write # 如果要推送到GitHub Packages，需要这个权限
+
+    steps:
+      # 步骤1: 检出代码
+      - name: Checkout repository
+        uses: actions/checkout@v4 # 使用最新的checkout action
+
+      # 步骤2: 设置 QEMU (用于多平台构建，如果需要的话，例如arm64。如果只构建amd64可以省略)
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # 步骤3: 设置 Docker Buildx (更高级的构建工具)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 步骤4: 登录到 Docker Hub
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 步骤5: (可选) 登录到 GitHub Container Registry (GHCR)
+      # 如果你希望也推送到GitHub Packages，取消下面这块的注释
+      # - name: Log in to GitHub Container Registry
+      #   uses: docker/login-action@v3
+      #   with:
+      #     registry: ghcr.io
+      #     username: ${{ github.actor }} # 通常是你的GitHub用户名
+      #     password: ${{ secrets.GITHUB_TOKEN }} # GITHUB_TOKEN 是GitHub自动提供的
+
+      # 步骤6: 提取 Docker 元数据 (镜像名, 标签)
+      # 这个action会根据事件类型（分支推送、标签推送）自动生成合适的Docker标签
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: | # 可以指定多个镜像仓库和名称
+            ${{ secrets.DOCKERHUB_USERNAME }}/emby-actor-processor 
+            # ghcr.io/${{ github.repository_owner }}/emby-actor-processor # 如果用GHCR
+          tags: |
+            # 当推送vX.Y.Z标签时，生成 X.Y.Z, X.Y, X, latest 标签
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            # 当推送到main分支时，生成 edge 标签 (或者你可以用 latest)
+            type=edge,branch=main 
+            # 当推送vX.Y.Z标签时，也标记为latest (如果这是最新的稳定版)
+            type=raw,value=latest,enable={{is_default_branch}} # 或者更精确地判断是否为最新的v标签
+            # 如果想让每个v标签都更新latest，可以这样：
+            # type=raw,value=latest,enable={{startsWith(github.ref, 'refs/tags/v')}}
+
+      # 步骤7: 构建并推送 Docker 镜像
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: . # Dockerfile的上下文路径，. 表示当前仓库根目录
+          file: ./Dockerfile # Dockerfile的路径
+          push: true # 设置为true才会推送到镜像仓库
+          tags: ${{ steps.meta.outputs.tags }} # 使用上一步生成的标签
+          labels: ${{ steps.meta.outputs.labels }} # 使用上一步生成的元数据作为镜像标签
+          # platforms: linux/amd64,linux/arm64 # (可选) 如果需要构建多平台镜像
+          cache-from: type=gha # (可选) 启用GitHub Actions的构建缓存
+          cache-to: type=gha,mode=max
