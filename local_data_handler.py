@@ -9,72 +9,80 @@ from utils import clean_character_name_static # 假设 utils.py 中有这个函�
 def find_local_json_path(
     local_data_root_path: str,
     media_type: str, # "movie" or "tv"
-    imdb_id: Optional[str] = None, # 我们现在主要依赖 IMDb ID
-    # douban_id: Optional[str] = None # 豆瓣ID可以作为备用或验证，但主要靠IMDb
+    imdb_id: Optional[str] = None,
 ) -> Optional[str]:
-    target_imdb_suffix = f"_{imdb_id}"
-    logger.debug(f"将在 '{base_path}' 中查找以 '{target_imdb_suffix}' 结尾或包含它的文件夹...")
-    found_folder_path = None
-    for folder_name in os.listdir(base_path):
-        full_folder_path = os.path.join(base_path, folder_name)
-        if os.path.isdir(full_folder_path):
-            # --- 新增：检查是否为占位目录 ---
-            if folder_name.startswith("0_"): # 或者其他你定义的占位符规则
-                logger.info(f"文件夹 '{folder_name}' 是一个占位目录 (以 '0_' 开头)，将跳过。")
-                continue # 跳过这个文件夹，继续查找下一个
-            # --- 新增结束 ---
+    logger.debug(f"find_local_json_path called with: root='{local_data_root_path}', type='{media_type}', imdb='{imdb_id}'")
 
-            if folder_name.endswith(target_imdb_suffix):
-                found_folder_path = full_folder_path
-                logger.info(f"找到完全匹配 IMDb ID 后缀的本地文件夹: {found_folder_path}")
-                break
+    # 1. 参数校验
     if not local_data_root_path or not os.path.isdir(local_data_root_path):
         logger.warning(f"本地数据源根路径 '{local_data_root_path}' 无效或不存在。")
         return None
 
-    if not imdb_id or not imdb_id.startswith("tt"): # 必须有有效的 IMDb ID
+    if not imdb_id or not imdb_id.startswith("tt"):
         logger.debug(f"未提供有效的 IMDb ID ('{imdb_id}')，无法通过ID精确查找本地文件夹。")
         return None
 
+    # 2. 根据 media_type 确定 subdir
     subdir = "douban-movies" if media_type == "movie" else ("douban-tv" if media_type == "tv" else None)
+    logger.debug(f"Determined subdir: '{subdir}'")
     if not subdir:
         logger.warning(f"未知的媒体类型 '{media_type}' 无法确定本地子目录。")
         return None
 
+    # 3. 构造 base_path
     base_path = os.path.join(local_data_root_path, subdir)
+    logger.debug(f"Constructed base_path: '{base_path}'")
+
+    # 4. 检查 base_path 是否为有效目录
     if not os.path.isdir(base_path):
-        logger.info(f"本地数据子目录 '{base_path}' 不存在。")
+        logger.info(f"本地数据子目录 '{base_path}' 不是一个有效的目录或不存在。")
         return None
 
-    # 我们要匹配文件夹名称中包含 _<imdb_id> 的部分
-    # 例如，如果 imdb_id 是 "tt0111495"，我们要找包含 "_tt0111495" 的文件夹
-    # 或者，如果神医插件的文件夹名就是 IMDb ID (不常见)，也考虑一下
-    # 但根据你的描述 "豆瓣ID_IMDBID"，我们主要匹配 `_ttxxxxxxx`
-
+    # 5. 准备查找
     target_imdb_suffix = f"_{imdb_id}" # 例如 "_tt0111495"
-
-    logger.debug(f"将在 '{base_path}' 中查找以 '{target_imdb_suffix}' 结尾或包含它的文件夹...")
+    logger.debug(f"将在 '{base_path}' 中查找文件夹名包含 '{target_imdb_suffix}' 的目录...")
     found_folder_path = None
-    for folder_name in os.listdir(base_path):
-        full_folder_path = os.path.join(base_path, folder_name)
-        if os.path.isdir(full_folder_path):
-            # 检查文件夹名称是否以 _<imdb_id> 结尾
-            if folder_name.endswith(target_imdb_suffix):
-                found_folder_path = full_folder_path
-                logger.info(f"找到完全匹配 IMDb ID 后缀的本地文件夹: {found_folder_path}")
-                break
-            # (可选) 如果神医插件有时只用 IMDb ID 作为文件夹名 (不带豆瓣ID前缀)
-            # elif folder_name == imdb_id:
-            #     found_folder_path = full_folder_path
-            #     logger.info(f"找到直接以 IMDb ID 命名的本地文件夹: {found_folder_path}")
-            #     break
+
+    # 6. 遍历 base_path 下的目录进行查找
+    try:
+        for folder_name in os.listdir(base_path):
+            full_folder_path = os.path.join(base_path, folder_name)
+            if os.path.isdir(full_folder_path):
+                # 6a. 检查是否为占位目录 (以 "0_" 开头)
+                if folder_name.startswith("0_"):
+                    logger.info(f"文件夹 '{folder_name}' 是一个占位目录 (以 '0_' 开头)，将跳过。")
+                    continue # 跳过这个文件夹，继续查找下一个
+
+                # 6b. 检查文件夹名称是否以 _<imdb_id> 结尾
+                # （或者其他你确定的神医插件命名规则，例如直接等于 imdb_id）
+                if folder_name.endswith(target_imdb_suffix):
+                    found_folder_path = full_folder_path
+                    logger.info(f"找到完全匹配 IMDb ID 后缀的本地文件夹: {found_folder_path}")
+                    break # 找到后就跳出循环
+                # (可选) 如果神医插件有时只用 IMDb ID 作为文件夹名 (不带豆瓣ID前缀)
+                # elif folder_name == imdb_id:
+                #     found_folder_path = full_folder_path
+                #     logger.info(f"找到直接以 IMDb ID 命名的本地文件夹: {found_folder_path}")
+                #     break
+    except FileNotFoundError: # os.listdir 可能因为 base_path 突然消失而报错
+        logger.error(f"查找本地文件夹时发生 FileNotFoundError: 目录 '{base_path}' 可能不存在或无权限访问。")
+        return None
+    except PermissionError:
+        logger.error(f"查找本地文件夹时发生 PermissionError: 没有权限访问目录 '{base_path}'。")
+        return None
+    except Exception as e: # 其他 os.listdir 可能的错误
+        logger.error(f"查找本地文件夹时发生未知错误 (os.listdir on '{base_path}'): {e}", exc_info=True)
+        return None
+
 
     if not found_folder_path:
         logger.info(f"在 '{base_path}' 中未找到与 IMDb ID '{imdb_id}' 相关的文件夹 (期望文件夹名包含 '{target_imdb_suffix}')。")
         return None
 
+    # 7. 确定 JSON 文件名并检查文件是否存在
     json_filename = "all.json" if media_type == "movie" else ("series.json" if media_type == "tv" else None)
-    if not json_filename: return None
+    # subdir 已经保证了 media_type 是 movie 或 tv，所以 json_filename 不会是 None
+    # if not json_filename: return None # 这行理论上不需要了
 
     json_file_path = os.path.join(found_folder_path, json_filename)
     if os.path.isfile(json_file_path):
