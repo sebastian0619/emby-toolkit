@@ -95,11 +95,18 @@
             </div>
 
             <div class="form-section">
-                <h2>国产影视数据源</h2>
-                <label for="domestic_source_mode">豆瓣数据源策略:</label>
-                <select id="domestic_source_mode" name="domestic_source_mode">
-                    {% for option in domestic_source_options %}
-                        <option value="{{ option.value }}" {% if config.get('domestic_source_mode') == option.value %}selected{% endif %}>
+                <h2>影视数据源配置</h2> {# 修改标题更通用 #}
+
+                {# --- 新增：本地数据源路径输入框 --- #}
+                <label for="local_data_path">本地影视数据源根路径:</label>
+                <input type="text" id="local_data_path" name="local_data_path" value="{{ config.get('local_data_path', '') }}" placeholder="例如: /cache">
+                <small>选择神医插件主缓存目录。如果留空，则不使用本地数据源。</small>
+                {# --- 新增结束 --- #}
+
+                <label for="data_source_mode" style="margin-top:15px;">数据源处理策略:</label> {# 修改标签 for 和 name #}
+                <select id="data_source_mode" name="data_source_mode"> {# 修改 id 和 name #}
+                    {% for option in data_source_options %} {# 使用新的 data_source_options #}
+                        <option value="{{ option.value }}" {% if config.get('data_source_mode') == option.value %}selected{% endif %}>
                             {{ option.text }}
                         </option>
                     {% endfor %}
