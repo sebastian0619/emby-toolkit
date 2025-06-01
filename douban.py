@@ -15,6 +15,7 @@ import hmac
 from urllib import parse
 from datetime import datetime
 from random import choice
+import threading
 # --- 标准库导入结束 ---
 
 # --- 辅助函数 ---
@@ -37,6 +38,7 @@ def clean_character_name_static(character_name: Optional[str]) -> str:
 class DoubanApi:
     _session: Optional[requests.Session] = None
     _db_path: Optional[str] = None
+    _session_lock = threading.Lock()
 
     _urls = {
         "search": "/search/weixin", "imdbid": "/movie/imdb/%s",
@@ -86,6 +88,13 @@ class DoubanApi:
         except Exception as e: logger.error(f"DB保存翻译缓存失败 for '{original_text}': {e}", exc_info=True)
 
     @classmethod
+    def _ensure_session(cls):
+        """确保 requests.Session 已初始化。线程安全。"""
+        if cls._session is None:
+            with cls._session_lock: # 加锁确保只有一个线程创建 session
+                if cls._session is None: # 双重检查锁定模式
+                    cls._session = requests.Session()
+                    logger.info("DoubanApi: requests.Session 已重新初始化 (ensure_session)。")
     def _sign(cls, url: str, ts: str, method='GET') -> str:
         url_path = parse.urlparse(url).path
         raw_sign = '&'.join([method.upper(), parse.quote(url_path, safe=''), ts])
@@ -99,6 +108,7 @@ class DoubanApi:
         return err_dict
 
     def __invoke(self, url: str, **kwargs) -> Dict[str, Any]:
+        DoubanApi._ensure_session() # <--- 在每次请求前确保 session 存在
         if DoubanApi._session is None: return self._make_error_dict("session_not_initialized", "Session未初始化")
         req_url = DoubanApi._base_url + url
         params: Dict[str, Any] = {'apiKey': DoubanApi._api_key, **kwargs}
@@ -132,6 +142,7 @@ class DoubanApi:
             return self._make_error_dict("json_decode_error", "无效的JSON响应")
 
     def __post(self, url: str, **kwargs) -> Dict[str, Any]:
+        DoubanApi._ensure_session() # <--- 在每次请求前确保 session 存在
         if DoubanApi._session is None: return self._make_error_dict("session_not_initialized", "Session未初始化")
         req_url = DoubanApi._api_url + url
         data_payload: Dict[str, Any] = {'apikey': DoubanApi._api_key2, **kwargs}
@@ -347,11 +358,12 @@ class DoubanApi:
         return self.__invoke(DoubanApi._urls["tv_celebrities"] % subject_id)
 
     def close(self):
-        if DoubanApi._session:
-            try: DoubanApi._session.close(); logger.info("DoubanApi requests.Session 已关闭。")
-            except Exception as e: logger.error(f"关闭 DoubanApi session 时出错: {e}")
-            finally: DoubanApi._session = None
-        logger.info("DoubanApi close 方法执行完毕。")
+        with DoubanApi._session_lock: # 关闭时也加锁
+            if DoubanApi._session:
+                try: DoubanApi._session.close(); logger.info("DoubanApi requests.Session 已关闭。")
+                except Exception as e: logger.error(f"关闭 DoubanApi session 时出错: {e}")
+                finally: DoubanApi._session = None
+            logger.info("DoubanApi close 方法执行完毕。")
 
 if __name__ == '__main__':
     # (测试代码与之前版本类似，确保 TEST_DB_PATH 和表结构正确)
