@@ -54,8 +54,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: | # 可以指定多个镜像仓库和名称
-            ${{ secrets.DOCKERHUB_USERNAME }}/my-emby-actor-processor 
-            # ghcr.io/${{ github.repository_owner }}/my-emby-actor-processor # 如果用GHCR
+            ${{ secrets.DOCKERHUB_USERNAME }}/emby-actor-processor 
+            # ghcr.io/${{ github.repository_owner }}/emby-actor-processor # 如果用GHCR
           tags: |
             # 当推送vX.Y.Z标签时，生成 X.Y.Z, X.Y, X, latest 标签
             type=semver,pattern={{version}}
