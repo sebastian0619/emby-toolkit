@@ -2,7 +2,10 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+config.ini
+*.log
+processed_media_log.txt
+translation_cache.json
 # C extensions
 *.so
 

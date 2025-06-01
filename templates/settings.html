@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emby演员处理工具 - 配置</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); max-width: 800px; margin: auto;}
+        h1, h2, h3 { color: #333; }
+        label { display: block; margin-top: 15px; margin-bottom: 3px; font-weight: bold; }
+        input[type="text"], input[type="password"], input[type="number"], select, textarea {
+            width: calc(100% - 18px); padding: 8px; margin-top: 2px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box;
+        }
+        input[type="checkbox"] { margin-right: 5px; vertical-align: middle; }
+        label.inline-label { display: inline-block; font-weight: normal; margin-left: 2px;}
+        .button-group { margin-top: 25px; margin-bottom: 15px; }
+        button, input[type="submit"] {
+            background-color: #007bff; color: white; padding: 10px 15px; border: none;
+            border-radius: 4px; cursor: pointer; font-size: 16px; margin-right: 10px;
+        }
+        button:hover, input[type="submit"]:hover { background-color: #0056b3; }
+        button[disabled] { background-color: #ccc; cursor: not-allowed; }
+        .flash-messages { list-style: none; padding: 0; margin-bottom: 15px;}
+        .flash-messages li { padding: 10px; margin-bottom: 10px; border-radius: 4px; }
+        .flash-messages .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .flash-messages .error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .flash-messages .warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+        .flash-messages .info { background-color: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        .status-box { border: 1px solid #ccc; padding: 15px; margin-top: 20px; border-radius: 5px; background-color: #f9f9f9;}
+        .status-box p { margin: 8px 0; }
+        hr { border: 0; height: 1px; background-color: #eee; margin: 30px 0; }
+        small { color: #666; display: block; margin-top: 3px;}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Emby演员处理工具 - 配置</h1>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <ul class="flash-messages">
+                {% for category, message in messages %}
+                    <li class="{{ category }}">{{ message }}</li>
+                {% endfor %}
+                </ul>
+            {% endif %}
+        {% endwith %}
+
+        <form method="POST">
+            <h2>Emby 服务器配置</h2>
+            <label for="emby_server_url">Emby 服务器 URL:</label>
+            <input type="text" id="emby_server_url" name="emby_server_url" value="{{ config.get('emby_server_url', '') }}" placeholder="例如: http://localhost:8096" required>
+
+            <label for="emby_api_key">Emby API Key:</label>
+            <input type="password" id="emby_api_key" name="emby_api_key" value="{{ config.get('emby_api_key', '') }}" required>
+
+            <label for="emby_user_id">Emby User ID (用于获取详情):</label>
+            <input type="text" id="emby_user_id" name="emby_user_id" value="{{ config.get('emby_user_id', '') }}" placeholder="Emby用户的唯一ID" required>
+            
+            <div>
+                <input type="checkbox" id="refresh_emby_after_update" name="refresh_emby_after_update" value="true" {% if config.get('refresh_emby_after_update') %}checked{% endif %}>
+                <label for="refresh_emby_after_update" class="inline-label">处理完成后通知Emby刷新元数据</label>
+            </div>
+
+
+            <h2>TMDB API 配置</h2>
+            <label for="tmdb_api_key">TMDB API Key (v3):</label>
+            <input type="text" id="tmdb_api_key" name="tmdb_api_key" value="{{ config.get('tmdb_api_key', '') }}">
+            <small>（可选，如果需要通过TMDB补充演员信息或为豆瓣演员查找ID）</small>
+
+            <h2>翻译配置</h2>
+            <label for="translator_engines_order">翻译引擎顺序 (用逗号分隔):</label>
+            <input type="text" id="translator_engines_order" name="translator_engines_order" value="{{ current_engine_str }}">
+            <small>可用引擎: {{ available_engines|join(', ') }}. 顶部优先尝试。</small>
+
+            <h2>国产影视数据源</h2>
+            <label for="domestic_source_mode">豆瓣数据源策略:</label>
+            <select id="domestic_source_mode" name="domestic_source_mode">
+                {% for option in domestic_source_options %}
+                    <option value="{{ option.value }}" {% if config.get('domestic_source_mode') == option.value %}selected{% endif %}>
+                        {{ option.text }}
+                    </option>
+                {% endfor %}
+            </select>
+            
+            <h2>其他配置</h2>
+            <label for="delay_between_items_sec">全量扫描时项目处理间隔 (秒):</label>
+            <input type="number" step="0.1" min="0" id="delay_between_items_sec" name="delay_between_items_sec" value="{{ config.get('delay_between_items_sec', 0.5) }}">
+            
+            <label for="api_douban_default_cooldown_seconds">豆瓣API默认冷却时间 (秒):</label>
+            <input type="number" step="0.1" min="0" id="api_douban_default_cooldown_seconds" name="api_douban_default_cooldown_seconds" value="{{ config.get('api_douban_default_cooldown_seconds', 1.0) }}">
+            
+            <h2>定时任务：全量扫描</h2>
+            <div>
+                <input type="checkbox" id="schedule_enabled" name="schedule_enabled" value="true" {% if config.get('schedule_enabled') %}checked{% endif %}>
+                <label for="schedule_enabled" class="inline-label">启用定时全量扫描</label>
+            </div>
+
+            <label for="schedule_cron">CRON表达式 (分 时 日 月 周):</label>
+            <input type="text" id="schedule_cron" name="schedule_cron" value="{{ config.get('schedule_cron', '0 3 * * *') }}" placeholder="例如: 0 3 * * * (每天凌晨3点)">
+            <small>使用标准的CRON表达式。工具如 <a href="https://crontab.guru/" target="_blank">crontab.guru</a> 可以帮助生成。</small>
+            
+            <div>
+                <input type="checkbox" id="schedule_force_reprocess" name="schedule_force_reprocess" value="true" {% if config.get('schedule_force_reprocess') %}checked{% endif %}>
+                <label for="schedule_force_reprocess" class="inline-label">定时任务强制重处理所有项目</label>
+            </div>
+            <div class="button-group">
+                <input type="submit" value="保存配置">
+            </div>
+        </form>
+
+        <hr>
+
+        <h2>手动操作</h2>
+        <form method="POST" action="{{ url_for('trigger_full_scan') }}" style="display: inline-block;">
+            <button type="submit" id="triggerScanButton" {% if task_status.is_running %}disabled{% endif %}>
+                全量媒体库扫描和处理
+            </button>
+            <span style="margin-left: 15px;">
+                <input type="checkbox" id="force_reprocess_all" name="force_reprocess_all" {% if task_status.is_running %}disabled{% endif %}>
+                <label for="force_reprocess_all" class="inline-label">强制重处理所有项目 (忽略已处理记录)</label>
+            </span>
+        </form>
+        <form method="POST" action="{{ url_for('trigger_stop_task') }}" style="display: inline-block; margin-left: 10px;">
+            <button type="submit" id="stopTaskButton" {% if not task_status.is_running %}disabled{% endif %} style="background-color: #dc3545;">
+                停止当前任务
+            </button>
+        </form>
+        <small style="display: block; margin-top: 5px;">(注意: 全量扫描可能非常耗时)</small>
+
+        <div class="status-box" id="statusBox">
+            <h3>后台任务状态</h3>
+            <p><strong>正在运行:</strong> <span id="isRunning">{{ task_status.is_running }}</span></p>
+            <p><strong>当前动作:</strong> <span id="currentAction">{{ task_status.current_action }}</span></p>
+            <p><strong>进度:</strong> <span id="progress">{{ task_status.progress }}</span>%</p>
+            <p><strong>消息:</strong> <span id="message">{{ task_status.message }}</span></p>
+        </div>
+    </div>
+
+    <script>
+        const getStatusUrl = "{{ url_for('get_status') }}";
+        const triggerFullScanUrl = "{{ url_for('trigger_full_scan') }}"; // 虽然没直接用，但保留以防万一
+        const triggerStopTaskUrl = "{{ url_for('trigger_stop_task') }}"; // 同上
+
+        function fetchStatus() {
+            fetch(getStatusUrl)
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('isRunning').textContent = data.is_running;
+                    document.getElementById('currentAction').textContent = data.current_action;
+                    document.getElementById('progress').textContent = data.progress;
+                    document.getElementById('message').textContent = data.message;
+                    
+                    const scanButton = document.getElementById('triggerScanButton');
+                    const stopButton = document.getElementById('stopTaskButton');
+
+                    if (scanButton) {
+                        scanButton.disabled = data.is_running;
+                    }
+                    if (stopButton) {
+                        stopButton.disabled = !data.is_running;
+                    }
+                })
+                .catch(error => console.error('Error fetching status:', error));
+        }
+        fetchStatus();
+        setInterval(fetchStatus, 3000); 
+    </script>
+</body>
+</html>

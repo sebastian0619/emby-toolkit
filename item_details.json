@@ -1,0 +1,160 @@
+{
+  "Name": "安家",
+  "OriginalTitle": "安家",
+  "ServerId": "ef40c431063e4e8f8717a5f4fbc6c155",
+  "Id": "436194",
+  "Etag": "02d28408496c14ce978364a6ada5e71e",
+  "DateCreated": "2025-05-15T23:15:16.0000000Z",
+  "CanDelete": true,
+  "CanDownload": false,
+  "PresentationUniqueKey": "377629-zh-CN-dfbcdc94e7fb4ecf8f587752abede3f5",
+  "SupportsSync": true,
+  "SortName": "AJ",
+  "ForcedSortName": "AJ",
+  "PremiereDate": "2020-02-21T00:00:00.0000000Z",
+  "ExternalUrls": [
+    {
+      "Name": "Douban",
+      "Url": "https://movie.douban.com/subject/30482003/"
+    },
+    {
+      "Name": "IMDb",
+      "Url": "https://www.imdb.com/title/tt11172878"
+    },
+    {
+      "Name": "MovieDb",
+      "Url": "https://www.themoviedb.org/tv/99693"
+    },
+    {
+      "Name": "TheTVDB",
+      "Url": "https://thetvdb.com/?tab=series&id=377629"
+    },
+    {
+      "Name": "Trakt",
+      "Url": "https://trakt.tv/search/tmdb/99693?id_type=show"
+    }
+  ],
+  "Path": "/strm/媒体库/电视剧/华语剧/安家 (2020) {tmdb=99693}",
+  "Overview": "房似锦年纪轻轻已经是安家天下中介公司的金字招牌，她在上司翟云霄的授意之下，空降静宜门店担任双店长。门店原生店长徐文昌是个“高贵的人”，他推崇“人性流”管理方式，也不屑对付手段卑鄙的对手。 到任后房似锦施展雷霆手段坚壁清野，对外辣手反击，对内冷血整肃。虽然在房似锦的铁血管理下众人苦不堪言，但是业绩的提升的确振奋了门店士气。房似锦的管理方式和处事之道与徐文昌截然相反，而业务员们也在两位“神仙”的较劲中左右为难。 身为房产中的他们不仅要帮助客户买房卖房租房，还时常被裹挟着卷入他们的人生，见证他们生活中的歌舞升平与一地鸡毛。",
+  "Taglines": [],
+  "Genres": [
+    "剧情"
+  ],
+  "CommunityRating": 8.333,
+  "RunTimeTicks": 27000000000,
+  "FileName": "安家 (2020) {tmdb=99693}",
+  "ProductionYear": 2020,
+  "RemoteTrailers": [],
+  "ProviderIds": {
+    "Tmdb": "99693",
+    "Imdb": "tt11172878",
+    "Tvdb": "377629",
+    "Douban": "30482003"
+  },
+  "IsFolder": true,
+  "ParentId": "430510",
+  "Type": "Series",
+  "People": [
+    {
+      "Name": "孙俪",
+      "Id": "3114",
+      "Role": "Fang Si Jin / 房似锦",
+      "Type": "Actor",
+      "PrimaryImageTag": "2e6a537c17b67f28ffaf136b71fd2b56"
+    },
+    {
+      "Name": "罗晋",
+      "Id": "5628",
+      "Role": "Xu Wen Dao / 徐文昌",
+      "Type": "Actor",
+      "PrimaryImageTag": "7125375f2f193bb8591e03c8558e32cd"
+    },
+    {
+      "Name": "张萌",
+      "Id": "42469",
+      "Role": "Zhang Cheng Cheng [Wen Chang's ex] / 张乘乘",
+      "Type": "Actor",
+      "PrimaryImageTag": "ff611f95e73594d3a21f590377cb3478"
+    },
+    {
+      "Name": "杨皓宇",
+      "Id": "3848",
+      "Role": "Xie Ting Feng [Agent] / 谢亭丰",
+      "Type": "Actor",
+      "PrimaryImageTag": "1f2d46626695d39335ad41815815f4d1"
+    },
+    {
+      "Name": "孙佳雨",
+      "Id": "42470",
+      "Role": "Zhu Shan Shan [Agent] / 朱闪闪",
+      "Type": "Actor",
+      "PrimaryImageTag": "9dee87c1f3b8b167790953b95b46d19b"
+    },
+    {
+      "Name": "闫学晶",
+      "Id": "42471",
+      "Role": "Aunt Cai / 蔡阿姨",
+      "Type": "Actor",
+      "PrimaryImageTag": "ad7c30d101c709ddd7dfdff01d8c347e"
+    },
+    {
+      "Name": "海清",
+      "Id": "4329",
+      "Role": "Gong Beibei / 宫蓓蓓",
+      "Type": "Actor",
+      "PrimaryImageTag": "f29e66ee2f659eab71e37b65555267bd"
+    },
+    {
+      "Name": "郝平",
+      "Id": "6674",
+      "Role": "Li Si Li",
+      "Type": "Actor",
+      "PrimaryImageTag": "376321aeac98ee0654e13f0eafb0b2da"
+    }
+  ],
+  "Studios": [
+    {
+      "Name": "Dragon Television",
+      "Id": 42070
+    },
+    {
+      "Name": "Tencent Video",
+      "Id": 3945
+    },
+    {
+      "Name": "Beijing Television",
+      "Id": 42069
+    }
+  ],
+  "GenreItems": [
+    {
+      "Name": "剧情",
+      "Id": 490
+    }
+  ],
+  "TagItems": [],
+  "LocalTrailerCount": 0,
+  "UserData": {
+    "UnplayedItemCount": 53,
+    "PlaybackPositionTicks": 0,
+    "PlayCount": 0,
+    "IsFavorite": false,
+    "Played": false
+  },
+  "ChildCount": 1,
+  "DisplayPreferencesId": "f63033ff6886ecc7083a696cbeced1b0",
+  "Status": "Ended",
+  "AirDays": [],
+  "PrimaryImageAspectRatio": 0.6666666666666666,
+  "DisplayOrder": "Aired",
+  "ImageTags": {
+    "Primary": "8f8177eb7e2fdfeca23cdb7f8656b948",
+    "Logo": "e2d65d53edd3de655b92b27f40fa26fd"
+  },
+  "BackdropImageTags": [
+    "39b0a8defd256ae57a7d26df44e56b16"
+  ],
+  "EndDate": "2020-03-20T00:00:00.0000000Z",
+  "LockedFields": [],
+  "LockData": false
+}

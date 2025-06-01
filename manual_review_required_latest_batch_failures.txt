@@ -1,0 +1,20 @@
+# 处理失败的媒体列表 (创建于 20250531_154539)
+# 文件名: manual_review_required_latest_batch_failures.txt
+# 格式: 媒体类型,TMDB_ID,"目录路径","失败原因"
+==================================================
+
+# === 追加失败项 (批处理于 20250531_172800) ===
+movie,1030587,//192.168.31.160/appdata/EmbyServer/tmdb/cache\tmdb-movies2\1030587,角色名 'Paradapia Teacher (voice)' (演员: 藤本美貴) 不符规范 (在最终列表第9项)
+movie,1040284,//192.168.31.160/appdata/EmbyServer/tmdb/cache\tmdb-movies2\1040284,角色名 'Yaya (Voice)' (演员: 鄭羽晴) 不符规范 (在最终列表第17项)
+movie,105001,//192.168.31.160/appdata/EmbyServer/tmdb/cache\tmdb-movies2\105001,角色名 'Ying' (演员: 甄子丹) 不符规范 (在最终列表第1项)
+movie,105444,//192.168.31.160/appdata/EmbyServer/tmdb/cache\tmdb-movies2\105444,角色名 'Doraemon (voice)' (演员: 大山羡代) 不符规范 (在最终列表第1项)
+movie,105680,//192.168.31.160/appdata/EmbyServer/tmdb/cache\tmdb-movies2\105680,角色名 'Sam' (演员: 徐峥) 不符规范 (在最终列表第3项)
+movie,1058027,//192.168.31.160/appdata/EmbyServer/tmdb/cache\tmdb-movies2\1058027,角色名 'JADE' (演员: En Mei) 不符规范 (在最终列表第13项)
+movie,106164,//192.168.31.160/appdata/EmbyServer/tmdb/cache\tmdb-movies2\106164,角色名 'Doraemon (voice)' (演员: 大山羡代) 不符规范 (在最终列表第1项)
+movie,10618,//192.168.31.160/appdata/EmbyServer/tmdb/cache\tmdb-movies2\10618,角色名 'Wong Fei Hung' (演员: 李连杰) 不符规范 (在最终列表第1项)
+movie,10619,//192.168.31.160/appdata/EmbyServer/tmdb/cache\tmdb-movies2\10619,角色名 'Yan' (演员: 黄德仁) 不符规范 (在最终列表第8项)
+movie,10620,//192.168.31.160/appdata/EmbyServer/tmdb/cache\tmdb-movies2\10620,角色名 'Wong Fei Hung' (演员: 李连杰) 不符规范 (在最终列表第1项)
+movie,1066298,//192.168.31.160/appdata/EmbyServer/tmdb/cache\tmdb-movies2\1066298,角色名 'Zhang Da' (演员: 沈腾) 不符规范 (在最终列表第1项)
+movie,1067513,//192.168.31.160/appdata/EmbyServer/tmdb/cache\tmdb-movies2\1067513,角色名 'Hu Bayi' (演员: 王紫逸) 不符规范 (在最终列表第1项)
+movie,10703,//192.168.31.160/appdata/EmbyServer/tmdb/cache\tmdb-movies2\10703,角色名 'Yang Yuncong' (演员: 黎明) 不符规范 (在最终列表第1项)
+movie,1072890,//192.168.31.160/appdata/EmbyServer/tmdb/cache\tmdb-movies2\1072890,角色名 'Xia He' (演员: 娜然) 不符规范 (在最终列表第6项)
