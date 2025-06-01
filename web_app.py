@@ -190,7 +190,14 @@ def scheduled_task_job(force_reprocess: bool):
             
             logger.info(final_msg) # 定时任务的完成主要通过日志体现
             
-            # 短暂保留is_running状态，以便极少数情况下Web查看能看到完成状态
+            if media_processor_instance and hasattr(media_processor_instance, 'close'):
+                logger.info("定时任务结束 (finally块)，准备调用 media_processor_instance.close() ...")
+                try:
+                    media_processor_instance.close()
+                    logger.info("media_processor_instance.close() 调用完毕 (定时任务 finally块)。")
+                except Exception as e_close_proc:
+                    logger.error(f"调用 media_processor_instance.close() 时发生错误 (定时任务): {e_close_proc}", exc_info=True)
+
             time.sleep(5) 
             background_task_status["is_running"] = False
             background_task_status["current_action"] = "无"
@@ -347,15 +354,13 @@ def emby_webhook():
                         logger.info(f"Webhook处理 Item ID {item_id_to_process} 结束，状态: {log_final_status}")
                         
                         # 尝试保存翻译缓存
-                        if media_processor_instance and \
-                           media_processor_instance.douban_api and \
-                           hasattr(DoubanApi, '_save_translation_cache_to_file') and \
-                           callable(DoubanApi._save_translation_cache_to_file): # DoubanApi是类名
+                        if media_processor_instance and hasattr(media_processor_instance, 'close'):
+                            logger.info("Webhook任务结束 (finally块)，准备调用 media_processor_instance.close() ...")
                             try:
-                                logger.info("Webhook任务结束，尝试保存翻译缓存...")
-                                DoubanApi._save_translation_cache_to_file() # 调用类方法
-                            except Exception as e_save_cache:
-                                logger.error(f"保存翻译缓存时发生错误 (Webhook): {e_save_cache}", exc_info=True)
+                                media_processor_instance.close()
+                                logger.info("media_processor_instance.close() 调用完毕 (Webhook finally块)。")
+                            except Exception as e_close_proc:
+                                logger.error(f"调用 media_processor_instance.close() 时发生错误 (Webhook): {e_close_proc}", exc_info=True)
                         
                         time.sleep(1) 
                         background_task_status["is_running"] = False
@@ -434,6 +439,26 @@ def trigger_full_scan():
                 # else: 异常退出时，消息已在except中通过update_status_from_thread设置
                 
                 logger.info(f"后台任务 '{current_action_message_for_thread}' 结束，最终状态: {final_message_for_status}")
+
+                if media_processor_instance and hasattr(media_processor_instance, 'close'):
+                    logger.info("全量扫描任务结束 (finally块)，准备调用 media_processor_instance.close() ...")
+                    try:
+                        media_processor_instance.close() # 这会触发 DoubanApi.close() 和缓存保存
+                        logger.info("media_processor_instance.close() 调用完毕 (全量扫描 finally块)。")
+                    except Exception as e_close_proc:
+                        logger.error(f"调用 media_processor_instance.close() 时发生错误: {e_close_proc}", exc_info=True)
+                else:
+                    # 如果 MediaProcessor 实例不存在，但我们知道 DoubanApi 缓存是类级别的，
+                    # 仍然可以尝试直接保存 DoubanApi 的缓存，作为最后的保障。
+                    # (这部分与 atexit 中的逻辑类似，但这里是针对任务结束)
+                    if hasattr(DoubanApi, '_save_translation_cache_to_file') and \
+                       callable(DoubanApi._save_translation_cache_to_file) and \
+                       DoubanApi._cache_loaded:
+                        logger.info("全量扫描任务结束 (finally块)，MediaProcessor实例无效，尝试直接保存DoubanApi缓存...")
+                        try:
+                            DoubanApi._save_translation_cache_to_file()
+                        except Exception as e_direct_save:
+                            logger.error(f"直接保存DoubanApi缓存失败 (全量扫描 finally块): {e_direct_save}", exc_info=True)
 
                 time.sleep(2) # 给前端一点时间抓取最终状态
                 background_task_status["is_running"] = False
