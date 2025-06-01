@@ -109,7 +109,7 @@ def load_config() -> dict:
         constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN: str(constants.DEFAULT_API_COOLDOWN_SECONDS_FALLBACK),
         constants.CONFIG_OPTION_TRANSLATOR_ENGINES: ",".join(constants.DEFAULT_TRANSLATOR_ENGINES_ORDER),
         # --- 确保这里的键名与 constants.py 中定义的一致 ---
-        constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE: constants.DEFAULT_DOMESTIC_SOURCE_MODE, # <--- 默认值
+        constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE: constants.DEFAULT_DOMESTIC_SOURCE_MODE,
         constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS: "",
         constants.CONFIG_OPTION_LOCAL_DATA_PATH: constants.DEFAULT_LOCAL_DATA_PATH,
         "delay_between_items_sec": "0.5",
@@ -138,8 +138,14 @@ def load_config() -> dict:
     app_cfg["tmdb_api_key"] = config_parser.get(constants.CONFIG_SECTION_TMDB, constants.CONFIG_OPTION_TMDB_API_KEY)
 
     # Douban API Section
-    if not config_parser.has_section(constants.CONFIG_SECTION_API_DOUBAN): config_parser.add_section(constants.CONFIG_SECTION_API_DOUBAN)
-    app_cfg["api_douban_default_cooldown_seconds"] = config_parser.getfloat(constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN)
+    if not config_parser.has_section(constants.CONFIG_SECTION_DOMESTIC_SOURCE):
+        config_parser.add_section(constants.CONFIG_SECTION_DOMESTIC_SOURCE)
+    # 将读取到的值存入 app_cfg 字典，键名为 "domestic_source_mode"
+    app_cfg["domestic_source_mode"] = config_parser.get(
+        constants.CONFIG_SECTION_DOMESTIC_SOURCE,
+        constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE,
+        fallback=constants.DEFAULT_DOMESTIC_SOURCE_MODE
+    )
 
     # Translation Section
     if not config_parser.has_section(constants.CONFIG_SECTION_TRANSLATION): config_parser.add_section(constants.CONFIG_SECTION_TRANSLATION)
@@ -174,7 +180,7 @@ def load_config() -> dict:
     app_cfg["schedule_force_reprocess"] = config_parser.getboolean("Scheduler", "schedule_force_reprocess")
 
     logger.debug(f"load_config: 返回的 app_cfg 中的 libraries_to_process = {app_cfg.get('libraries_to_process')}")
-    logger.debug(f"load_config: 返回的 app_cfg 中的 data_source_mode = {app_cfg.get('data_source_mode')}") # 新增日志
+    logger.debug(f"load_config: 返回的 app_cfg 中的 domestic_source_mode = {app_cfg.get('domestic_source_mode')}") 
     logger.info(f"配置已从 '{CONFIG_FILE_PATH}' 加载。")
     return app_cfg
 
@@ -201,8 +207,11 @@ def save_config(new_config: Dict[str, Any]):
             libraries_list = [lib_id.strip() for lib_id in libraries_list.split(',') if lib_id.strip()]
         else:
             libraries_list = []
-    config.set(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, str(new_config.get("data_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE)))
-    # --- 新增结束 ---
+    config.set(
+        constants.CONFIG_SECTION_DOMESTIC_SOURCE,    # 节名
+        constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, # 选项名 (config.ini中的键)
+        str(new_config.get("domestic_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE)) # 从 new_conf 获取，键是 "domestic_source_mode"
+    )
 
     # --- Emby Section ---
     config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_SERVER_URL, str(new_config.get("emby_server_url", "")))
@@ -422,7 +431,7 @@ def settings_page():
             "emby_api_key": request.form.get("emby_api_key", "").strip(),
             "emby_user_id": request.form.get("emby_user_id", "").strip(),
             "local_data_path": request.form.get("local_data_path", "").strip(), # 新增的本地路径
-            "data_source_mode": request.form.get("data_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE), # 新的数据源模式
+            "domestic_source_mode": request.form.get("domestic_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE),
             "tmdb_api_key": request.form.get("tmdb_api_key", "").strip(),
             "translator_engines_order": [eng.strip() for eng in request.form.get("translator_engines_order", "").split(',') if eng.strip()],
             "delay_between_items_sec": float(request.form.get("delay_between_items_sec", 0.5)),
@@ -459,7 +468,8 @@ def settings_page():
                            config=current_config,
                            available_engines=available_engines,
                            current_engine_str=current_engine_str,
-                           data_source_options=data_source_options_to_template, # <--- 确保这里传递了
+                           domestic_source_options_in_template=constants.DOMESTIC_SOURCE_OPTIONS,
+                           constant_config_option_domestic_source_mode=constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE,
                            task_status=background_task_status,
                            app_version=constants.APP_VERSION,
                            selected_libraries=selected_libraries

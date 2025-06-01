@@ -12,10 +12,22 @@ def find_local_json_path(
     imdb_id: Optional[str] = None, # 我们现在主要依赖 IMDb ID
     # douban_id: Optional[str] = None # 豆瓣ID可以作为备用或验证，但主要靠IMDb
 ) -> Optional[str]:
-    """
-    根据提供的 IMDb ID 在本地数据源中查找对应的元数据文件夹和JSON文件路径。
-    文件夹命名格式: <任意前缀>_tt<IMDb数字ID> (例如 1292047_tt0111495)
-    """
+    target_imdb_suffix = f"_{imdb_id}"
+    logger.debug(f"将在 '{base_path}' 中查找以 '{target_imdb_suffix}' 结尾或包含它的文件夹...")
+    found_folder_path = None
+    for folder_name in os.listdir(base_path):
+        full_folder_path = os.path.join(base_path, folder_name)
+        if os.path.isdir(full_folder_path):
+            # --- 新增：检查是否为占位目录 ---
+            if folder_name.startswith("0_"): # 或者其他你定义的占位符规则
+                logger.info(f"文件夹 '{folder_name}' 是一个占位目录 (以 '0_' 开头)，将跳过。")
+                continue # 跳过这个文件夹，继续查找下一个
+            # --- 新增结束 ---
+
+            if folder_name.endswith(target_imdb_suffix):
+                found_folder_path = full_folder_path
+                logger.info(f"找到完全匹配 IMDb ID 后缀的本地文件夹: {found_folder_path}")
+                break
     if not local_data_root_path or not os.path.isdir(local_data_root_path):
         logger.warning(f"本地数据源根路径 '{local_data_root_path}' 无效或不存在。")
         return None
