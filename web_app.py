@@ -449,7 +449,7 @@ def settings_page():
     current_engine_str = ",".join(current_engines_list)
 
     # --- 确保 data_source_options 从 constants.py 获取并传递给模板 ---
-    data_source_options_to_template = constants.DATA_SOURCE_OPTIONS
+    data_source_options_to_template = constants.DOMESTIC_SOURCE_OPTIONS
     logger.debug(f"settings_page GET - data_source_options being passed to template: {data_source_options_to_template}")
     # ---
 
