@@ -201,7 +201,7 @@ def save_config(new_config: Dict[str, Any]):
             libraries_list = [lib_id.strip() for lib_id in libraries_list.split(',') if lib_id.strip()]
         else:
             libraries_list = []
-    config.set(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, str(new_config.get("data_source_mode", constants.DEFAULT_DATA_SOURCE_MODE)))
+    config.set(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, str(new_config.get("data_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE)))
     # --- 新增结束 ---
 
     # --- Emby Section ---
@@ -422,7 +422,7 @@ def settings_page():
             "emby_api_key": request.form.get("emby_api_key", "").strip(),
             "emby_user_id": request.form.get("emby_user_id", "").strip(),
             "local_data_path": request.form.get("local_data_path", "").strip(), # 新增的本地路径
-            "data_source_mode": request.form.get("data_source_mode", constants.DEFAULT_DATA_SOURCE_MODE), # 新的数据源模式
+            "data_source_mode": request.form.get("data_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE), # 新的数据源模式
             "tmdb_api_key": request.form.get("tmdb_api_key", "").strip(),
             "translator_engines_order": [eng.strip() for eng in request.form.get("translator_engines_order", "").split(',') if eng.strip()],
             "delay_between_items_sec": float(request.form.get("delay_between_items_sec", 0.5)),
