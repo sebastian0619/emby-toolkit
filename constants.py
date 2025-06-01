@@ -3,7 +3,7 @@
 # ... (你已有的其他常量，比如 EMBY_SERVER_URL, API_KEY 等) ...
 
 # --- Web Application Settings ---
-APP_VERSION = "1.3.8"  # 或者你的实际版本号
+APP_VERSION = "1.3.9"  # 或者你的实际版本号
 DEBUG_MODE = True      # 开发时设为 True，部署到生产环境时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 
@@ -19,7 +19,12 @@ AVAILABLE_TRANSLATOR_ENGINES = ['bing', 'google', 'baidu', 'alibaba', 'youdao', 
 # 默认的翻译引擎顺序
 DEFAULT_TRANSLATOR_ENGINES_ORDER = ['bing', 'google', 'baidu']
 
-# --- 国产剧豆瓣处理模式 ---
+#本地数据源配置
+CONFIG_SECTION_LOCAL_DATA = "LocalDataSource" # 新的节名
+CONFIG_OPTION_LOCAL_DATA_PATH = "local_data_path" # 本地数据源根路径
+DEFAULT_LOCAL_DATA_PATH = "" # 默认空，表示未配置
+
+# --- 豆瓣处理模式 ---
 DOMESTIC_SOURCE_MODE_LOCAL_THEN_ONLINE = "local_then_online"
 DOMESTIC_SOURCE_MODE_ONLINE_ONLY = "online_only"
 DOMESTIC_SOURCE_MODE_LOCAL_ONLY = "local_only"

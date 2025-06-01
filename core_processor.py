@@ -5,6 +5,7 @@ import os
 import sqlite3 # 用于数据库操作
 from typing import Dict, List, Optional, Any
 import threading
+import local_data_handler
 
 # 假设 emby_handler.py, utils.py, logger_setup.py, constants.py 都在同一级别或Python路径中
 import emby_handler
@@ -208,43 +209,126 @@ class MediaProcessor:
             if self.douban_api and hasattr(DoubanApi, '_save_translation_to_db'):
                 DoubanApi._save_translation_to_db(text_stripped, final_translation, used_engine)
             # 更新调试日志
-            logger.debug(f"翻译缓存已更新 (数据库): '{text_stripped}' -> '{final_translation}'.")
             return final_translation
         else:
             logger.warning(f"在线翻译失败或返回空: '{text_stripped}' (演员: {actor_name_for_log}, 字段: {field_name})")
             # 保存翻译失败状态 (None) 到数据库，避免重复无效尝试
             if self.douban_api and hasattr(DoubanApi, '_save_translation_to_db'):
                 DoubanApi._save_translation_to_db(text_stripped, None, f"failed_or_empty_via_{used_engine}")
-            logger.debug(f"翻译缓存已更新 (数据库) (翻译失败): '{text_stripped}'.")
             return text # 返回原文
 
 
     def _process_cast_list(self, current_cast: List[Dict[str, Any]], media_info: Dict[str, Any]) -> List[Dict[str, Any]]:
-        # 这个方法的内部逻辑（豆瓣优先、补充翻译、去重）基本保持不变
-        # 只是它调用的 _translate_actor_field 现在使用了数据库缓存
-        logger.info(f"开始处理媒体 '{media_info.get('Name')}' 的演员列表，原始数量: {len(current_cast)} 位。")
+        media_name_for_log = media_info.get("Name", "未知媒体")
+        logger.info(f"开始处理媒体 '{media_name_for_log}' 的演员列表，原始Emby演员数量: {len(current_cast)} 位。")
+
+        # 准备一个工作副本的演员列表，以及标记数组
         processed_cast: List[Dict[str, Any]] = [actor.copy() for actor in current_cast]
-        media_name = media_info.get("Name", "未知媒体")
-        imdb_id_media = media_info.get("ProviderIds", {}).get("Imdb")
-        year = str(media_info.get("ProductionYear", ""))
-        internal_media_type = "movie" if media_info.get("Type") == "Movie" else ("tv" if media_info.get("Type") == "Series" else None)
+        # 标记哪些 Emby 演员的字段被本地数据或豆瓣成功提供了“最终”中文版本
+        # True 表示该字段已最终确定，无需后续翻译
+        actor_field_finalized: List[Dict[str, bool]] = [{"name": False, "character": False} for _ in processed_cast]
 
-        emby_actor_name_finalized_by_douban = [False] * len(processed_cast)
-        emby_actor_character_finalized_by_douban = [False] * len(processed_cast)
-        actors_actually_updated_by_douban_count = 0
+        # 从 media_info 中获取用于查找本地文件和调用豆瓣API的ID
+        # ProviderIds 结构可能因 Emby 版本或刮削器而异，确保路径正确
+        provider_ids = media_info.get("ProviderIds", {})
+        imdb_id_from_emby = provider_ids.get("Imdb")
+        douban_id_from_emby = provider_ids.get("Douban") # 神医刮削通常会写入豆瓣ID
 
-        # 步骤1: 豆瓣优先处理 (逻辑不变)
-        if self.douban_api and hasattr(self.douban_api, 'get_acting') and \
-           self.config.get("domestic_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE) != "disabled_douban":
-            logger.info(f"步骤1: 媒体 '{media_name}'，尝试从豆瓣获取演员信息进行优先更新。")
+        media_type_for_local = "movie" if media_info.get("Type") == "Movie" else ("tv" if media_info.get("Type") == "Series" else None)
+        year_for_api = str(media_info.get("ProductionYear", ""))
+
+        local_data_processed_actors = False # 标记是否成功从本地数据加载了演员
+
+        # --------------------------------------------------------------------
+        # 步骤 0: 尝试从本地数据源 (神医JSON) 加载演员信息
+        # --------------------------------------------------------------------
+        if self.local_data_path and media_type_for_local and \
+           self.data_source_mode in [constants.DATA_SOURCE_MODE_LOCAL_THEN_ONLINE, constants.DATA_SOURCE_MODE_LOCAL_ONLY]:
+
+            logger.info(f"步骤0: 媒体 '{media_name_for_log}' - 尝试从本地数据源加载演员信息 (IMDb: {imdb_id_from_emby}, Douban: {douban_id_from_emby})。")
+            local_json_file_path = local_data_handler.find_local_json_path(
+                local_data_root_path=self.local_data_path,
+                media_type=media_type_for_local,
+                imdb_id=imdb_id_from_emby
+                # douban_id=douban_id_from_emby # find_local_json_path 现在主要用 imdb_id
+            )
+
+            if local_json_file_path:
+                local_parsed_data = local_data_handler.parse_local_actor_data(local_json_file_path)
+                if local_parsed_data and local_parsed_data.get("cast"):
+                    local_cast_list = local_parsed_data["cast"]
+                    logger.info(f"成功从本地文件 '{local_json_file_path}' 加载到 {len(local_cast_list)} 位演员。")
+
+                    # TODO: 核心逻辑 - 将 local_cast_list 的数据应用到 processed_cast
+                    # 这部分会比较复杂，需要匹配或替换 Emby 中的演员
+                    # 简化处理：如果本地有数据，我们先假设它完全覆盖 Emby 的演员列表
+                    # （这可能不理想，更好的做法是基于演员名或ID进行匹配和合并）
+                    # 为了演示，我们先用本地数据替换（如果本地数据非空）
+                    if local_cast_list: # 只有当本地真的有演员时才替换
+                        logger.info(f"使用本地数据覆盖/填充演员列表 (原Emby演员数: {len(processed_cast)})。")
+                        new_processed_cast = []
+                        new_actor_field_finalized = [] # 新的标记数组
+
+                        for local_actor in local_cast_list:
+                            # 将本地演员数据转换为我们内部使用的格式
+                            # 注意：local_actor 的 "id" 可能是豆瓣 celebrity ID
+                            internal_actor_entry = {
+                                "Name": local_actor.get("name"), # 本地数据通常是中文名
+                                "Character": local_actor.get("character"), # 本地数据通常是中文角色名
+                                "Id": None, # Emby Person ID，本地数据通常没有，除非神医也存了
+                                "OriginalName": local_actor.get("latin_name"), # 本地数据可能有外文名
+                                "_source": "local_data" # 标记来源
+                            }
+                            new_processed_cast.append(internal_actor_entry)
+                            # 假设本地获取的都是最终中文，标记为已最终确定
+                            new_actor_field_finalized.append({"name": True, "character": True})
+
+                        processed_cast = new_processed_cast
+                        actor_field_finalized = new_actor_field_finalized
+                        local_data_processed_actors = True
+                        logger.info(f"演员列表已更新为本地数据，共 {len(processed_cast)} 位演员。")
+                    else:
+                        logger.info(f"本地文件 '{local_json_file_path}' 解析成功但未包含演员信息。")
+                else:
+                    logger.info(f"本地文件 '{local_json_file_path}' 解析失败或未返回有效数据结构。")
+            else:
+                logger.info(f"未能在本地数据源中找到媒体 '{media_name_for_log}' 的元数据文件。")
+
+        if self.is_stop_requested(): logger.info("本地数据处理后检测到停止信号。"); return processed_cast
+
+        # --------------------------------------------------------------------
+        # 步骤 1: (如果需要) 尝试从在线豆瓣API获取演员信息
+        # --------------------------------------------------------------------
+        should_call_douban_api = False
+        if self.data_source_mode == constants.DATA_SOURCE_MODE_ONLINE_ONLY:
+            should_call_douban_api = True
+            logger.info(f"步骤1: 模式为仅在线API，准备调用豆瓣API。")
+        elif self.data_source_mode == constants.DATA_SOURCE_MODE_LOCAL_THEN_ONLINE and not local_data_processed_actors:
+            should_call_douban_api = True
+            logger.info(f"步骤1: 模式为本地优先但本地未处理成功，准备调用豆瓣API。")
+        elif self.data_source_mode == constants.DATA_SOURCE_MODE_LOCAL_ONLY:
+            logger.info(f"步骤1: 模式为仅本地数据，跳过在线豆瓣API。")
+        elif local_data_processed_actors and self.data_source_mode == constants.DATA_SOURCE_MODE_LOCAL_THEN_ONLINE:
+            logger.info(f"步骤1: 已通过本地数据处理，跳过在线豆瓣API。")
+
+
+        if should_call_douban_api and self.douban_api and hasattr(self.douban_api, 'get_acting') and \
+           self.data_source_mode != constants.DATA_SOURCE_MODE_API_DISABLED: # 确保API未被禁用
+            # (这里的 self.config.get("domestic_source_mode", ...) 判断可以移除或与 self.data_source_mode 统一)
+
+            logger.info(f"步骤1: 媒体 '{media_name_for_log}' - 尝试从在线豆瓣API获取演员信息。")
             douban_actors_raw = None
             try:
                 douban_api_cooldown = float(self.config.get("api_douban_default_cooldown_seconds", 1.0))
-                if douban_api_cooldown > 0:
-                    logger.debug(f"豆瓣API调用前等待 {douban_api_cooldown} 秒...")
-                    time.sleep(douban_api_cooldown)
+                if douban_api_cooldown > 0: time.sleep(douban_api_cooldown)
+
+                # 调用豆瓣API时，优先使用从Emby获取的豆瓣ID（如果神医刮削了）或IMDbID
                 douban_actors_raw = self.douban_api.get_acting(
-                    name=media_name, imdbid=imdb_id_media, mtype=internal_media_type, year=year
+                    name=media_name_for_log, # 作为后备
+                    imdbid=imdb_id_from_emby,
+                    mtype=media_type_for_local,
+                    year=year_for_api,
+                    douban_id_override=douban_id_from_emby # 优先用这个
                 )
             except Exception as e_douban_get_acting:
                 logger.error(f"调用豆瓣 get_acting 时发生错误: {e_douban_get_acting}", exc_info=True)
@@ -252,88 +336,123 @@ class MediaProcessor:
             if self.is_stop_requested(): logger.info("获取豆瓣信息后检测到停止信号。"); return processed_cast
 
             if douban_actors_raw and douban_actors_raw.get("cast"):
-                # ... (豆瓣演员匹配和更新Emby列表的详细逻辑，与你之前版本类似) ...
-                # 这里省略详细的豆瓣匹配逻辑，假设它能正确更新 emby_actor_name_finalized_by_douban 等标记
-                # 确保 clean_character_name_static 被 utils.clean_character_name_static 替换
-                douban_cast_list = douban_actors_raw["cast"]
-                logger.info(f"从豆瓣为 '{media_name}' 获取到 {len(douban_cast_list)} 位演员，开始匹配和更新Emby列表...")
-                updated_emby_indices_this_pass = set()
-                for db_actor in douban_cast_list:
-                    if self.is_stop_requested(): break
-                    douban_actor_name_cn = db_actor.get("name")
-                    douban_actor_name_latin = db_actor.get("latin_name")
-                    douban_character_name_cn = utils.clean_character_name_static(db_actor.get("character")) # 使用 utils
-                    if not douban_actor_name_cn: continue
-                    for idx_emby, emby_actor_entry in enumerate(processed_cast):
-                        if idx_emby in updated_emby_indices_this_pass: continue
-                        # ... (匹配逻辑) ...
-                        # 假设匹配成功:
-                        # emby_actor_entry["Name"] = douban_actor_name_cn
-                        # emby_actor_entry["Character"] = douban_character_name_cn
-                        # emby_actor_name_finalized_by_douban[idx_emby] = True
-                        # emby_actor_character_finalized_by_douban[idx_emby] = True
-                        # actors_actually_updated_by_douban_count +=1
-                        # updated_emby_indices_this_pass.add(idx_emby)
-                        # break # 跳出内层循环
-                if actors_actually_updated_by_douban_count > 0:
-                    logger.info(f"步骤1结果：根据豆瓣信息，共更新了 {actors_actually_updated_by_douban_count} 位Emby演员。")
+                online_douban_cast_list = douban_actors_raw["cast"]
+                logger.info(f"从在线豆瓣API为 '{media_name_for_log}' 获取到 {len(online_douban_cast_list)} 位演员。")
+                # TODO: 核心逻辑 - 将 online_douban_cast_list 的数据应用到 processed_cast
+                # 这部分逻辑与你之前处理豆瓣API返回的逻辑类似。
+                # 如果本地数据已经处理过 (local_data_processed_actors is True)，
+                # 你可能需要决定是合并、替换还是跳过。
+                # 为了简化，如果本地已处理，我们这里可以先跳过在线豆瓣数据，
+                # 或者只用在线数据补充本地数据中没有的演员（这需要更复杂的匹配逻辑）。
+                # 假设：如果本地数据已处理，我们不再用在线豆瓣数据覆盖。
+                if not local_data_processed_actors: # 只有当本地数据未处理时，才使用在线豆瓣数据
+                    logger.info("使用在线豆瓣数据填充/覆盖演员列表。")
+                    new_processed_cast_online = []
+                    new_actor_field_finalized_online = []
+                    for online_actor in online_douban_cast_list:
+                        internal_actor_entry = {
+                            "Name": online_actor.get("name"),
+                            "Character": online_actor.get("character"), # 可能需要 clean_character_name_static
+                            "Id": None,
+                            "OriginalName": online_actor.get("latin_name", online_actor.get("original_name")),
+                            "_source": "douban_api"
+                        }
+                        new_processed_cast_online.append(internal_actor_entry)
+                        new_actor_field_finalized_online.append({"name": True, "character": True}) # 假设豆瓣API返回的是最终中文
+                    processed_cast = new_processed_cast_online
+                    actor_field_finalized = new_actor_field_finalized_online
+                    logger.info(f"演员列表已更新为在线豆瓣数据，共 {len(processed_cast)} 位演员。")
+                else:
+                    logger.info("本地数据已处理演员，在线豆瓣数据将被忽略或仅用于补充（补充逻辑未实现）。")
+
             elif douban_actors_raw and douban_actors_raw.get("error"):
-                 logger.warning(f"豆瓣API返回错误: {douban_actors_raw.get('message')}")
-            else: logger.info(f"豆瓣未能为 '{media_name}' 提供演员信息。")
-        else:
-            logger.info(f"步骤1：跳过豆瓣演员信息获取流程 (豆瓣API不可用或配置禁用)。")
+                 logger.warning(f"在线豆瓣API返回错误: {douban_actors_raw.get('message', '未知豆瓣错误')}")
+            else:
+                 logger.info(f"在线豆瓣API未能为 '{media_name_for_log}' 提供演员信息或返回未知结构: {douban_actors_raw}")
+        elif self.data_source_mode == constants.DATA_SOURCE_MODE_API_DISABLED:
+            logger.info(f"步骤1: 在线API已禁用，跳过。")
 
-        if self.is_stop_requested(): logger.info("豆瓣处理后检测到停止信号。"); return processed_cast
 
-        # 步骤2: 补充翻译
-        logger.info(f"步骤2: 开始对媒体 '{media_name}' 中未被豆瓣最终确定且非中文的演员字段进行补充翻译...")
+        if self.is_stop_requested(): logger.info("在线豆瓣API处理后检测到停止信号。"); return processed_cast
+
+        # --------------------------------------------------------------------
+        # 步骤 2: 对那些未被本地数据或豆瓣API最终确定的字段进行补充翻译
+        # --------------------------------------------------------------------
+        logger.info(f"步骤2: 媒体 '{media_name_for_log}' - 对未最终确定的字段进行补充翻译...")
         translation_performed_count = 0
-        for idx, actor_data in enumerate(processed_cast):
+        for idx, actor_data in enumerate(processed_cast): # 遍历的是已经可能被本地或豆瓣数据更新过的列表
             if self.is_stop_requested(): logger.info("翻译循环在步骤2被中断..."); break
-            actor_name_original_for_log = actor_data.get("Name", "未知演员")
 
-            if not emby_actor_name_finalized_by_douban[idx]:
+            actor_name_original_for_log = actor_data.get("Name", "未知演员") # 用于日志的原始名可能是中文或英文
+
+            # 检查对应索引的 finalized 标记
+            finalized_info = actor_field_finalized[idx] if idx < len(actor_field_finalized) else {"name": False, "character": False}
+
+            if not finalized_info.get("name"):
                 current_actor_name = actor_data.get("Name")
                 translated_actor_name = self._translate_actor_field(current_actor_name, "演员名(补充翻译)", actor_name_original_for_log)
                 if translated_actor_name and actor_data.get("Name") != translated_actor_name:
                     actor_data["Name"] = translated_actor_name
                     translation_performed_count += 1
+                    finalized_info["name"] = utils.contains_chinese(translated_actor_name) # 如果翻译结果是中文，则标记为最终
 
-            if not emby_actor_character_finalized_by_douban[idx]:
+            if not finalized_info.get("character"):
                 current_actor_character = actor_data.get("Character")
-                # 清理角色名，例如移除 "(voice)" 等标记，以便翻译核心部分
-                char_to_translate_for_role = utils.clean_character_name_static(current_actor_character)
-                # (如果 clean_character_name_static 移除了 (voice)，需要在这里判断是否要加回中文的配音标记)
-                # suffix_after_translation_for_role = " (配音)" if "(voice)" in current_actor_character.lower() else "" # 简陋判断
+                char_to_translate = utils.clean_character_name_static(current_actor_character) # 清理后再翻译
 
-                translated_role_part = self._translate_actor_field(char_to_translate_for_role, "角色名(补充翻译)", actor_name_original_for_log)
+                translated_role_part = self._translate_actor_field(char_to_translate, "角色名(补充翻译)", actor_name_original_for_log)
 
-                final_character_str = translated_role_part if translated_role_part and translated_role_part.strip() else char_to_translate_for_role
-                # final_character_str += suffix_after_translation_for_role # 如果需要加回配音标记
+                final_character_str = translated_role_part if translated_role_part and translated_role_part.strip() else char_to_translate
+                cleaned_final_char = utils.clean_character_name_static(final_character_str) # 再次清理
 
-                # 再次清理，以防翻译结果包含不必要的字符
-                cleaned_final_char = utils.clean_character_name_static(final_character_str)
                 if actor_data.get("Character") != cleaned_final_char:
                     actor_data["Character"] = cleaned_final_char
                     translation_performed_count += 1
+                    finalized_info["character"] = utils.contains_chinese(cleaned_final_char) # 如果翻译结果是中文，则标记为最终
         if translation_performed_count > 0:
             logger.info(f"步骤2结果：对 {translation_performed_count} 个字段进行了补充翻译。")
-        else: logger.info("步骤2结果：无需进行补充翻译或所有需翻译字段均失败。")
+        else:
+            logger.info("步骤2结果：无需进行补充翻译或所有需翻译字段均失败/已包含中文。")
 
-        # 步骤3: 豆瓣溢出演员处理 (保持你之前的逻辑或简化)
-        logger.info(f"步骤3: 为豆瓣溢出演员查找TMDb ID的逻辑已暂时简化/跳过。")
 
-        # 最终去重 (保持你之前的逻辑)
-        final_unique_cast = []
-        seen_final_keys = set()
+        # --------------------------------------------------------------------
+        # 步骤 3: (可选) 为豆瓣/本地数据中多出（但Emby原始列表没有）的演员查找TMDb ID并尝试添加
+        # --------------------------------------------------------------------
+        # 这个逻辑会比较复杂，涉及到与Emby原始演员列表的对比和TMDb API的调用
+        # 目前可以先简化或跳过，专注于核心的替换和翻译
+        logger.info(f"步骤3: 溢出演员处理逻辑已暂时简化/跳过。")
+
+
+        # --------------------------------------------------------------------
+        # 最终去重 (基于 Name 和 Character，或者如果能获取到 Emby Person ID 则基于ID)
+        # --------------------------------------------------------------------
+        final_unique_cast: List[Dict[str, Any]] = []
+        seen_actor_signatures = set() # 用于去重
         for actor in processed_cast:
-            key_to_check = (str(actor.get("Id", "")), actor.get("Name","").lower(), actor.get("Character","").lower())
-            if key_to_check not in seen_final_keys:
+            # 去重签名可以基于演员名和角色名的小写形式
+            # 如果演员有唯一的ID (比如来自本地数据的豆瓣celebrity ID，或未来从TMDb获取的ID)，用ID去重更好
+            actor_name_lower = str(actor.get("Name", "")).lower()
+            character_name_lower = str(actor.get("Character", "")).lower()
+            signature = (actor_name_lower, character_name_lower)
+
+            # 如果这个演员是来自Emby原始列表并且有Emby Person ID，优先用ID去重
+            # (但我们目前的替换逻辑可能导致原始Emby ID丢失，需要更精细的合并策略)
+            # emby_person_id = actor.get("Id") # 这是Emby Person ID
+            # if emby_person_id:
+            #     signature = ("emby_id", emby_person_id)
+
+            if signature not in seen_actor_signatures:
                 final_unique_cast.append(actor)
-                seen_final_keys.add(key_to_check)
+                seen_actor_signatures.add(signature)
+            else:
+                logger.debug(f"去重时跳过重复演员: {actor.get('Name')} - {actor.get('Character')}")
+
         processed_cast = final_unique_cast
-        logger.info(f"演员列表最终处理完成，包含 {len(processed_cast)} 位演员。")
+        logger.info(f"演员列表最终处理完成 (去重后)，包含 {len(processed_cast)} 位演员。")
         return processed_cast
+
+    # ... (你的 process_single_item, close 等其他方法保持不变) ...
+    # process_single_item 会调用 _process_cast_list
 
 
     def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False) -> bool:
