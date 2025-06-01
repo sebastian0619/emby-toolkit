@@ -532,34 +532,34 @@ class MediaProcessor:
             logger.info("正在关闭 MediaProcessor 中的 DoubanApi session...")
             self.douban_api.close()
 
-if __name__ == '__main__':
-    mock_config = {
-        "emby_server_url": "http://192.168.31.163:8096",
-        "emby_api_key": "eaa73b828ac04b1bb6d3687a0117572c", 
-        "emby_user_id": "e274948e690043c9a86c9067ead73af4",
-        "translator_engines_order": ["bing", "youdao"], 
-        "domestic_source_mode": constants.DOMESTIC_SOURCE_MODE_LOCAL_THEN_ONLINE, 
-        "delay_between_items_sec": 0.5, 
-        "refresh_emby_after_update": True, 
-        "api_douban_default_cooldown_seconds": 1.0,
-        "tmdb_api_key": "42985eb2e0cbdf2b2c88f2f30990be40"
-    }
+# if __name__ == '__main__':
+#     mock_config = {
+#         "emby_server_url": "http://192.168.31.163:8096",
+#         "emby_api_key": "eaa73b828ac04b1bb6d3687a0117572c", 
+#         "emby_user_id": "e274948e690043c9a86c9067ead73af4",
+#         "translator_engines_order": ["bing", "youdao"], 
+#         "domestic_source_mode": constants.DOMESTIC_SOURCE_MODE_LOCAL_THEN_ONLINE, 
+#         "delay_between_items_sec": 0.5, 
+#         "refresh_emby_after_update": True, 
+#         "api_douban_default_cooldown_seconds": 1.0,
+#         "tmdb_api_key": "42985eb2e0cbdf2b2c88f2f30990be40"
+#     }
 
-    if mock_config["emby_user_id"] == "YOUR_EMBY_USER_ID_REPLACE_ME" or \
-       mock_config["emby_api_key"] == "YOUR_EMBY_API_KEY_PLACEHOLDER":
-        logger.error("错误：请在脚本中修改 mock_config 和文件顶部的占位符为您的真实Emby配置！")
-    else:
-        processor = MediaProcessor(config=mock_config)
+#     if mock_config["emby_user_id"] == "YOUR_EMBY_USER_ID_REPLACE_ME" or \
+#        mock_config["emby_api_key"] == "YOUR_EMBY_API_KEY_PLACEHOLDER":
+#         logger.error("错误：请在脚本中修改 mock_config 和文件顶部的占位符为您的真实Emby配置！")
+#     else:
+#         processor = MediaProcessor(config=mock_config)
 
-        MOVIE_ID_TO_PROCESS = "435075"
-        logger.info(f"\n--- 测试处理单个电影 (ID: {MOVIE_ID_TO_PROCESS}) ---")
-        processor.process_single_item(MOVIE_ID_TO_PROCESS)
+#         MOVIE_ID_TO_PROCESS = "435075"
+#         logger.info(f"\n--- 测试处理单个电影 (ID: {MOVIE_ID_TO_PROCESS}) ---")
+#         processor.process_single_item(MOVIE_ID_TO_PROCESS)
 
-        time.sleep(2)
+#         time.sleep(2)
 
-        SERIES_ID_TO_PROCESS = "436062"
-        logger.info(f"\n--- 测试处理单个剧集 (ID: {SERIES_ID_TO_PROCESS}) ---")
-        processor.process_single_item(SERIES_ID_TO_PROCESS)
+#         SERIES_ID_TO_PROCESS = "436062"
+#         logger.info(f"\n--- 测试处理单个剧集 (ID: {SERIES_ID_TO_PROCESS}) ---")
+#         processor.process_single_item(SERIES_ID_TO_PROCESS)
         
-        processor.close()
-        logger.info("\n--- MediaProcessor 测试结束 ---")
+#         processor.close()
+#         logger.info("\n--- MediaProcessor 测试结束 ---")

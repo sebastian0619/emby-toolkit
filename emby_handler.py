@@ -294,75 +294,75 @@ def refresh_emby_item_metadata(item_emby_id: str,
         logger.error(f"{log_message_prefix} 刷新请求时发生未知错误: {e}\n{traceback.format_exc()}")
         return False
 
-if __name__ == '__main__':
-    TEST_EMBY_SERVER_URL = "http://192.168.31.163:8096"
-    TEST_EMBY_API_KEY = "eaa73b828ac04b1bb6d3687a0117572c" 
-    TEST_EMBY_USER_ID = YOUR_EMBY_USER_ID_FOR_TESTING # 使用文件顶部定义的，确保已替换
+# if __name__ == '__main__':
+#     TEST_EMBY_SERVER_URL = "http://192.168.31.163:8096"
+#     TEST_EMBY_API_KEY = "eaa73b828ac04b1bb6d3687a0117572c" 
+#     TEST_EMBY_USER_ID = YOUR_EMBY_USER_ID_FOR_TESTING # 使用文件顶部定义的，确保已替换
     
-    SERIES_ID_TO_TEST = "436062" 
-    MOVIE_ID_TO_TEST = "459188"
+#     SERIES_ID_TO_TEST = "436062" 
+#     MOVIE_ID_TO_TEST = "459188"
 
-    logger.info(f"--- 开始Emby Handler测试 (使用 /Users/UserID/Items/ItemID 端点) ---")
+#     logger.info(f"--- 开始Emby Handler测试 (使用 /Users/UserID/Items/ItemID 端点) ---")
 
-    placeholders_not_set = False
-    if TEST_EMBY_SERVER_URL == "YOUR_EMBY_SERVER_URL" or not TEST_EMBY_SERVER_URL:
-        logger.error("错误：TEST_EMBY_SERVER_URL 未设置或仍为占位符。")
-        placeholders_not_set = True
-    if TEST_EMBY_API_KEY == "YOUR_EMBY_API_KEY" or not TEST_EMBY_API_KEY:
-        logger.error("错误：TEST_EMBY_API_KEY 未设置或仍为占位符。")
-        placeholders_not_set = True
-    if TEST_EMBY_USER_ID == "YOUR_EMBY_USER_ID_REPLACE_ME" or not TEST_EMBY_USER_ID:
-        logger.error("错误：TEST_EMBY_USER_ID 未设置或仍为占位符 (YOUR_EMBY_USER_ID_FOR_TESTING)。请在脚本顶部和此处修改。")
-        placeholders_not_set = True
+#     placeholders_not_set = False
+#     if TEST_EMBY_SERVER_URL == "YOUR_EMBY_SERVER_URL" or not TEST_EMBY_SERVER_URL:
+#         logger.error("错误：TEST_EMBY_SERVER_URL 未设置或仍为占位符。")
+#         placeholders_not_set = True
+#     if TEST_EMBY_API_KEY == "YOUR_EMBY_API_KEY" or not TEST_EMBY_API_KEY:
+#         logger.error("错误：TEST_EMBY_API_KEY 未设置或仍为占位符。")
+#         placeholders_not_set = True
+#     if TEST_EMBY_USER_ID == "YOUR_EMBY_USER_ID_REPLACE_ME" or not TEST_EMBY_USER_ID:
+#         logger.error("错误：TEST_EMBY_USER_ID 未设置或仍为占位符 (YOUR_EMBY_USER_ID_FOR_TESTING)。请在脚本顶部和此处修改。")
+#         placeholders_not_set = True
     
-    if placeholders_not_set:
-        logger.error("由于一个或多个关键测试参数未正确设置，测试无法继续。请编辑脚本并替换占位符。")
-    else:
-        # --- 测试获取电影详情 (因为 update_emby_item_cast 会用到它) ---
-        logger.info(f"\n--- 首先测试 get_emby_item_details (Movie ID: {MOVIE_ID_TO_TEST}, UserID: {TEST_EMBY_USER_ID}) ---")
-        movie_details = get_emby_item_details(MOVIE_ID_TO_TEST, TEST_EMBY_SERVER_URL, TEST_EMBY_API_KEY, TEST_EMBY_USER_ID)
-        if movie_details:
-            logger.info(f"  获取到电影详情 - 标题: {movie_details.get('Name')}, 类型: {movie_details.get('Type')}")
-            logger.info(f"  当前演员数量: {len(movie_details.get('People', []))}")
-            if movie_details.get('People'):
-                logger.debug(f"    当前前2位演员: {movie_details.get('People')[:2]}")
+#     if placeholders_not_set:
+#         logger.error("由于一个或多个关键测试参数未正确设置，测试无法继续。请编辑脚本并替换占位符。")
+#     else:
+#         # --- 测试获取电影详情 (因为 update_emby_item_cast 会用到它) ---
+#         logger.info(f"\n--- 首先测试 get_emby_item_details (Movie ID: {MOVIE_ID_TO_TEST}, UserID: {TEST_EMBY_USER_ID}) ---")
+#         movie_details = get_emby_item_details(MOVIE_ID_TO_TEST, TEST_EMBY_SERVER_URL, TEST_EMBY_API_KEY, TEST_EMBY_USER_ID)
+#         if movie_details:
+#             logger.info(f"  获取到电影详情 - 标题: {movie_details.get('Name')}, 类型: {movie_details.get('Type')}")
+#             logger.info(f"  当前演员数量: {len(movie_details.get('People', []))}")
+#             if movie_details.get('People'):
+#                 logger.debug(f"    当前前2位演员: {movie_details.get('People')[:2]}")
 
-            # --- 测试更新演员信息 ---
-            logger.info(f"\n--- 测试 update_emby_item_cast (Movie ID: {MOVIE_ID_TO_TEST}, UserID: {TEST_EMBY_USER_ID}) ---")
-            test_cast_for_update = [
-                {"name": "演员甲PyTest", "character": "角色一PyTest"},
-                {"name": "演员乙PyTest", "character": "角色二PyTest"}
-            ]
-            # 调用时传入 UserID
-            update_success = update_emby_item_cast(MOVIE_ID_TO_TEST, test_cast_for_update, 
-                                                   TEST_EMBY_SERVER_URL, TEST_EMBY_API_KEY, TEST_EMBY_USER_ID)
-            if update_success:
-                logger.success(f"  电影 {MOVIE_ID_TO_TEST} 演员信息更新请求已发送。请检查Emby。")
-                time.sleep(3) # 给Emby一点时间处理
-                logger.info(f"    验证更新结果 (Movie ID: {MOVIE_ID_TO_TEST}, UserID: {TEST_EMBY_USER_ID})...")
-                updated_details_after_post = get_emby_item_details(MOVIE_ID_TO_TEST, TEST_EMBY_SERVER_URL, TEST_EMBY_API_KEY, TEST_EMBY_USER_ID)
-                if updated_details_after_post:
-                    logger.info(f"      更新后标题: {updated_details_after_post.get('Name')}")
-                    logger.info(f"      更新后演员数量: {len(updated_details_after_post.get('People', []))}")
-                    if updated_details_after_post.get('People'):
-                        logger.debug(f"        更新后演员: {updated_details_after_post.get('People')}") # 打印所有演员以确认
-                else:
-                    logger.error(f"      未能获取更新后的电影 {MOVIE_ID_TO_TEST} 详情进行验证。")
-            else:
-                logger.error(f"  电影 {MOVIE_ID_TO_TEST} 演员信息更新失败。")
-        else:
-            logger.error(f"  未能获取电影ID {MOVIE_ID_TO_TEST} (UserID: {TEST_EMBY_USER_ID}) 的详细信息，无法进行更新测试。")
+#             # --- 测试更新演员信息 ---
+#             logger.info(f"\n--- 测试 update_emby_item_cast (Movie ID: {MOVIE_ID_TO_TEST}, UserID: {TEST_EMBY_USER_ID}) ---")
+#             test_cast_for_update = [
+#                 {"name": "演员甲PyTest", "character": "角色一PyTest"},
+#                 {"name": "演员乙PyTest", "character": "角色二PyTest"}
+#             ]
+#             # 调用时传入 UserID
+#             update_success = update_emby_item_cast(MOVIE_ID_TO_TEST, test_cast_for_update, 
+#                                                    TEST_EMBY_SERVER_URL, TEST_EMBY_API_KEY, TEST_EMBY_USER_ID)
+#             if update_success:
+#                 logger.success(f"  电影 {MOVIE_ID_TO_TEST} 演员信息更新请求已发送。请检查Emby。")
+#                 time.sleep(3) # 给Emby一点时间处理
+#                 logger.info(f"    验证更新结果 (Movie ID: {MOVIE_ID_TO_TEST}, UserID: {TEST_EMBY_USER_ID})...")
+#                 updated_details_after_post = get_emby_item_details(MOVIE_ID_TO_TEST, TEST_EMBY_SERVER_URL, TEST_EMBY_API_KEY, TEST_EMBY_USER_ID)
+#                 if updated_details_after_post:
+#                     logger.info(f"      更新后标题: {updated_details_after_post.get('Name')}")
+#                     logger.info(f"      更新后演员数量: {len(updated_details_after_post.get('People', []))}")
+#                     if updated_details_after_post.get('People'):
+#                         logger.debug(f"        更新后演员: {updated_details_after_post.get('People')}") # 打印所有演员以确认
+#                 else:
+#                     logger.error(f"      未能获取更新后的电影 {MOVIE_ID_TO_TEST} 详情进行验证。")
+#             else:
+#                 logger.error(f"  电影 {MOVIE_ID_TO_TEST} 演员信息更新失败。")
+#         else:
+#             logger.error(f"  未能获取电影ID {MOVIE_ID_TO_TEST} (UserID: {TEST_EMBY_USER_ID}) 的详细信息，无法进行更新测试。")
 
-        time.sleep(1)
+#         time.sleep(1)
 
-        # --- 测试获取电视剧详情 ---
-        logger.info(f"\n--- 测试 get_emby_item_details (Series ID: {SERIES_ID_TO_TEST}, UserID: {TEST_EMBY_USER_ID}) ---")
-        series_details = get_emby_item_details(SERIES_ID_TO_TEST, TEST_EMBY_SERVER_URL, TEST_EMBY_API_KEY, TEST_EMBY_USER_ID)
-        if series_details:
-            logger.info(f"  获取到电视剧详情 - 标题: {series_details.get('Name')}, 类型: {series_details.get('Type')}")
-            logger.info(f"  TMDb ID: {series_details.get('ProviderIds', {}).get('Tmdb')}")
-            logger.info(f"  演员数量: {len(series_details.get('People', []))}")
-        else:
-            logger.error(f"  未能获取电视剧ID {SERIES_ID_TO_TEST} (UserID: {TEST_EMBY_USER_ID}) 的详细信息。")
+#         # --- 测试获取电视剧详情 ---
+#         logger.info(f"\n--- 测试 get_emby_item_details (Series ID: {SERIES_ID_TO_TEST}, UserID: {TEST_EMBY_USER_ID}) ---")
+#         series_details = get_emby_item_details(SERIES_ID_TO_TEST, TEST_EMBY_SERVER_URL, TEST_EMBY_API_KEY, TEST_EMBY_USER_ID)
+#         if series_details:
+#             logger.info(f"  获取到电视剧详情 - 标题: {series_details.get('Name')}, 类型: {series_details.get('Type')}")
+#             logger.info(f"  TMDb ID: {series_details.get('ProviderIds', {}).get('Tmdb')}")
+#             logger.info(f"  演员数量: {len(series_details.get('People', []))}")
+#         else:
+#             logger.error(f"  未能获取电视剧ID {SERIES_ID_TO_TEST} (UserID: {TEST_EMBY_USER_ID}) 的详细信息。")
 
-    logger.info("\n--- Emby Handler测试结束 ---")
+#     logger.info("\n--- Emby Handler测试结束 ---")
