@@ -4,11 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Emby演员处理工具 - 配置</title>
-    {% if app_version %}
-            <p style="text-align: center; color: #555; margin-top: -10px; margin-bottom: 20px;">版本: {{ app_version }}</p>
-        {% endif %}
-
-        {% with messages = get_flashed_messages(with_categories=true) %}
     <style>
         body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
         .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); max-width: 800px; margin: auto;}
@@ -172,5 +167,11 @@
         fetchStatus();
         setInterval(fetchStatus, 3000); 
     </script>
+    <footer style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; color: #777;">
+        {% if app_version %}
+            <p>Emby Actor Processor - Version: {{ app_version }}</p>
+        {% endif %}
+        <p><a href="https://github.com/hbq0405/emby-actor-processor" target="_blank">项目GitHub地址</a></p>
+    </footer>
 </body>
 </html>
