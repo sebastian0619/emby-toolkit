@@ -448,71 +448,142 @@ class MediaProcessor:
 
 
     def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False):
-        self.clear_stop_signal()
+        self.clear_stop_signal() # 清除任何可能残留的停止信号
+        logger.debug(f"process_full_library: 方法开始执行。")
+        logger.debug(f"  Initial self.libraries_to_process (来自实例属性): {self.libraries_to_process}")
+        logger.debug(f"  force_reprocess_all: {force_reprocess_all}")
+
         if force_reprocess_all:
-            logger.info("用户请求强制重处理所有媒体项，将清除已处理记录。")
-            self.clear_processed_log()
+            logger.info("用户请求强制重处理所有媒体项，将清除数据库中的已处理记录。")
+            self.clear_processed_log() # 这个方法应该清除数据库和内存缓存
 
         if not all([self.emby_url, self.emby_api_key, self.emby_user_id]):
             logger.error("Emby配置不完整，无法处理整个媒体库。")
-            if update_status_callback: update_status_callback(-1, "Emby配置不完整")
+            if update_status_callback:
+                update_status_callback(-1, "Emby配置不完整")
             return
 
-        logger.info("开始全量处理Emby媒体库...")
-        if update_status_callback: update_status_callback(0, "正在获取电影列表...")
-        movies = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Movie", self.emby_user_id)
-        if self.is_stop_requested(): logger.info("获取电影列表后检测到停止信号。"); return
-        if update_status_callback: update_status_callback(5, "正在获取剧集列表...")
-        series_list = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Series", self.emby_user_id)
-        if self.is_stop_requested(): logger.info("获取剧集列表后检测到停止信号。"); return
+        # --- 关键检查点：从实例属性获取要处理的库列表 ---
+        current_libs_to_process = self.libraries_to_process
+        logger.info(f"process_full_library: 即将用于获取项目的媒体库ID列表为: {current_libs_to_process}")
 
-        all_items = (movies if movies else []) + (series_list if series_list else []) #确保是列表
+        if not current_libs_to_process: # 检查列表是否为空
+            logger.warning("process_full_library: 配置中要处理的媒体库ID列表 (current_libs_to_process) 为空。将不会从Emby获取任何项目。")
+            if update_status_callback:
+                update_status_callback(100, "未在配置中指定要处理的媒体库，或列表为空。")
+            # 注意：emby_handler.get_emby_library_items 如果接收到空的 library_ids 列表，它自己也会返回空列表。
+            # 所以这里的行为是正确的，后续 movies 和 series_list 会是空。
+            # 如果你希望在这种情况下完全不执行后续步骤，可以在这里直接 return。
+            # return
+        # --- 关键检查点结束 ---
+
+        logger.info(f"开始全量处理选定的Emby媒体库 (ID(s): {current_libs_to_process if current_libs_to_process else '无特定库'})...")
+        if update_status_callback:
+            update_status_callback(0, "正在获取电影列表...")
+
+        movies: Optional[List[Dict[str, Any]]] = None
+        series_list: Optional[List[Dict[str, Any]]] = None
+
+        try:
+            movies = emby_handler.get_emby_library_items(
+                self.emby_url, self.emby_api_key, "Movie", self.emby_user_id,
+                library_ids=current_libs_to_process # 使用局部变量传递
+            )
+        except Exception as e_movie_get:
+            logger.error(f"获取电影列表时发生严重错误: {e_movie_get}", exc_info=True)
+            movies = [] # 出错则视为空列表
+
+        if self.is_stop_requested():
+            logger.info("获取电影列表后检测到停止信号，处理中止。")
+            if update_status_callback: update_status_callback(background_task_status.get("progress", 5), "任务已中断") # type: ignore
+            return
+
+        if update_status_callback:
+            update_status_callback(5, "正在获取剧集列表...") # 假设电影占5%进度
+
+        try:
+            series_list = emby_handler.get_emby_library_items(
+                self.emby_url, self.emby_api_key, "Series", self.emby_user_id,
+                library_ids=current_libs_to_process # 使用局部变量传递
+            )
+        except Exception as e_series_get:
+            logger.error(f"获取剧集列表时发生严重错误: {e_series_get}", exc_info=True)
+            series_list = [] # 出错则视为空列表
+
+
+        if self.is_stop_requested():
+            logger.info("获取剧集列表后检测到停止信号，处理中止。")
+            if update_status_callback: update_status_callback(background_task_status.get("progress", 10), "任务已中断") # type: ignore
+            return
+
+        # 合并电影和剧集列表，并确保它们是列表类型
+        all_items = (movies if isinstance(movies, list) else []) + \
+                    (series_list if isinstance(series_list, list) else [])
         total_items = len(all_items)
+
         if total_items == 0:
-            logger.info("媒体库为空或获取失败，无需处理。")
-            if update_status_callback: update_status_callback(100, "媒体库为空或获取失败。")
+            logger.info("从选定的媒体库中未获取到任何电影或剧集项目，或者获取失败，无需进一步处理。")
+            if update_status_callback:
+                update_status_callback(100, "未在选定库中找到项目或获取失败。")
             return
-        logger.info(f"获取到 {len(movies if movies else [])} 部电影和 {len(series_list if series_list else [])} 部剧集，共 {total_items} 个项目进行处理。")
+
+        logger.info(f"总共从选定的库中获取到 {len(movies) if movies else 0} 部电影和 {len(series_list) if series_list else 0} 部剧集，共 {total_items} 个项目进行处理。")
 
         for i, item in enumerate(all_items):
             if self.is_stop_requested():
-                logger.info("全量媒体库处理被用户中断。")
+                logger.info("全量媒体库处理在项目迭代中被用户中断。")
                 if update_status_callback:
-                    current_progress = int(((i) / total_items) * 100) if total_items > 0 else 0
-                    update_status_callback(current_progress, "任务已中断")
-                break
+                    current_progress_on_stop = int(((i) / total_items) * 100) if total_items > 0 else 0
+                    update_status_callback(current_progress_on_stop, "任务已中断")
+                break # 跳出循环
 
             item_id = item.get('Id')
             item_name = item.get('Name', f"未知项目(ID:{item_id})")
             item_type_str = "电影" if item.get("Type") == "Movie" else ("剧集" if item.get("Type") == "Series" else "未知类型")
-            progress = int(((i + 1) / total_items) * 99)
+
+            # 更新进度 (0-99% 用于处理过程，100% 用于完成)
+            # 这里的进度是基于总项目数的，而不是获取列表的进度
+            progress_percent = int(((i + 1) / total_items) * 90) + 10 # 假设获取列表占了前10%
+            if progress_percent > 99: progress_percent = 99
+
+
             message = f"正在处理 {item_type_str} ({i+1}/{total_items}): {item_name}"
             logger.info(message)
-            if update_status_callback: update_status_callback(progress, message)
+            if update_status_callback:
+                update_status_callback(progress_percent, message)
 
             if not item_id:
                 logger.warning(f"条目缺少ID，跳过: {item_name}")
                 continue
 
+            # 调用 process_single_item 处理单个项目
+            # force_reprocess_this_item 参数现在由 force_reprocess_all 控制
             process_success = self.process_single_item(item_id, force_reprocess_this_item=force_reprocess_all)
-            if not process_success and self.is_stop_requested(): # 如果处理失败且是因停止信号导致
-                logger.info(f"处理 Item ID {item_id} 时被中断，停止全量扫描。")
-                if update_status_callback: update_status_callback(progress, f"处理 {item_name} 时中断")
-                break
-            
+
+            if not process_success and self.is_stop_requested():
+                # 如果处理单个项目失败是因为收到了停止信号
+                logger.info(f"处理 Item ID {item_id} ('{item_name}') 时被中断，停止全量扫描。")
+                if update_status_callback:
+                    update_status_callback(progress_percent, f"处理 '{item_name}' 时中断")
+                break # 跳出循环
+
+            # 项目间延迟
             delay = float(self.config.get("delay_between_items_sec", 0.5))
-            if delay > 0 and i < total_items -1 : # 最后一个项目后不延迟
+            if delay > 0 and i < total_items - 1: # 最后一个项目之后不延迟
                 if self.is_stop_requested():
-                    logger.info("延迟等待前检测到停止信号，中断全量扫描。")
-                    if update_status_callback: update_status_callback(progress, "任务已中断")
+                    logger.info("项目间延迟等待前检测到停止信号，中断全量扫描。")
+                    if update_status_callback: update_status_callback(progress_percent, "任务已中断")
                     break
                 time.sleep(delay)
 
+        # 循环结束后的最终状态报告
         if self.is_stop_requested():
             logger.info("全量处理任务已结束（因用户请求停止）。")
+            # 状态已在循环内或 _execute_task_with_lock 的 finally 中更新
         else:
             logger.info("全量处理Emby媒体库结束。")
-            if update_status_callback: update_status_callback(100, "全量处理完成。")
+            if update_status_callback:
+                update_status_callback(100, "全量处理完成。")
 
 
     def close(self):
