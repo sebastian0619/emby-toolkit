@@ -431,7 +431,9 @@ class DoubanApi:
                 DoubanApi._session = None # 重置，以便下次可以重新初始化
 
         # 保存翻译缓存 (调用类方法)
+        logger.info("DoubanApi.close() 方法：准备调用 _save_translation_cache_to_file()")
         DoubanApi._save_translation_cache_to_file()
+        logger.info("DoubanApi.close() 方法：_save_translation_cache_to_file() 调用完毕。")
         logger.info("DoubanApi close 方法执行完毕 (包含翻译缓存保存尝试)。")
 
 # --- (可选) 模块级别的缓存加载和程序退出时的保存 ---

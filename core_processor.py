@@ -538,9 +538,14 @@ class MediaProcessor:
                 update_status_callback(100, "全量处理完成。")
 
     def close(self):
+        logger.info("MediaProcessor.close() 方法开始执行。") # <-- 新增日志
         if self.douban_api and hasattr(self.douban_api, 'close'):
-            logger.info("正在关闭 MediaProcessor 中的 DoubanApi session...")
-            self.douban_api.close()
+            logger.info("MediaProcessor.close(): 准备调用 self.douban_api.close()") # <-- 新增日志
+            self.douban_api.close() # <--- 核心调用
+            logger.info("MediaProcessor.close(): self.douban_api.close() 调用完毕。") # <-- 新增日志
+        else:
+            logger.info("MediaProcessor.close(): Douban API 实例不存在或没有 close 方法。") # <-- 新增日志
+        logger.info("MediaProcessor close 方法执行完毕。")
 
 # if __name__ == '__main__':
 #     mock_config = {
