@@ -101,14 +101,22 @@ def init_db():
 
 # --- 配置加载与保存 ---
 def load_config() -> dict:
-    # (与你之前的 load_config 逻辑基本一致，确保所有默认值和读取逻辑正确)
-    # 为简洁起见，这里使用一个简化的结构，你需要用你完整的版本替换
     config_parser = configparser.ConfigParser(defaults={
         constants.CONFIG_OPTION_EMBY_SERVER_URL: "",
         constants.CONFIG_OPTION_EMBY_API_KEY: "",
-        # ... 其他所有默认值 ...
-        "schedule_cron": "0 3 * * *",
+        constants.CONFIG_OPTION_EMBY_USER_ID: "",
+        constants.CONFIG_OPTION_TMDB_API_KEY: constants.FALLBACK_TMDB_API_KEY,
+        constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN: str(constants.DEFAULT_API_COOLDOWN_SECONDS_FALLBACK),
+        constants.CONFIG_OPTION_TRANSLATOR_ENGINES: ",".join(constants.DEFAULT_TRANSLATOR_ENGINES_ORDER),
+        # --- 确保这里的键名与 constants.py 中定义的一致 ---
+        constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE: constants.DEFAULT_DOMESTIC_SOURCE_MODE, # <--- 默认值
         constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS: "",
+        constants.CONFIG_OPTION_LOCAL_DATA_PATH: constants.DEFAULT_LOCAL_DATA_PATH,
+        "delay_between_items_sec": "0.5",
+        "refresh_emby_after_update": "true",
+        "schedule_enabled": "false",
+        "schedule_cron": "0 3 * * *",
+        "schedule_force_reprocess": "false"
     })
     if os.path.exists(CONFIG_FILE_PATH):
         config_parser.read(CONFIG_FILE_PATH, encoding='utf-8')
@@ -116,37 +124,58 @@ def load_config() -> dict:
         logger.warning(f"配置文件 {CONFIG_FILE_PATH} 未找到，将使用默认值。请通过设置页面保存一次以创建文件。")
 
     app_cfg = {}
-    # 示例：
-    app_cfg["emby_server_url"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_SERVER_URL, fallback="")
-    app_cfg["emby_api_key"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_API_KEY, fallback="")
-    app_cfg["emby_user_id"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_USER_ID, fallback="")
-    app_cfg["refresh_emby_after_update"] = config_parser.getboolean(constants.CONFIG_SECTION_EMBY, "refresh_emby_after_update", fallback=True)
-    app_cfg["tmdb_api_key"] = config_parser.get(constants.CONFIG_SECTION_TMDB, constants.CONFIG_OPTION_TMDB_API_KEY, fallback=constants.FALLBACK_TMDB_API_KEY)
-    app_cfg["api_douban_default_cooldown_seconds"] = config_parser.getfloat(constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN, fallback=constants.DEFAULT_API_COOLDOWN_SECONDS_FALLBACK)
-    engines_str = config_parser.get(constants.CONFIG_SECTION_TRANSLATION, constants.CONFIG_OPTION_TRANSLATOR_ENGINES, fallback=",".join(constants.DEFAULT_TRANSLATOR_ENGINES_ORDER))
+    # Emby Section
+    if not config_parser.has_section(constants.CONFIG_SECTION_EMBY): config_parser.add_section(constants.CONFIG_SECTION_EMBY)
+    app_cfg["emby_server_url"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_SERVER_URL)
+    app_cfg["emby_api_key"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_API_KEY)
+    app_cfg["emby_user_id"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_USER_ID)
+    app_cfg["refresh_emby_after_update"] = config_parser.getboolean(constants.CONFIG_SECTION_EMBY, "refresh_emby_after_update")
+    libraries_str = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS)
+    app_cfg["libraries_to_process"] = [lib_id.strip() for lib_id in libraries_str.split(',') if lib_id.strip()]
+
+    # TMDB Section
+    if not config_parser.has_section(constants.CONFIG_SECTION_TMDB): config_parser.add_section(constants.CONFIG_SECTION_TMDB)
+    app_cfg["tmdb_api_key"] = config_parser.get(constants.CONFIG_SECTION_TMDB, constants.CONFIG_OPTION_TMDB_API_KEY)
+
+    # Douban API Section
+    if not config_parser.has_section(constants.CONFIG_SECTION_API_DOUBAN): config_parser.add_section(constants.CONFIG_SECTION_API_DOUBAN)
+    app_cfg["api_douban_default_cooldown_seconds"] = config_parser.getfloat(constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN)
+
+    # Translation Section
+    if not config_parser.has_section(constants.CONFIG_SECTION_TRANSLATION): config_parser.add_section(constants.CONFIG_SECTION_TRANSLATION)
+    engines_str = config_parser.get(constants.CONFIG_SECTION_TRANSLATION, constants.CONFIG_OPTION_TRANSLATOR_ENGINES)
     app_cfg["translator_engines_order"] = [eng.strip() for eng in engines_str.split(',') if eng.strip()]
     if not app_cfg["translator_engines_order"]: app_cfg["translator_engines_order"] = constants.DEFAULT_TRANSLATOR_ENGINES_ORDER
-    app_cfg["domestic_source_mode"] = config_parser.get(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, fallback=constants.DEFAULT_DOMESTIC_SOURCE_MODE)
-    app_cfg["delay_between_items_sec"] = config_parser.getfloat("General", "delay_between_items_sec", fallback=0.5)
-    app_cfg["schedule_enabled"] = config_parser.getboolean("Scheduler", "schedule_enabled", fallback=False)
-    app_cfg["schedule_cron"] = config_parser.get("Scheduler", "schedule_cron", fallback="0 3 * * *")
-    app_cfg["schedule_force_reprocess"] = config_parser.getboolean("Scheduler", "schedule_force_reprocess", fallback=False)
-    # 确保在 [Emby] 节下读取，或者你定义的其他节
-    if not config_parser.has_section(constants.CONFIG_SECTION_LOCAL_DATA):
-        config_parser.add_section(constants.CONFIG_SECTION_LOCAL_DATA)
-    app_cfg["local_data_path"] = config_parser.get(
-        constants.CONFIG_SECTION_LOCAL_DATA,
-        constants.CONFIG_OPTION_LOCAL_DATA_PATH,
-        fallback=constants.DEFAULT_LOCAL_DATA_PATH
-    ).strip()
-    app_cfg["data_source_mode"] = config_parser.get(
-        constants.CONFIG_SECTION_DOMESTIC_SOURCE, # 或者你改的新节名
-        constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, # 或者你改的新选项名
-        fallback=constants.DEFAULT_DOMESTIC_SOURCE_MODE
-    )
 
-    logger.info(f"配置已从 '{CONFIG_FILE_PATH}' 加载。")
+    # --- 修改这里，确保 fallback 使用 constants.py 中实际定义的常量名 ---
+    # Domestic Source / Data Source Section
+    # 假设你在 constants.py 中 CONFIG_SECTION_DOMESTIC_SOURCE 和 CONFIG_OPTION_DOMESTIC_SOURCE_MODE 是正确的
+    if not config_parser.has_section(constants.CONFIG_SECTION_DOMESTIC_SOURCE): config_parser.add_section(constants.CONFIG_SECTION_DOMESTIC_SOURCE)
+    app_cfg["data_source_mode"] = config_parser.get( # 使用 "data_source_mode" 作为 app_cfg 中的键
+        constants.CONFIG_SECTION_DOMESTIC_SOURCE,
+        constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE,
+        fallback=constants.DEFAULT_DOMESTIC_SOURCE_MODE # <--- 使用你 constants.py 中定义的那个默认模式常量
+    )
+    # --- 修改结束 ---
+
+    # Local Data Source Section
+    if not config_parser.has_section(constants.CONFIG_SECTION_LOCAL_DATA): config_parser.add_section(constants.CONFIG_SECTION_LOCAL_DATA)
+    app_cfg["local_data_path"] = config_parser.get(constants.CONFIG_SECTION_LOCAL_DATA, constants.CONFIG_OPTION_LOCAL_DATA_PATH).strip()
+
+
+    # General Section
+    if not config_parser.has_section("General"): config_parser.add_section("General")
+    app_cfg["delay_between_items_sec"] = config_parser.getfloat("General", "delay_between_items_sec")
+
+    # Scheduler Section
+    if not config_parser.has_section("Scheduler"): config_parser.add_section("Scheduler")
+    app_cfg["schedule_enabled"] = config_parser.getboolean("Scheduler", "schedule_enabled")
+    app_cfg["schedule_cron"] = config_parser.get("Scheduler", "schedule_cron")
+    app_cfg["schedule_force_reprocess"] = config_parser.getboolean("Scheduler", "schedule_force_reprocess")
+
     logger.debug(f"load_config: 返回的 app_cfg 中的 libraries_to_process = {app_cfg.get('libraries_to_process')}")
+    logger.debug(f"load_config: 返回的 app_cfg 中的 data_source_mode = {app_cfg.get('data_source_mode')}") # 新增日志
+    logger.info(f"配置已从 '{CONFIG_FILE_PATH}' 加载。")
     return app_cfg
 
 def save_config(new_config: Dict[str, Any]):
