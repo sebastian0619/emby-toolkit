@@ -60,6 +60,9 @@ class MediaProcessor:
         self.translator_engines = self.config.get("translator_engines_order", constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
         self.domestic_source_mode = self.config.get("domestic_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE)
 
+        self.data_source_mode = config.get("data_source_mode", constants.DEFAULT_DATA_SOURCE_MODE) # 或者你使用的默认常量名
+        self.local_data_path = config.get("local_data_path", constants.DEFAULT_LOCAL_DATA_PATH).strip() # 获取并去除首尾空格
+
         self._stop_event = threading.Event()
         self.processed_items_cache = self._load_processed_log_from_db() # 从数据库加载
         self.libraries_to_process = config.get("libraries_to_process", [])
