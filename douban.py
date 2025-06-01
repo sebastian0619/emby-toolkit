@@ -10,10 +10,15 @@ from random import choice
 from typing import Optional, Dict 
 from urllib import parse
 import json # 确保导入json，因为测试代码中用到了
+import constants
 
 import requests
-PERSISTENT_DATA_PATH = "/config"
-_translation_cache_file_path = os.path.join(PERSISTENT_DATA_PATH, constants.TRANSLATION_CACHE_FILE)
+# --- 之前定义的 PERSISTENT_DATA_PATH ---
+PERSISTENT_DATA_PATH = os.environ.get("APP_DATA_DIR", "/config") # 与 web_app.py 和 core_processor.py 保持一致
+CACHE_SUBDIR = os.path.join(PERSISTENT_DATA_PATH, "cache") # 建议将缓存放在子目录
+os.makedirs(CACHE_SUBDIR, exist_ok=True)
+# --- PERSISTENT_DATA_PATH 定义结束 ---
+
 
 try:
     from logger_setup import logger # 尝试从主项目导入logger
