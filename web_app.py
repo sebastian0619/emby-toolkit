@@ -142,6 +142,7 @@ def load_config() -> dict:
     app_cfg["libraries_to_process"] = [lib_id.strip() for lib_id in libraries_str.split(',') if lib_id.strip()]
 
     logger.info(f"配置已从 '{CONFIG_FILE_PATH}' 加载。")
+    logger.debug(f"load_config: 返回的 app_cfg 中的 libraries_to_process = {app_cfg.get('libraries_to_process')}")
     return app_cfg
 
 def save_config(new_config: Dict[str, Any]):

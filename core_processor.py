@@ -61,6 +61,11 @@ class MediaProcessor:
 
         self._stop_event = threading.Event()
         self.processed_items_cache = self._load_processed_log_from_db() # 从数据库加载
+        self.libraries_to_process = config.get("libraries_to_process", [])
+
+        logger.info(f"MediaProcessor __init__: self.libraries_to_process 被设置为: {self.libraries_to_process}")
+        if not self.libraries_to_process:
+            logger.warning("MediaProcessor __init__: 注意！self.libraries_to_process 为空，全量扫描将不处理任何特定库。")
 
         logger.info(f"MediaProcessor 初始化完成。Emby URL: {self.emby_url}, UserID: {self.emby_user_id}")
         logger.debug(f"  将使用数据库: {self.db_path}")
