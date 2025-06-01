@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz # 用于处理时区
+from douban import DoubanApi
 
 import constants
 from core_processor import MediaProcessor 
@@ -287,7 +288,8 @@ def settings_page():
                            available_engines=available_engines,
                            current_engine_str=current_engine_str,
                            domestic_source_options=domestic_source_options,
-                           task_status=background_task_status)
+                           task_status=background_task_status,
+                           app_version=constants.APP_VERSION)
 
 @app.route('/webhook/emby', methods=['POST'])
 def emby_webhook():
@@ -331,10 +333,10 @@ def emby_webhook():
                         else:
                             if media_processor_instance and media_processor_instance.is_stop_requested():
                                 background_task_status["message"] = f"Item ID: {item_id_to_process} 处理被用户中断。"
-                                error_message = "用户中断"
+                                error_message = "用户中断" 
                             else:
                                 background_task_status["message"] = f"Item ID: {item_id_to_process} 处理失败（具体原因请看日志）。"
-                                error_message = "处理失败"
+                                error_message = "处理失败" 
                         background_task_status["progress"] = 100 
                     except Exception as e:
                         logger.error(f"Webhook后台任务处理 Item ID {item_id_to_process} 发生严重异常: {e}", exc_info=True)
@@ -344,23 +346,23 @@ def emby_webhook():
                         log_final_status = "完成" if processing_success else (error_message or "未知原因失败")
                         logger.info(f"Webhook处理 Item ID {item_id_to_process} 结束，状态: {log_final_status}")
                         
+                        # 尝试保存翻译缓存
+                        if media_processor_instance and \
+                           media_processor_instance.douban_api and \
+                           hasattr(DoubanApi, '_save_translation_cache_to_file') and \
+                           callable(DoubanApi._save_translation_cache_to_file): # DoubanApi是类名
+                            try:
+                                logger.info("Webhook任务结束，尝试保存翻译缓存...")
+                                DoubanApi._save_translation_cache_to_file() # 调用类方法
+                            except Exception as e_save_cache:
+                                logger.error(f"保存翻译缓存时发生错误 (Webhook): {e_save_cache}", exc_info=True)
+                        
                         time.sleep(1) 
                         background_task_status["is_running"] = False
                         background_task_status["current_action"] = "无"
                         background_task_status["progress"] = 0 
                         if media_processor_instance: 
                             media_processor_instance.clear_stop_signal()
-            
-            thread = threading.Thread(target=task_wrapper, args=(item_id,))
-            thread.start()
-            
-            return jsonify({"status": "processing_started_via_webhook", "item_id": item_id}), 200
-        else:
-            logger.info(f"Webhook事件 '{event_type}' (Item ID: {item_id or 'N/A'}) 非处理类型或无ItemID，已忽略。")
-            return jsonify({"status": "event_ignored", "event": event_type}), 200
-    else:
-        logger.warning(f"Webhook请求中未找到有效的Item ID。请求数据: {data}")
-        return jsonify({"status": "error", "message": "无效的Webhook数据"}), 400
 
 @app.route('/trigger_full_scan', methods=['POST'])
 def trigger_full_scan():
@@ -389,11 +391,11 @@ def trigger_full_scan():
 
     def task_wrapper_full_scan(force_flag):
         with task_lock:
-            if media_processor_instance: # 确保在任务开始前清除
+            if media_processor_instance: 
                 media_processor_instance.clear_stop_signal()
 
             background_task_status["is_running"] = True
-            background_task_status["current_action"] = action_message 
+            background_task_status["current_action"] = action_message # action_message 在外部定义
             background_task_status["progress"] = 0
             background_task_status["message"] = "全量扫描初始化..."
             
@@ -403,30 +405,40 @@ def trigger_full_scan():
                     update_status_callback=update_status_from_thread,
                     force_reprocess_all=force_flag
                 )
-                # 如果 process_full_library 正常结束（没有被中断或抛异常）
                 if not (media_processor_instance and media_processor_instance.is_stop_requested()):
                     task_completed_normally = True
             except Exception as e:
                 logger.error(f"全量扫描后台任务失败: {e}", exc_info=True)
                 update_status_from_thread(-1, f"全量扫描失败: {e}")
             finally:
+                final_message_for_status = "未知结束状态"
                 if media_processor_instance and media_processor_instance.is_stop_requested():
-                    update_status_from_thread(background_task_status["progress"], "任务已成功中断。")
+                    final_message_for_status = "任务已成功中断。"
+                    update_status_from_thread(background_task_status["progress"], final_message_for_status)
                 elif task_completed_normally:
-                    update_status_from_thread(100, "全量扫描处理完成。")
-                # else: 异常退出时，消息已在except中设置
+                    final_message_for_status = "全量扫描处理完成。"
+                    update_status_from_thread(100, final_message_for_status)
+                # else: 异常退出时，消息已在except中通过update_status_from_thread设置
                 
-                time.sleep(2) # 调整为2秒，让前端有时间抓取最终状态
+                logger.info(f"全量扫描任务结束，最终状态: {final_message_for_status}")
+
+                # 尝试保存翻译缓存
+                if media_processor_instance and \
+                   media_processor_instance.douban_api and \
+                   hasattr(DoubanApi, '_save_translation_cache_to_file') and \
+                   callable(DoubanApi._save_translation_cache_to_file): # DoubanApi是类名
+                    try:
+                        logger.info("全量扫描任务结束，尝试保存翻译缓存...")
+                        DoubanApi._save_translation_cache_to_file() # 调用类方法
+                    except Exception as e_save_cache:
+                        logger.error(f"保存翻译缓存时发生错误 (全量扫描): {e_save_cache}", exc_info=True)
+
+                time.sleep(2) 
                 background_task_status["is_running"] = False
                 background_task_status["current_action"] = "无"
                 background_task_status["progress"] = 0
                 if media_processor_instance:
                     media_processor_instance.clear_stop_signal()
-
-    thread = threading.Thread(target=task_wrapper_full_scan, args=(force_reprocess,))
-    thread.start()
-    flash(f"{action_message}任务已在后台启动。", "info")
-    return redirect(url_for('settings_page'))
 
 @app.route('/trigger_stop_task', methods=['POST'])
 def trigger_stop_task():
