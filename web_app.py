@@ -142,7 +142,7 @@ def load_config() -> dict:
     app_cfg["data_source_mode"] = config_parser.get(
         constants.CONFIG_SECTION_DOMESTIC_SOURCE, # 或者你改的新节名
         constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, # 或者你改的新选项名
-        fallback=constants.DEFAULT_DATA_SOURCE_MODE
+        fallback=constants.DEFAULT_DOMESTIC_SOURCE_MODE
     )
 
     logger.info(f"配置已从 '{CONFIG_FILE_PATH}' 加载。")
