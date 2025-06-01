@@ -134,12 +134,11 @@ def load_config() -> dict:
     return app_cfg
 
 def save_config(new_config: Dict[str, Any]):
-    # (与你之前的 save_config 逻辑基本一致)
-    # 确保在保存后调用 initialize_media_processor() 和 setup_scheduled_tasks()
     config = configparser.ConfigParser()
-    if os.path.exists(CONFIG_FILE_PATH): # 先读取，避免完全覆盖
+    if os.path.exists(CONFIG_FILE_PATH):
         config.read(CONFIG_FILE_PATH, encoding='utf-8')
 
+    # 确保所有需要的节都存在
     sections_to_ensure = [
         constants.CONFIG_SECTION_EMBY, constants.CONFIG_SECTION_TMDB,
         constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_SECTION_TRANSLATION,
@@ -148,21 +147,55 @@ def save_config(new_config: Dict[str, Any]):
     for section in sections_to_ensure:
         if not config.has_section(section):
             config.add_section(section)
-    # 示例赋值，你需要用你完整的逻辑替换
-    config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_SERVER_URL, new_config.get("emby_server_url", ""))
-    # ... 其他所有配置项的保存 ...
-    config.set("Scheduler", "schedule_cron", new_config.get("schedule_cron", "0 3 * * *"))
+
+    # --- Emby Section ---
+    config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_SERVER_URL, str(new_config.get("emby_server_url", "")))
+    config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_API_KEY, str(new_config.get("emby_api_key", "")))
+    config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_USER_ID, str(new_config.get("emby_user_id", "")))
+    config.set(constants.CONFIG_SECTION_EMBY, "refresh_emby_after_update", str(new_config.get("refresh_emby_after_update", True)).lower())
+
+    # --- TMDB Section ---
+    config.set(constants.CONFIG_SECTION_TMDB, constants.CONFIG_OPTION_TMDB_API_KEY, str(new_config.get("tmdb_api_key", constants.FALLBACK_TMDB_API_KEY))) # 使用常量中的 fallback
+
+    # --- Douban API Section ---
+    config.set(constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN, str(new_config.get("api_douban_default_cooldown_seconds", constants.DEFAULT_API_COOLDOWN_SECONDS_FALLBACK)))
+    # TODO: 如果还有其他豆瓣 API 配置项 (max_cooldown, increment_cooldown)，也在这里添加
+
+    # --- Translation Section ---
+    engines_list = new_config.get("translator_engines_order", constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
+    if not isinstance(engines_list, list) or not engines_list: # 确保是列表且非空
+        engines_list = constants.DEFAULT_TRANSLATOR_ENGINES_ORDER
+    config.set(constants.CONFIG_SECTION_TRANSLATION, constants.CONFIG_OPTION_TRANSLATOR_ENGINES, ",".join(engines_list))
+
+    # --- Domestic Source Section ---
+    config.set(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, str(new_config.get("domestic_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE)))
+
+    # --- General Section ---
+    config.set("General", "delay_between_items_sec", str(new_config.get("delay_between_items_sec", "0.5"))) # 确保默认值也是字符串或能转为字符串
+
+    # --- Scheduler Section ---
+    config.set("Scheduler", "schedule_enabled", str(new_config.get("schedule_enabled", False)).lower())
+    config.set("Scheduler", "schedule_cron", str(new_config.get("schedule_cron", "0 3 * * *")))
     config.set("Scheduler", "schedule_force_reprocess", str(new_config.get("schedule_force_reprocess", False)).lower())
+
+    # --- 打印即将写入的配置 (用于调试) ---
+    logger.debug("save_config: 即将写入文件的 ConfigParser 内容:")
+    for section_name_debug in config.sections():
+        logger.debug(f"  [{section_name_debug}]")
+        for key_debug, value_debug in config.items(section_name_debug):
+            logger.debug(f"    {key_debug} = {value_debug}")
+    # --- 调试日志结束 ---
 
     try:
         if not os.path.exists(PERSISTENT_DATA_PATH):
+            logger.info(f"save_config: 持久化目录 {PERSISTENT_DATA_PATH} 不存在，尝试创建...")
             os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
+        logger.info(f"save_config: 准备将配置写入到文件: {CONFIG_FILE_PATH}")
         with open(CONFIG_FILE_PATH, 'w', encoding='utf-8') as configfile:
             config.write(configfile)
-        logger.info(f"配置已保存到 {CONFIG_FILE_PATH}。")
+        logger.info(f"配置已成功写入到 {CONFIG_FILE_PATH}。")
     except Exception as e:
         logger.error(f"保存配置文件 {CONFIG_FILE_PATH} 失败: {e}", exc_info=True)
-        flash(f"保存配置文件失败: {e}", "error")
     finally:
         initialize_media_processor()
         setup_scheduled_tasks()
@@ -346,6 +379,7 @@ def settings_page():
             "schedule_cron": request.form.get("schedule_cron", "0 3 * * *").strip(),
             "schedule_force_reprocess": "schedule_force_reprocess" in request.form,
         }
+        logger.debug(f"settings_page POST - 从表单获取的 new_conf: {new_conf}")
         if not new_conf["translator_engines_order"]:
             new_conf["translator_engines_order"] = constants.DEFAULT_TRANSLATOR_ENGINES_ORDER
         save_config(new_conf)
