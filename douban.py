@@ -95,6 +95,8 @@ class DoubanApi:
                 if cls._session is None: # 双重检查锁定模式
                     cls._session = requests.Session()
                     logger.info("DoubanApi: requests.Session 已重新初始化 (ensure_session)。")
+
+    @classmethod
     def _sign(cls, url: str, ts: str, method='GET') -> str:
         url_path = parse.urlparse(url).path
         raw_sign = '&'.join([method.upper(), parse.quote(url_path, safe=''), ts])
