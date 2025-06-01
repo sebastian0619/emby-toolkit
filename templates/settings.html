@@ -103,9 +103,9 @@
                 <small>选择神医插件主缓存目录。如果留空，则不使用本地数据源。</small>
                 {# --- 新增结束 --- #}
 
-                <label for="domestic_source_mode_select" style="margin-top:15px;">数据源处理策略:</label> {# 修改标签 for 和 name #}
-                <select id="domestic_source_mode_select" name="domestic_source_mode"> {# 修改 id 和 name #}
-                    {% for option in data_source_options %} {# 使用新的 data_source_options #}
+                <label for="domestic_source_mode_select" style="margin-top:15px;">数据源处理策略:</label> {# 修改 for 属性 #}
+                <select id="domestic_source_mode_select" name="domestic_source_mode"> {# 修改 id, name 使用 config.ini 中的键名 #}
+                    {% for option in domestic_source_options_in_template %} {# 使用后端传来的变量名 #}
                         <option value="{{ option.value }}" {% if config.get(constant_config_option_domestic_source_mode) == option.value %}selected{% endif %}>
                             {{ option.text }}
                         </option>
