@@ -8,11 +8,11 @@ import constants # 确保导入 constants
 
 # 创建一个logger实例
 logger = logging.getLogger("app_logger") # 给logger起个名字
-logger.setLevel(logging.DEBUG if constants.DEBUG else logging.INFO) # 根据 DEBUG 常量设置级别
+logger.setLevel(logging.DEBUG if constants.DEBUG_MODE else logging.INFO) # 根据 DEBUG 常量设置级别
 
 # 创建一个handler，用于将日志输出到控制台 (stdout)
 stream_handler = logging.StreamHandler(sys.stdout)
-stream_handler.setLevel(logging.DEBUG if constants.DEBUG else logging.INFO)
+stream_handler.setLevel(logging.DEBUG if constants.DEBUG_MODE else logging.INFO)
 
 # 创建一个formatter并将其添加到handler
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')

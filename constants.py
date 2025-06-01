@@ -1,76 +1,76 @@
 # constants.py
-APP_VERSION = "1.3.0-beta"
-# Debugging flag
-DEBUG = True  # 全局调试开关，True会输出更多日志，False则输出较少
 
-# --- 配置文件的常量 ---
-CONFIG_FILE = "config.ini"  # 程序配置文件的名字
-TRANSLATION_CACHE_FILE = "douban_translation_cache.json"#翻译缓存
+# ... (你已有的其他常量，比如 EMBY_SERVER_URL, API_KEY 等) ...
 
-# --- 日志文件的常量 ---
-PROCESSED_MEDIA_LOG_FILE = "processed_media_log.txt"  # 记录已处理媒体项的日志文件名
-FAILED_ITEMS_LOG_PREFIX = "manual_review_required_"   # 失败项日志文件名的前缀 (暂时未使用，但保留)
-FIXED_FAILURE_LOG_FILENAME = FAILED_ITEMS_LOG_PREFIX + "latest_batch_failures.txt" # 固定失败日志文件名
+# --- Web Application Settings ---
+APP_VERSION = "1.3.1"  # 或者你的实际版本号
+DEBUG_MODE = True      # 开发时设为 True，部署到生产环境时应设为 False
+WEB_APP_PORT = 5257    # Web UI 监听的端口
 
-# --- 在线翻译引擎 ---
-AVAILABLE_TRANSLATOR_ENGINES = ["baidu", "youdao", "sogou", "alibaba", "google", "bing", "baidu", "tencent", "deepl"]
-DEFAULT_TRANSLATOR_ENGINES_ORDER = ["google", "bing", "baidu", "alibaba"] # <--- 确认这个常量存在且名字正确
+# --- 数据库设置 ---
+DB_NAME = "emby_actor_processor.sqlite" # 数据库文件名 (也可以在这里定义，然后在 web_app.py 中引用)
 
-# --- 在线翻译配置 ---
-CONFIG_SECTION_TRANSLATION = "Translation"
-CONFIG_OPTION_TRANSLATOR_ENGINES = "preferred_engines_order"
+# --- 配置文件名 ---
+CONFIG_FILE_NAME = "config.ini"
 
-# --- 国产影视数据源配置 ---
-CONFIG_SECTION_DOMESTIC_SOURCE = "DomesticSource"
-CONFIG_OPTION_DOMESTIC_SOURCE_MODE = "douban_source_mode_for_domestic"
-#CONFIG_OPTION_DOMESTIC_USE_ONLINE_API = "use_online_douban_api_for_domestic" # 可选值为 "local_douban" 或 "online_douban"
-# 定义三个模式的常量值
-DOMESTIC_SOURCE_MODE_LOCAL_ONLY = "local_only"
+# --- 翻译引擎 ---
+# 你可以定义所有可用的翻译引擎列表，供设置页面选择
+AVAILABLE_TRANSLATOR_ENGINES = ['bing', 'google', 'baidu', 'alibaba', 'youdao', 'tencent']
+# 默认的翻译引擎顺序
+DEFAULT_TRANSLATOR_ENGINES_ORDER = ['bing', 'google', 'baidu']
+
+# --- 国产剧豆瓣处理模式 ---
+DOMESTIC_SOURCE_MODE_LOCAL_THEN_ONLINE = "local_then_online"
 DOMESTIC_SOURCE_MODE_ONLINE_ONLY = "online_only"
-DOMESTIC_SOURCE_MODE_LOCAL_THEN_ONLINE = "local_then_online" # 本地优先，在线备选
-# 默认的国产影视数据源策略
+DOMESTIC_SOURCE_MODE_LOCAL_ONLY = "local_only"
+DOMESTIC_SOURCE_MODE_DISABLED = "disabled_douban" # 明确禁用
 DEFAULT_DOMESTIC_SOURCE_MODE = DOMESTIC_SOURCE_MODE_LOCAL_THEN_ONLINE
+# 用于设置页面的选项
+DOMESTIC_SOURCE_OPTIONS = [
+    {"value": DOMESTIC_SOURCE_MODE_LOCAL_THEN_ONLINE, "text": "豆瓣本地优先，在线备选 (推荐)"},
+    {"value": DOMESTIC_SOURCE_MODE_ONLINE_ONLY, "text": "仅在线豆瓣API"},
+    {"value": DOMESTIC_SOURCE_MODE_LOCAL_ONLY, "text": "仅豆瓣本地数据 (神医刮削)"},
+    {"value": DOMESTIC_SOURCE_MODE_DISABLED, "text": "禁用豆瓣数据源"}
+]
 
-# [Paths] 配置段 (用于路径相关的设置)
-CONFIG_SECTION_PATHS = "Paths"  # config.ini 中路径配置段的名称
-CONFIG_OPTION_MAIN_CACHE_PATH = "main_cache_path"  # 主缓存目录的选项名
-CONFIG_OPTION_OVERRIDE_CACHE_PATH = "override_cache_path"  # 覆盖缓存目录的选项名
 
-# [Emby] 配置段 (用于Emby相关的设置)
-CONFIG_SECTION_EMBY = "Emby"  # config.ini 中Emby配置段的名称
-CONFIG_OPTION_EMBY_SERVER_URL = "server_url"  # Emby服务器地址的选项名
-CONFIG_OPTION_EMBY_API_KEY = "api_key"  # Emby API密钥的选项名
-CONFIG_OPTION_EMBY_USER_ID = "user_id"  # <--- 新增这一行，定义UserID的配置键名
-CONFIG_OPTION_ENABLE_EMBY_ITEM_REFRESH = "enable_emby_item_refresh_after_processing"
-DEFAULT_ENABLE_EMBY_ITEM_REFRESH = False # 默认关闭通知刷新
+# --- API 冷却时间默认值 (如果 core_processor 或其他地方需要) ---
+DEFAULT_API_COOLDOWN_SECONDS_FALLBACK = 1.0
+MAX_API_COOLDOWN_SECONDS_FALLBACK = 5.0
+COOLDOWN_INCREMENT_SECONDS_FALLBACK = 0.5
 
-# --- TMDB API 配置段和选项名 ---
+# --- TMDB API Key (如果 core_processor 或其他地方需要) ---
+FALLBACK_TMDB_API_KEY = "" # 最好让用户在配置中填写
+
+# --- 配置文件的节和选项名 (保持与你的 load_config/save_config 一致) ---
+CONFIG_SECTION_EMBY = "Emby"
+CONFIG_OPTION_EMBY_SERVER_URL = "emby_server_url"
+CONFIG_OPTION_EMBY_API_KEY = "emby_api_key"
+CONFIG_OPTION_EMBY_USER_ID = "emby_user_id"
+# ... 其他配置常量 ...
 CONFIG_SECTION_TMDB = "TMDB"
-CONFIG_OPTION_TMDB_API_KEY = "api_key"
-FALLBACK_TMDB_API_KEY = ""
-# --- TMDB API 配置结束 ---
+CONFIG_OPTION_TMDB_API_KEY = "tmdb_api_key"
+CONFIG_SECTION_API_DOUBAN = "DoubanAPI"
+CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN = "api_douban_default_cooldown_seconds"
+CONFIG_SECTION_TRANSLATION = "Translation"
+CONFIG_OPTION_TRANSLATOR_ENGINES = "translator_engines_order"
+CONFIG_SECTION_DOMESTIC_SOURCE = "DomesticSource"
+CONFIG_OPTION_DOMESTIC_SOURCE_MODE = "domestic_source_mode"
 
-# [API_Douban] 配置段 (用于豆瓣API相关的设置，之前可能是 [API])
-CONFIG_SECTION_API_DOUBAN = "API_Douban"  # config.ini 中豆瓣API配置段的名称
-CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN = "default_cooldown_seconds" # 默认冷却时间的选项名
-CONFIG_OPTION_DOUBAN_MAX_COOLDOWN = "max_cooldown_seconds"      # 最大冷却时间的选项名
-CONFIG_OPTION_DOUBAN_INCREMENT_COOLDOWN = "cooldown_increment_seconds" # 冷却时间增量的选项名
-# --- 新增配置项常量结束 ---
-DOUBAN_LOCAL_MOVIES_SUBDIR = "douban-movies"
-DOUBAN_LOCAL_TV_SUBDIR = "douban-tv"
-# UI Theming (PyQt6不直接用ttkthemes，但保留此常量以防未来有其他用途)
-USE_TTK_THEMES = False
 
-# --- 默认值常量 (当config.ini中没有对应配置时使用) ---
-# 路径相关的默认值
-FALLBACK_DEFAULT_MAIN_CACHE_PATH = "~"  # 如果config.ini里没有主缓存目录，默认指向用户的主目录 (~)
-                                        # 之前是 FALLBACK_DEFAULT_JSON_PATH，现在改名更清晰
+# --- 演员状态文本映射 (用于 /api/search_media) ---
+ACTOR_STATUS_TEXT_MAP = {
+    "ok": "已处理",
+    "name_untranslated": "演员名未翻译",
+    "character_untranslated": "角色名未翻译",
+    "name_char_untranslated": "演员名和角色名均未翻译",
+    "pending_translation": "待翻译",
+    "parent_failed": "媒体项处理失败",
+    "unknown": "未知状态"
+}
 
-# 豆瓣API冷却相关的默认值
-DEFAULT_API_COOLDOWN_SECONDS_FALLBACK = 1   # 默认冷却时间 (秒)
-MAX_API_COOLDOWN_SECONDS_FALLBACK = 60      # 最大冷却时间 (秒)
-COOLDOWN_INCREMENT_SECONDS_FALLBACK = 10    # 冷却时间递增值 (秒)
-                                            # (你之前的例子是3，但原始常量是10，这里保持10，可以按需调整)
+
+# ... (其他你可能已经定义的常量) ...
 
 # API Source Map (如果未来增加其他API来源)
 SOURCE_API_MAP = {
