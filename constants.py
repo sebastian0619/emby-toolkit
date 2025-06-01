@@ -1,11 +1,11 @@
 # constants.py
-APP_VERSION = "1.2.6-beta"
+APP_VERSION = "1.2.7-beta"
 # Debugging flag
 DEBUG = True  # 全局调试开关，True会输出更多日志，False则输出较少
 
 # --- 配置文件的常量 ---
 CONFIG_FILE = "config.ini"  # 程序配置文件的名字
-TRANSLATION_CACHE_FILE = "translation_cache.json" #翻译缓存
+TRANSLATION_CACHE_FILE = "douban_translation_cache.json"#翻译缓存
 
 # --- 日志文件的常量 ---
 PROCESSED_MEDIA_LOG_FILE = "processed_media_log.txt"  # 记录已处理媒体项的日志文件名
