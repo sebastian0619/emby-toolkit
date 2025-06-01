@@ -62,7 +62,7 @@ class MediaProcessor:
         self._stop_event = threading.Event()
         
         # 已处理记录相关
-        self.processed_log_file = os.path.join(BASE_DIR, constants.PROCESSED_MEDIA_LOG_FILE)
+        self.processed_log_file = os.path.join(PERSISTENT_DATA_PATH, constants.PROCESSED_MEDIA_LOG_FILE)
         self.processed_items_cache = self._load_processed_log()
         logger.info(f"已加载 {len(self.processed_items_cache)} 个已处理媒体记录。")
 
@@ -84,6 +84,14 @@ class MediaProcessor:
 
     def _load_processed_log(self) -> set:
         log_set = set()
+        log_dir = os.path.dirname(self.processed_log_file)
+        if not os.path.exists(log_dir):
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+                logger.info(f"创建持久化数据目录 (用于加载日志): {log_dir}")
+            except Exception as e:
+                logger.error(f"创建持久化数据目录 '{log_dir}' 失败: {e}")
+                return log_set # 如果目录创建失败，直接返回空集合
         if os.path.exists(self.processed_log_file):
             try:
                 with open(self.processed_log_file, 'r', encoding='utf-8') as f:
