@@ -366,79 +366,91 @@ def emby_webhook():
 
 @app.route('/trigger_full_scan', methods=['POST'])
 def trigger_full_scan():
-    global background_task_status
+    global background_task_status # 允许修改全局变量
     if not media_processor_instance:
         flash("错误：服务未就绪，无法开始全量扫描。", "error")
+        logger.warning("trigger_full_scan: MediaProcessor未初始化，重定向到设置页。")
         return redirect(url_for('settings_page'))
 
     if task_lock.locked():
         flash("已有后台任务正在运行，请稍后再试。", "warning")
+        logger.warning("trigger_full_scan: 检测到已有任务运行，重定向到设置页。")
         return redirect(url_for('settings_page'))
 
-    force_reprocess = request.form.get('force_reprocess_all') == 'on'
-    action_message = "全量媒体库扫描与处理"
+    # 从表单获取是否强制重处理的选项
+    force_reprocess = request.form.get('force_reprocess_all') == 'on' 
+    
+    # 确保 action_message 总是有定义的
+    action_message = "全量媒体库扫描与处理" 
     if force_reprocess:
         action_message += " (强制重处理所有)"
         logger.info("收到手动触发全量扫描的请求 (强制重处理所有)。")
     else:
         logger.info("收到手动触发全量扫描的请求。")
     
+    # 定义一个用于更新全局状态的回调函数
     def update_status_from_thread(progress: int, message: str):
-        global background_task_status
+        global background_task_status # 允许修改全局变量
         if progress >= 0: 
             background_task_status["progress"] = progress
         background_task_status["message"] = message
+        logger.debug(f"状态更新回调: Progress={progress}%, Message='{message}'")
 
-    def task_wrapper_full_scan(force_flag):
+    def task_wrapper_full_scan(force_flag_for_thread, current_action_message_for_thread): # 明确传递参数
+        # 使用 with task_lock 来确保同一时间只有一个这样的任务运行
         with task_lock:
             if media_processor_instance: 
                 media_processor_instance.clear_stop_signal()
 
+            # 更新全局状态，标记任务开始
             background_task_status["is_running"] = True
-            background_task_status["current_action"] = action_message # action_message 在外部定义
+            background_task_status["current_action"] = current_action_message_for_thread # 使用传递进来的action_message
             background_task_status["progress"] = 0
             background_task_status["message"] = "全量扫描初始化..."
+            logger.info(f"后台任务 '{current_action_message_for_thread}' 开始执行。")
             
             task_completed_normally = False
             try:
                 media_processor_instance.process_full_library(
                     update_status_callback=update_status_from_thread,
-                    force_reprocess_all=force_flag
+                    force_reprocess_all=force_flag_for_thread
                 )
+                # 如果 process_full_library 正常结束（没有被中断或抛异常）
                 if not (media_processor_instance and media_processor_instance.is_stop_requested()):
                     task_completed_normally = True
             except Exception as e:
-                logger.error(f"全量扫描后台任务失败: {e}", exc_info=True)
-                update_status_from_thread(-1, f"全量扫描失败: {e}")
+                logger.error(f"全量扫描后台任务执行失败: {e}", exc_info=True)
+                # 更新状态以反映错误
+                update_status_from_thread(-1, f"全量扫描失败: {str(e)[:100]}...") # 只取错误信息前100字符
             finally:
                 final_message_for_status = "未知结束状态"
                 if media_processor_instance and media_processor_instance.is_stop_requested():
                     final_message_for_status = "任务已成功中断。"
+                    # 回调函数可能已经在core_processor中更新了消息，这里可以再确认一下
                     update_status_from_thread(background_task_status["progress"], final_message_for_status)
                 elif task_completed_normally:
                     final_message_for_status = "全量扫描处理完成。"
                     update_status_from_thread(100, final_message_for_status)
                 # else: 异常退出时，消息已在except中通过update_status_from_thread设置
                 
-                logger.info(f"全量扫描任务结束，最终状态: {final_message_for_status}")
+                logger.info(f"后台任务 '{current_action_message_for_thread}' 结束，最终状态: {final_message_for_status}")
 
-                # 尝试保存翻译缓存
-                if media_processor_instance and \
-                   media_processor_instance.douban_api and \
-                   hasattr(DoubanApi, '_save_translation_cache_to_file') and \
-                   callable(DoubanApi._save_translation_cache_to_file): # DoubanApi是类名
-                    try:
-                        logger.info("全量扫描任务结束，尝试保存翻译缓存...")
-                        DoubanApi._save_translation_cache_to_file() # 调用类方法
-                    except Exception as e_save_cache:
-                        logger.error(f"保存翻译缓存时发生错误 (全量扫描): {e_save_cache}", exc_info=True)
-
-                time.sleep(2) 
+                time.sleep(2) # 给前端一点时间抓取最终状态
                 background_task_status["is_running"] = False
                 background_task_status["current_action"] = "无"
-                background_task_status["progress"] = 0
+                background_task_status["progress"] = 0 # 重置进度为下次准备
+                background_task_status["message"] = "等待任务" # 重置消息
                 if media_processor_instance:
                     media_processor_instance.clear_stop_signal()
+                logger.info("后台任务状态已重置。")
+
+    # 启动后台线程
+    thread = threading.Thread(target=task_wrapper_full_scan, args=(force_reprocess, action_message)) # 将action_message也传进去
+    thread.start()
+    
+    flash(f"{action_message}任务已在后台启动。", "info")
+    logger.debug("trigger_full_scan 函数即将返回 redirect 到 settings_page。")
+    return redirect(url_for('settings_page'))
 
 @app.route('/trigger_stop_task', methods=['POST'])
 def trigger_stop_task():
