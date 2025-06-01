@@ -1,6 +1,7 @@
 # web_app.py
 import os
 import sqlite3
+import emby_handler
 import configparser
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash
 import threading
@@ -107,6 +108,7 @@ def load_config() -> dict:
         constants.CONFIG_OPTION_EMBY_API_KEY: "",
         # ... 其他所有默认值 ...
         "schedule_cron": "0 3 * * *",
+        constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS: "",
     })
     if os.path.exists(CONFIG_FILE_PATH):
         config_parser.read(CONFIG_FILE_PATH, encoding='utf-8')
@@ -129,6 +131,15 @@ def load_config() -> dict:
     app_cfg["schedule_enabled"] = config_parser.getboolean("Scheduler", "schedule_enabled", fallback=False)
     app_cfg["schedule_cron"] = config_parser.get("Scheduler", "schedule_cron", fallback="0 3 * * *")
     app_cfg["schedule_force_reprocess"] = config_parser.getboolean("Scheduler", "schedule_force_reprocess", fallback=False)
+    # 确保在 [Emby] 节下读取，或者你定义的其他节
+    if not config_parser.has_section(constants.CONFIG_SECTION_EMBY): # 确保节存在
+        config_parser.add_section(constants.CONFIG_SECTION_EMBY)
+    libraries_str = config_parser.get(
+        constants.CONFIG_SECTION_EMBY,
+        constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, # 使用常量
+        fallback="" # 如果读取不到，默认为空字符串
+    )
+    app_cfg["libraries_to_process"] = [lib_id.strip() for lib_id in libraries_str.split(',') if lib_id.strip()]
 
     logger.info(f"配置已从 '{CONFIG_FILE_PATH}' 加载。")
     return app_cfg
@@ -147,6 +158,20 @@ def save_config(new_config: Dict[str, Any]):
     for section in sections_to_ensure:
         if not config.has_section(section):
             config.add_section(section)
+
+    # --- 新增：保存在 Emby 节下的媒体库列表 ---
+    libraries_list = new_config.get("libraries_to_process", []) # 期望是一个ID列表
+    if not isinstance(libraries_list, list): # 做个类型检查和转换
+        if isinstance(libraries_list, str) and libraries_list:
+            libraries_list = [lib_id.strip() for lib_id in libraries_list.split(',') if lib_id.strip()]
+        else:
+            libraries_list = []
+    config.set(
+        constants.CONFIG_SECTION_EMBY,
+        constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, # 使用常量
+        ",".join(libraries_list) # 将ID列表转换为逗号分隔的字符串保存
+    )
+    # --- 新增结束 ---
 
     # --- Emby Section ---
     config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_SERVER_URL, str(new_config.get("emby_server_url", "")))
@@ -196,17 +221,19 @@ def save_config(new_config: Dict[str, Any]):
         logger.info(f"配置已成功写入到 {CONFIG_FILE_PATH}。")
     except Exception as e:
         logger.error(f"保存配置文件 {CONFIG_FILE_PATH} 失败: {e}", exc_info=True)
+        # flash(f"保存配置文件失败: {e}", "error") # 在非请求上下文中 flash 会报错
     finally:
-        initialize_media_processor()
-        setup_scheduled_tasks()
+        initialize_media_processor() # 重新加载配置并初始化处理器
+        setup_scheduled_tasks()    # 根据新配置更新定时任务
 # --- 配置加载与保存结束 ---
 
 # --- MediaProcessor 初始化 ---
 def initialize_media_processor():
     global media_processor_instance
-    current_config = load_config()
+    current_config = load_config() # load_config 现在会包含 libraries_to_process
     current_config['db_path'] = DB_PATH
 
+    # ... (关闭旧实例的逻辑不变) ...
     if media_processor_instance and hasattr(media_processor_instance, 'close'):
         logger.info("准备关闭旧的 MediaProcessor 实例...")
         try:
@@ -217,19 +244,12 @@ def initialize_media_processor():
 
     logger.info("准备创建新的 MediaProcessor 实例...")
     try:
-        media_processor_instance = MediaProcessor(config=current_config)
+        media_processor_instance = MediaProcessor(config=current_config) # current_config 已包含所需信息
         logger.info("新的 MediaProcessor 实例已创建/更新。")
     except Exception as e_init_mp:
         logger.error(f"创建 MediaProcessor 实例失败: {e_init_mp}", exc_info=True)
-        media_processor_instance = None # 创建失败则置为None
-        # --- 修改：移除 flash 调用，因为这里没有请求上下文 ---
-        # flash(f"核心处理器初始化失败: {e_init_mp}", "error")
-        # 可以考虑在这里抛出异常让应用启动失败，或者设置一个全局错误状态
+        media_processor_instance = None
         print(f"CRITICAL ERROR: MediaProcessor 核心处理器初始化失败: {e_init_mp}. 应用可能无法正常工作。")
-        # 如果希望应用在这种情况下直接退出，可以：
-        # import sys
-        # sys.exit(1)
-        # --- 修改结束 ---
 # --- MediaProcessor 初始化结束 ---
 
 # --- 后台任务回调 ---
@@ -379,25 +399,42 @@ def settings_page():
             "schedule_cron": request.form.get("schedule_cron", "0 3 * * *").strip(),
             "schedule_force_reprocess": "schedule_force_reprocess" in request.form,
         }
+        # --- 新增：获取选中的媒体库ID列表 ---
+        # request.form.getlist() 用于获取同名复选框的多个值
+        # HTML 中复选框的 name 属性应该是 "libraries_to_process[]" 或类似的，以便 getlist 能正确工作
+        # 或者，如果你的 HTML 复选框 name 就是 "libraries_to_process"，getlist 也能处理
+        selected_libs_from_form = request.form.getlist("libraries_to_process")
+        # 如果你的 HTML checkbox 的 name 是 "libraries_to_process[]"，用下面这行：
+        # selected_libs_from_form = request.form.getlist("libraries_to_process[]")
+        new_conf["libraries_to_process"] = selected_libs_from_form
+        logger.debug(f"settings_page POST - 从表单获取的 libraries_to_process: {selected_libs_from_form}")
+        # --- 新增结束 ---
         logger.debug(f"settings_page POST - 从表单获取的 new_conf: {new_conf}")
-        if not new_conf["translator_engines_order"]:
+        if not new_conf.get("translator_engines_order"): # 确保键存在
             new_conf["translator_engines_order"] = constants.DEFAULT_TRANSLATOR_ENGINES_ORDER
+
         save_config(new_conf)
-        flash("配置已保存！定时任务已根据新配置更新。", "success")
+        flash("配置已保存！媒体库选择和定时任务已根据新配置更新。", "success")
         return redirect(url_for('settings_page'))
 
+    # GET 请求逻辑
     current_config = load_config()
+    # ... (获取 available_engines, current_engine_str, domestic_source_options 的逻辑不变) ...
     available_engines = constants.AVAILABLE_TRANSLATOR_ENGINES
     current_engines_list = current_config.get("translator_engines_order", constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
     current_engine_str = ",".join(current_engines_list)
-    domestic_source_options = constants.DOMESTIC_SOURCE_OPTIONS # 假设在constants中定义
+    domestic_source_options = constants.DOMESTIC_SOURCE_OPTIONS
+    selected_libraries = current_config.get("libraries_to_process", [])
     return render_template('settings.html',
                            config=current_config,
                            available_engines=available_engines,
                            current_engine_str=current_engine_str,
                            domestic_source_options=domestic_source_options,
                            task_status=background_task_status,
-                           app_version=constants.APP_VERSION)
+                           app_version=constants.APP_VERSION,
+                           # emby_libraries=[], # 传递一个空列表，让JS去填充
+                           selected_libraries=selected_libraries # 传递已选中的，供JS使用
+                           )
 
 @app.route('/webhook/emby', methods=['POST'])
 def emby_webhook():
@@ -549,6 +586,27 @@ def api_search_media():
         "items": results, "total_items": total_items, "total_pages": total_pages,
         "current_page": page, "per_page": per_page, "query": query, "scope": scope
     })
+
+@app.route('/api/emby_libraries')
+def api_get_emby_libraries():
+    # 确保 media_processor_instance 已初始化并且 Emby 配置有效
+    if not media_processor_instance or \
+       not media_processor_instance.emby_url or \
+       not media_processor_instance.emby_api_key:
+        logger.warning("/api/emby_libraries: Emby配置不完整或服务未就绪。")
+        return jsonify({"error": "Emby配置不完整或服务未就绪"}), 500
+
+    libraries = emby_handler.get_emby_libraries(
+        media_processor_instance.emby_url,
+        media_processor_instance.emby_api_key,
+        media_processor_instance.emby_user_id # 传递 user_id
+    )
+
+    if libraries is not None: # get_emby_libraries 成功返回列表 (可能为空列表)
+        return jsonify(libraries)
+    else: # get_emby_libraries 返回了 None，表示获取失败
+        logger.error("/api/emby_libraries: 无法获取Emby媒体库列表 (emby_handler返回None)。")
+        return jsonify({"error": "无法获取Emby媒体库列表，请检查Emby连接和日志"}), 500
 # --- API 端点结束 ---
 
 

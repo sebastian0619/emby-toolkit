@@ -3,7 +3,7 @@
 # ... (你已有的其他常量，比如 EMBY_SERVER_URL, API_KEY 等) ...
 
 # --- Web Application Settings ---
-APP_VERSION = "1.3.3"  # 或者你的实际版本号
+APP_VERSION = "1.3.4"  # 或者你的实际版本号
 DEBUG_MODE = True      # 开发时设为 True，部署到生产环境时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 
@@ -47,6 +47,7 @@ CONFIG_SECTION_EMBY = "Emby"
 CONFIG_OPTION_EMBY_SERVER_URL = "emby_server_url"
 CONFIG_OPTION_EMBY_API_KEY = "emby_api_key"
 CONFIG_OPTION_EMBY_USER_ID = "emby_user_id"
+CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS = "libraries_to_process"
 # ... 其他配置常量 ...
 CONFIG_SECTION_TMDB = "TMDB"
 CONFIG_OPTION_TMDB_API_KEY = "tmdb_api_key"

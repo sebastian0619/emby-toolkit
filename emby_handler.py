@@ -2,6 +2,7 @@
 
 import requests
 import os
+import json
 import time
 from typing import Optional, List, Dict, Any
 
@@ -158,92 +159,161 @@ def update_emby_item_cast(item_id: str, new_cast_list: List[Dict[str, Any]],
         import traceback
         logger.error(f"更新Emby项目 {item_id} 演员信息时发生未知错误: {e}\n{traceback.format_exc()}")
         return False
+    
+def get_emby_libraries(base_url: str, api_key: str, user_id: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+    """
+    获取 Emby 用户可见的所有顶层媒体库列表。
+    返回一个列表，每个元素是一个包含 'Name' 和 'Id' 的字典。
+    """
+    # API 端点可能因 Emby 版本而异，常见的有 /Library/VirtualFolders 或通过用户视图获取
+    # 这是一个示例，你可能需要查找确切的 API 端点
+    # 方案一：获取用户的主视图，然后遍历其中的文件夹
+    # 另一种可能是直接获取 VirtualFolders，但这可能包含非媒体库的文件夹
+    # 我们先尝试获取用户视图下的文件夹，这通常更准确地代表媒体库
 
-def get_emby_library_items(emby_server_url: str, emby_api_key: str,
-                           media_type_filter: Optional[str] = None, 
-                           parent_id: Optional[str] = None, 
-                           start_index: int = 0,
-                           limit: Optional[int] = None, 
-                           recursive: bool = True,
-                           search_term: Optional[str] = None,
-                           user_id: Optional[str] = None
-                           ) -> List[Dict[str, Any]]:
-    if not all([emby_server_url, emby_api_key]):
-        logger.error("获取Emby媒体库项目参数不足：缺少服务器URL或API Key。")
-        return []
+    if not user_id: # 如果没有提供 user_id，可能需要先获取一个管理员用户或默认用户
+        logger.warning("get_emby_libraries: 未提供 user_id，可能无法准确获取用户可见的库。")
+        # 可以尝试获取系统信息中的第一个本地用户ID作为后备，但这不可靠
+        # system_info = get_system_info(base_url, api_key)
+        # if system_info and system_info.get("LocalAdminPassword"): # 只是个例子，实际API不同
+        #     user_id = ...
+        # else:
+        #     return None # 或者尝试一个公共的获取库的API（如果存在）
 
-    if user_id:
-        items_url = f"{emby_server_url.rstrip('/')}/Users/{user_id}/Items"
-        logger.debug(f"获取Emby媒体库项目 (UserSpecific, UserID: {user_id})")
-    else:
-        items_url = f"{emby_server_url.rstrip('/')}/Items"
-        logger.debug(f"获取Emby媒体库项目 (SystemLevel)")
+    # 尝试获取用户视图 (User Views)
+    # 端点通常是 /Users/{UserId}/Views
+    # 或者直接获取 /Library/VirtualFolders，然后用户根据名称判断
+    # 我们先用一个更通用的 /Library/VirtualFolders，然后让用户自己识别哪些是他们的主媒体库
+    # 因为 /Users/{UserId}/Views 返回的是用户配置的视图，可能不是直接的物理库列表
 
-    all_items: List[Dict[str, Any]] = []
-    current_start_index = start_index
-    page_limit = 50 if search_term else 200
+    api_url = f"{base_url}/Library/VirtualFolders"
+    params = {"api_key": api_key}
+    if user_id: # 有些API端点可能接受 UserId 作为过滤条件
+        # params["UserId"] = user_id # 取决于具体API是否支持
+        pass
 
-    while True:
-        params = {
-            "api_key": emby_api_key,
-            "Recursive": str(recursive).lower(),
-            "Fields": "ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,Type,Name,Id",
-            "StartIndex": current_start_index,
-            "Limit": page_limit
+    logger.debug(f"get_emby_libraries: Requesting URL: {api_url}")
+    try:
+        response = requests.get(api_url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json() # 假设返回的是一个包含 Items 列表的结构
+
+        libraries = []
+        # 返回的结构可能直接是文件夹列表，或者在 Items 键下
+        items_to_check = data if isinstance(data, list) else data.get("Items", [])
+
+        for item in items_to_check:
+            # 我们需要判断哪些是真正的媒体库文件夹
+            # 通常媒体库有 CollectionType (e.g., "movies", "tvshows", "music")
+            # 并且 LocationType 应该是 FileSystem
+            # 简单的判断：如果它有 Name 和 Id，并且看起来像个顶层文件夹
+            if item.get("Name") and item.get("Id"):
+                # 为了更准确，可以检查 item.get("CollectionType") 是否为 movies, tvshows 等
+                # 或者检查 item.get("IsFolder") == True 并且它在顶层
+                # 这里我们先简单地将所有看起来像文件夹的都列出来，让用户自己选
+                # 更好的做法是只列出 CollectionType 为 movies, tvshows, homevideos, music 的
+                collection_type = item.get("CollectionType")
+                if collection_type in ["movies", "tvshows", "homevideos", "music", "mixed", "boxsets"]: # 常见媒体库类型
+                    libraries.append({
+                        "Name": item.get("Name"),
+                        "Id": item.get("Id"),
+                        "CollectionType": collection_type
+                    })
+        logger.info(f"get_emby_libraries: 成功获取到 {len(libraries)} 个可能的媒体库。")
+        return libraries
+    except requests.exceptions.RequestException as e:
+        logger.error(f"get_emby_libraries: 请求 Emby 库列表失败: {e}", exc_info=True)
+        return None
+    except json.JSONDecodeError as e:
+        logger.error(f"get_emby_libraries: 解析 Emby 库列表响应失败: {e}", exc_info=True)
+        return None
+
+def get_emby_library_items(
+    base_url: str,
+    api_key: str,
+    media_type_filter: Optional[str] = None, # 例如 "Movie", "Series"
+    user_id: Optional[str] = None,
+    library_ids: Optional[List[str]] = None  # <--- 新增这个参数
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    获取指定媒体库中特定类型的媒体项目列表。
+    :param base_url: Emby 服务器 URL
+    :param api_key: Emby API Key
+    :param media_type_filter: 要获取的媒体类型 (例如 "Movie", "Series")
+    :param user_id: Emby 用户 ID (可选, 但推荐)
+    :param library_ids: 一个包含媒体库ID的列表。如果为 None 或空，则不获取任何项目。
+    :return: 媒体项目列表，或在失败时返回 None。
+    """
+    if not base_url or not api_key:
+        logger.error("get_emby_library_items: base_url 或 api_key 未提供。")
+        return None
+
+    # 如果没有指定 library_ids 或者列表为空，则不处理任何库
+    if not library_ids:
+        logger.info("get_emby_library_items: 未指定要处理的媒体库ID (library_ids为空或None)，不获取任何项目。")
+        return [] # 返回空列表表示没有项目
+
+    all_items_from_selected_libraries: List[Dict[str, Any]] = []
+
+    for lib_id in library_ids:
+        if not lib_id or not lib_id.strip(): # 跳过空的库ID
+            logger.warning(f"get_emby_library_items: 遇到一个空的库ID，已跳过。")
+            continue
+
+        api_url = f"{base_url.rstrip('/')}/Items"
+        params: Dict[str, Any] = { # 明确类型
+            "api_key": api_key,
+            "Recursive": "true", # 递归获取子文件夹中的项目
+            "ParentId": lib_id,  # <--- 这是核心：按库ID过滤
+            "Fields": "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines", # 获取更多有用的字段
+            # "SortBy": "SortName", # 可以根据需要添加排序
+            # "SortOrder": "Ascending",
         }
-        if media_type_filter:
+        if media_type_filter: # 如果指定了媒体类型，则加入过滤
             params["IncludeItemTypes"] = media_type_filter
-        if parent_id:
-            params["ParentId"] = parent_id
-        if search_term:
-            params["SearchTerm"] = search_term
-        
-        log_message = f"请求Emby媒体库项目: URL='{items_url}', StartIndex={current_start_index}, Limit={page_limit}, Type={media_type_filter or 'Any'}, ParentId={parent_id or 'None'}"
-        if search_term:
-            log_message += f", SearchTerm='{search_term}'"
-        logger.debug(log_message)
+        else: # 否则获取常见的媒体类型
+             params["IncludeItemTypes"] = "Movie,Series,Video"
 
+
+        if user_id: # 如果提供了用户ID，加入参数以获取该用户可见的项目
+            # 对于 /Items 端点，通常是通过 /Users/{UserId}/Items 来获取用户特定视图
+            # 或者在请求 /Items 时，某些 Emby 版本可能接受 UserId 参数
+            # 更可靠的方式是调整 api_url
+            # api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+            # 但 ParentId 应该仍然有效。如果 ParentId 和 UserId 一起用在 /Items 上效果不好，
+            # 可能需要先获取库的 UserData (如果适用) 或调整策略。
+            # 我们先假设 ParentId 在 /Items 上是主要的过滤方式。
+            # 如果要严格按用户视图，可能需要先获取用户视图下的库ID。
+            # 为简单起见，我们先这样，如果发现权限问题再调整。
+            params["UserId"] = user_id # 尝试添加 UserId，看是否有效
+            logger.debug(f"get_emby_library_items: 将使用 UserID '{user_id}' 进行过滤。")
+
+
+        logger.debug(f"get_emby_library_items: Requesting items from library ID '{lib_id}'. URL: {api_url}, Params: {params}")
         try:
-            response = requests.get(items_url, params=params, timeout=30)
+            response = requests.get(api_url, params=params, timeout=30) # 增加超时
             response.raise_for_status()
             data = response.json()
-            
-            current_page_items = data.get("Items", [])
-            if not current_page_items:
-                if search_term:
-                    logger.info(f"Emby名称搜索 '{search_term}' 未找到匹配项目。")
-                else:
-                    logger.info(f"Emby媒体库分页获取：在StartIndex={current_start_index} 未找到更多项目。")
-                break
-            
-            all_items.extend(current_page_items)
-            logger.info(f"Emby媒体库/搜索获取：已获取 {len(current_page_items)} 个项目，总计 {len(all_items)}。")
-
-            if search_term and limit is None: 
-                logger.info(f"名称搜索 '{search_term}' 完成，获取到第一页 {len(all_items)} 个结果。")
-                break 
-
-            if limit is not None and len(all_items) >= limit:
-                logger.info(f"已达到用户指定的获取上限 {limit} 个项目。")
-                return all_items[:limit]
-
-            if len(current_page_items) < page_limit:
-                logger.info("当前页返回项目数小于页面限制，判定为最后一页。")
-                break
-            
-            current_start_index += len(current_page_items)
-            time.sleep(0.1) 
-
+            items_in_lib = data.get("Items", [])
+            if items_in_lib:
+                logger.info(f"从库 ID '{lib_id}' (类型: {media_type_filter or '所有'}) 获取到 {len(items_in_lib)} 个项目。")
+                all_items_from_selected_libraries.extend(items_in_lib)
+            else:
+                logger.info(f"库 ID '{lib_id}' (类型: {media_type_filter or '所有'}) 中未找到项目。")
         except requests.exceptions.RequestException as e:
-            logger.error(f"获取Emby媒体库项目时发生请求错误: {e}")
-            break 
+            logger.error(f"请求库 '{lib_id}' 中的项目失败: {e}", exc_info=True)
+            # 可以选择让整个函数失败返回 None，或者跳过这个库继续处理其他库
+            # return None # 如果一个库失败则整体失败
+            continue # 跳过这个失败的库
+        except json.JSONDecodeError as e:
+            logger.error(f"解析库 '{lib_id}' 项目响应失败: {e}. Response: {response.text[:500] if response else 'N/A'}", exc_info=True)
+            continue # 跳过这个失败的库
         except Exception as e:
-            import traceback
-            logger.error(f"获取Emby媒体库项目时发生未知错误: {e}\n{traceback.format_exc()}")
-            break
-            
-    logger.info(f"Emby媒体库/搜索项目获取完成，共获取到 {len(all_items)} 个项目。")
-    return all_items
+             logger.error(f"获取库 '{lib_id}' 项目时发生未知错误: {e}", exc_info=True)
+             continue
+
+    logger.info(f"总共从选定的 {len(library_ids)} 个库中获取到 {len(all_items_from_selected_libraries)} 个项目。")
+    return all_items_from_selected_libraries
 
 def refresh_emby_item_metadata(item_emby_id: str,
                                emby_server_url: str,
