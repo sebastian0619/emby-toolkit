@@ -142,7 +142,7 @@ class MediaProcessor:
         translated = translate_text_with_translators(text_stripped, engine_order=self.translator_engines)
         
         if translated and translated.strip():
-            logger.success(f"在线翻译成功: '{text_stripped}' -> '{translated}' (演员: {actor_name_for_log}, 字段: {field_name})")
+            logger.info(f"在线翻译成功: '{text_stripped}' -> '{translated}' (演员: {actor_name_for_log}, 字段: {field_name})")
             if self.douban_api and hasattr(DoubanApi, '_translation_cache'):
                 DoubanApi._translation_cache[text_stripped] = translated.strip()
             return translated.strip()
@@ -416,7 +416,7 @@ class MediaProcessor:
         )
 
         if update_success:
-            logger.success(f"Emby项目 {emby_item_id} ('{item_details.get('Name')}') 演员信息更新成功。")
+            logger.info(f"Emby项目 {emby_item_id} ('{item_details.get('Name')}') 演员信息更新成功。")
             self.save_to_processed_log(emby_item_id)
             
             if self.config.get("refresh_emby_after_update", True):

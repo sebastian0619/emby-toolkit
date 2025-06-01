@@ -52,7 +52,7 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
 
         response.raise_for_status()
         item_data = response.json()
-        logger.success(f"成功获取Emby项目 '{item_data.get('Name', item_id)}' (ID: {item_id}, User: {user_id}) 的详情。")
+        logger.info(f"成功获取Emby项目 '{item_data.get('Name', item_id)}' (ID: {item_id}, User: {user_id}) 的详情。")
         
         if not item_data.get('Name') or not item_data.get('Type'):
             logger.warning(f"Emby项目 {item_id} 返回的数据缺少Name或Type字段。")
@@ -98,7 +98,7 @@ def update_emby_item_cast(item_id: str, new_cast_list: List[Dict[str, Any]],
         response_get = requests.get(current_item_url, params=params_get, timeout=15)
         response_get.raise_for_status()
         item_to_update = response_get.json()
-        logger.success(f"成功获取项目 {item_id} (UserID: {user_id}) 的当前信息用于更新。")
+        logger.info(f"成功获取项目 {item_id} (UserID: {user_id}) 的当前信息用于更新。")
     except requests.exceptions.RequestException as e:
         logger.error(f"更新演员前获取Emby项目 {item_id} (UserID: {user_id}) 失败: {e}")
         return False
@@ -142,7 +142,7 @@ def update_emby_item_cast(item_id: str, new_cast_list: List[Dict[str, Any]],
         response_post.raise_for_status() 
         
         if response_post.status_code == 204:
-            logger.success(f"成功更新Emby项目 {item_id} 的演员信息。")
+            logger.info(f"成功更新Emby项目 {item_id} 的演员信息。")
             return True
         else:
             logger.warning(f"更新Emby项目 {item_id} 演员信息请求已发送，但状态码为: {response_post.status_code}。响应: {response_post.text[:200]}")
@@ -242,7 +242,7 @@ def get_emby_library_items(emby_server_url: str, emby_api_key: str,
             logger.error(f"获取Emby媒体库项目时发生未知错误: {e}\n{traceback.format_exc()}")
             break
             
-    logger.success(f"Emby媒体库/搜索项目获取完成，共获取到 {len(all_items)} 个项目。")
+    logger.info(f"Emby媒体库/搜索项目获取完成，共获取到 {len(all_items)} 个项目。")
     return all_items
 
 def refresh_emby_item_metadata(item_emby_id: str,
@@ -276,7 +276,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
     try:
         response = requests.post(refresh_url, params=params, timeout=20)
         if response.status_code == 204:
-            logger.success(f"{log_message_prefix} 刷新请求成功发送。Emby将在后台处理。")
+            logger.info(f"{log_message_prefix} 刷新请求成功发送。Emby将在后台处理。")
             return True
         else:
             logger.error(f"{log_message_prefix} 刷新请求失败: HTTP状态码 {response.status_code}")
@@ -337,7 +337,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
 #             update_success = update_emby_item_cast(MOVIE_ID_TO_TEST, test_cast_for_update, 
 #                                                    TEST_EMBY_SERVER_URL, TEST_EMBY_API_KEY, TEST_EMBY_USER_ID)
 #             if update_success:
-#                 logger.success(f"  电影 {MOVIE_ID_TO_TEST} 演员信息更新请求已发送。请检查Emby。")
+#                 logger.info(f"  电影 {MOVIE_ID_TO_TEST} 演员信息更新请求已发送。请检查Emby。")
 #                 time.sleep(3) # 给Emby一点时间处理
 #                 logger.info(f"    验证更新结果 (Movie ID: {MOVIE_ID_TO_TEST}, UserID: {TEST_EMBY_USER_ID})...")
 #                 updated_details_after_post = get_emby_item_details(MOVIE_ID_TO_TEST, TEST_EMBY_SERVER_URL, TEST_EMBY_API_KEY, TEST_EMBY_USER_ID)
