@@ -316,7 +316,7 @@ class MediaProcessor:
 
 
         if should_call_douban_api and self.douban_api and hasattr(self.douban_api, 'get_acting') and \
-           self.data_source_mode != constants.DATA_SOURCE_MODE_API_DISABLED: # 确保API未被禁用
+           self.data_source_mode != constants.DOMESTIC_SOURCE_MODE_DISABLED: # 确保API未被禁用
             # (这里的 self.config.get("domestic_source_mode", ...) 判断可以移除或与 self.data_source_mode 统一)
 
             logger.info(f"步骤1: 媒体 '{media_name_for_log}' - 尝试从在线豆瓣API获取演员信息。")
@@ -372,7 +372,7 @@ class MediaProcessor:
                  logger.warning(f"在线豆瓣API返回错误: {douban_actors_raw.get('message', '未知豆瓣错误')}")
             else:
                  logger.info(f"在线豆瓣API未能为 '{media_name_for_log}' 提供演员信息或返回未知结构: {douban_actors_raw}")
-        elif self.data_source_mode == constants.DATA_SOURCE_MODE_API_DISABLED:
+        elif self.data_source_mode == constants.DOMESTIC_SOURCE_MODE_DISABLED:
             logger.info(f"步骤1: 在线API已禁用，跳过。")
 
 
