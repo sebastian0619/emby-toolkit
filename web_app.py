@@ -132,14 +132,18 @@ def load_config() -> dict:
     app_cfg["schedule_cron"] = config_parser.get("Scheduler", "schedule_cron", fallback="0 3 * * *")
     app_cfg["schedule_force_reprocess"] = config_parser.getboolean("Scheduler", "schedule_force_reprocess", fallback=False)
     # 确保在 [Emby] 节下读取，或者你定义的其他节
-    if not config_parser.has_section(constants.CONFIG_SECTION_EMBY): # 确保节存在
-        config_parser.add_section(constants.CONFIG_SECTION_EMBY)
-    libraries_str = config_parser.get(
-        constants.CONFIG_SECTION_EMBY,
-        constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, # 使用常量
-        fallback="" # 如果读取不到，默认为空字符串
+    if not config_parser.has_section(constants.CONFIG_SECTION_LOCAL_DATA):
+        config_parser.add_section(constants.CONFIG_SECTION_LOCAL_DATA)
+    app_cfg["local_data_path"] = config_parser.get(
+        constants.CONFIG_SECTION_LOCAL_DATA,
+        constants.CONFIG_OPTION_LOCAL_DATA_PATH,
+        fallback=constants.DEFAULT_LOCAL_DATA_PATH
+    ).strip()
+    app_cfg["data_source_mode"] = config_parser.get(
+        constants.CONFIG_SECTION_DOMESTIC_SOURCE, # 或者你改的新节名
+        constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, # 或者你改的新选项名
+        fallback=constants.DEFAULT_DATA_SOURCE_MODE
     )
-    app_cfg["libraries_to_process"] = [lib_id.strip() for lib_id in libraries_str.split(',') if lib_id.strip()]
 
     logger.info(f"配置已从 '{CONFIG_FILE_PATH}' 加载。")
     logger.debug(f"load_config: 返回的 app_cfg 中的 libraries_to_process = {app_cfg.get('libraries_to_process')}")
@@ -157,8 +161,9 @@ def save_config(new_config: Dict[str, Any]):
         constants.CONFIG_SECTION_DOMESTIC_SOURCE, "General", "Scheduler"
     ]
     for section in sections_to_ensure:
-        if not config.has_section(section):
-            config.add_section(section)
+        if not config.has_section(constants.CONFIG_SECTION_LOCAL_DATA):
+            config.add_section(constants.CONFIG_SECTION_LOCAL_DATA)
+        config.set(constants.CONFIG_SECTION_LOCAL_DATA, constants.CONFIG_OPTION_LOCAL_DATA_PATH, str(new_config.get("local_data_path", "")))
 
     # --- 新增：保存在 Emby 节下的媒体库列表 ---
     libraries_list = new_config.get("libraries_to_process", []) # 期望是一个ID列表
@@ -167,11 +172,7 @@ def save_config(new_config: Dict[str, Any]):
             libraries_list = [lib_id.strip() for lib_id in libraries_list.split(',') if lib_id.strip()]
         else:
             libraries_list = []
-    config.set(
-        constants.CONFIG_SECTION_EMBY,
-        constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, # 使用常量
-        ",".join(libraries_list) # 将ID列表转换为逗号分隔的字符串保存
-    )
+    config.set(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, str(new_config.get("data_source_mode", constants.DEFAULT_DATA_SOURCE_MODE)))
     # --- 新增结束 ---
 
     # --- Emby Section ---
@@ -400,14 +401,11 @@ def settings_page():
             "schedule_cron": request.form.get("schedule_cron", "0 3 * * *").strip(),
             "schedule_force_reprocess": "schedule_force_reprocess" in request.form,
         }
-        # --- 新增：获取选中的媒体库ID列表 ---
-        # request.form.getlist() 用于获取同名复选框的多个值
-        # HTML 中复选框的 name 属性应该是 "libraries_to_process[]" 或类似的，以便 getlist 能正确工作
-        # 或者，如果你的 HTML 复选框 name 就是 "libraries_to_process"，getlist 也能处理
+        new_conf["local_data_path"] = request.form.get("local_data_path", "").strip()
+        new_conf["data_source_mode"] = request.form.get("data_source_mode", constants.DEFAULT_DATA_SOURCE_MODE)
         selected_libs_from_form = request.form.getlist("libraries_to_process")
         # 如果你的 HTML checkbox 的 name 是 "libraries_to_process[]"，用下面这行：
         # selected_libs_from_form = request.form.getlist("libraries_to_process[]")
-        new_conf["libraries_to_process"] = selected_libs_from_form
         logger.debug(f"settings_page POST - 从表单获取的 libraries_to_process: {selected_libs_from_form}")
         # --- 新增结束 ---
         logger.debug(f"settings_page POST - 从表单获取的 new_conf: {new_conf}")
@@ -419,22 +417,24 @@ def settings_page():
         return redirect(url_for('settings_page'))
 
     # GET 请求逻辑
+    # --- GET 请求逻辑 ---
     current_config = load_config()
-    # ... (获取 available_engines, current_engine_str, domestic_source_options 的逻辑不变) ...
-    available_engines = constants.AVAILABLE_TRANSLATOR_ENGINES
+    available_engines = constants.AVAILABLE_TRANSLATOR_ENGINES # 假设这个常量存在
     current_engines_list = current_config.get("translator_engines_order", constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
     current_engine_str = ",".join(current_engines_list)
-    domestic_source_options = constants.DOMESTIC_SOURCE_OPTIONS
+
+    data_source_options_to_template = constants.DATA_SOURCE_OPTIONS # 从 constants.py 获取选项列表
+
     selected_libraries = current_config.get("libraries_to_process", [])
+
     return render_template('settings.html',
                            config=current_config,
                            available_engines=available_engines,
                            current_engine_str=current_engine_str,
-                           domestic_source_options=domestic_source_options,
+                           data_source_options=data_source_options_to_template, # <--- 传递给模板
                            task_status=background_task_status,
                            app_version=constants.APP_VERSION,
-                           # emby_libraries=[], # 传递一个空列表，让JS去填充
-                           selected_libraries=selected_libraries # 传递已选中的，供JS使用
+                           selected_libraries=selected_libraries
                            )
 
 @app.route('/webhook/emby', methods=['POST'])
