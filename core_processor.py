@@ -246,7 +246,7 @@ class MediaProcessor:
         # 步骤 0: 尝试从本地数据源 (神医JSON) 加载演员信息
         # --------------------------------------------------------------------
         if self.local_data_path and media_type_for_local and \
-           self.data_source_mode in [constants.DATA_SOURCE_MODE_LOCAL_THEN_ONLINE, constants.DATA_SOURCE_MODE_LOCAL_ONLY]:
+           self.data_source_mode in [constants.DOMESTIC_SOURCE_MODE_LOCAL_THEN_ONLINE, constants.DOMESTIC_SOURCE_MODE_LOCAL_ONLY]:
 
             logger.info(f"步骤0: 媒体 '{media_name_for_log}' - 尝试从本地数据源加载演员信息 (IMDb: {imdb_id_from_emby}, Douban: {douban_id_from_emby})。")
             local_json_file_path = local_data_handler.find_local_json_path(
@@ -303,15 +303,15 @@ class MediaProcessor:
         # 步骤 1: (如果需要) 尝试从在线豆瓣API获取演员信息
         # --------------------------------------------------------------------
         should_call_douban_api = False
-        if self.data_source_mode == constants.DATA_SOURCE_MODE_ONLINE_ONLY:
+        if self.data_source_mode == constants.DOMESTIC_SOURCE_MODE_ONLINE_ONLY:
             should_call_douban_api = True
             logger.info(f"步骤1: 模式为仅在线API，准备调用豆瓣API。")
-        elif self.data_source_mode == constants.DATA_SOURCE_MODE_LOCAL_THEN_ONLINE and not local_data_processed_actors:
+        elif self.data_source_mode == constants.DOMESTIC_SOURCE_MODE_LOCAL_THEN_ONLINE and not local_data_processed_actors:
             should_call_douban_api = True
             logger.info(f"步骤1: 模式为本地优先但本地未处理成功，准备调用豆瓣API。")
-        elif self.data_source_mode == constants.DATA_SOURCE_MODE_LOCAL_ONLY:
+        elif self.data_source_mode == constants.DOMESTIC_SOURCE_MODE_LOCAL_ONLY:
             logger.info(f"步骤1: 模式为仅本地数据，跳过在线豆瓣API。")
-        elif local_data_processed_actors and self.data_source_mode == constants.DATA_SOURCE_MODE_LOCAL_THEN_ONLINE:
+        elif local_data_processed_actors and self.data_source_mode == constants.DOMESTIC_SOURCE_MODE_LOCAL_THEN_ONLINE:
             logger.info(f"步骤1: 已通过本地数据处理，跳过在线豆瓣API。")
 
 
