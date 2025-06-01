@@ -387,13 +387,15 @@ def index():
 @app.route('/settings', methods=['GET', 'POST'])
 def settings_page():
     if request.method == 'POST':
+        # ... (你的 POST 逻辑，这部分应该没问题) ...
         new_conf = {
             "emby_server_url": request.form.get("emby_server_url", "").strip(),
             "emby_api_key": request.form.get("emby_api_key", "").strip(),
             "emby_user_id": request.form.get("emby_user_id", "").strip(),
+            "local_data_path": request.form.get("local_data_path", "").strip(), # 新增的本地路径
+            "data_source_mode": request.form.get("data_source_mode", constants.DEFAULT_DATA_SOURCE_MODE), # 新的数据源模式
             "tmdb_api_key": request.form.get("tmdb_api_key", "").strip(),
             "translator_engines_order": [eng.strip() for eng in request.form.get("translator_engines_order", "").split(',') if eng.strip()],
-            "domestic_source_mode": request.form.get("domestic_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE),
             "delay_between_items_sec": float(request.form.get("delay_between_items_sec", 0.5)),
             "refresh_emby_after_update": "refresh_emby_after_update" in request.form,
             "api_douban_default_cooldown_seconds": float(request.form.get("api_douban_default_cooldown_seconds", constants.DEFAULT_API_COOLDOWN_SECONDS_FALLBACK)),
@@ -401,29 +403,26 @@ def settings_page():
             "schedule_cron": request.form.get("schedule_cron", "0 3 * * *").strip(),
             "schedule_force_reprocess": "schedule_force_reprocess" in request.form,
         }
-        new_conf["local_data_path"] = request.form.get("local_data_path", "").strip()
-        new_conf["data_source_mode"] = request.form.get("data_source_mode", constants.DEFAULT_DATA_SOURCE_MODE)
         selected_libs_from_form = request.form.getlist("libraries_to_process")
-        # 如果你的 HTML checkbox 的 name 是 "libraries_to_process[]"，用下面这行：
-        # selected_libs_from_form = request.form.getlist("libraries_to_process[]")
-        logger.debug(f"settings_page POST - 从表单获取的 libraries_to_process: {selected_libs_from_form}")
-        # --- 新增结束 ---
-        logger.debug(f"settings_page POST - 从表单获取的 new_conf: {new_conf}")
-        if not new_conf.get("translator_engines_order"): # 确保键存在
+        new_conf["libraries_to_process"] = selected_libs_from_form
+        if not new_conf.get("translator_engines_order"):
             new_conf["translator_engines_order"] = constants.DEFAULT_TRANSLATOR_ENGINES_ORDER
-
+        
+        logger.debug(f"settings_page POST - 从表单获取的 new_conf: {new_conf}")
         save_config(new_conf)
         flash("配置已保存！媒体库选择和定时任务已根据新配置更新。", "success")
         return redirect(url_for('settings_page'))
 
-    # GET 请求逻辑
     # --- GET 请求逻辑 ---
     current_config = load_config()
-    available_engines = constants.AVAILABLE_TRANSLATOR_ENGINES # 假设这个常量存在
+    available_engines = constants.AVAILABLE_TRANSLATOR_ENGINES
     current_engines_list = current_config.get("translator_engines_order", constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
     current_engine_str = ",".join(current_engines_list)
 
-    data_source_options_to_template = constants.DATA_SOURCE_OPTIONS # 从 constants.py 获取选项列表
+    # --- 确保 data_source_options 从 constants.py 获取并传递给模板 ---
+    data_source_options_to_template = constants.DATA_SOURCE_OPTIONS
+    logger.debug(f"settings_page GET - data_source_options being passed to template: {data_source_options_to_template}")
+    # ---
 
     selected_libraries = current_config.get("libraries_to_process", [])
 
@@ -431,7 +430,7 @@ def settings_page():
                            config=current_config,
                            available_engines=available_engines,
                            current_engine_str=current_engine_str,
-                           data_source_options=data_source_options_to_template, # <--- 传递给模板
+                           data_source_options=data_source_options_to_template, # <--- 确保这里传递了
                            task_status=background_task_status,
                            app_version=constants.APP_VERSION,
                            selected_libraries=selected_libraries
