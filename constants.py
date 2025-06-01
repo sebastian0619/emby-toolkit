@@ -1,5 +1,5 @@
 # constants.py
-APP_VERSION = "1.2.7-beta"
+APP_VERSION = "1.2.8-beta"
 # Debugging flag
 DEBUG = True  # 全局调试开关，True会输出更多日志，False则输出较少
 

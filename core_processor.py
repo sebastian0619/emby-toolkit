@@ -153,11 +153,13 @@ class MediaProcessor:
             logger.info(f"在线翻译成功: '{text_stripped}' -> '{translated}' (演员: {actor_name_for_log}, 字段: {field_name})")
             if self.douban_api and hasattr(DoubanApi, '_translation_cache'):
                 DoubanApi._translation_cache[text_stripped] = translated.strip()
+                logger.debug(f"翻译缓存已更新: '{text_stripped}' -> '{translated.strip()}'. 当前缓存大小: {len(DoubanApi._translation_cache)}")
             return translated.strip()
         else:
             logger.warning(f"在线翻译失败或返回空: '{text_stripped}' (演员: {actor_name_for_log}, 字段: {field_name})")
             if self.douban_api and hasattr(DoubanApi, '_translation_cache'):
                  DoubanApi._translation_cache[text_stripped] = None
+                 logger.debug(f"翻译缓存已更新 (None): '{text_stripped}'. 当前缓存大小: {len(DoubanApi._translation_cache)}")
             return text
 
     def _process_cast_list(self, current_cast: List[Dict[str, Any]], media_info: Dict[str, Any]) -> List[Dict[str, Any]]:
