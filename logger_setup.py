@@ -5,6 +5,11 @@ import constants # <--- 确保这行存在且在顶部
 
 AppMainWindow_instance = None 
 
+PERSISTENT_DATA_PATH = "/config" 
+LOG_SUBDIR = os.path.join(PERSISTENT_DATA_PATH, "logs")
+os.makedirs(LOG_SUBDIR, exist_ok=True)
+log_file = os.path.join(LOG_SUBDIR, "app.log")
+
 class SimpleLogger:
     def __init__(self):
         self.debug_mode = False 

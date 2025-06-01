@@ -12,6 +12,8 @@ from urllib import parse
 import json # 确保导入json，因为测试代码中用到了
 
 import requests
+PERSISTENT_DATA_PATH = "/config"
+_translation_cache_file_path = os.path.join(PERSISTENT_DATA_PATH, constants.TRANSLATION_CACHE_FILE)
 
 try:
     from logger_setup import logger # 尝试从主项目导入logger

@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+.dockerignore
+Dockerfile
+README.md 
+# 其他你不想包含在镜像中的本地文件或文件夹
+# 例如，如果你的测试数据很大，或者有本地的虚拟环境文件夹
+.venv/
+venv/
+*.log 
+# config.ini, processed_media_log.txt, translation_cache.json 
+# 这些运行时数据和配置，我们通常通过Docker卷(volume)来持久化，而不是直接打入镜像。
+# 但如果希望镜像启动时有一个初始的、空的配置文件，可以不忽略它。
+# 暂时我们可以先不忽略它们，让它们作为初始文件进入镜像。

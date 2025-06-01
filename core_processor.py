@@ -11,6 +11,8 @@ from utils import translate_text_with_translators, contains_chinese, clean_chara
 from logger_setup import logger
 import constants
 
+PERSISTENT_DATA_PATH = "/config"
+
 # --- 获取基础路径，用于定位配置文件等 ---
 try:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +41,7 @@ class MediaProcessor:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.douban_api = None
+        self.processed_log_file = os.path.join(PERSISTENT_DATA_PATH, constants.PROCESSED_MEDIA_LOG_FILE)
         if DOUBAN_API_AVAILABLE: 
             try:
                 self.douban_api = DoubanApi()

@@ -16,9 +16,9 @@ from logger_setup import logger
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24) 
-
+PERSISTENT_DATA_PATH = "/config"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE_PATH = os.path.join(BASE_DIR, constants.CONFIG_FILE)
+CONFIG_FILE_PATH = os.path.join(PERSISTENT_DATA_PATH, constants.CONFIG_FILE)
 
 media_processor_instance: Optional[MediaProcessor] = None
 background_task_status = {
@@ -447,4 +447,4 @@ def get_status():
 if __name__ == '__main__':
     initialize_media_processor() 
     setup_scheduled_tasks() # 应用启动时根据配置设置定时任务
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5257, debug=True)
