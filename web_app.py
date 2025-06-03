@@ -11,6 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz # 用于处理时区
 import atexit # 用于应用退出处理
+from core_processor import MediaProcessor, SyncHandler
 
 # --- 核心模块导入 ---
 import constants # 你的常量定义
@@ -18,23 +19,45 @@ from core_processor import MediaProcessor # 核心处理逻辑
 from logger_setup import logger # 日志记录器
 # emby_handler 和 utils 会在需要的地方被 core_processor 或此文件中的函数调用
 # 如果直接在此文件中使用它们的功能，也需要在这里导入
-import emby_handler # 例如，用于 /api/search_media
 import utils       # 例如，用于 /api/search_media
 # from douban import DoubanApi # 通常不需要在 web_app.py 直接导入 DoubanApi，由 MediaProcessor 管理
 # --- 核心模块导入结束 ---
+
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24) # 用于 flash 消息等
 
 # --- 路径和配置定义 ---
-PERSISTENT_DATA_PATH = "/config" # Docker 卷挂载的持久化数据目录
-BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # 当前文件所在目录
-CONFIG_FILE_NAME = "config.ini" # 配置文件名，建议也放入 constants.py
-CONFIG_FILE_PATH = os.path.join(PERSISTENT_DATA_PATH, CONFIG_FILE_NAME)
+APP_DATA_DIR_ENV = os.environ.get("APP_DATA_DIR")
+JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
 
-DB_NAME = "emby_actor_processor.sqlite" # 数据库文件名
-DB_PATH = os.path.join(PERSISTENT_DATA_PATH, DB_NAME)
+if APP_DATA_DIR_ENV: # 如果设置了环境变量 (例如在 Dockerfile 中)
+    PERSISTENT_DATA_PATH = APP_DATA_DIR_ENV
+    logger.info(f"使用环境变量 APP_DATA_DIR 指定的持久化路径: {PERSISTENT_DATA_PATH}")
+else:
+    # 本地开发环境：在项目根目录下创建一个名为 'local_data' 的文件夹
+    # BASE_DIR 通常是 web_app.py 所在的目录
+    BASE_DIR_FOR_DATA = os.path.dirname(os.path.abspath(__file__)) # web_app.py 所在目录
+    PERSISTENT_DATA_PATH = os.path.join(BASE_DIR_FOR_DATA, "local_data")
+    logger.info(f"未检测到 APP_DATA_DIR 环境变量，将使用本地开发数据路径: {PERSISTENT_DATA_PATH}")
 # --- 路径和配置定义结束 ---
+
+try:
+    if not os.path.exists(PERSISTENT_DATA_PATH):
+        os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
+        logger.info(f"持久化数据目录已创建/确认: {PERSISTENT_DATA_PATH}")
+except OSError as e:
+    logger.error(f"创建持久化数据目录 '{PERSISTENT_DATA_PATH}' 失败: {e}。程序可能无法正常读写配置文件和数据库。")
+    # 在这种情况下，程序可能无法继续，可以考虑退出或抛出异常
+    # raise RuntimeError(f"无法创建必要的数据目录: {PERSISTENT_DATA_PATH}") from e
+
+# --- 后续所有 CONFIG_FILE_PATH 和 DB_PATH 都基于这个 PERSISTENT_DATA_PATH ---
+CONFIG_FILE_NAME = getattr(constants, 'CONFIG_FILE_NAME', "config.ini") # 从常量获取或默认
+CONFIG_FILE_PATH = os.path.join(PERSISTENT_DATA_PATH, constants.CONFIG_FILE_NAME)
+
+DB_NAME = getattr(constants, 'DB_NAME', "emby_actor_processor.sqlite") # 从常量获取或默认
+DB_PATH = os.path.join(PERSISTENT_DATA_PATH, constants.DB_NAME)
+
 
 # --- 全局变量 ---
 media_processor_instance: Optional[MediaProcessor] = None
@@ -58,13 +81,16 @@ def get_db_connection() -> sqlite3.Connection:
 
 def init_db():
     """初始化数据库表结构"""
+    conn = None # 初始化 conn 以确保 finally 中可用
     try:
         if not os.path.exists(PERSISTENT_DATA_PATH):
             os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
             logger.info(f"持久化数据目录已创建: {PERSISTENT_DATA_PATH}")
 
-        conn = get_db_connection()
+        conn = get_db_connection() # 获取连接
         cursor = conn.cursor()
+
+        # --- 创建 processed_log 表 ---
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS processed_log (
                 item_id TEXT PRIMARY KEY,
@@ -72,6 +98,9 @@ def init_db():
                 processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        logger.info("Table 'processed_log' schema confirmed/created.")
+
+        # --- 创建 failed_log 表 ---
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS failed_log (
                 item_id TEXT PRIMARY KEY,
@@ -81,6 +110,9 @@ def init_db():
                 item_type TEXT
             )
         ''')
+        logger.info("Table 'failed_log' schema confirmed/created.")
+
+        # --- 创建 translation_cache 表 ---
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS translation_cache (
                 original_text TEXT PRIMARY KEY,
@@ -90,42 +122,112 @@ def init_db():
             )
         ''')
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_translation_cache_original_text ON translation_cache (original_text)")
+        logger.info("Table 'translation_cache' and index schema confirmed/created.")
+
+        # --- 创建 person_identity_map 表 (包含 imdb_id) ---
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS person_identity_map (
+                tmdb_person_id TEXT,
+                emby_person_id TEXT NOT NULL,
+                emby_person_name TEXT,
+                tmdb_name TEXT,
+                imdb_id TEXT,
+                douban_celebrity_id TEXT,
+                douban_name TEXT,
+                last_synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (emby_person_id),
+                UNIQUE (tmdb_person_id),      
+                UNIQUE (imdb_id),            
+                UNIQUE (douban_celebrity_id) 
+            )
+        ''')
+        # 为 person_identity_map 表创建其他需要的索引
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_tmdb_id_non_unique ON person_identity_map (tmdb_person_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_imdb_id_non_unique ON person_identity_map (imdb_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_id_non_unique ON person_identity_map (douban_celebrity_id)")
+        logger.info("Table 'person_identity_map' (with imdb_id) and indexes schema confirmed/created.")
+
+        # --- 所有表和索引创建完毕后，进行一次总的提交 ---
         conn.commit()
-        logger.info(f"数据库表已在 '{DB_PATH}' 初始化/检查完毕。")
+        logger.info(f"数据库表结构已在 '{DB_PATH}' 初始化/检查完毕并已提交。")
+
     except Exception as e:
         logger.error(f"数据库初始化失败: {e}", exc_info=True)
+        if conn: # 如果连接存在且发生错误，尝试回滚
+            try:
+                conn.rollback()
+                logger.info("数据库初始化错误，事务已回滚。")
+            except Exception as e_rollback:
+                logger.error(f"数据库回滚失败: {e_rollback}", exc_info=True)
     finally:
-        if 'conn' in locals() and conn: # 确保 conn 已定义
+        if conn: # 确保 conn 已定义且不为 None
             conn.close()
+            logger.debug("数据库连接已在 init_db 的 finally 块中关闭。")
 # --- 数据库辅助函数结束 ---
 
 # --- 配置加载与保存 ---
-def load_config() -> dict:
-    config_parser = configparser.ConfigParser(defaults={
-        constants.CONFIG_OPTION_EMBY_SERVER_URL: "",
-        constants.CONFIG_OPTION_EMBY_API_KEY: "",
-        constants.CONFIG_OPTION_EMBY_USER_ID: "",
-        constants.CONFIG_OPTION_TMDB_API_KEY: constants.FALLBACK_TMDB_API_KEY,
-        constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN: str(constants.DEFAULT_API_COOLDOWN_SECONDS_FALLBACK),
-        constants.CONFIG_OPTION_TRANSLATOR_ENGINES: ",".join(constants.DEFAULT_TRANSLATOR_ENGINES_ORDER),
-        # --- 确保这里的键名与 constants.py 中定义的一致 ---
-        constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE: constants.DEFAULT_DOMESTIC_SOURCE_MODE,
+def load_config() -> Dict[str, Any]:
+    """
+    从 config.ini 文件加载配置。
+    如果文件不存在或缺少某些项，则使用默认值。
+    """
+    # 使用 getattr 从 constants 获取默认值，如果常量未定义则使用硬编码的后备值
+    # 确保所有在 constants.py 中为配置项定义的 DEFAULT_XXX 常量都存在
+    defaults = {
+        constants.CONFIG_OPTION_EMBY_SERVER_URL: getattr(constants, 'DEFAULT_EMBY_SERVER_URL', ""),
+        constants.CONFIG_OPTION_EMBY_API_KEY: getattr(constants, 'DEFAULT_EMBY_API_KEY', ""),
+        constants.CONFIG_OPTION_EMBY_USER_ID: getattr(constants, 'DEFAULT_EMBY_USER_ID', ""),
+        "refresh_emby_after_update": str(getattr(constants, 'DEFAULT_REFRESH_EMBY_AFTER_UPDATE', True)).lower(),
         constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS: "",
-        constants.CONFIG_OPTION_LOCAL_DATA_PATH: constants.DEFAULT_LOCAL_DATA_PATH,
-        "delay_between_items_sec": "0.5",
-        "refresh_emby_after_update": "true",
-        "schedule_enabled": "false",
-        "schedule_cron": "0 3 * * *",
-        "schedule_force_reprocess": "false"
-    })
-    if os.path.exists(CONFIG_FILE_PATH):
-        config_parser.read(CONFIG_FILE_PATH, encoding='utf-8')
-    else:
-        logger.warning(f"配置文件 {CONFIG_FILE_PATH} 未找到，将使用默认值。请通过设置页面保存一次以创建文件。")
 
-    app_cfg = {}
-    # Emby Section
-    if not config_parser.has_section(constants.CONFIG_SECTION_EMBY): config_parser.add_section(constants.CONFIG_SECTION_EMBY)
+        constants.CONFIG_OPTION_TMDB_API_KEY: getattr(constants, 'FALLBACK_TMDB_API_KEY', ""),
+
+        constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN: str(getattr(constants, 'DEFAULT_API_COOLDOWN_SECONDS_FALLBACK', 1.0)),
+
+        constants.CONFIG_OPTION_TRANSLATOR_ENGINES: ",".join(getattr(constants, 'DEFAULT_TRANSLATOR_ENGINES_ORDER', ['bing', 'google'])),
+
+        constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE: getattr(constants, 'DEFAULT_DOMESTIC_SOURCE_MODE', "local_then_online"),
+        
+        constants.CONFIG_OPTION_LOCAL_DATA_PATH: getattr(constants, 'DEFAULT_LOCAL_DATA_PATH', ""),
+
+        "delay_between_items_sec": str(getattr(constants, 'DEFAULT_DELAY_BETWEEN_ITEMS_SEC', 0.5)),
+
+        "schedule_enabled": str(getattr(constants, 'DEFAULT_SCHEDULE_ENABLED', False)).lower(),
+        "schedule_cron": getattr(constants, 'DEFAULT_SCHEDULE_CRON', "0 3 * * *"),
+        "schedule_force_reprocess": str(getattr(constants, 'DEFAULT_SCHEDULE_FORCE_REPROCESS', False)).lower(),
+        "schedule_sync_map_enabled": str(getattr(constants, 'DEFAULT_SCHEDULE_SYNC_MAP_ENABLED', False)).lower(),
+        "schedule_sync_map_cron": getattr(constants, 'DEFAULT_SCHEDULE_SYNC_MAP_CRON', "0 1 * * *")
+    }
+
+    config_parser = configparser.ConfigParser(defaults=defaults)
+    # config_parser.optionxform = str # 如果需要保留选项名大小写
+
+    expected_sections = [
+        constants.CONFIG_SECTION_EMBY, constants.CONFIG_SECTION_TMDB,
+        constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_SECTION_TRANSLATION,
+        constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_SECTION_LOCAL_DATA,
+        "General", "Scheduler"
+    ]
+
+    if os.path.exists(CONFIG_FILE_PATH):
+        try:
+            config_parser.read(CONFIG_FILE_PATH, encoding='utf-8')
+            logger.info(f"配置已从 '{CONFIG_FILE_PATH}' 加载。")
+        except configparser.Error as e:
+            logger.error(f"读取配置文件 '{CONFIG_FILE_PATH}' 失败: {e}。将使用默认值。")
+            config_parser = configparser.ConfigParser(defaults=defaults)
+    else:
+        logger.warning(f"配置文件 '{CONFIG_FILE_PATH}' 未找到，将使用默认值。请通过设置页面保存一次以创建文件。")
+
+    for section_name in expected_sections:
+        if not config_parser.has_section(section_name):
+            config_parser.add_section(section_name)
+            logger.debug(f"load_config: 添加了缺失的配置节 [{section_name}]")
+
+    app_cfg: Dict[str, Any] = {}
+
+    # --- Emby Section ---
     app_cfg["emby_server_url"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_SERVER_URL)
     app_cfg["emby_api_key"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_API_KEY)
     app_cfg["emby_user_id"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_USER_ID)
@@ -133,98 +235,89 @@ def load_config() -> dict:
     libraries_str = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS)
     app_cfg["libraries_to_process"] = [lib_id.strip() for lib_id in libraries_str.split(',') if lib_id.strip()]
 
-    # TMDB Section
-    if not config_parser.has_section(constants.CONFIG_SECTION_TMDB): config_parser.add_section(constants.CONFIG_SECTION_TMDB)
+    # --- TMDB Section ---
     app_cfg["tmdb_api_key"] = config_parser.get(constants.CONFIG_SECTION_TMDB, constants.CONFIG_OPTION_TMDB_API_KEY)
 
-    # Douban API Section
-    if not config_parser.has_section(constants.CONFIG_SECTION_DOMESTIC_SOURCE):
-        config_parser.add_section(constants.CONFIG_SECTION_DOMESTIC_SOURCE)
-    # 将读取到的值存入 app_cfg 字典，键名为 "domestic_source_mode"
-    app_cfg["domestic_source_mode"] = config_parser.get(
-        constants.CONFIG_SECTION_DOMESTIC_SOURCE,
-        constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE,
-        fallback=constants.DEFAULT_DOMESTIC_SOURCE_MODE
-    )
+    # --- Douban API Section ---
+    app_cfg["api_douban_default_cooldown_seconds"] = config_parser.getfloat(constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN)
 
-    # Translation Section
-    if not config_parser.has_section(constants.CONFIG_SECTION_TRANSLATION): config_parser.add_section(constants.CONFIG_SECTION_TRANSLATION)
+    # --- Translation Section ---
     engines_str = config_parser.get(constants.CONFIG_SECTION_TRANSLATION, constants.CONFIG_OPTION_TRANSLATOR_ENGINES)
     app_cfg["translator_engines_order"] = [eng.strip() for eng in engines_str.split(',') if eng.strip()]
-    if not app_cfg["translator_engines_order"]: app_cfg["translator_engines_order"] = constants.DEFAULT_TRANSLATOR_ENGINES_ORDER
+    if not app_cfg["translator_engines_order"]:
+        app_cfg["translator_engines_order"] = getattr(constants, 'DEFAULT_TRANSLATOR_ENGINES_ORDER', ['bing', 'google'])
 
-    # --- 修改这里，确保 fallback 使用 constants.py 中实际定义的常量名 ---
-    # Domestic Source / Data Source Section
-    # 假设你在 constants.py 中 CONFIG_SECTION_DOMESTIC_SOURCE 和 CONFIG_OPTION_DOMESTIC_SOURCE_MODE 是正确的
-    if not config_parser.has_section(constants.CONFIG_SECTION_DOMESTIC_SOURCE): config_parser.add_section(constants.CONFIG_SECTION_DOMESTIC_SOURCE)
-    app_cfg["data_source_mode"] = config_parser.get( # 使用 "data_source_mode" 作为 app_cfg 中的键
-        constants.CONFIG_SECTION_DOMESTIC_SOURCE,
-        constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE,
-        fallback=constants.DEFAULT_DOMESTIC_SOURCE_MODE # <--- 使用你 constants.py 中定义的那个默认模式常量
-    )
-    # --- 修改结束 ---
+    # --- Domestic Source Section (数据源模式) ---
+    app_cfg["data_source_mode"] = config_parser.get(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE)
 
-    # Local Data Source Section
-    if not config_parser.has_section(constants.CONFIG_SECTION_LOCAL_DATA): config_parser.add_section(constants.CONFIG_SECTION_LOCAL_DATA)
+    # --- Local Data Source Section ---
     app_cfg["local_data_path"] = config_parser.get(constants.CONFIG_SECTION_LOCAL_DATA, constants.CONFIG_OPTION_LOCAL_DATA_PATH).strip()
 
-
-    # General Section
-    if not config_parser.has_section("General"): config_parser.add_section("General")
+    # --- General Section ---
     app_cfg["delay_between_items_sec"] = config_parser.getfloat("General", "delay_between_items_sec")
 
-    # Scheduler Section
-    if not config_parser.has_section("Scheduler"): config_parser.add_section("Scheduler")
-    app_cfg["schedule_enabled"] = config_parser.getboolean("Scheduler", "schedule_enabled")
+    # --- Scheduler Section ---
+    app_cfg["schedule_enabled"] = config_parser.getboolean("Scheduler", "schedule_enabled") # 用于全量扫描
     app_cfg["schedule_cron"] = config_parser.get("Scheduler", "schedule_cron")
     app_cfg["schedule_force_reprocess"] = config_parser.getboolean("Scheduler", "schedule_force_reprocess")
+    app_cfg["schedule_sync_map_enabled"] = config_parser.getboolean("Scheduler", "schedule_sync_map_enabled")
+    app_cfg["schedule_sync_map_cron"] = config_parser.get("Scheduler", "schedule_sync_map_cron")
 
-    logger.debug(f"load_config: 返回的 app_cfg 中的 libraries_to_process = {app_cfg.get('libraries_to_process')}")
-    logger.debug(f"load_config: 返回的 app_cfg 中的 domestic_source_mode = {app_cfg.get('domestic_source_mode')}") 
-    logger.info(f"配置已从 '{CONFIG_FILE_PATH}' 加载。")
+    logger.debug(f"load_config: 返回的 app_cfg['libraries_to_process'] = {app_cfg.get('libraries_to_process')}")
+    logger.debug(f"load_config: 返回的 app_cfg['data_source_mode'] = {app_cfg.get('data_source_mode')}")
+    logger.debug(f"load_config: 返回的 app_cfg['schedule_enabled'] (for scan) = {app_cfg.get('schedule_enabled')}")
     return app_cfg
 
 def save_config(new_config: Dict[str, Any]):
     config = configparser.ConfigParser()
+    # 如果配置文件已存在，先读取它，这样可以保留文件中不由UI管理的注释或部分
     if os.path.exists(CONFIG_FILE_PATH):
         config.read(CONFIG_FILE_PATH, encoding='utf-8')
 
-    # 确保所有需要的节都存在
-    sections_to_ensure = [
-        constants.CONFIG_SECTION_EMBY, constants.CONFIG_SECTION_TMDB,
-        constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_SECTION_TRANSLATION,
-        constants.CONFIG_SECTION_DOMESTIC_SOURCE, "General", "Scheduler"
+    # --- 修改开始 ---
+    # 1. 定义所有此函数会管理的配置节（分组名）
+    #    确保这些名称与 constants.py 中的定义以及 load_config 函数的期望一致
+    all_sections_to_manage = [
+        constants.CONFIG_SECTION_EMBY,
+        constants.CONFIG_SECTION_TMDB,
+        constants.CONFIG_SECTION_API_DOUBAN,    # 用于豆瓣API特定设置，如冷却时间
+        constants.CONFIG_SECTION_TRANSLATION,
+        constants.CONFIG_SECTION_DOMESTIC_SOURCE, # 用于 domestic_source_mode (之前出错的地方)
+        constants.CONFIG_SECTION_LOCAL_DATA,    # 用于 local_data_path
+        "General",                              # 通用设置
+        "Scheduler"                             # 定时任务设置
     ]
-    for section in sections_to_ensure:
-        if not config.has_section(constants.CONFIG_SECTION_LOCAL_DATA):
-            config.add_section(constants.CONFIG_SECTION_LOCAL_DATA)
-        config.set(constants.CONFIG_SECTION_LOCAL_DATA, constants.CONFIG_OPTION_LOCAL_DATA_PATH, str(new_config.get("local_data_path", "")))
 
-    # --- 新增：保存在 Emby 节下的媒体库列表 ---
-    libraries_list = new_config.get("libraries_to_process", []) # 期望是一个ID列表
-    if not isinstance(libraries_list, list): # 做个类型检查和转换
-        if isinstance(libraries_list, str) and libraries_list:
-            libraries_list = [lib_id.strip() for lib_id in libraries_list.split(',') if lib_id.strip()]
-        else:
-            libraries_list = []
-    config.set(
-        constants.CONFIG_SECTION_DOMESTIC_SOURCE,    # 节名
-        constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, # 选项名 (config.ini中的键)
-        str(new_config.get("domestic_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE)) # 从 new_conf 获取，键是 "domestic_source_mode"
-    )
+    # 2. 确保所有这些节都存在于 config 对象中，如果不存在则添加
+    for section_name in all_sections_to_manage:
+        if not config.has_section(section_name):
+            config.add_section(section_name)
+    # --- 修改结束 ---
+
+    # 3. 现在可以安全地设置每个配置项了，因为我们知道它们所属的节已经存在
 
     # --- Emby Section ---
     config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_SERVER_URL, str(new_config.get("emby_server_url", "")))
     config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_API_KEY, str(new_config.get("emby_api_key", "")))
     config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_USER_ID, str(new_config.get("emby_user_id", "")))
     config.set(constants.CONFIG_SECTION_EMBY, "refresh_emby_after_update", str(new_config.get("refresh_emby_after_update", True)).lower())
+    
+    # --- 修正：正确保存媒体库列表到 Emby 节下 ---
+    libraries_list = new_config.get("libraries_to_process", [])
+    if not isinstance(libraries_list, list): # 做个类型检查和转换
+        if isinstance(libraries_list, str) and libraries_list:
+            libraries_list = [lib_id.strip() for lib_id in libraries_list.split(',') if lib_id.strip()]
+        else:
+            libraries_list = []
+    # 使用 constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS 作为键名
+    config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, ",".join(map(str, libraries_list)))
+    # --- 修正结束 ---
 
     # --- TMDB Section ---
-    config.set(constants.CONFIG_SECTION_TMDB, constants.CONFIG_OPTION_TMDB_API_KEY, str(new_config.get("tmdb_api_key", constants.FALLBACK_TMDB_API_KEY))) # 使用常量中的 fallback
+    config.set(constants.CONFIG_SECTION_TMDB, constants.CONFIG_OPTION_TMDB_API_KEY, str(new_config.get("tmdb_api_key", constants.FALLBACK_TMDB_API_KEY)))
 
-    # --- Douban API Section ---
+    # --- Douban API Section (对应常量 constants.CONFIG_SECTION_API_DOUBAN) ---
     config.set(constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN, str(new_config.get("api_douban_default_cooldown_seconds", constants.DEFAULT_API_COOLDOWN_SECONDS_FALLBACK)))
-    # TODO: 如果还有其他豆瓣 API 配置项 (max_cooldown, increment_cooldown)，也在这里添加
 
     # --- Translation Section ---
     engines_list = new_config.get("translator_engines_order", constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
@@ -232,18 +325,21 @@ def save_config(new_config: Dict[str, Any]):
         engines_list = constants.DEFAULT_TRANSLATOR_ENGINES_ORDER
     config.set(constants.CONFIG_SECTION_TRANSLATION, constants.CONFIG_OPTION_TRANSLATOR_ENGINES, ",".join(engines_list))
 
-    # --- Domestic Source Section ---
+    # --- Domestic Source Section (对应常量 constants.CONFIG_SECTION_DOMESTIC_SOURCE) ---
     config.set(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, str(new_config.get("domestic_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE)))
 
+    # --- Local Data Section (对应常量 constants.CONFIG_SECTION_LOCAL_DATA) ---
+    config.set(constants.CONFIG_SECTION_LOCAL_DATA, constants.CONFIG_OPTION_LOCAL_DATA_PATH, str(new_config.get("local_data_path", "")))
+
     # --- General Section ---
-    config.set("General", "delay_between_items_sec", str(new_config.get("delay_between_items_sec", "0.5"))) # 确保默认值也是字符串或能转为字符串
+    config.set("General", "delay_between_items_sec", str(new_config.get("delay_between_items_sec", "0.5")))
 
     # --- Scheduler Section ---
     config.set("Scheduler", "schedule_enabled", str(new_config.get("schedule_enabled", False)).lower())
     config.set("Scheduler", "schedule_cron", str(new_config.get("schedule_cron", "0 3 * * *")))
     config.set("Scheduler", "schedule_force_reprocess", str(new_config.get("schedule_force_reprocess", False)).lower())
 
-    # --- 打印即将写入的配置 (用于调试) ---
+    # --- 打印即将写入的配置 (用于调试，这部分可以保留) ---
     logger.debug("save_config: 即将写入文件的 ConfigParser 内容:")
     for section_name_debug in config.sections():
         logger.debug(f"  [{section_name_debug}]")
@@ -265,7 +361,7 @@ def save_config(new_config: Dict[str, Any]):
     finally:
         initialize_media_processor() # 重新加载配置并初始化处理器
         setup_scheduled_tasks()    # 根据新配置更新定时任务
-# --- 配置加载与保存结束 ---
+# --- 配置加载与保存结束 --- (确保这个注释和你的文件结构匹配)
 
 # --- MediaProcessor 初始化 ---
 def initialize_media_processor():
@@ -386,35 +482,83 @@ def scheduled_task_job_wrapper(force_reprocess: bool):
 
 def setup_scheduled_tasks():
     config = load_config()
-    schedule_enabled = config.get("schedule_enabled", False)
-    cron_expression = config.get("schedule_cron", "0 3 * * *")
-    force_reprocess_scheduled = config.get("schedule_force_reprocess", False)
+
+    # --- 处理全量扫描的定时任务 ---
+    schedule_scan_enabled = config.get("schedule_enabled", False) # <--- 从 config 获取
+    scan_cron_expression = config.get("schedule_cron", "0 3 * * *")
+    force_reprocess_scheduled_scan = config.get("schedule_force_reprocess", False)
 
     if scheduler.get_job(JOB_ID_FULL_SCAN):
         scheduler.remove_job(JOB_ID_FULL_SCAN)
         logger.info("已移除旧的定时全量扫描任务。")
-
-    if schedule_enabled:
+    if schedule_scan_enabled: # <--- 使用这里定义的 schedule_scan_enabled
         try:
             scheduler.add_job(
-                func=scheduled_task_job_wrapper, # 调用包装器
-                trigger=CronTrigger.from_crontab(cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                id=JOB_ID_FULL_SCAN,
-                name="定时全量媒体库扫描",
-                replace_existing=True,
-                args=[force_reprocess_scheduled]
+                func=scheduled_task_job_wrapper,
+                trigger=CronTrigger.from_crontab(scan_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                id=JOB_ID_FULL_SCAN, name="定时全量媒体库扫描", replace_existing=True,
+                args=[force_reprocess_scheduled_scan]
             )
-            logger.info(f"已设置定时全量扫描任务: CRON='{cron_expression}', 强制={force_reprocess_scheduled}")
-            if not scheduler.running: scheduler.start() # 确保调度器已启动
-            # scheduler.print_jobs() # 打印任务列表以供调试
+            logger.info(f"已设置定时全量扫描任务: CRON='{scan_cron_expression}', 强制={force_reprocess_scheduled_scan}")
         except Exception as e:
-            logger.error(f"设置定时任务失败: CRON='{cron_expression}', 错误: {e}", exc_info=True)
-            flash(f"设置定时任务失败: {e}", "error")
+            logger.error(f"设置定时全量扫描任务失败: CRON='{scan_cron_expression}', 错误: {e}", exc_info=True)
     else:
         logger.info("定时全量扫描任务未启用。")
-        if scheduler.running and not scheduler.get_jobs(): # 如果没有其他任务了，可以考虑关闭
-            # scheduler.shutdown()
-            pass
+
+    # --- 处理同步人物映射表的定时任务 ---
+    schedule_sync_map_enabled = config.get("schedule_sync_map_enabled", False)
+    sync_map_cron_expression = config.get("schedule_sync_map_cron", "0 1 * * *")
+
+    if scheduler.get_job(JOB_ID_SYNC_PERSON_MAP):
+        scheduler.remove_job(JOB_ID_SYNC_PERSON_MAP)
+        logger.info("已移除旧的定时同步人物映射表任务。")
+    if schedule_sync_map_enabled:
+        try:
+            def scheduled_sync_map_wrapper(): # 这个包装器是正确的
+                task_name = "定时同步Emby人物映射表"
+                def sync_map_task_for_scheduler():
+                    if media_processor_instance and media_processor_instance.emby_url and media_processor_instance.emby_api_key:
+                        logger.info(f"'{task_name}' (定时): 准备创建 SyncHandler 实例...")
+                        try:
+                            # 假设 SyncHandler 在 core_processor.py 中定义，或者你已正确导入
+                            from core_processor import SyncHandler # 或者 from sync_handler import SyncHandler
+                            sync_handler_instance = SyncHandler(
+                                db_path=DB_PATH, emby_url=media_processor_instance.emby_url,
+                                emby_api_key=media_processor_instance.emby_api_key, emby_user_id=media_processor_instance.emby_user_id
+                            )
+                            logger.info(f"'{task_name}' (定时): SyncHandler 实例已创建。")
+                            sync_handler_instance.sync_emby_person_map_to_db(update_status_callback=update_status_from_thread)
+                        except NameError as ne: # SyncHandler 未定义
+                            logger.error(f"'{task_name}' (定时) 无法执行：SyncHandler 类未定义或未导入。错误: {ne}", exc_info=True)
+                            update_status_from_thread(-1, "错误：同步功能组件未找到 (定时)")
+                        except Exception as e_sync_sched:
+                            logger.error(f"'{task_name}' (定时) 执行过程中发生错误: {e_sync_sched}", exc_info=True)
+                            update_status_from_thread(-1, f"错误：定时同步失败 ({str(e_sync_sched)[:50]}...)")
+                    else:
+                        logger.error(f"'{task_name}' (定时) 无法执行：MediaProcessor 未初始化或 Emby 配置不完整。")
+                        update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪 (定时)")
+                _execute_task_with_lock(sync_map_task_for_scheduler, task_name)
+
+            scheduler.add_job(
+                func=scheduled_sync_map_wrapper,
+                trigger=CronTrigger.from_crontab(sync_map_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                id=JOB_ID_SYNC_PERSON_MAP, name="定时同步Emby人物映射表", replace_existing=True
+            )
+            logger.info(f"已设置定时同步人物映射表任务: CRON='{sync_map_cron_expression}'")
+        except Exception as e:
+            logger.error(f"设置定时同步人物映射表任务失败: CRON='{sync_map_cron_expression}', 错误: {e}", exc_info=True)
+    else:
+        logger.info("定时同步人物映射表任务未启用。")
+
+    if scheduler.running:
+        try: scheduler.print_jobs()
+        except Exception as e_print_jobs: logger.warning(f"打印 APScheduler 任务列表时出错: {e_print_jobs}")
+    if not scheduler.running and (schedule_scan_enabled or schedule_sync_map_enabled): # 修正这里的条件
+        try:
+            scheduler.start()
+            logger.info("APScheduler 已根据任务需求启动。")
+        except Exception as e_scheduler_start:
+            logger.error(f"APScheduler 启动失败: {e_scheduler_start}", exc_info=True)
 # --- 定时任务结束 ---
 
 # --- Flask 路由 ---
@@ -430,8 +574,8 @@ def settings_page():
             "emby_server_url": request.form.get("emby_server_url", "").strip(),
             "emby_api_key": request.form.get("emby_api_key", "").strip(),
             "emby_user_id": request.form.get("emby_user_id", "").strip(),
-            "local_data_path": request.form.get("local_data_path", "").strip(), # 新增的本地路径
-            "domestic_source_mode": request.form.get("domestic_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE),
+            "local_data_path": request.form.get("local_data_path", "").strip(),
+            "domestic_source_mode": request.form.get("domestic_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE), # 确保这里获取正确
             "tmdb_api_key": request.form.get("tmdb_api_key", "").strip(),
             "translator_engines_order": [eng.strip() for eng in request.form.get("translator_engines_order", "").split(',') if eng.strip()],
             "delay_between_items_sec": float(request.form.get("delay_between_items_sec", 0.5)),
@@ -441,40 +585,60 @@ def settings_page():
             "schedule_cron": request.form.get("schedule_cron", "0 3 * * *").strip(),
             "schedule_force_reprocess": "schedule_force_reprocess" in request.form,
         }
+        new_conf["schedule_sync_map_enabled"] = "schedule_sync_map_enabled" in request.form
+        new_conf["schedule_sync_map_cron"] = request.form.get("schedule_sync_map_cron", "0 1 * * *").strip()
         selected_libs_from_form = request.form.getlist("libraries_to_process")
         new_conf["libraries_to_process"] = selected_libs_from_form
         if not new_conf.get("translator_engines_order"):
             new_conf["translator_engines_order"] = constants.DEFAULT_TRANSLATOR_ENGINES_ORDER
         
         logger.debug(f"settings_page POST - 从表单获取的 new_conf: {new_conf}")
-        save_config(new_conf)
+        save_config(new_conf) # 假设 save_config 存在
         flash("配置已保存！媒体库选择和定时任务已根据新配置更新。", "success")
         return redirect(url_for('settings_page'))
 
     # --- GET 请求逻辑 ---
-    current_config = load_config()
+    current_config = load_config() # load_config() 返回包含所有配置的字典
     available_engines = constants.AVAILABLE_TRANSLATOR_ENGINES
     current_engines_list = current_config.get("translator_engines_order", constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
     current_engine_str = ",".join(current_engines_list)
 
-    # --- 确保 data_source_options 从 constants.py 获取并传递给模板 ---
-    data_source_options_to_template = constants.DOMESTIC_SOURCE_OPTIONS
-    logger.debug(f"settings_page GET - data_source_options being passed to template: {data_source_options_to_template}")
-    # ---
-
     selected_libraries = current_config.get("libraries_to_process", [])
 
-    return render_template('settings.html',
-                           config=current_config,
-                           available_engines=available_engines,
-                           current_engine_str=current_engine_str,
-                           domestic_source_options_in_template=constants.DOMESTIC_SOURCE_OPTIONS,
-                           constant_config_option_domestic_source_mode=constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE,
-                           task_status=background_task_status,
-                           app_version=constants.APP_VERSION,
-                           selected_libraries=selected_libraries
-                           )
+    # --- 核心调试和修改开始 ---
+    logger.debug(f"SETTINGS_PAGE_GET (Before extraction): current_config IS: {current_config}")
+    logger.debug(f"SETTINGS_PAGE_GET (Before extraction): current_config['data_source_mode'] IS [{current_config.get('data_source_mode')}]")
+    logger.debug(f"SETTINGS_PAGE_GET (Before extraction): constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE IS [{constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE}]")
 
+    # 显式提取 domestic_source_mode 的值
+    # 我们期望 constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE 的值是 "data_source_mode"
+    # 或者如果 load_config 中用的是 "domestic_source_mode" 作为键，那这里也应该是 "domestic_source_mode"
+    # 根据之前的日志，load_config 返回的字典中，键是 "data_source_mode"
+    key_for_dsm_in_config_dict = "data_source_mode" # 这是 load_config 实际使用的键
+    
+    current_domestic_source_mode_value = current_config.get(key_for_dsm_in_config_dict)
+    
+    logger.debug(f"SETTINGS_PAGE_GET (After extraction): Extracted current_domestic_source_mode_value (from key '{key_for_dsm_in_config_dict}') IS [{current_domestic_source_mode_value}]")
+    # --- 核心调试和修改结束 ---
+
+    template_context = {
+        'config': current_config, # 仍然传递完整的 config，其他地方可能需要
+        'available_engines': available_engines,
+        'current_engine_str': current_engine_str,
+        'domestic_source_options_in_template': constants.DOMESTIC_SOURCE_OPTIONS,
+        # 'constant_config_option_domestic_source_mode': constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, # 我们暂时不直接用这个来get
+        'task_status': background_task_status, # 假设 background_task_status 已定义
+        'app_version': constants.APP_VERSION,
+        'selected_libraries': selected_libraries,
+        'type': type, # 为了让模板中的 type() 能工作
+        'current_dsm_value_for_template': current_domestic_source_mode_value # 将显式提取的值传递给模板
+    }
+
+    # 再次确认传递给模板前的值
+    logger.debug(f"SETTINGS_PAGE_GET (Before render_template): template_context['config']['{key_for_dsm_in_config_dict}'] IS [{template_context.get('config', {}).get(key_for_dsm_in_config_dict)}]")
+    logger.debug(f"SETTINGS_PAGE_GET (Before render_template): template_context['current_dsm_value_for_template'] IS [{template_context.get('current_dsm_value_for_template')}]")
+
+    return render_template('settings.html', **template_context)
 @app.route('/webhook/emby', methods=['POST'])
 def emby_webhook():
     data = request.json
@@ -516,6 +680,58 @@ def trigger_full_scan():
     thread = threading.Thread(target=_execute_task_with_lock, args=(full_scan_task_internal, action_message, force_reprocess))
     thread.start()
     flash(f"{action_message}任务已在后台启动。", "info")
+    return redirect(url_for('settings_page'))
+
+@app.route('/trigger_sync_person_map', methods=['POST'])
+def trigger_sync_person_map():
+    global background_task_status
+    if not media_processor_instance:
+        flash("错误：服务未就绪，无法开始同步映射表。", "error")
+        logger.warning("trigger_sync_person_map: MediaProcessor未初始化。")
+        return redirect(url_for('settings_page'))
+
+    if task_lock.locked():
+        flash("已有其他后台任务正在运行，请稍后再试。", "warning")
+        logger.warning("trigger_sync_person_map: 检测到已有任务运行。")
+        return redirect(url_for('settings_page'))
+
+    task_name = "同步Emby人物映射表"
+    logger.info(f"收到手动触发 '{task_name}' 的请求。")
+
+    def sync_map_task_internal(): # 这是在后台线程中执行的
+        if media_processor_instance and \
+           media_processor_instance.emby_url and \
+           media_processor_instance.emby_api_key: # 确保 Emby 配置有效
+
+            logger.info(f"'{task_name}': 准备创建 SyncHandler 实例...")
+            try:
+                # --- 创建 SyncHandler 实例 ---
+                sync_handler_instance = SyncHandler(
+                    db_path=DB_PATH, # 使用 web_app.py 中定义的全局 DB_PATH
+                    emby_url=media_processor_instance.emby_url,
+                    emby_api_key=media_processor_instance.emby_api_key,
+                    emby_user_id=media_processor_instance.emby_user_id
+                )
+                logger.info(f"'{task_name}': SyncHandler 实例已创建。")
+
+                # --- 调用同步方法 ---
+                sync_handler_instance.sync_emby_person_map_to_db(
+                    update_status_callback=update_status_from_thread # 传递状态更新回调
+                )
+            except NameError as ne: # 如果 SyncHandler 没有被正确导入
+                 logger.error(f"'{task_name}' 无法执行：SyncHandler 类未定义或未导入。错误: {ne}", exc_info=True)
+                 update_status_from_thread(-1, "错误：同步功能组件未找到")
+            except Exception as e_sync:
+                logger.error(f"'{task_name}' 执行过程中发生严重错误: {e_sync}", exc_info=True)
+                update_status_from_thread(-1, f"错误：同步失败 ({str(e_sync)[:50]}...)")
+        else:
+            logger.error(f"'{task_name}' 无法执行：MediaProcessor 未初始化或 Emby 配置不完整。")
+            update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
+
+    thread = threading.Thread(target=_execute_task_with_lock, args=(sync_map_task_internal, task_name))
+    thread.start()
+
+    flash(f"'{task_name}' 任务已在后台启动。", "info")
     return redirect(url_for('settings_page'))
 
 @app.route('/trigger_stop_task', methods=['POST'])
@@ -673,17 +889,96 @@ logger.info("已注册应用程序退出处理程序 (atexit)。")
 # --- 主程序入口 ---
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
-    init_db() # 初始化数据库
-    initialize_media_processor() # 初始化核心处理器
-    if not scheduler.running: # 确保调度器只启动一次
+    init_db()
+    initialize_media_processor()
+    if not scheduler.running:
         try:
             scheduler.start()
             logger.info("APScheduler 已启动。")
-        except Exception as e_scheduler_start: # 捕获可能的启动错误
+        except Exception as e_scheduler_start:
             logger.error(f"APScheduler 启动失败: {e_scheduler_start}", exc_info=True)
-    setup_scheduled_tasks() # 设置定时任务
+    setup_scheduled_tasks()
 
-    # 生产环境建议使用 Gunicorn 等 WSGI 服务器
+
+    # --- !!! 测试代码开始 !!! ---
+if __name__ == '__main__':
+    RUN_MANUAL_TESTS = False  # <--- 在这里控制是否运行测试代码
+
+    logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
+    init_db()
+    initialize_media_processor() # 确保 media_processor_instance 被创建并配置好
+    # ... (scheduler setup) ...
+
+    # --- !!! 测试 _process_cast_list 方法 !!! ---
+    # if media_processor_instance and media_processor_instance.emby_url:
+    #     TEST_MOVIE_ID_FOR_PROCESS_CAST = "432258" # 继续用 “骗骗”喜欢你 的 ID，或者你换一个
+        
+    #     logger.info(f"--- 开始手动测试 _process_cast_list for movie ID: {TEST_MOVIE_ID_FOR_PROCESS_CAST} ---")
+
+    #     # 1. 获取这部电影的原始 Emby 详情 (包含原始 People 列表)
+    #     raw_movie_details = None
+    #     try:
+    #         raw_movie_details = emby_handler.get_emby_item_details(
+    #             TEST_MOVIE_ID_FOR_PROCESS_CAST,
+    #             media_processor_instance.emby_url,
+    #             media_processor_instance.emby_api_key,
+    #             media_processor_instance.emby_user_id
+    #         )
+    #     except Exception as e_get_raw:
+    #         logger.error(f"测试：获取原始电影详情失败: {e_get_raw}", exc_info=True)
+        
+    #     if raw_movie_details and raw_movie_details.get("People"):
+    #         original_emby_people = raw_movie_details.get("People", [])
+    #         logger.info(f"测试：获取到电影 '{raw_movie_details.get('Name')}' 的原始 People 列表，数量: {len(original_emby_people)}")
+    #         logger.debug(f"测试：原始 People (前3条): {original_emby_people[:3]}")
+
+    #         # 2. (可选) 构造或加载你的 source_actors_candidates 数据
+    #         #    为了精确测试，你可以手动构造这个列表，模拟从本地文件或豆瓣API获取的数据
+    #         #    确保它包含我们想测试的各种情况（能匹配映射表、不能匹配等）
+    #         #    这里我们先假设 _process_cast_list 内部会自己处理 source_actors_candidates 的获取
+    #         #    如果你想更精确控制，可以在这里手动创建 source_actors_candidates 并想办法传递给
+    #         #    一个修改版的 _process_cast_list (但这会使测试更复杂)
+    #         #    目前，我们先依赖 _process_cast_list 内部的数据源获取逻辑。
+    #         #    确保你的 config.ini 中 data_source_mode 和 local_data_path 设置正确以便它能获取到数据。
+
+    #         # 3. 调用 _process_cast_list 方法
+    #         logger.info(f"测试：准备调用 media_processor_instance._process_cast_list...")
+    #         try:
+    #             # _process_cast_list 期望的第一个参数是原始的 People 列表
+    #             final_cast_list = media_processor_instance._process_cast_list(
+    #                 original_emby_people, # 传递原始 People 列表
+    #                 raw_movie_details      # 传递整个电影详情，方法内部会提取所需信息
+    #             )
+                
+    #             logger.info(f"测试：_process_cast_list 执行完毕。最终演员列表长度: {len(final_cast_list)}")
+    #             logger.info(f"测试：最终演员列表 (前5条):")
+    #             for i, actor in enumerate(final_cast_list[:5]):
+    #                 logger.info(f"  演员 {i+1}: Name='{actor.get('Name')}', Role='{actor.get('Role')}', EmbyPID='{actor.get('EmbyPersonId')}', TMDbPID='{actor.get('TmdbPersonId')}', DoubanID='{actor.get('DoubanCelebrityId')}', Providers='{actor.get('ProviderIds')}', Source='{actor.get('_source')}'")
+                
+    #             # 4. (可选) 如果你想继续测试写入 Emby，可以取消注释下面的代码
+    #             #    但建议先只看 _process_cast_list 的输出是否正确
+    #             # logger.info("测试：准备调用 update_emby_item_cast 将处理后的演员列表写回Emby...")
+    #             # cast_for_emby_update = []
+    #             # for actor_data in final_cast_list:
+    #             #     # ... (与 process_single_item 中类似的构建 cast_for_emby_update 的逻辑) ...
+    #             # success_write = emby_handler.update_emby_item_cast(...)
+    #             # if success_write:
+    #             #     logger.info("测试：演员列表已尝试更新到Emby。")
+    #             #     emby_handler.refresh_emby_item_metadata(...)
+
+    #         except Exception as e_proc_cast:
+    #             logger.error(f"测试：调用 _process_cast_list 时发生错误: {e_proc_cast}", exc_info=True)
+    #     else:
+    #         logger.error(f"测试：未能获取电影 {TEST_MOVIE_ID_FOR_PROCESS_CAST} 的原始详情，无法继续测试 _process_cast_list。")
+
+    #     logger.info(f"--- 手动测试 _process_cast_list 结束 ---")
+    # else:
+    #     logger.warning("手动测试 _process_cast_list 跳过：MediaProcessor 未初始化或 Emby 配置不完整。")
+    # # --- 测试代码结束 --- #
+
+    # app.run(...) # 你可以暂时注释掉 app.run，这样脚本执行完测试就结束了，方便看日志
+    # 或者保留它，测试完后再通过浏览器访问应用
+
     app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=constants.DEBUG_MODE, use_reloader=not constants.DEBUG_MODE)
     # 注意: debug=True 配合 use_reloader=True (Flask默认) 会导致 atexit 执行两次或行为异常。
     # 在生产中，use_reloader 应为 False。为了开发方便，可以暂时接受 atexit 的一些小问题。

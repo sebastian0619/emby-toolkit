@@ -23,49 +23,60 @@ except ImportError:
 # 例如： DEFAULT_TRANSLATOR_ENGINES_ORDER = ['bing', 'google'] # 来自 constants.py
 
 def contains_chinese(text: Optional[str]) -> bool:
-    """检查字符串是否包含中文字符"""
+    """检查字符串是否包含中文字符。"""
     if not text:
         return False
     for char in text:
-        if '\u4e00' <= char <= '\u9fff':
+        # 基本的 Unicode 中文字符范围判断
+        # CJK Unified Ideographs: U+4E00 to U+9FFF
+        # CJK Compatibility Ideographs: U+F900 to U+FAFF
+        # CJK Unified Ideographs Extension A: U+3400 to U+4DBF
+        # 还有其他扩展区，但这些是核心
+        if '\u4e00' <= char <= '\u9fff' or \
+           '\u3400' <= char <= '\u4dbf' or \
+           '\uf900' <= char <= '\ufaff':
             return True
     return False
 
 def clean_character_name_static(character_name: Optional[str]) -> str:
     """
-    静态辅助函数：移除角色名前的 '饰 ' 或 '饰' 及前后空格。
-    同时处理 "角色名1 / 角色名2" 的情况，只取第一个。
-    并移除角色名末尾的 "(voice)" 或类似配音标记（如果翻译后需要中文配音标记，则在翻译后添加）。
+    清理角色名，移除常见的前缀和后缀。
+    这是一个静态方法，可以被任何地方调用。
     """
     if not character_name:
         return ""
+    
     name = str(character_name).strip()
-
-    # 移除 "饰 " 或 "饰"
+    
+    # 移除 "饰 " 或 "饰" 前缀
+    if name.startswith("饰 "):
+        name = name[2:].strip()
+    elif name.startswith("饰"): # 处理没有空格的情况
+        name = name[1:].strip()
+        
+    # 处理斜杠，只取第一个角色
+    if '/' in name:
+        name = name.split('/')[0].strip()
+        
+    # 移除 (voice), [voice], (v.o.) 等标记 (不区分大小写)
+    # 确保括号是转义的，因为它们在正则表达式中有特殊含义
+    voice_patterns = [
+        r'\s*\((?:voice|VOICE|Voice)\)\s*$',       # (voice), (VOICE), (Voice)
+        r'\s*\[(?:voice|VOICE|Voice)\]\s*$',       # [voice], [VOICE], [Voice]
+        r'\s*\((?:v\.o\.|V\.O\.)\)\s*$',           # (v.o.), (V.O.)
+        r'\s*配\s音\s*$',                         # "配音" 后缀 (如果需要)
+        r'\s*配\s*$',                             # 单独的 "配" 后缀 (如果需要)
+    ]
+    for pattern in voice_patterns:
+        name = re.sub(pattern, '', name, flags=re.IGNORECASE).strip()
+        
+    # 再次移除可能因上述操作产生的多余前缀 "饰 " (例如 "饰 配音" 清理后可能剩下 "饰 ")
     if name.startswith("饰 "):
         name = name[2:].strip()
     elif name.startswith("饰"):
         name = name[1:].strip()
 
-    # 处理 "角色名1 / 角色名2"，只取第一个
-    if '/' in name:
-        name = name.split('/')[0].strip()
-
-    # 移除末尾的常见配音标记 (英文)
-    # 注意：如果希望翻译后有中文配音标记，例如 " (配音)"，
-    # 那么这个移除应该在翻译前做，翻译后再根据需要添加中文标记。
-    # 或者，如果翻译引擎能智能处理，也可以保留。
-    # 为简单起见，这里先移除常见的英文配音标记。
-    voice_patterns = [
-        r'\s*\((voice|Voice|VOICE)\)\s*$',
-        r'\s*\[voice\]\s*$',
-        r'\s*\(v\.o\.\)\s*$',
-        r'\s*\(V\.O\.\)\s*$',
-    ]
-    for pattern in voice_patterns:
-        name = re.sub(pattern, '', name, flags=re.IGNORECASE).strip()
-
-    return name
+    return name.strip()
 
 def translate_text_with_translators(
     query_text: str,
@@ -146,30 +157,16 @@ def format_character_display_name(char_cn: Optional[str], char_en: Optional[str]
 
 if __name__ == '__main__':
     # 测试 contains_chinese
-    print(f"'Hello World' contains chinese: {contains_chinese('Hello World')}")
-    print(f"'你好，世界' contains chinese: {contains_chinese('你好，世界')}")
+    print(f"'Hello': {contains_chinese('Hello')}")  # False
+    print(f"'你好': {contains_chinese('你好')}")    # True
+    print(f"'Hello 你好': {contains_chinese('Hello 你好')}") # True
+    print(f"None: {contains_chinese(None)}")      # False
+    print(f"Empty string: {contains_chinese('')}") # False
 
     # 测试 clean_character_name_static
-    print(f"Clean '饰 小明': '{clean_character_name_static('饰 小明')}'")
-    print(f"Clean '小红 (voice)': '{clean_character_name_static('小红 (voice)')}'")
-    print(f"Clean '角色1 / 角色2 [VOICE]': '{clean_character_name_static('角色1 / 角色2 [VOICE]')}'")
-
-    # 测试翻译 (前提是 translators 库已安装且网络通畅)
-    if TRANSLATORS_LIB_AVAILABLE:
-        test_text = "Hello World"
-        # 确保 constants.DEFAULT_TRANSLATOR_ENGINES_ORDER 在这里可用，或者硬编码一个列表
-        default_engines = ['bing', 'google', 'baidu'] # 假设这是你的默认顺序
-        translation_result = translate_text_with_translators(test_text, engine_order=default_engines)
-        if translation_result:
-            print(f"Translate '{test_text}': '{translation_result['text']}' (Engine: {translation_result['engine']})")
-        else:
-            print(f"Failed to translate '{test_text}'")
-
-        test_text_jp = "こんにちは世界" # 日语
-        translation_result_jp = translate_text_with_translators(test_text_jp, from_language='ja', engine_order=default_engines)
-        if translation_result_jp:
-            print(f"Translate '{test_text_jp}' (from ja): '{translation_result_jp['text']}' (Engine: {translation_result_jp['engine']})")
-        else:
-            print(f"Failed to translate '{test_text_jp}'")
-    else:
-        print("Skipping translation test as 'translators' library is not available.")
+    test_roles = [
+        "饰 蝙蝠侠 / 布鲁斯·韦恩", "饰蝙蝠侠", "蝙蝠侠 (voice)", "蝙蝠侠 [VOICE]",
+        "超人 (v.o.)", "神奇女侠", None, "", "  饰 小丑  ", "配音", "饰 配音", "饰 钢铁侠 配音"
+    ]
+    for role in test_roles:
+        print(f"Original: '{role}' -> Cleaned: '{clean_character_name_static(role)}'")

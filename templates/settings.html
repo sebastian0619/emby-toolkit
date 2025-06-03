@@ -3,44 +3,143 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Emby演员处理工具 - 配置</title>
+    <title>Emby演员处理工具 - 配置 v2</title>
     <style>
-        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
-        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); max-width: 800px; margin: auto;}
-        h1, h2, h3 { color: #333; }
-        label { display: block; margin-top: 15px; margin-bottom: 3px; font-weight: bold; }
-        input[type="text"], input[type="password"], input[type="number"], select, textarea {
-            width: calc(100% - 18px); padding: 8px; margin-top: 2px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box;
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            background-color: #f0f2f5;
+            color: #333;
+            line-height: 1.6;
         }
-        input[type="checkbox"] { margin-right: 5px; vertical-align: middle; }
-        label.inline-label { display: inline-block; font-weight: normal; margin-left: 2px;}
-        .button-group { margin-top: 25px; margin-bottom: 15px; }
+        .top-bar {
+            background-color: #007bff;
+            color: white;
+            padding: 15px 30px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .top-bar h1 {
+            margin: 0;
+            font-size: 1.8em;
+        }
+        .container {
+            max-width: 900px;
+            margin: 30px auto;
+            padding: 0 20px;
+        }
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid #dee2e6;
+            margin-bottom: 20px;
+            background-color: #fff;
+            border-radius: 8px 8px 0 0;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+        .tab-button {
+            padding: 15px 25px;
+            cursor: pointer;
+            border: none;
+            background-color: transparent;
+            font-size: 1em;
+            color: #495057;
+            transition: background-color 0.2s ease, color 0.2s ease;
+            border-bottom: 3px solid transparent; /* For active state */
+        }
+        .tab-button:hover {
+            background-color: #e9ecef;
+        }
+        .tab-button.active {
+            color: #007bff;
+            border-bottom-color: #007bff;
+            font-weight: 600;
+        }
+        .tab-content {
+            display: none;
+            background-color: #fff;
+            padding: 25px;
+            border-radius: 0 0 8px 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.08);
+            animation: fadeIn 0.3s ease-out;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        label {
+            display: block;
+            margin-top: 18px;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #495057;
+        }
+        input[type="text"], input[type="password"], input[type="number"], select, textarea {
+            width: 100%; /* Changed for better responsiveness within sections */
+            padding: 10px;
+            margin-top: 3px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            box-sizing: border-box;
+            font-size: 0.95em;
+        }
+        input[type="checkbox"] { margin-right: 8px; vertical-align: middle; }
+        label.inline-label { display: inline-block; font-weight: normal; margin-left: 0; color: #333; }
+
+        .button-group { margin-top: 30px; margin-bottom: 20px; text-align: right; }
         button, input[type="submit"] {
-            background-color: #007bff; color: white; padding: 10px 15px; border: none;
-            border-radius: 4px; cursor: pointer; font-size: 16px; margin-right: 10px;
+            background-color: #007bff; color: white; padding: 10px 20px; border: none;
+            border-radius: 4px; cursor: pointer; font-size: 1em; margin-left: 10px;
+            transition: background-color 0.2s ease;
         }
         button:hover, input[type="submit"]:hover { background-color: #0056b3; }
-        button[disabled] { background-color: #ccc; cursor: not-allowed; }
-        .flash-messages { list-style: none; padding: 0; margin-bottom: 15px;}
-        .flash-messages li { padding: 10px; margin-bottom: 10px; border-radius: 4px; }
-        .flash-messages .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-        .flash-messages .error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-        .flash-messages .warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
-        .flash-messages .info { background-color: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
-        .status-box { border: 1px solid #ccc; padding: 15px; margin-top: 20px; border-radius: 5px; background-color: #f9f9f9;}
-        .status-box p { margin: 8px 0; }
-        hr { border: 0; height: 1px; background-color: #eee; margin: 30px 0; }
-        small { color: #666; display: block; margin-top: 3px;}
-        .form-section { margin-bottom: 25px; padding-bottom: 15px; border-bottom: 1px solid #eee; }
-        .form-section:last-of-type { border-bottom: none; }
-        #embyLibrariesContainer { margin-top: 10px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; max-height: 300px; overflow-y: auto; background-color: #fdfdfd; }
-        #embyLibrariesContainer .form-check { margin-bottom: 8px; }
+        button[disabled] { background-color: #adb5bd; cursor: not-allowed; }
+        button.danger { background-color: #dc3545; }
+        button.danger:hover { background-color: #c82333; }
+        button.success { background-color: #28a745; }
+        button.success:hover { background-color: #218838; }
+
+        .flash-messages { list-style: none; padding: 0; margin-bottom: 20px;}
+        .flash-messages li { padding: 12px 18px; margin-bottom: 10px; border-radius: 4px; border: 1px solid transparent; }
+        .flash-messages .success { background-color: #d1e7dd; color: #0f5132; border-color: #badbcc; }
+        .flash-messages .error { background-color: #f8d7da; color: #842029; border-color: #f5c2c7; }
+        .flash-messages .warning { background-color: #fff3cd; color: #664d03; border-color: #ffecb5; }
+        .flash-messages .info { background-color: #cff4fc; color: #055160; border-color: #b6effb; }
+
+        .status-box { border: 1px solid #e9ecef; padding: 20px; margin-top: 25px; border-radius: 5px; background-color: #f8f9fa;}
+        .status-box h3 { margin-top: 0; color: #007bff; }
+        .status-box p { margin: 10px 0; }
+        hr { border: 0; height: 1px; background-color: #e9ecef; margin: 35px 0; }
+        small, .form-text.text-muted { color: #6c757d; display: block; margin-top: 5px; font-size: 0.85em; }
+        
+        #embyLibrariesContainer { margin-top: 10px; padding: 15px; border: 1px solid #ced4da; border-radius: 4px; max-height: 250px; overflow-y: auto; background-color: #f8f9fa; }
+        #embyLibrariesContainer .form-check { margin-bottom: 10px; }
+
+        .manual-actions-group { margin-top: 20px; }
+        .manual-actions-group form { display: inline-block; margin-right: 10px; margin-bottom: 10px; }
+        .manual-actions-group small { margin-top: 2px; }
+
+        .footer {
+            text-align: center; margin-top: 40px; padding: 25px 0; border-top: 1px solid #dee2e6; color: #6c757d; font-size: 0.9em;
+        }
+        .footer a { color: #007bff; text-decoration: none; }
+        .footer a:hover { text-decoration: underline; }
+
+        /* Debug info styling from previous template */
+        .debug-info { background-color: #f0f0f0; border: 1px dashed #aaa; padding: 10px; margin-bottom:10px; font-family: monospace; font-size: 0.9em; }
+        .debug-info code { background-color: #e0e0e0; padding: 2px 4px; border-radius: 3px; }
+
     </style>
 </head>
 <body>
-    <div class="container">
+    <div class="top-bar">
         <h1>Emby演员处理工具 - 配置</h1>
+    </div>
 
+    <div class="container">
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
                 <ul class="flash-messages">
@@ -51,8 +150,15 @@
             {% endif %}
         {% endwith %}
 
+        <div class="tabs">
+            <button class="tab-button active" onclick="openTab(event, 'embyTab')">Emby 配置</button>
+            <button class="tab-button" onclick="openTab(event, 'apiTab')">API & 数据源</button>
+            <button class="tab-button" onclick="openTab(event, 'schedulerTab')">定时任务</button>
+            <button class="tab-button" onclick="openTab(event, 'actionsTab')">手动操作 & 状态</button>
+        </div>
+
         <form method="POST">
-            <div class="form-section">
+            <div id="embyTab" class="tab-content active">
                 <h2>Emby 服务器配置</h2>
                 <label for="emby_server_url">Emby 服务器 URL:</label>
                 <input type="text" id="emby_server_url" name="emby_server_url" value="{{ config.get('emby_server_url', '') }}" placeholder="例如: http://localhost:8096" required>
@@ -68,52 +174,42 @@
                     <label for="refresh_emby_after_update" class="inline-label">处理完成后通知Emby刷新元数据</label>
                 </div>
 
-                {# --- 新增：选择要处理的 Emby 媒体库区域 --- #}
                 <h3 style="margin-top: 20px;">选择要处理的媒体库</h3>
-                <p class="text-muted"><small>选择你希望此工具扫描和处理的Emby媒体库。如果未选择任何库，全量处理将不会执行。</small></p>
+                <p class="form-text text-muted">选择你希望此工具扫描和处理的Emby媒体库。如果未选择任何库，全量处理将不会执行。</p>
                 <div id="embyLibrariesContainer">
-                    {# JavaScript 将在这里填充内容 #}
-                    <p><em>正在加载媒体库列表，请稍候... (如果长时间未加载，请检查Emby配置是否正确并已保存)</em></p>
+                    <p><em>正在加载媒体库列表，请稍候...</em></p>
                 </div>
                 <small class="form-text text-muted">如果列表为空或不正确，请先确保上面的 Emby 服务器地址、API Key 和用户ID配置正确并已保存，然后刷新此页面。</small>
-                {# --- 新增结束 --- #}
             </div>
 
-
-            <div class="form-section">
+            <div id="apiTab" class="tab-content">
                 <h2>TMDB API 配置</h2>
                 <label for="tmdb_api_key">TMDB API Key (v3):</label>
                 <input type="text" id="tmdb_api_key" name="tmdb_api_key" value="{{ config.get('tmdb_api_key', '') }}">
                 <small>（可选，如果需要通过TMDB补充演员信息或为豆瓣演员查找ID）</small>
-            </div>
 
-            <div class="form-section">
+                <hr>
                 <h2>翻译配置</h2>
                 <label for="translator_engines_order">翻译引擎顺序 (用逗号分隔):</label>
                 <input type="text" id="translator_engines_order" name="translator_engines_order" value="{{ current_engine_str }}">
                 <small>可用引擎: {{ available_engines|join(', ') }}. 顶部优先尝试。</small>
-            </div>
 
-            <div class="form-section">
-                <h2>影视数据源配置</h2> {# 修改标题更通用 #}
-
-                {# --- 新增：本地数据源路径输入框 --- #}
+                <hr>
+                <h2>影视数据源配置</h2>
                 <label for="local_data_path">本地影视数据源根路径:</label>
                 <input type="text" id="local_data_path" name="local_data_path" value="{{ config.get('local_data_path', '') }}" placeholder="例如: /cache">
                 <small>选择神医插件主缓存目录。如果留空，则不使用本地数据源。</small>
-                {# --- 新增结束 --- #}
 
-                <label for="domestic_source_mode_select" style="margin-top:15px;">数据源处理策略:</label> {# 修改 for 属性 #}
-                <select id="domestic_source_mode_select" name="domestic_source_mode"> {# 修改 id, name 使用 config.ini 中的键名 #}
-                    {% for option in domestic_source_options_in_template %} {# 使用后端传来的变量名 #}
-                        <option value="{{ option.value }}" {% if config.get(constant_config_option_domestic_source_mode) == option.value %}selected{% endif %}>
+                <label for="domestic_source_mode_select" style="margin-top:15px;">数据源处理策略:</label>
+                <select id="domestic_source_mode_select" name="domestic_source_mode">
+                    {% for option in domestic_source_options_in_template %}
+                        <option value="{{ option.value }}" {% if current_dsm_value_for_template == option.value %}selected{% endif %}>
                             {{ option.text }}
                         </option>
                     {% endfor %}
                 </select>
-            </div>
 
-            <div class="form-section">
+                <hr>
                 <h2>其他配置</h2>
                 <label for="delay_between_items_sec">全量扫描时项目处理间隔 (秒):</label>
                 <input type="number" step="0.1" min="0" id="delay_between_items_sec" name="delay_between_items_sec" value="{{ config.get('delay_between_items_sec', 0.5) }}">
@@ -122,7 +218,7 @@
                 <input type="number" step="0.1" min="0" id="api_douban_default_cooldown_seconds" name="api_douban_default_cooldown_seconds" value="{{ config.get('api_douban_default_cooldown_seconds', 1.0) }}">
             </div>
 
-            <div class="form-section">
+            <div id="schedulerTab" class="tab-content">
                 <h2>定时任务：全量扫描</h2>
                 <div>
                     <input type="checkbox" id="schedule_enabled" name="schedule_enabled" value="true" {% if config.get('schedule_enabled') %}checked{% endif %}>
@@ -137,43 +233,89 @@
                     <input type="checkbox" id="schedule_force_reprocess" name="schedule_force_reprocess" value="true" {% if config.get('schedule_force_reprocess') %}checked{% endif %}>
                     <label for="schedule_force_reprocess" class="inline-label">定时任务强制重处理所有项目</label>
                 </div>
+                <hr>
+                <h3>定时任务：同步人物映射表</h3>
+                <div>
+                    <input type="checkbox" id="schedule_sync_map_enabled" name="schedule_sync_map_enabled" value="true" {% if config.get('schedule_sync_map_enabled') %}checked{% endif %}>
+                    <label for="schedule_sync_map_enabled" class="inline-label">启用定时同步人物映射表</label>
+                </div>
+                <label for="schedule_sync_map_cron">同步映射表CRON表达式:</label>
+                <input type="text" id="schedule_sync_map_cron" name="schedule_sync_map_cron" value="{{ config.get('schedule_sync_map_cron', '0 1 * * *') }}" placeholder="例如: 0 1 * * * (每天凌晨1点)">
             </div>
 
             <div class="button-group">
                 <input type="submit" value="保存配置">
             </div>
-        </form>
+        </form> {# Form ends here, manual actions are outside the main form #}
 
-        <hr>
+        <div id="actionsTab" class="tab-content">
+            <h2>手动操作</h2>
+            <div class="manual-actions-group">
+                <form method="POST" action="{{ url_for('trigger_full_scan') }}">
+                    <button type="submit" id="triggerScanButton" {% if task_status.is_running %}disabled{% endif %}>
+                        全量媒体库扫描和处理
+                    </button>
+                    <span style="margin-left: 10px;">
+                        <input type="checkbox" id="force_reprocess_all" name="force_reprocess_all" {% if task_status.is_running %}disabled{% endif %}>
+                        <label for="force_reprocess_all" class="inline-label">强制重处理所有项目</label>
+                    </span>
+                    <small>注意: 全量扫描可能非常耗时</small>
+                </form>
 
-        <h2>手动操作</h2>
-        <form method="POST" action="{{ url_for('trigger_full_scan') }}" style="display: inline-block;">
-            <button type="submit" id="triggerScanButton" {% if task_status.is_running %}disabled{% endif %}>
-                全量媒体库扫描和处理
-            </button>
-            <span style="margin-left: 15px;">
-                <input type="checkbox" id="force_reprocess_all" name="force_reprocess_all" {% if task_status.is_running %}disabled{% endif %}>
-                <label for="force_reprocess_all" class="inline-label">强制重处理所有项目 (忽略已处理记录)</label>
-            </span>
-        </form>
-        <form method="POST" action="{{ url_for('trigger_stop_task') }}" style="display: inline-block; margin-left: 10px;">
-            <button type="submit" id="stopTaskButton" {% if not task_status.is_running %}disabled{% endif %} style="background-color: #dc3545;">
-                停止当前任务
-            </button>
-        </form>
-        <small style="display: block; margin-top: 5px;">(注意: 全量扫描可能非常耗时)</small>
+                <form method="POST" action="{{ url_for('trigger_sync_person_map') }}">
+                    <button type="submit" id="triggerSyncMapButton" class="success" {% if task_status.is_running %}disabled{% endif %}>
+                        同步Emby人物映射表
+                    </button>
+                    <small>此操作会从Emby读取所有人物信息并更新本地映射库</small>
+                </form>
 
-        <div class="status-box" id="statusBox">
-            <h3>后台任务状态</h3>
-            <p><strong>正在运行:</strong> <span id="isRunning">{{ task_status.is_running }}</span></p>
-            <p><strong>当前动作:</strong> <span id="currentAction">{{ task_status.current_action }}</span></p>
-            <p><strong>进度:</strong> <span id="progress">{{ task_status.progress }}</span>%</p>
-            <p><strong>消息:</strong> <span id="message">{{ task_status.message }}</span></p>
+                <form method="POST" action="{{ url_for('trigger_stop_task') }}">
+                    <button type="submit" id="stopTaskButton" class="danger" {% if not task_status.is_running %}disabled{% endif %}>
+                        停止当前任务
+                    </button>
+                </form>
+            </div>
+
+            <div class="status-box" id="statusBox">
+                <h3>后台任务状态</h3>
+                <p><strong>正在运行:</strong> <span id="isRunning">{{ task_status.is_running }}</span></p>
+                <p><strong>当前动作:</strong> <span id="currentAction">{{ task_status.current_action }}</span></p>
+                <p><strong>进度:</strong> <span id="progress">{{ task_status.progress }}</span>%</p>
+                <p><strong>消息:</strong> <span id="message">{{ task_status.message }}</span></p>
+            </div>
         </div>
     </div>
 
+    <footer class="footer">
+        {% if app_version %}
+            <p>Emby Actor Processor - Version: {{ app_version }}</p>
+        {% endif %}
+        <p><a href="https://github.com/hbq0405/emby-actor-processor" target="_blank">项目GitHub地址</a></p>
+    </footer>
+
     <script>
-        // 状态更新的 JavaScript (保持不变)
+        function openTab(evt, tabName) {
+            var i, tabcontent, tabbuttons;
+            tabcontent = document.getElementsByClassName("tab-content");
+            for (i = 0; i < tabcontent.length; i++) {
+                tabcontent[i].style.display = "none";
+                tabcontent[i].classList.remove("active");
+            }
+            tabbuttons = document.getElementsByClassName("tab-button");
+            for (i = 0; i < tabbuttons.length; i++) {
+                tabbuttons[i].classList.remove("active");
+            }
+            document.getElementById(tabName).style.display = "block";
+            document.getElementById(tabName).classList.add("active");
+            evt.currentTarget.classList.add("active");
+        }
+
+        // Initialize first tab
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelector('.tab-button.active').click(); 
+        });
+
+        // Status update JavaScript (same as before)
         const getStatusUrl = "{{ url_for('get_status') }}";
         function fetchStatus() {
             fetch(getStatusUrl)
@@ -183,66 +325,59 @@
                     document.getElementById('currentAction').textContent = data.current_action;
                     document.getElementById('progress').textContent = data.progress;
                     document.getElementById('message').textContent = data.message;
+                    
                     const scanButton = document.getElementById('triggerScanButton');
                     const stopButton = document.getElementById('stopTaskButton');
-                    if (scanButton) scanButton.disabled = data.is_running;
-                    if (stopButton) stopButton.disabled = !data.is_running;
+                    const syncMapButton = document.getElementById('triggerSyncMapButton');
+                    const forceReprocessCheckbox = document.getElementById('force_reprocess_all');
+
+                    const isTaskRunning = data.is_running;
+                    if (scanButton) scanButton.disabled = isTaskRunning;
+                    if (stopButton) stopButton.disabled = !isTaskRunning;
+                    if (syncMapButton) syncMapButton.disabled = isTaskRunning;
+                    if (forceReprocessCheckbox) forceReprocessCheckbox.disabled = isTaskRunning;
                 })
                 .catch(error => console.error('Error fetching status:', error));
         }
-        fetchStatus(); // 页面加载时获取一次状态
-        setInterval(fetchStatus, 3000); // 每3秒刷新一次状态
+        fetchStatus();
+        setInterval(fetchStatus, 3000);
 
-        // --- 新增：加载 Emby 媒体库列表的 JavaScript ---
+        // Emby Libraries JavaScript (same as before)
         document.addEventListener('DOMContentLoaded', function() {
             const librariesContainer = document.getElementById('embyLibrariesContainer');
-            // 从后端模板变量获取已保存的、被选中的库ID列表
-            // web_app.py 中 settings_page 的 GET 请求传递了 selected_libraries
+            if (!librariesContainer) { return; } // Guard if not on the right tab initially
+            
             const previouslySelectedLibraries = JSON.parse('{{ selected_libraries | tojson | safe }}') || [];
-
-            if (!librariesContainer) {
-                console.error("Could not find embyLibrariesContainer element.");
-                return;
-            }
 
             fetch("{{ url_for('api_get_emby_libraries') }}")
                 .then(response => {
                     if (!response.ok) {
-                        return response.json().then(errData => { // 尝试解析后端返回的JSON错误
+                        return response.json().then(errData => {
                             throw new Error(errData.error || `HTTP error ${response.status}`);
-                        }).catch(() => { // 如果错误响应不是JSON，或者解析失败
+                        }).catch(() => {
                             throw new Error(`HTTP error ${response.status}: ${response.statusText}`);
                         });
                     }
                     return response.json();
                 })
                 .then(libraries => {
-                    librariesContainer.innerHTML = ''; // 清空 "正在加载..." 提示
-
+                    librariesContainer.innerHTML = ''; 
                     if (libraries && Array.isArray(libraries) && libraries.length > 0) {
                         libraries.forEach(lib => {
                             const div = document.createElement('div');
-                            div.className = 'form-check'; // 可以添加一些样式
-
+                            div.className = 'form-check';
                             const checkbox = document.createElement('input');
                             checkbox.type = 'checkbox';
-                            checkbox.className = 'form-check-input';
-                            // name 属性用于表单提交时后端 getlist 获取
-                            checkbox.name = 'libraries_to_process'; // 与后端 getlist("libraries_to_process") 对应
+                            checkbox.name = 'libraries_to_process';
                             checkbox.value = lib.Id;
                             checkbox.id = 'lib_checkbox_' + lib.Id;
-
                             if (previouslySelectedLibraries.includes(lib.Id)) {
                                 checkbox.checked = true;
                             }
-
                             const label = document.createElement('label');
-                            label.className = 'form-check-label';
                             label.htmlFor = 'lib_checkbox_' + lib.Id;
-                            label.style.fontWeight = 'normal'; // 使标签文字不是粗体
-                            label.style.marginLeft = '5px';   // 与复选框有点间距
+                            label.className = 'inline-label'; // Use inline-label for styling
                             label.textContent = ` ${lib.Name} (类型: ${lib.CollectionType || '未知'}, ID: ${lib.Id})`;
-
                             div.appendChild(checkbox);
                             div.appendChild(label);
                             librariesContainer.appendChild(div);
@@ -250,21 +385,14 @@
                     } else if (libraries && libraries.error) {
                         librariesContainer.innerHTML = `<p style="color: red;">获取媒体库列表失败: ${libraries.error}</p>`;
                     } else {
-                        librariesContainer.innerHTML = '<p>未找到媒体库，或者Emby配置不正确。请检查Emby服务器地址、API Key和用户ID是否已正确填写并保存，然后刷新页面重试。</p>';
+                        librariesContainer.innerHTML = '<p>未找到媒体库，或Emby配置不正确。</p>';
                     }
                 })
                 .catch(error => {
                     console.error('Error fetching Emby libraries:', error);
-                    librariesContainer.innerHTML = `<p style="color: red;">加载媒体库列表时发生错误: ${error.message}</p><p>请检查浏览器控制台获取更多信息，并确认Emby服务是否可访问。</p>`;
+                    librariesContainer.innerHTML = `<p style="color: red;">加载媒体库列表时发生错误: ${error.message}</p>`;
                 });
         });
-        // --- 新增 JavaScript 结束 ---
     </script>
-    <footer style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; color: #777;">
-        {% if app_version %}
-            <p>Emby Actor Processor - Version: {{ app_version }}</p>
-        {% endif %}
-        <p><a href="https://github.com/hbq0405/emby-actor-processor" target="_blank">项目GitHub地址</a></p>
-    </footer>
 </body>
 </html>

@@ -3,8 +3,8 @@
 # ... (你已有的其他常量，比如 EMBY_SERVER_URL, API_KEY 等) ...
 
 # --- Web Application Settings ---
-APP_VERSION = "1.5.4"  # 或者你的实际版本号
-DEBUG_MODE = True      # 开发时设为 True，部署到生产环境时应设为 False
+APP_VERSION = "1.5.5"  # 或者你的实际版本号
+DEBUG_MODE = False      # 开发时设为 True，部署到生产环境时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 
 # --- 数据库设置 ---
@@ -12,6 +12,7 @@ DB_NAME = "emby_actor_processor.sqlite" # 数据库文件名 (也可以在这里
 
 # --- 配置文件名 ---
 CONFIG_FILE_NAME = "config.ini"
+DOUBAN_API_AVAILABLE = True
 
 # --- 翻译引擎 ---
 # 你可以定义所有可用的翻译引擎列表，供设置页面选择
@@ -23,6 +24,9 @@ DEFAULT_TRANSLATOR_ENGINES_ORDER = ['bing', 'google', 'baidu']
 CONFIG_SECTION_LOCAL_DATA = "LocalDataSource" # 新的节名
 CONFIG_OPTION_LOCAL_DATA_PATH = "local_data_path" # 本地数据源根路径
 DEFAULT_LOCAL_DATA_PATH = "" # 默认空，表示未配置
+
+CONFIG_FILE_NAME = "config.ini"
+DB_NAME = "emby_actor_processor.sqlite"
 
 # --- 豆瓣处理模式 ---
 DOMESTIC_SOURCE_MODE_LOCAL_THEN_ONLINE = "local_then_online"

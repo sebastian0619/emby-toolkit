@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 config.ini
+config/*.sqlite
+config_local/*.sqlite
+local_data/
 *.log
 processed_media_log.txt
 translation_cache.json

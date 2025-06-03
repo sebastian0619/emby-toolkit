@@ -2,6 +2,7 @@
 import logging
 import sys
 import constants # 确保导入 constants
+print(f"logger_setup.py: constants.DEBUG_MODE is {constants.DEBUG_MODE}")
 
 # 配置基本的日志记录器
 # 您可以根据需要调整日志级别、格式和输出目标（例如文件）

@@ -255,18 +255,31 @@ class DoubanApi:
             if api_item_type not in ["movie", "tv"]: continue
             if mtype and mtype != api_item_type: continue # 类型不匹配
 
-            title = target.get("title")
+            title_from_api = target.get("title") # 先获取原始值
             douban_id = str(target.get("id", "")).strip()
-            if not title or not douban_id.isdigit(): continue
+
+            # 检查 title_from_api 是否是有效字符串
+            if not isinstance(title_from_api, str) or not title_from_api.strip() or not douban_id.isdigit():
+                logger.debug(f"_search_by_name_for_match_info: 跳过无效条目，title='{title_from_api}' (类型: {type(title_from_api).__name__}), douban_id='{douban_id}'")
+                continue
+
+            # 到这里，title_from_api 肯定是字符串且非空
+            title_str = title_from_api # 现在可以安全地称之为 title_str
 
             api_item_year = str(target.get("year", "")).strip()
             year_match = (not year) or (year and api_item_year and abs(int(api_item_year) - int(year)) <= 1)
 
             if year_match:
-                candidate_info = {"id": douban_id, "title": title, "original_title": target.get("original_title"),
+                candidate_info = {"id": douban_id, "title": title_str, "original_title": target.get("original_title"),
                                   "year": api_item_year, "type": api_item_type, "source": "name_search_candidate"}
-                if title.lower().strip() == name.lower().strip() and (not year or api_item_year == year):
-                    exact_match = candidate_info; exact_match["source"] = "name_search_exact"; break
+                
+                # 在调用 .lower() 前确保 name 也是字符串 (虽然类型提示是 str，但多一层保险)
+                name_to_compare = str(name).strip() # name 是函数传入的参数
+
+                if title_str.lower().strip() == name_to_compare.lower() and (not year or api_item_year == year):
+                    exact_match = candidate_info
+                    exact_match["source"] = "name_search_exact"
+                    break
                 candidates.append(candidate_info)
 
         if exact_match: return exact_match
