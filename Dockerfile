@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 拷贝后端源码
 COPY *.py ./
-COPY local_data/ ./local_data/
+RUN mkdir -p /config
 COPY templates/ ./templates/
 
 # 拷贝前端静态文件到 Flask 模板或静态目录（根据你的 web_app.py 实现）
