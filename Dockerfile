@@ -13,6 +13,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# 安装 nodejs（推荐 LTS）
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    && apt-get update \
+    && apt-get install -y nodejs \
+    && node -v && npm -v
+
 # 拷贝后端源码
 COPY *.py ./
 RUN mkdir -p /config
