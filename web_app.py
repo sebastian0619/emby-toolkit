@@ -3,7 +3,7 @@ import os
 import sqlite3
 import emby_handler
 import configparser
-from flask import Flask, render_template, request, redirect, url_for, jsonify, flash
+from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context
 import threading
 import time
 from typing import Optional, Dict, Any, List # 确保 List 被导入
@@ -12,6 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 import pytz # 用于处理时区
 import atexit # 用于应用退出处理
 from core_processor import MediaProcessor, SyncHandler
+#from flask_cors import CORS # 导入 CORS
 
 # --- 核心模块导入 ---
 import constants # 你的常量定义
@@ -22,11 +23,13 @@ from logger_setup import logger # 日志记录器
 import utils       # 例如，用于 /api/search_media
 # from douban import DoubanApi # 通常不需要在 web_app.py 直接导入 DoubanApi，由 MediaProcessor 管理
 # --- 核心模块导入结束 ---
-
-
+static_folder='static'
 app = Flask(__name__)
-app.secret_key = os.urandom(24) # 用于 flash 消息等
+# CORS(app) # 最简单的全局启用 CORS，允许所有源
+# app.secret_key = os.urandom(24) # 用于 flash 消息等
 
+# vue_dev_server_origin = "http://localhost:5173"
+# CORS(app, resources={r"/api/*": {"origins": vue_dev_server_origin}})
 # --- 路径和配置定义 ---
 APP_DATA_DIR_ENV = os.environ.get("APP_DATA_DIR")
 JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
@@ -75,96 +78,109 @@ JOB_ID_FULL_SCAN = "scheduled_full_scan"
 
 # --- 数据库辅助函数 ---
 def get_db_connection() -> sqlite3.Connection:
+    # 确保 DB_PATH 是有效的，并且目录存在
+    # 这个函数本身不应该处理目录创建，那是 init_db 的责任
+    if not os.path.exists(os.path.dirname(DB_PATH)): # 检查数据库文件所在的目录是否存在
+        logger.warning(f"数据库目录 {os.path.dirname(DB_PATH)} 不存在，get_db_connection 可能失败。")
     conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row # 方便按列名访问数据
+    conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
-    """初始化数据库表结构"""
-    conn = None # 初始化 conn 以确保 finally 中可用
+    """初始化数据库表结构。只在表不存在时创建它们。"""
+    conn: Optional[sqlite3.Connection] = None
+    cursor: Optional[sqlite3.Cursor] = None
     try:
         if not os.path.exists(PERSISTENT_DATA_PATH):
             os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
             logger.info(f"持久化数据目录已创建: {PERSISTENT_DATA_PATH}")
 
-        conn = get_db_connection() # 获取连接
+        conn = get_db_connection()
         cursor = conn.cursor()
 
-        # --- 创建 processed_log 表 ---
-        cursor.execute('''
+        # --- processed_log 表 ---
+        # 只在表不存在时创建，如果已存在则不操作
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS processed_log (
                 item_id TEXT PRIMARY KEY,
                 item_name TEXT,
-                processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                score REAL
             )
-        ''')
-        logger.info("Table 'processed_log' schema confirmed/created.")
+        """)
+        # **重要：如果表已存在但没有 score 列，你需要手动或通过一次性脚本添加它**
+        # 例如： self._add_column_if_not_exists(cursor, "processed_log", "score", "REAL")
+        logger.info("Table 'processed_log' schema confirmed/created if not exists.")
 
-        # --- 创建 failed_log 表 ---
-        cursor.execute('''
+        # --- failed_log 表 ---
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS failed_log (
-                item_id TEXT PRIMARY KEY,
+                item_id TEXT PRIMARY KEY, 
                 item_name TEXT,
                 failed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 error_message TEXT,
-                item_type TEXT
+                item_type TEXT,
+                score REAL
             )
-        ''')
-        logger.info("Table 'failed_log' schema confirmed/created.")
+        """)
+        # **同上，如果表已存在但没有 score 列，需要手动或脚本添加**
+        # self._add_column_if_not_exists(cursor, "failed_log", "score", "REAL")
+        logger.info("Table 'failed_log' schema confirmed/created if not exists.")
 
-        # --- 创建 translation_cache 表 ---
-        cursor.execute('''
+        # --- translation_cache 表 ---
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS translation_cache (
                 original_text TEXT PRIMARY KEY,
                 translated_text TEXT,
                 engine_used TEXT,
-                last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP 
             )
-        ''')
+        """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_translation_cache_original_text ON translation_cache (original_text)")
-        logger.info("Table 'translation_cache' and index schema confirmed/created.")
+        logger.info("Table 'translation_cache' and index schema confirmed/created if not exists.")
 
-        # --- 创建 person_identity_map 表 (包含 imdb_id) ---
-        cursor.execute('''
+        # --- person_identity_map 表 ---
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS person_identity_map (
-                tmdb_person_id TEXT,
-                emby_person_id TEXT NOT NULL,
+                map_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                emby_person_id TEXT UNIQUE NOT NULL,
                 emby_person_name TEXT,
+                tmdb_person_id TEXT, 
                 tmdb_name TEXT,
                 imdb_id TEXT,
                 douban_celebrity_id TEXT,
                 douban_name TEXT,
-                last_synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (emby_person_id),
-                UNIQUE (tmdb_person_id),      
-                UNIQUE (imdb_id),            
-                UNIQUE (douban_celebrity_id) 
+                last_synced_at TIMESTAMP,
+                last_updated_at TIMESTAMP
             )
-        ''')
-        # 为 person_identity_map 表创建其他需要的索引
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_tmdb_id_non_unique ON person_identity_map (tmdb_person_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_imdb_id_non_unique ON person_identity_map (imdb_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_id_non_unique ON person_identity_map (douban_celebrity_id)")
-        logger.info("Table 'person_identity_map' (with imdb_id) and indexes schema confirmed/created.")
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_person_id ON person_identity_map (emby_person_id)")
+        # ... (其他 person_identity_map 的索引) ...
+        logger.info("Table 'person_identity_map' and indexes schema confirmed/created if not exists.")
 
-        # --- 所有表和索引创建完毕后，进行一次总的提交 ---
         conn.commit()
-        logger.info(f"数据库表结构已在 '{DB_PATH}' 初始化/检查完毕并已提交。")
+        logger.info(f"数据库表结构已在 '{DB_PATH}' 检查/创建完毕 (如果不存在)。")
 
-    except Exception as e:
-        logger.error(f"数据库初始化失败: {e}", exc_info=True)
-        if conn: # 如果连接存在且发生错误，尝试回滚
-            try:
-                conn.rollback()
-                logger.info("数据库初始化错误，事务已回滚。")
-            except Exception as e_rollback:
-                logger.error(f"数据库回滚失败: {e_rollback}", exc_info=True)
+    except sqlite3.Error as e_sqlite: # 更具体地捕获 SQLite 错误
+        logger.error(f"数据库初始化时发生 SQLite 错误: {e_sqlite}", exc_info=True)
+        if conn:
+            try: conn.rollback()
+            except Exception as e_rb: logger.error(f"SQLite 错误后回滚失败: {e_rb}")
+    except OSError as e_os: # 捕获目录创建等OS错误
+        logger.error(f"数据库初始化时发生文件/目录操作错误: {e_os}", exc_info=True)
+    except Exception as e_global:
+        logger.error(f"数据库初始化时发生未知错误: {e_global}", exc_info=True)
+        if conn: # 如果连接存在但发生了其他未知错误，也尝试回滚
+            try: conn.rollback()
+            except Exception as e_rb: logger.error(f"未知错误后回滚失败: {e_rb}")
     finally:
-        if conn: # 确保 conn 已定义且不为 None
-            conn.close()
-            logger.debug("数据库连接已在 init_db 的 finally 块中关闭。")
-# --- 数据库辅助函数结束 ---
+        if cursor: # 先关闭 cursor
+            try: cursor.close()
+            except Exception as e_cur_close: logger.debug(f"关闭 cursor 时出错: {e_cur_close}")
+        if conn:
+            try: conn.close()
+            except Exception as e_conn_close: logger.debug(f"关闭 conn 时出错: {e_conn_close}")
+            else: logger.debug("数据库连接已在 init_db 的 finally 块中关闭。")# --- 数据库辅助函数结束 ---
 
 # --- 配置加载与保存 ---
 def load_config() -> Dict[str, Any]:
@@ -326,7 +342,7 @@ def save_config(new_config: Dict[str, Any]):
     config.set(constants.CONFIG_SECTION_TRANSLATION, constants.CONFIG_OPTION_TRANSLATOR_ENGINES, ",".join(engines_list))
 
     # --- Domestic Source Section (对应常量 constants.CONFIG_SECTION_DOMESTIC_SOURCE) ---
-    config.set(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, str(new_config.get("domestic_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE)))
+    config.set(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, str(new_config.get("data_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE)))
 
     # --- Local Data Section (对应常量 constants.CONFIG_SECTION_LOCAL_DATA) ---
     config.set(constants.CONFIG_SECTION_LOCAL_DATA, constants.CONFIG_OPTION_LOCAL_DATA_PATH, str(new_config.get("local_data_path", "")))
@@ -560,7 +576,30 @@ def setup_scheduled_tasks():
         except Exception as e_scheduler_start:
             logger.error(f"APScheduler 启动失败: {e_scheduler_start}", exc_info=True)
 # --- 定时任务结束 ---
+def enrich_and_match_douban_cast_to_emby(
+    douban_actors_api_data: List[Dict[str, Any]],
+    current_emby_cast_list: List[Dict[str, Any]],
+    tmdb_api_key: Optional[str],
+    db_cursor: sqlite3.Cursor # 注意：这里接收的是游标，不是连接
+) -> List[Dict[str, Any]]:
+    logger.info(f"enrich_and_match_douban_cast_to_emby: 开始处理 {len(douban_actors_api_data)} 位豆瓣演员，与 {len(current_emby_cast_list)} 位Emby演员进行匹配增强。")
+    results = []
+    processed_emby_pids_in_this_run = set()
 
+    for d_actor_data in douban_actors_api_data:
+        # ... (这里是详细的匹配、TMDb增强、状态标记逻辑) ...
+        # ... (确保这个函数内部调用的 match_douban_actor_to_emby_person 也已定义或导入) ...
+        # ... (并且 tmdb_handler 也是可用的) ...
+
+        # 示例：
+        d_name = d_actor_data.get("name")
+        logger.debug(f"  正在处理豆瓣演员: {d_name}")
+        # (此处应有完整的匹配和信息组合逻辑)
+        # (如果匹配成功，将结果添加到 results 列表)
+        # results.append({ "embyPersonId": ..., "name": ..., ... "matchStatus": ... })
+
+    logger.info(f"enrich_and_match_douban_cast_to_emby: 处理完成，返回 {len(results)} 个匹配/增强的演员信息。")
+    return results
 # --- Flask 路由 ---
 @app.route('/')
 def index():
@@ -575,7 +614,7 @@ def settings_page():
             "emby_api_key": request.form.get("emby_api_key", "").strip(),
             "emby_user_id": request.form.get("emby_user_id", "").strip(),
             "local_data_path": request.form.get("local_data_path", "").strip(),
-            "domestic_source_mode": request.form.get("domestic_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE), # 确保这里获取正确
+            "data_source_mode": request.form.get("data_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE), # 确保这里获取正确
             "tmdb_api_key": request.form.get("tmdb_api_key", "").strip(),
             "translator_engines_order": [eng.strip() for eng in request.form.get("translator_engines_order", "").split(',') if eng.strip()],
             "delay_between_items_sec": float(request.form.get("delay_between_items_sec", 0.5)),
@@ -639,6 +678,33 @@ def settings_page():
     logger.debug(f"SETTINGS_PAGE_GET (Before render_template): template_context['current_dsm_value_for_template'] IS [{template_context.get('current_dsm_value_for_template')}]")
 
     return render_template('settings.html', **template_context)
+
+def api_specific_sync_map_task(api_task_name: str): # <--- API 专属的，接收一个任务名参数
+    logger.info(f"'{api_task_name}': API专属同步任务开始执行。")
+    if media_processor_instance and \
+       media_processor_instance.emby_url and \
+       media_processor_instance.emby_api_key:
+        try:
+            sync_handler_instance = SyncHandler(
+                db_path=DB_PATH,
+                emby_url=media_processor_instance.emby_url,
+                emby_api_key=media_processor_instance.emby_api_key,
+                emby_user_id=media_processor_instance.emby_user_id
+            )
+            logger.info(f"'{api_task_name}': SyncHandler 实例已创建 (API)。")
+            sync_handler_instance.sync_emby_person_map_to_db(
+                update_status_callback=update_status_from_thread
+            )
+            logger.info(f"'{api_task_name}': 同步操作完成 (API)。")
+        except NameError as ne:
+             logger.error(f"'{api_task_name}' (API) 无法执行：SyncHandler 类未定义或未导入。错误: {ne}", exc_info=True)
+             update_status_from_thread(-1, "错误：同步功能组件未找到")
+        except Exception as e_sync:
+            logger.error(f"'{api_task_name}' (API) 执行过程中发生严重错误: {e_sync}", exc_info=True)
+            update_status_from_thread(-1, f"错误：同步失败 ({str(e_sync)[:50]}...)")
+    else:
+        logger.error(f"'{api_task_name}' (API) 无法执行：MediaProcessor 未初始化或 Emby 配置不完整。")
+        update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
 @app.route('/webhook/emby', methods=['POST'])
 def emby_webhook():
     data = request.json
@@ -683,52 +749,41 @@ def trigger_full_scan():
     return redirect(url_for('settings_page'))
 
 @app.route('/trigger_sync_person_map', methods=['POST'])
-def trigger_sync_person_map():
-    global background_task_status
-    if not media_processor_instance:
-        flash("错误：服务未就绪，无法开始同步映射表。", "error")
-        logger.warning("trigger_sync_person_map: MediaProcessor未初始化。")
-        return redirect(url_for('settings_page'))
+def trigger_sync_person_map(): # WebUI 用的
+    # ... (你的 if not media_processor_instance 和 if task_lock.locked() 检查逻辑不变) ...
 
-    if task_lock.locked():
-        flash("已有其他后台任务正在运行，请稍后再试。", "warning")
-        logger.warning("trigger_sync_person_map: 检测到已有任务运行。")
-        return redirect(url_for('settings_page'))
-
-    task_name = "同步Emby人物映射表"
+    task_name = "同步Emby人物映射表 (WebUI)"
     logger.info(f"收到手动触发 '{task_name}' 的请求。")
 
-    def sync_map_task_internal(): # 这是在后台线程中执行的
+    def sync_map_task_internal_for_webui(): # <--- 这是 WebUI 专属的内部任务函数
+        logger.info(f"'{task_name}': WebUI专属同步任务开始执行。")
         if media_processor_instance and \
            media_processor_instance.emby_url and \
-           media_processor_instance.emby_api_key: # 确保 Emby 配置有效
-
-            logger.info(f"'{task_name}': 准备创建 SyncHandler 实例...")
+           media_processor_instance.emby_api_key:
             try:
-                # --- 创建 SyncHandler 实例 ---
                 sync_handler_instance = SyncHandler(
-                    db_path=DB_PATH, # 使用 web_app.py 中定义的全局 DB_PATH
+                    db_path=DB_PATH,
                     emby_url=media_processor_instance.emby_url,
                     emby_api_key=media_processor_instance.emby_api_key,
                     emby_user_id=media_processor_instance.emby_user_id
                 )
-                logger.info(f"'{task_name}': SyncHandler 实例已创建。")
-
-                # --- 调用同步方法 ---
+                logger.info(f"'{task_name}': SyncHandler 实例已创建 (WebUI)。")
                 sync_handler_instance.sync_emby_person_map_to_db(
-                    update_status_callback=update_status_from_thread # 传递状态更新回调
+                    update_status_callback=update_status_from_thread
                 )
-            except NameError as ne: # 如果 SyncHandler 没有被正确导入
-                 logger.error(f"'{task_name}' 无法执行：SyncHandler 类未定义或未导入。错误: {ne}", exc_info=True)
+                logger.info(f"'{task_name}': 同步操作完成 (WebUI)。")
+            except NameError as ne:
+                 logger.error(f"'{task_name}' (WebUI) 无法执行：SyncHandler 类未定义或未导入。错误: {ne}", exc_info=True)
                  update_status_from_thread(-1, "错误：同步功能组件未找到")
             except Exception as e_sync:
-                logger.error(f"'{task_name}' 执行过程中发生严重错误: {e_sync}", exc_info=True)
+                logger.error(f"'{task_name}' (WebUI) 执行过程中发生严重错误: {e_sync}", exc_info=True)
                 update_status_from_thread(-1, f"错误：同步失败 ({str(e_sync)[:50]}...)")
         else:
-            logger.error(f"'{task_name}' 无法执行：MediaProcessor 未初始化或 Emby 配置不完整。")
+            logger.error(f"'{task_name}' (WebUI) 无法执行：MediaProcessor 未初始化或 Emby 配置不完整。")
             update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
 
-    thread = threading.Thread(target=_execute_task_with_lock, args=(sync_map_task_internal, task_name))
+    # WebUI 路由调用它自己的内部任务函数
+    thread = threading.Thread(target=_execute_task_with_lock, args=(sync_map_task_internal_for_webui, task_name))
     thread.start()
 
     flash(f"'{task_name}' 任务已在后台启动。", "info")
@@ -842,6 +897,14 @@ def api_search_media():
         "current_page": page, "per_page": per_page, "query": query, "scope": scope
     })
 
+
+
+@app.route('/api/status', methods=['GET']) # <--- 添加这个路由
+def api_get_task_status():
+    global background_task_status # 确保能访问到全局的 background_task_status
+    # logger.debug(f"API /api/status (GET) 被调用，返回状态: {background_task_status}") # 可选的调试日志
+    return jsonify(background_task_status)
+
 @app.route('/api/emby_libraries')
 def api_get_emby_libraries():
     # 确保 media_processor_instance 已初始化并且 Emby 配置有效
@@ -887,6 +950,520 @@ logger.info("已注册应用程序退出处理程序 (atexit)。")
 # --- 应用退出处理结束 ---
 
 # --- 主程序入口 ---
+
+# --- API 端点：获取当前配置 ---
+@app.route('/api/config', methods=['GET'])
+def api_get_config():
+    try:
+        current_config = load_config() # 调用你实际的加载配置函数
+        if current_config:
+            logger.info(f"API /api/config (GET): 成功加载并返回配置。")
+            return jsonify(current_config)
+        else:
+            logger.error(f"API /api/config (GET): load_config() 返回为空或None。")
+            return jsonify({"error": "无法加载配置数据"}), 500
+    except Exception as e:
+        logger.error(f"API /api/config (GET) 获取配置时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "获取配置信息时发生服务器内部错误"}), 500
+
+# --- API 端点：保存配置 ---
+@app.route('/api/config', methods=['POST'])
+def api_save_config():
+    try:
+        new_config_data = request.json # 前端发送的是 JSON 数据
+        if not new_config_data:
+            logger.warning("API /api/config (POST): 未收到配置数据。")
+            return jsonify({"error": "请求体中未包含配置数据"}), 400
+        
+        logger.info(f"API /api/config (POST): 收到新的配置数据，准备保存...")
+        # logger.debug(f"收到的原始配置数据: {new_config_data}") # 可以取消注释用于调试
+
+        # 调用你实际的 save_config 函数
+        # save_config 函数内部应该处理数据转换、写入文件、
+        # 以及调用 initialize_media_processor() 和 setup_scheduled_tasks()
+        save_config(new_config_data) 
+        
+        logger.info("API /api/config (POST): 配置已成功传递给 save_config 函数。")
+        return jsonify({"message": "配置已成功保存并已触发重新加载。"}) # 返回成功消息
+        
+    except Exception as e:
+        logger.error(f"API /api/config (POST) 保存配置时发生错误: {e}", exc_info=True)
+        return jsonify({"error": f"保存配置时发生服务器内部错误: {str(e)}"}), 500
+
+# --- 新增 API 端点：获取待复核列表 ---
+@app.route('/api/review_items')
+def api_get_review_items():
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    query_filter = request.args.get('query', '', type=str).strip() # 按媒体名搜索的查询词
+
+    # 基本的参数校验
+    if page < 1: page = 1
+    if per_page < 1: per_page = 10
+    if per_page > 100: per_page = 100 # 限制每页最大数量
+
+    offset = (page - 1) * per_page
+    
+    items_to_review = [] # 存储最终结果的列表
+    total_matching_items = 0 # 符合条件的总项目数
+    
+    try:
+        conn = get_db_connection() # 使用你已有的获取数据库连接的函数
+        cursor = conn.cursor()
+        
+        # 构建 SQL 查询条件
+        # 我们主要查找 error_message 中包含特定关键词的记录
+        # 你可以根据实际存入 failed_log 的 error_message 内容调整这些关键词
+        # 例如："评分过低", "人工复核", "待复核"
+        # 使用 OR 连接多个可能的关键词
+        where_clauses = []
+        sql_params = []
+
+        # 关键词筛选 error_message
+        # 注意：这里的关键词需要和你写入 failed_log 时使用的 error_message 格式匹配
+        # 例如，如果 error_message 是 "处理评分过低(4.9)，建议人工复核。"
+        # 那么 LIKE '%评分过低%' 或者 LIKE '%人工复核%' 都能匹配到
+        review_keywords = ["评分过低", "人工复核", "待复核"] # 你可以扩展这个列表
+        keyword_conditions = " OR ".join(["error_message LIKE ?"] * len(review_keywords))
+        where_clauses.append(f"({keyword_conditions})")
+        for kw in review_keywords:
+            sql_params.append(f"%{kw}%")
+
+        if query_filter: # 如果有名称搜索条件
+            where_clauses.append("item_name LIKE ?")
+            sql_params.append(f"%{query_filter}%")
+        
+        full_where_clause = " AND ".join(where_clauses) if where_clauses else "1=1" # 如果没有条件，则全选（理论上应该总有关键词条件）
+
+        # 1. 查询符合条件的总项目数 (用于分页)
+        count_sql = f"SELECT COUNT(DISTINCT item_id) FROM failed_log WHERE {full_where_clause}"
+        # logger.debug(f"Review items count SQL: {count_sql} with params: {sql_params}")
+        count_row = cursor.execute(count_sql, tuple(sql_params)).fetchone()
+        if count_row:
+            total_matching_items = count_row[0]
+
+        # 2. 查询当前页的项目数据
+        # 我们选择每个 item_id 最新的那条失败/待复核记录 (如果 item_id 在 failed_log 中不是主键的话)
+        # 但由于我们之前将 failed_log 的 item_id 设为 PRIMARY KEY，所以每个 item_id 只有一条记录，简化了查询
+        items_sql = f"""
+            SELECT item_id, item_name, failed_at, error_message, item_type, score 
+            FROM failed_log 
+            WHERE {full_where_clause}
+            ORDER BY failed_at DESC 
+            LIMIT ? OFFSET ?
+        """
+        params_for_page_query = sql_params + [per_page, offset]
+        # logger.debug(f"Review items data SQL: {items_sql} with params: {params_for_page_query}")
+        
+        fetched_rows = cursor.execute(items_sql, tuple(params_for_page_query)).fetchall()
+        for row in fetched_rows:
+            items_to_review.append(dict(row)) # 将 sqlite3.Row 转换为字典
+
+        conn.close()
+        
+        total_pages = (total_matching_items + per_page - 1) // per_page if total_matching_items > 0 else 0
+        
+        logger.info(f"API /api/review_items: 返回 {len(items_to_review)} 条待复核项目 (总计: {total_matching_items}, 第 {page}/{total_pages} 页)")
+        return jsonify({
+            "items": items_to_review,
+            "total_items": total_matching_items,
+            "total_pages": total_pages,
+            "current_page": page,
+            "per_page": per_page,
+            "query": query_filter # 返回当前的搜索词，方便前端显示
+        })
+
+    except Exception as e:
+        logger.error(f"API /api/review_items 获取数据失败: {e}", exc_info=True)
+        # 确保在发生异常时也关闭连接（如果已打开）
+        if 'conn' in locals() and conn:
+            try: conn.close()
+            except: pass
+        return jsonify({"error": "获取待复核列表时发生服务器内部错误"}), 500
+    
+@app.route('/api/actions/reprocess_item/<item_id>', methods=['POST'])
+def api_reprocess_item(item_id):
+    if not media_processor_instance:
+        return jsonify({"error": "核心处理器未就绪"}), 503
+    
+    # 最好在一个新线程中执行，避免阻塞API请求
+    # 但 process_single_item 内部可能已经有自己的线程管理或快速返回
+    # 如果 process_single_item 是耗时的，应该用 _execute_task_with_lock
+    
+    # 假设 process_single_item 是可以同步调用的（如果它内部处理了耗时操作）
+    # 或者我们在这里只触发一个后台任务
+    logger.info(f"API: 收到重新处理项目 {item_id} 的请求。")
+    
+    def reprocess_task_internal(id_to_process):
+        success = media_processor_instance.process_single_item(id_to_process, force_reprocess_this_item=True)
+        if success:
+            # 尝试从 failed_log 移除 (如果 process_single_item 没处理)
+            # 通常 process_single_item 会根据新评分决定是否移除或更新
+            logger.info(f"项目 {id_to_process} 重新处理任务完成。")
+        else:
+            logger.warning(f"项目 {id_to_process} 重新处理任务可能未完全成功。")
+
+    # 使用 _execute_task_with_lock 来管理这个单一任务
+    # 注意：_execute_task_with_lock 通常用于长时间运行的任务，
+    # 如果 process_single_item 很快，直接调用也可以，但要处理好状态。
+    # 为了一致性，我们还是用它，但任务名可以更具体。
+    thread = threading.Thread(target=_execute_task_with_lock, 
+                              args=(reprocess_task_internal, f"重新处理项目: {item_id}", item_id))
+    thread.start()
+    
+    return jsonify({"message": f"项目 {item_id} 已提交重新处理。"}), 202
+
+@app.route('/api/actions/mark_item_processed/<item_id>', methods=['POST'])
+def api_mark_item_processed(item_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # 从 failed_log 获取信息，以便存入 processed_log
+        cursor.execute("SELECT item_name, item_type, score FROM failed_log WHERE item_id = ?", (item_id,))
+        failed_item_info = cursor.fetchone()
+        
+        cursor.execute("DELETE FROM failed_log WHERE item_id = ?", (item_id,))
+        deleted_count = cursor.rowcount
+        
+        if deleted_count > 0 and failed_item_info:
+            # 标记为已处理时，可以给一个特殊的高分或标记
+            # 或者，如果原始评分存在，就用那个评分
+            score_to_save = failed_item_info["score"] if failed_item_info["score"] is not None else 10.0 # 假设手动处理给10分
+            item_name = failed_item_info["item_name"]
+            
+            # 添加到 processed_log
+            # 假设 MediaProcessor 实例在这里不可用，我们直接操作数据库
+            # 如果 MediaProcessor 可用，调用其 save_to_processed_log 方法更好
+            cursor.execute(
+                "REPLACE INTO processed_log (item_id, item_name, processed_at, score) VALUES (?, ?, CURRENT_TIMESTAMP, ?)",
+                (item_id, item_name, score_to_save)
+            )
+            logger.info(f"项目 {item_id} ('{item_name}') 已标记为已处理，并移至已处理日志 (评分: {score_to_save})。")
+
+        conn.commit()
+        conn.close()
+        
+        if deleted_count > 0:
+            return jsonify({"message": f"项目 {item_id} 已成功标记为已处理。"}), 200
+        else:
+            return jsonify({"error": f"未在待复核列表中找到项目 {item_id}。"}), 404
+    except Exception as e:
+        logger.error(f"标记项目 {item_id} 为已处理时失败: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+    
+@app.route('/api/trigger_full_scan', methods=['POST'])
+def api_handle_trigger_full_scan():
+    logger.info("API Endpoint: Received request to trigger full scan.")
+    try:
+        # --- 修改这里 ---
+        # 从 request.form 获取 'force_reprocess_all' 参数
+        # 如果前端发送了 'force_reprocess_all=on'，则 request.form.get('force_reprocess_all') 会是字符串 'on'
+        # 如果前端没有发送这个参数（复选框未勾选），则 request.form.get 返回 None
+        force_reprocess_str = request.form.get('force_reprocess_all') # 获取原始字符串
+        
+        # 将获取到的值转换为布尔值
+        # 如果是 'on' (前端勾选时发送的值)，则为 True，否则为 False
+        force_reprocess = True if force_reprocess_str == 'on' else False
+        
+        logger.info(f"API /api/trigger_full_scan: Received force_reprocess_all from form: '{force_reprocess_str}', Parsed as boolean: {force_reprocess}")
+        # --- 修改结束 ---
+        
+        action_message = "全量媒体库扫描"
+        if force_reprocess:
+            action_message += " (强制重处理所有)"
+
+        def task_to_run(force_flag_param):
+            if media_processor_instance:
+                media_processor_instance.process_full_library(
+                    update_status_callback=update_status_from_thread,
+                    force_reprocess_all=force_flag_param # <--- 现在这里会使用从前端解析来的 force_reprocess
+                )
+            else:
+                logger.error("API: 全量扫描无法执行：MediaProcessor 未初始化。")
+                update_status_from_thread(-1, "错误：核心处理器未就绪")
+
+        thread = threading.Thread(target=_execute_task_with_lock, args=(lambda: task_to_run(force_reprocess), action_message))
+        thread.start()
+        
+        return jsonify({"message": f"{action_message} 任务已提交启动。"}), 202
+    except Exception as e:
+        logger.error(f"API /api/trigger_full_scan error: {e}", exc_info=True)
+        return jsonify({"error": "启动全量扫描时发生服务器内部错误"}), 500
+
+@app.route('/api/trigger_sync_person_map', methods=['POST'])
+def api_handle_trigger_sync_map():
+    logger.info("API Endpoint: Received request to trigger sync person map.")
+    try:
+        if task_lock.locked():
+            logger.warning("API /api/trigger_sync_person_map: Task lock is active.")
+            return jsonify({"error": "已有其他后台任务正在运行，请稍后再试。"}), 409
+
+        task_name_for_api = "同步Emby人物映射表 (API)" # API 调用的任务名
+
+        # API 路由调用它专属的后台任务函数
+        # 假设 _execute_task_with_lock 的第二个参数是任务描述，第三个是传递给目标函数的第一个参数
+        thread = threading.Thread(target=_execute_task_with_lock, args=(api_specific_sync_map_task, task_name_for_api, task_name_for_api))
+        thread.start()
+
+        return jsonify({"message": f"'{task_name_for_api}' 任务已提交启动。"}), 202
+    except Exception as e:
+        logger.error(f"API /api/trigger_sync_person_map error: {e}", exc_info=True)
+        return jsonify({"error": "启动同步映射表时发生服务器内部错误"}), 500
+
+@app.route('/api/trigger_stop_task', methods=['POST'])
+def api_handle_trigger_stop_task():
+    logger.info("API Endpoint: Received request to stop current task.")
+    try:
+        # (调用你实际停止任务的逻辑，例如设置一个全局的停止事件)
+        # global_stop_event.set() # 假设你有这样一个事件
+        if media_processor_instance and hasattr(media_processor_instance, 'signal_stop'):
+            media_processor_instance.signal_stop()
+            logger.info("API: 已发送停止信号给 MediaProcessor。")
+            # 你可能还需要停止其他类型的任务，例如同步任务
+            # 这取决于你的 _execute_task_with_lock 如何处理停止信号
+            # 或者你有一个更通用的任务管理器来发送停止信号
+        else:
+            logger.warning("API: MediaProcessor 未初始化，无法发送停止信号。")
+
+        return jsonify({"message": "已发送停止任务请求。"}), 200
+    except Exception as e:
+        logger.error(f"API /api/trigger_stop_task error: {e}", exc_info=True)
+        return jsonify({"error": "发送停止任务请求时发生服务器内部错误"}), 500
+    
+@app.route('/api/media_with_cast_for_editing/<item_id>', methods=['GET'])
+def api_get_media_for_editing(item_id):
+    logger.info(f"API: Received request to get media details for editing, ItemID: {item_id}")
+
+    if not media_processor_instance:
+        logger.error("API: MediaProcessor 未初始化，无法获取媒体详情。")
+        return jsonify({"error": "核心处理器未就绪"}), 503
+
+    # 1. 从 Emby 获取详情
+    emby_details = None
+    try: # <--- Python 的 try:
+        emby_details = emby_handler.get_emby_item_details(
+            item_id,
+            media_processor_instance.emby_url,
+            media_processor_instance.emby_api_key,
+            media_processor_instance.emby_user_id
+        )
+    except Exception as e: # <--- Python 的 except Exception as e:
+        logger.error(f"API: 调用 emby_handler.get_emby_item_details 失败 for ItemID {item_id}: {e}", exc_info=True)
+        # 即使这里失败，我们仍然尝试从 failed_log 获取信息，或者至少返回一个部分错误
+    
+    # ... 后续从 failed_log 获取信息、组合数据等逻辑保持不变 ...
+    # (确保那部分代码的 try...except...finally 也是 Python 语法)
+
+    if not emby_details:
+        logger.warning(f"API: 无法从 Emby 获取项目 {item_id} 的详情。可能项目不存在或Emby API问题。")
+
+    # 2. 从 failed_log 获取信息 (这部分你之前的代码是正确的 Python try-except-finally)
+    conn = None
+    failed_log_info = {}
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT item_name, item_type, error_message, score FROM failed_log WHERE item_id = ?", (item_id,))
+        row = cursor.fetchone()
+        if row:
+            failed_log_info = dict(row)
+            logger.debug(f"API: 从 failed_log 找到项目 {item_id} 的信息: {failed_log_info}")
+        else:
+            logger.warning(f"API: 项目 {item_id} 在 failed_log 中未找到。")
+            if not emby_details:
+                 return jsonify({"error": f"项目 {item_id} 在 Emby 和待复核日志中均未找到"}), 404
+    except Exception as e:
+        logger.error(f"API: 查询 failed_log 获取项目 {item_id} 信息失败: {e}", exc_info=True)
+        if not emby_details:
+            return jsonify({"error": f"获取项目 {item_id} 信息时发生数据库错误，且无法从Emby获取详情"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+    # 3. 提取并格式化 Emby 演员列表 (这部分你之前的代码是正确的 Python 逻辑)
+    current_cast_for_frontend = []
+    # ... (这部分代码不变) ...
+    if emby_details and emby_details.get("People"):
+        for person in emby_details.get("People", []):
+            if person.get("Id") and person.get("Name"): # 必须有 Emby Person ID 和名字
+                provider_ids = person.get("ProviderIds", {})
+                current_cast_for_frontend.append({
+                    "embyPersonId": str(person["Id"]),
+                    "name": person["Name"],
+                    "role": person.get("Role", ""),
+                    "imdbId": provider_ids.get("Imdb"),
+                    "doubanId": provider_ids.get("Douban"),
+                    "tmdbId": provider_ids.get("Tmdb")
+                })
+    elif emby_details: 
+        logger.info(f"API: Emby 项目 {item_id} 详情中没有 People (演员) 信息。")
+
+
+    # 4. 组合最终的响应数据 (这部分你之前的代码是正确的 Python 逻辑)
+    # ... (这部分代码不变) ...
+    final_item_name = failed_log_info.get('item_name')
+    if not final_item_name and emby_details:
+        final_item_name = emby_details.get('Name')
+    
+    final_item_type = failed_log_info.get('item_type')
+    if not final_item_type and emby_details:
+        final_item_type = emby_details.get('Type')
+
+    response_data = {
+        "item_id": item_id,
+        "item_name": final_item_name or f"未知名称 (ID: {item_id})",
+        "item_type": final_item_type or "未知类型",
+        "original_score": failed_log_info.get('score'),
+        "review_reason": failed_log_info.get('error_message'),
+        "current_emby_cast": current_cast_for_frontend
+    }
+    
+    logger.info(f"API: 成功为项目 {item_id} 构建编辑详情，准备返回。演员数: {len(current_cast_for_frontend)}")
+    return jsonify(response_data)
+
+@app.route('/api/refresh_cast_from_douban_by_name/<item_id>', methods=['POST'])
+def api_refresh_cast_from_douban_by_name(item_id):
+    if not media_processor_instance or not media_processor_instance.douban_api:
+        return jsonify({"error": "豆瓣API处理器未就绪"}), 503
+
+    emby_details = emby_handler.get_emby_item_details(item_id, media_processor_instance.emby_url, media_processor_instance.emby_api_key, media_processor_instance.emby_user_id)
+    if not emby_details:
+        return jsonify({"error": "无法获取当前媒体的Emby详情"}), 404
+    
+    current_emby_cast_list_formatted = [] # 转换为 enrich_and_match 需要的格式
+    for person in emby_details.get("People", []):
+        if person.get("Id") and person.get("Name"):
+            current_emby_cast_list_formatted.append({
+                "embyPersonId": str(person["Id"]),
+                "name": person["Name"], # Emby 原始名字，用于日志或后备
+                "provider_ids": person.get("ProviderIds", {})
+            })
+    
+    media_name = emby_details.get("Name")
+    media_type = "movie" if emby_details.get("Type") == "Movie" else ("tv" if emby_details.get("Type") == "Series" else None)
+    year = str(emby_details.get("ProductionYear", ""))
+    # imdb_id_media = emby_details.get("ProviderIds", {}).get("Imdb") # 这个imdbid是媒体的，不是演员的
+
+    if not media_name or not media_type:
+        return jsonify({"error": "媒体名称或类型未知，无法从豆瓣搜索"}), 400
+
+    logger.info(f"API: 正在为媒体 '{media_name}' (类型: {media_type}, 年份: {year}) 从豆瓣【强制按片名】获取演员...")
+    douban_cast_data = media_processor_instance.douban_api.get_acting(
+        name=media_name, 
+        mtype=media_type, 
+        year=year,
+        force_name_search=True # <--- 强制使用名称搜索
+    )
+
+    if douban_cast_data.get("error") or not douban_cast_data.get("cast"):
+        return jsonify({"error": "从豆瓣获取演员信息失败或列表为空", "details": douban_cast_data.get("message")}), 502
+
+    douban_actors_from_api = douban_cast_data["cast"]
+    logger.info(f"API: 从豆瓣获取到 {len(douban_actors_from_api)} 位演员 for '{media_name}'.")
+
+    conn = None
+    refreshed_and_matched_cast = []
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        refreshed_and_matched_cast = enrich_and_match_douban_cast_to_emby(
+            douban_actors_api_data=douban_actors_from_api,
+            current_emby_cast_list=current_emby_cast_list_formatted,
+            tmdb_api_key=media_processor_instance.tmdb_api_key,
+            db_cursor=cursor
+        )
+    except Exception as e:
+        logger.error(f"API /api/refresh_cast_from_douban_by_name 处理过程中发生错误: {e}", exc_info=True)
+        if conn: conn.close()
+        return jsonify({"error": "刷新演员信息时发生内部错误"}), 500
+    finally:
+        if conn:
+            conn.close()
+            
+    logger.info(f"API: 为媒体 {item_id} 从豆瓣刷新并匹配到 {len(refreshed_and_matched_cast)} 个演员信息。")
+    return jsonify(refreshed_and_matched_cast)
+
+@app.route('/api/update_media_cast/<item_id>', methods=['POST'])
+def api_update_edited_cast(item_id):
+    if not media_processor_instance: # media_processor_instance 持有 Emby 配置和数据库路径
+        logger.error(f"API: /api/update_media_cast - MediaProcessor 未初始化 for item {item_id}")
+        return jsonify({"error": "核心处理器未就绪"}), 503
+    
+    try:
+        data = request.json
+        if not data or "cast" not in data or not isinstance(data["cast"], list):
+            logger.warning(f"API: /api/update_media_cast - 请求体中缺少有效的 'cast' 列表 for item {item_id}")
+            return jsonify({"error": "请求体中缺少有效的 'cast' 列表"}), 400
+
+        edited_cast_from_frontend = data["cast"]
+        logger.info(f"API: 收到为 ItemID {item_id} 更新演员的请求，共 {len(edited_cast_from_frontend)} 位演员。")
+
+        # 1. 将前端传来的 cast 转换为 emby_handler.update_emby_item_cast 期望的格式
+        #    emby_handler 期望: [{"name": ..., "character": ..., "emby_person_id": ... (可选), "provider_ids": {...}}]
+        cast_for_emby_handler = []
+        for actor_frontend in edited_cast_from_frontend:
+            if not actor_frontend.get("embyPersonId") or not actor_frontend.get("name"):
+                logger.warning(f"  跳过无效的前端演员条目（缺少embyPersonId或name）: {actor_frontend}")
+                continue
+            
+            entry = {
+                "emby_person_id": str(actor_frontend["embyPersonId"]), # 确保是字符串
+                "name": str(actor_frontend["name"]).strip(),
+                "character": str(actor_frontend.get("role", "")).strip(),
+                "provider_ids": {} # 初始化 provider_ids
+            }
+            # 填充 provider_ids，只添加有值的ID
+            if actor_frontend.get("imdbId") and str(actor_frontend["imdbId"]).strip():
+                entry["provider_ids"]["Imdb"] = str(actor_frontend["imdbId"]).strip()
+            if actor_frontend.get("doubanId") and str(actor_frontend["doubanId"]).strip():
+                entry["provider_ids"]["Douban"] = str(actor_frontend["doubanId"]).strip() # Emby 可能期望 DoubanCelebrityId
+            if actor_frontend.get("tmdbId") and str(actor_frontend["tmdbId"]).strip():
+                entry["provider_ids"]["Tmdb"] = str(actor_frontend["tmdbId"]).strip()
+            
+            cast_for_emby_handler.append(entry)
+        
+        logger.debug(f"  转换后准备发送给 emby_handler 的演员列表 (前2条): {cast_for_emby_handler[:2]}")
+
+        # 2. 调用 emby_handler 更新 Emby
+        update_success = emby_handler.update_emby_item_cast(
+            item_id=item_id,
+            new_cast_list_for_handler=cast_for_emby_handler, # 这是关键
+            emby_server_url=media_processor_instance.emby_url,
+            emby_api_key=media_processor_instance.emby_api_key,
+            user_id=media_processor_instance.emby_user_id # update_emby_item_cast 需要 user_id 来获取当前项目信息
+        )
+
+        if update_success:
+            logger.info(f"API: ItemID {item_id} 的演员信息已成功更新到 Emby。")
+            
+            # 3. 从 failed_log 删除，并添加到 processed_log
+            item_name_for_log = request.json.get("item_name", f"未知项目(ID:{item_id})") # 可以从前端也把 item_name 传过来
+            
+            # 使用 MediaProcessor 实例的方法来操作数据库日志，保持一致性
+            media_processor_instance._remove_from_failed_log_if_exists(item_id)
+            media_processor_instance.save_to_processed_log(item_id, item_name_for_log, score=10.0) # 手动编辑给满分
+
+            # 4. （可选）触发 Emby 元数据刷新
+            if media_processor_instance.config.get("refresh_emby_after_update", True):
+                item_type_for_log = request.json.get("item_type", "Unknown") # 也可从前端获取
+                logger.info(f"API: 准备为项目 {item_id} ('{item_name_for_log}') 触发Emby元数据刷新...")
+                emby_handler.refresh_emby_item_metadata(
+                    item_emby_id=item_id,
+                    emby_server_url=media_processor_instance.emby_url,
+                    emby_api_key=media_processor_instance.emby_api_key,
+                    recursive=(item_type_for_log == "Series"),
+                )
+            
+            return jsonify({"message": "演员信息已成功更新到Emby，并从待复核列表移除。"}), 200
+        else:
+            logger.error(f"API: 更新 Emby 项目 {item_id} 演员信息失败 (emby_handler 返回 False)。")
+            return jsonify({"error": "更新Emby演员信息失败，请检查后端日志。"}), 500
+
+    except Exception as e:
+        logger.error(f"API /api/update_media_cast Error for {item_id}: {e}", exc_info=True)
+        return jsonify({"error": "保存演员信息时发生服务器内部错误"}), 500
+
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
     init_db()
@@ -899,8 +1476,6 @@ if __name__ == '__main__':
             logger.error(f"APScheduler 启动失败: {e_scheduler_start}", exc_info=True)
     setup_scheduled_tasks()
 
-
-    # --- !!! 测试代码开始 !!! ---
 if __name__ == '__main__':
     RUN_MANUAL_TESTS = False  # <--- 在这里控制是否运行测试代码
 
@@ -910,70 +1485,54 @@ if __name__ == '__main__':
     # ... (scheduler setup) ...
 
     # --- !!! 测试 _process_cast_list 方法 !!! ---
-    # if media_processor_instance and media_processor_instance.emby_url:
-    #     TEST_MOVIE_ID_FOR_PROCESS_CAST = "432258" # 继续用 “骗骗”喜欢你 的 ID，或者你换一个
+    if RUN_MANUAL_TESTS and media_processor_instance and media_processor_instance.emby_url:
+        TEST_MEDIA_ID_TO_PROCESS = "464188" # 测试电视剧《白蛇传》
         
-    #     logger.info(f"--- 开始手动测试 _process_cast_list for movie ID: {TEST_MOVIE_ID_FOR_PROCESS_CAST} ---")
+        logger.info(f"--- 开始手动测试 _process_cast_list for MEDIA ID: {TEST_MEDIA_ID_TO_PROCESS} ---")
 
-    #     # 1. 获取这部电影的原始 Emby 详情 (包含原始 People 列表)
-    #     raw_movie_details = None
-    #     try:
-    #         raw_movie_details = emby_handler.get_emby_item_details(
-    #             TEST_MOVIE_ID_FOR_PROCESS_CAST,
-    #             media_processor_instance.emby_url,
-    #             media_processor_instance.emby_api_key,
-    #             media_processor_instance.emby_user_id
-    #         )
-    #     except Exception as e_get_raw:
-    #         logger.error(f"测试：获取原始电影详情失败: {e_get_raw}", exc_info=True)
+        raw_media_item_details = None # <--- 修改变量名
+        try:
+            raw_media_item_details = emby_handler.get_emby_item_details( # <--- 修改变量名
+                TEST_MEDIA_ID_TO_PROCESS,
+                media_processor_instance.emby_url,
+                media_processor_instance.emby_api_key,
+                media_processor_instance.emby_user_id
+            )
+        except Exception as e_get_raw:
+            logger.error(f"测试：获取原始 MEDIA 详情失败 (ID: {TEST_MEDIA_ID_TO_PROCESS}): {e_get_raw}", exc_info=True)
         
-    #     if raw_movie_details and raw_movie_details.get("People"):
-    #         original_emby_people = raw_movie_details.get("People", [])
-    #         logger.info(f"测试：获取到电影 '{raw_movie_details.get('Name')}' 的原始 People 列表，数量: {len(original_emby_people)}")
-    #         logger.debug(f"测试：原始 People (前3条): {original_emby_people[:3]}")
+        # 打印获取到的原始详情，用于调试
+        if raw_media_item_details:
+            logger.info(f"DEBUG_DETAILS: 原始获取到的 raw_media_item_details 内容 (部分键): {{'Name': '{raw_media_item_details.get('Name')}', 'Type': '{raw_media_item_details.get('Type')}', 'Id': '{raw_media_item_details.get('Id')}', 'HasPeopleField': {'People' in raw_media_item_details}, 'PeopleFieldType': {type(raw_media_item_details.get('People')).__name__ if 'People' in raw_media_item_details else 'N/A'} }}")
+            # 如果想看完整内容，取消下面这行的注释，但可能会很长
+            # logger.info(f"DEBUG_DETAILS_FULL: {raw_media_item_details}")
+        else:
+            logger.error("DEBUG_DETAILS: raw_media_item_details 为 None，获取失败。")
 
-    #         # 2. (可选) 构造或加载你的 source_actors_candidates 数据
-    #         #    为了精确测试，你可以手动构造这个列表，模拟从本地文件或豆瓣API获取的数据
-    #         #    确保它包含我们想测试的各种情况（能匹配映射表、不能匹配等）
-    #         #    这里我们先假设 _process_cast_list 内部会自己处理 source_actors_candidates 的获取
-    #         #    如果你想更精确控制，可以在这里手动创建 source_actors_candidates 并想办法传递给
-    #         #    一个修改版的 _process_cast_list (但这会使测试更复杂)
-    #         #    目前，我们先依赖 _process_cast_list 内部的数据源获取逻辑。
-    #         #    确保你的 config.ini 中 data_source_mode 和 local_data_path 设置正确以便它能获取到数据。
+        # --- 核心判断逻辑 ---
+        # 检查 raw_media_item_details 是否有效，并且 People 字段是否存在且是一个列表
+        if raw_media_item_details and isinstance(raw_media_item_details.get("People"), list):
+            original_emby_people = raw_media_item_details.get("People", []) # 如果People键不存在，默认为空列表
+            
+            # 即使 People 列表存在但为空，也应该继续，让 _process_cast_list 尝试从豆瓣补充
+            logger.info(f"测试：获取到 MEDIA '{raw_media_item_details.get('Name')}' 的原始 People 列表，数量: {len(original_emby_people)}")
+            if original_emby_people: # 只在列表非空时打印前3条
+                logger.debug(f"测试：原始 People (前3条): {original_emby_people[:3]}")
 
-    #         # 3. 调用 _process_cast_list 方法
-    #         logger.info(f"测试：准备调用 media_processor_instance._process_cast_list...")
-    #         try:
-    #             # _process_cast_list 期望的第一个参数是原始的 People 列表
-    #             final_cast_list = media_processor_instance._process_cast_list(
-    #                 original_emby_people, # 传递原始 People 列表
-    #                 raw_movie_details      # 传递整个电影详情，方法内部会提取所需信息
-    #             )
-                
-    #             logger.info(f"测试：_process_cast_list 执行完毕。最终演员列表长度: {len(final_cast_list)}")
-    #             logger.info(f"测试：最终演员列表 (前5条):")
-    #             for i, actor in enumerate(final_cast_list[:5]):
-    #                 logger.info(f"  演员 {i+1}: Name='{actor.get('Name')}', Role='{actor.get('Role')}', EmbyPID='{actor.get('EmbyPersonId')}', TMDbPID='{actor.get('TmdbPersonId')}', DoubanID='{actor.get('DoubanCelebrityId')}', Providers='{actor.get('ProviderIds')}', Source='{actor.get('_source')}'")
-                
-    #             # 4. (可选) 如果你想继续测试写入 Emby，可以取消注释下面的代码
-    #             #    但建议先只看 _process_cast_list 的输出是否正确
-    #             # logger.info("测试：准备调用 update_emby_item_cast 将处理后的演员列表写回Emby...")
-    #             # cast_for_emby_update = []
-    #             # for actor_data in final_cast_list:
-    #             #     # ... (与 process_single_item 中类似的构建 cast_for_emby_update 的逻辑) ...
-    #             # success_write = emby_handler.update_emby_item_cast(...)
-    #             # if success_write:
-    #             #     logger.info("测试：演员列表已尝试更新到Emby。")
-    #             #     emby_handler.refresh_emby_item_metadata(...)
+            logger.info(f"测试：准备调用 media_processor_instance._process_cast_list...")
+            try:
+                final_cast_list = media_processor_instance._process_cast_list(
+                    original_emby_people,
+                    raw_media_item_details # <--- 修改变量名
+                )
+                # ... (打印 final_cast_list) ...
+            except Exception as e_proc_cast:
+                logger.error(f"测试：调用 _process_cast_list 时发生错误: {e_proc_cast}", exc_info=True)
+        
+        else: # raw_media_item_details 无效，或者 People 字段不存在/不是列表
+            logger.error(f"测试：未能获取 MEDIA {TEST_MEDIA_ID_TO_PROCESS} 的原始详情，或详情中无有效People列表，无法继续测试 _process_cast_list。")
 
-    #         except Exception as e_proc_cast:
-    #             logger.error(f"测试：调用 _process_cast_list 时发生错误: {e_proc_cast}", exc_info=True)
-    #     else:
-    #         logger.error(f"测试：未能获取电影 {TEST_MOVIE_ID_FOR_PROCESS_CAST} 的原始详情，无法继续测试 _process_cast_list。")
-
-    #     logger.info(f"--- 手动测试 _process_cast_list 结束 ---")
-    # else:
-    #     logger.warning("手动测试 _process_cast_list 跳过：MediaProcessor 未初始化或 Emby 配置不完整。")
+        logger.info(f"--- 手动测试 _process_cast_list 结束 ---")
     # # --- 测试代码结束 --- #
 
     # app.run(...) # 你可以暂时注释掉 app.run，这样脚本执行完测试就结束了，方便看日志

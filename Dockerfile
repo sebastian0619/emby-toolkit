@@ -1,30 +1,25 @@
-# 使用官方Python基础镜像 (slim版本比较小)
-FROM python:3.11.12-slim-bookworm
-
-# 设置工作目录，后续的命令都会在这个目录下执行
+# 第 1 阶段：构建前端
+FROM node:20 AS frontend-build
 WORKDIR /app
+COPY emby-actor-ui/ ./emby-actor-ui/
+WORKDIR /app/emby-actor-ui
+RUN npm install && npm run build
 
-ENV APP_DATA_DIR /config
+# 第 2 阶段：构建 Python 后端 + 嵌入前端
+FROM python:3.11-slim
 
-# 设置环境变量，例如Python不缓冲标准输出，方便看日志
-ENV PYTHONUNBUFFERED 1
-
-# 安装系统级的依赖，包括 Node.js 和 npm (用于 translators 库)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends nodejs npm && \
-    rm -rf /var/lib/apt/lists/*
-
-# 复制依赖描述文件到工作目录
+# 安装 Python 依赖
+WORKDIR /app
 COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# 安装Python依赖
-RUN pip install --no-cache-dir --default-timeout=100 --retries 5 -r requirements.txt
+# 拷贝后端源码
+COPY *.py ./
+COPY local_data/ ./local_data/
+COPY templates/ ./templates/
 
-# 复制所有项目文件到工作目录
-COPY . . 
+# 拷贝前端静态文件到 Flask 模板或静态目录（根据你的 web_app.py 实现）
+COPY --from=frontend-build /app/emby-actor-ui/dist/ ./static/
 
-# 暴露Flask应用监听的端口
-EXPOSE 5257
-ENV APP_ENV=docker
-# 容器启动时执行的命令
+# 启动程序
 CMD ["python", "web_app.py"]

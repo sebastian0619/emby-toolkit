@@ -4,7 +4,7 @@
 
 # --- Web Application Settings ---
 APP_VERSION = "1.5.5"  # 或者你的实际版本号
-DEBUG_MODE = False      # 开发时设为 True，部署到生产环境时应设为 False
+DEBUG_MODE = True      # 开发时设为 True，部署到生产环境时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 
 # --- 数据库设置 ---

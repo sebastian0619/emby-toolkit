@@ -3,25 +3,19 @@
 import requests
 import json
 import os
-from typing import Optional, List, Dict, Any
+from utils import contains_chinese
+from typing import Optional, List, Dict, Any, Union
 from logger_setup import logger # 假设你的 logger 在这里
 # import constants # 如果直接使用 constants.TMDB_API_KEY
 
 # TMDb API 的基础 URL
 TMDB_API_BASE_URL = "https://api.themoviedb.org/3"
 
-# 默认语言设置 (可以考虑从配置中读取)
-DEFAULT_LANGUAGE = "zh-CN" # 中文优先
-DEFAULT_REGION = "CN"    # 区域设置，影响某些结果的本地化
+# 默认语言设置
+DEFAULT_LANGUAGE = "zh-CN"
+DEFAULT_REGION = "CN"
 
 def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    """
-    通用的 TMDb API 请求函数。
-    :param endpoint: API 端点路径 (例如 "/movie/{movie_id}")
-    :param api_key: TMDb API Key
-    :param params: 请求参数字典
-    :return: 解析后的 JSON 数据字典，或在失败时返回 None
-    """
     if not api_key:
         logger.error("TMDb API Key 未提供，无法发起请求。")
         return None
@@ -29,17 +23,16 @@ def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] 
     full_url = f"{TMDB_API_BASE_URL}{endpoint}"
     base_params = {
         "api_key": api_key,
-        "language": DEFAULT_LANGUAGE # 默认语言
+        "language": DEFAULT_LANGUAGE
     }
     if params:
         base_params.update(params)
 
     try:
         # logger.debug(f"TMDb Request: URL={full_url}, Params={base_params}")
-        response = requests.get(full_url, params=base_params, timeout=10)
-        response.raise_for_status() # 如果是 4xx 或 5xx 错误，则抛出异常
+        response = requests.get(full_url, params=base_params, timeout=15) # 增加超时
+        response.raise_for_status()
         data = response.json()
-        # logger.debug(f"TMDb Response: Status={response.status_code}, Data (preview)={str(data)[:200]}")
         return data
     except requests.exceptions.HTTPError as e:
         error_details = ""
@@ -48,155 +41,428 @@ def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] 
             error_details = error_data.get("status_message", str(e))
         except json.JSONDecodeError:
             error_details = str(e)
-        logger.error(f"TMDb API HTTP Error: {e.response.status_code} - {error_details}. URL: {full_url}", exc_info=True) # type: ignore
+        logger.error(f"TMDb API HTTP Error: {e.response.status_code} - {error_details}. URL: {full_url}", exc_info=False) # 减少日志冗余
         return None
     except requests.exceptions.RequestException as e:
-        logger.error(f"TMDb API Request Error: {e}. URL: {full_url}", exc_info=True)
+        logger.error(f"TMDb API Request Error: {e}. URL: {full_url}", exc_info=False)
         return None
     except json.JSONDecodeError as e:
-        logger.error(f"TMDb API JSON Decode Error: {e}. URL: {full_url}. Response: {response.text[:200] if response else 'N/A'}", exc_info=True)
+        logger.error(f"TMDb API JSON Decode Error: {e}. URL: {full_url}. Response: {response.text[:200] if response else 'N/A'}", exc_info=False)
         return None
 
-def search_movie_tmdb(query: str, api_key: str, year: Optional[int] = None, page: int = 1) -> Optional[Dict[str, Any]]:
-    """
-    通过名称搜索电影。
-    :param query: 搜索关键词 (电影名称)
-    :param api_key: TMDb API Key
-    :param year: 电影年份 (可选，用于精确搜索)
-    :param page: 分页页码 (可选)
-    :return: 搜索结果字典，包含 'results', 'page', 'total_pages', 'total_results'
-    """
+# --- 电影相关 ---
+
+def search_movie_tmdb(query: str, api_key: str, year: Optional[Union[int, str]] = None, page: int = 1) -> Optional[Dict[str, Any]]: # year可以是str
     endpoint = "/search/movie"
     params = {
         "query": query,
         "page": page,
-        "include_adult": "false", # 通常不搜索成人内容，除非特别需要
+        "include_adult": "false",
         "language": DEFAULT_LANGUAGE,
-        "region": DEFAULT_REGION
+        "region": DEFAULT_REGION # 添加区域，可能影响搜索结果排序
     }
     if year:
-        params["primary_release_year"] = year # 或 year，取决于API文档
+        # TMDb API 文档中 primary_release_year 和 year 都可以用于电影搜索的年份过滤
+        # primary_release_year 更精确，但 year 也可以工作
+        params["primary_release_year"] = str(year) 
     logger.info(f"TMDb: 搜索电影 '{query}' (年份: {year or '任意'})")
     return _tmdb_request(endpoint, api_key, params)
 
-def get_movie_details_tmdb(movie_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids") -> Optional[Dict[str, Any]]:
+def select_best_movie_match(query_title: str, search_results: Optional[Dict[str, Any]], original_language: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
-    获取指定电影的详细信息，包括演员表 (credits)。
-    :param movie_id: TMDb 电影 ID
-    :param api_key: TMDb API Key
-    :param append_to_response: 附加到响应的数据，例如 'credits,videos,images'
-    :return: 电影详情字典
+    从电影搜索结果中选择最佳匹配。
     """
+    if not search_results or not search_results.get("results"):
+        return None
+
+    results = search_results["results"]
+    query_title_lower = query_title.lower()
+
+    # 优先选择标题完全匹配的
+    exact_matches = [
+        r for r in results 
+        if r.get("title", "").lower() == query_title_lower or \
+           r.get("original_title", "").lower() == query_title_lower
+    ]
+
+    if exact_matches:
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+        else:
+            # 如果有多个完全匹配，尝试匹配原始语言
+            if original_language:
+                lang_matches = [m for m in exact_matches if m.get("original_language") == original_language.lower()]
+                if lang_matches:
+                    # 如果有原始语言匹配，按流行度排序选第一个
+                    lang_matches.sort(key=lambda x: x.get("popularity", 0), reverse=True)
+                    return lang_matches[0]
+            # 如果没有原始语言信息或匹配不上，则在精确匹配中按流行度排序选第一个
+            exact_matches.sort(key=lambda x: x.get("popularity", 0), reverse=True)
+            return exact_matches[0]
+    
+    # 如果没有完全匹配的，退回到原始结果列表（通常已按相关性排序），取第一个
+    # 可以增加更多模糊匹配逻辑，但会更复杂
+    if results:
+        logger.debug(f"电影 '{query_title}' 未找到完全匹配，返回第一个搜索结果 '{results[0].get('title')}'。")
+        return results[0]
+        
+    return None
+
+
+def get_movie_details_tmdb(movie_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations") -> Optional[Dict[str, Any]]:
     endpoint = f"/movie/{movie_id}"
     params = {
-        "language": DEFAULT_LANGUAGE,
+        "language": DEFAULT_LANGUAGE, # 获取中文详情
         "append_to_response": append_to_response
     }
+    # 为了获取英文标题等信息，可以考虑再请求一次英文版或查看translations
     logger.info(f"TMDb: 获取电影详情 (ID: {movie_id})")
-    return _tmdb_request(endpoint, api_key, params)
+    details = _tmdb_request(endpoint, api_key, params)
+    
+    # 尝试补充英文标题，如果主语言是中文且original_title不是英文
+    if details and details.get("original_language") != "en" and DEFAULT_LANGUAGE.startswith("zh"):
+        if "translations" in (append_to_response or "") and details.get("translations", {}).get("translations"):
+            for trans in details["translations"]["translations"]:
+                if trans.get("iso_639_1") == "en" and trans.get("data", {}).get("title"):
+                    details["english_title"] = trans["data"]["title"]
+                    logger.debug(f"  从translations补充英文标题: {details['english_title']}")
+                    break
+        if not details.get("english_title"): # 如果translations里没有，尝试请求一次英文版详情
+            logger.debug(f"  尝试获取电影 {movie_id} 的英文标题...")
+            en_params = {"language": "en-US"}
+            en_details = _tmdb_request(f"/movie/{movie_id}", api_key, en_params)
+            if en_details and en_details.get("title"):
+                details["english_title"] = en_details.get("title")
+                logger.debug(f"  通过请求英文版补充英文标题: {details['english_title']}")
+    elif details and details.get("original_language") == "en":
+        details["english_title"] = details.get("original_title")
 
-def get_movie_credits_tmdb(movie_id: int, api_key: str) -> Optional[Dict[str, Any]]:
-    """
-    单独获取指定电影的演职员信息。
-    :param movie_id: TMDb 电影 ID
-    :param api_key: TMDb API Key
-    :return: 演职员信息字典，包含 'cast' 和 'crew'
-    """
-    # get_movie_details_tmdb 已经可以通过 append_to_response="credits" 获取，
-    # 但如果只需要 credits，可以调用这个专用端点。
-    endpoint = f"/movie/{movie_id}/credits"
-    params = {"language": DEFAULT_LANGUAGE}
-    logger.info(f"TMDb: 获取电影演职员 (ID: {movie_id})")
-    return _tmdb_request(endpoint, api_key, params)
+    return details
+
+
+# --- 人物相关 ---
 
 def search_person_tmdb(query: str, api_key: str, page: int = 1) -> Optional[Dict[str, Any]]:
-    """
-    通过名称搜索演员/人物。
-    :param query: 搜索关键词 (演员名称)
-    :param api_key: TMDb API Key
-    :param page: 分页页码 (可选)
-    :return: 搜索结果字典
-    """
     endpoint = "/search/person"
     params = {
         "query": query,
         "page": page,
         "include_adult": "false",
-        "language": DEFAULT_LANGUAGE
+        "language": DEFAULT_LANGUAGE # 搜索时也用中文，结果可能包含中文名
     }
     logger.info(f"TMDb: 搜索人物 '{query}'")
     return _tmdb_request(endpoint, api_key, params)
 
-def get_person_details_tmdb(person_id: int, api_key: str, append_to_response: Optional[str] = "movie_credits,tv_credits,images,external_ids") -> Optional[Dict[str, Any]]:
+def select_best_person_match(
+    query_name: str, 
+    search_results: Optional[Dict[str, Any]], 
+    target_media_year: Optional[int] = None,
+    known_for_titles: Optional[List[str]] = None # 提供一些演员的已知作品名用于匹配
+) -> Optional[Dict[str, Any]]:
     """
-    获取指定人物（演员）的详细信息，包括参演的电影和电视剧。
-    :param person_id: TMDb 人物 ID
-    :param api_key: TMDb API Key
-    :param append_to_response: 附加到响应的数据
-    :return: 人物详情字典
+    从人物搜索结果中选择最佳匹配。
     """
+    if not search_results or not search_results.get("results"):
+        return None
+
+    results = search_results["results"]
+    query_name_lower = query_name.lower()
+
+    acting_candidates = [p for p in results if p.get("known_for_department") == "Acting"]
+    if not acting_candidates:
+        logger.debug(f"人物 '{query_name}' 的搜索结果中没有 'Acting' 部门的候选人。")
+        return None
+
+    # 1. 优先选择名字完全匹配的
+    exact_name_matches = [
+        p for p in acting_candidates
+        if p.get("name", "").lower() == query_name_lower or \
+           (p.get("original_name") and p.get("original_name", "").lower() == query_name_lower)
+           # 可以考虑加入 p.get("also_known_as") 的匹配，但这需要先获取详情
+    ]
+
+    if not exact_name_matches: # 如果没有精确匹配，尝试模糊一点，比如包含
+        logger.debug(f"人物 '{query_name}' 未找到精确名字匹配，尝试在 'Acting' 候选人中查找包含的名字。")
+        # 这里可以添加更复杂的模糊匹配，或者直接使用第一个 acting_candidate
+        # 为简单起见，如果没有精确匹配，我们可能返回第一个 acting_candidate (通常按TMDb相关性排序)
+        # 或者，如果提供了 known_for_titles，可以尝试用它来筛选
+        if known_for_titles and acting_candidates:
+            best_by_known_for = None
+            max_known_for_score = 0
+            for candidate in acting_candidates:
+                score = 0
+                for work in candidate.get("known_for", []):
+                    work_title = work.get("title") or work.get("name") # 电影用title, 剧集用name
+                    if work_title and any(kft.lower() in work_title.lower() for kft in known_for_titles):
+                        score +=1
+                if score > max_known_for_score:
+                    max_known_for_score = score
+                    best_by_known_for = candidate
+                elif score == max_known_for_score and best_by_known_for and candidate.get("popularity",0) > best_by_known_for.get("popularity",0):
+                    best_by_known_for = candidate
+            if best_by_known_for:
+                logger.info(f"人物 '{query_name}': 通过已知作品匹配到 '{best_by_known_for.get('name')}' (ID: {best_by_known_for.get('id')})")
+                return best_by_known_for
+        
+        if acting_candidates: # 如果还是没有，返回最受欢迎的acting candidate
+             acting_candidates.sort(key=lambda p: p.get("popularity", 0), reverse=True)
+             logger.info(f"人物 '{query_name}': 无精确匹配，返回最受欢迎的候选人 '{acting_candidates[0].get('name')}' (ID: {acting_candidates[0].get('id')})")
+             return acting_candidates[0]
+        return None
+
+
+    # 如果有精确名字匹配的候选人
+    if len(exact_name_matches) == 1:
+        logger.info(f"人物 '{query_name}': 找到唯一精确名字匹配 '{exact_name_matches[0].get('name')}' (ID: {exact_name_matches[0].get('id')})")
+        return exact_name_matches[0]
+    else: # 多个精确名字匹配，需要进一步筛选
+        logger.debug(f"人物 '{query_name}': 找到 {len(exact_name_matches)} 个精确名字匹配，尝试进一步筛选。")
+        best_candidate = None
+        highest_score = -1
+
+        for candidate in exact_name_matches:
+            current_candidate_score = candidate.get("popularity", 0) # 基础分是流行度
+
+            # 尝试用 target_media_year 筛选
+            if target_media_year:
+                year_match_bonus = 0
+                for work in candidate.get("known_for", []):
+                    work_year_str = None
+                    if work.get("media_type") == "movie" and work.get("release_date"):
+                        work_year_str = work.get("release_date")[:4]
+                    elif work.get("media_type") == "tv" and work.get("first_air_date"):
+                        work_year_str = work.get("first_air_date")[:4]
+                    
+                    if work_year_str and work_year_str.isdigit():
+                        work_year = int(work_year_str)
+                        if abs(work_year - target_media_year) <= 2: # 年份相差2年以内，算强相关
+                            year_match_bonus += 50 # 给一个较大的奖励分
+                        elif abs(work_year - target_media_year) <= 5: # 5年以内，弱相关
+                            year_match_bonus += 20
+                current_candidate_score += year_match_bonus
+            
+            # 尝试用 known_for_titles 筛选
+            if known_for_titles:
+                known_for_bonus = 0
+                for work in candidate.get("known_for", []):
+                    work_title = work.get("title") or work.get("name")
+                    if work_title and any(kft.lower() in work_title.lower() for kft in known_for_titles):
+                        known_for_bonus += 100 # 匹配到已知作品给很高奖励
+                current_candidate_score += known_for_bonus
+
+            if current_candidate_score > highest_score:
+                highest_score = current_candidate_score
+                best_candidate = candidate
+        
+        if best_candidate:
+            logger.info(f"人物 '{query_name}': 从多个精确匹配中选择 '{best_candidate.get('name')}' (ID: {best_candidate.get('id')}), Score: {highest_score}")
+            return best_candidate
+        else: # 理论上不应到这里，因为 exact_name_matches 不为空
+            logger.warning(f"人物 '{query_name}': 无法从多个精确匹配中选出最佳，返回第一个。")
+            return exact_name_matches[0]
+
+
+def get_person_details_tmdb(person_id: int, api_key: str, append_to_response: Optional[str] = "movie_credits,tv_credits,images,external_ids,translations") -> Optional[Dict[str, Any]]:
     endpoint = f"/person/{person_id}"
     params = {
         "language": DEFAULT_LANGUAGE,
         "append_to_response": append_to_response
     }
     logger.info(f"TMDb: 获取人物详情 (ID: {person_id})")
-    return _tmdb_request(endpoint, api_key, params)
+    details = _tmdb_request(endpoint, api_key, params)
+
+    # 尝试补充英文名，如果主语言是中文且original_name不是英文 (TMDb人物的original_name通常是其母语名)
+    if details and details.get("name") != details.get("original_name") and DEFAULT_LANGUAGE.startswith("zh"):
+        # 检查 translations 是否包含英文名
+        if "translations" in (append_to_response or "") and details.get("translations", {}).get("translations"):
+            for trans in details["translations"]["translations"]:
+                if trans.get("iso_639_1") == "en" and trans.get("data", {}).get("name"):
+                    details["english_name_from_translations"] = trans["data"]["name"]
+                    logger.debug(f"  从translations补充人物英文名: {details['english_name_from_translations']}")
+                    break
+        # 如果 original_name 本身是英文，也可以用 (需要判断 original_name 的语言，较复杂)
+        # 简单处理：如果 original_name 和 name 不同，且 name 是中文，可以认为 original_name 可能是外文名
+        if details.get("original_name") and not contains_chinese(details.get("original_name", "")): # 假设 contains_chinese 在这里可用
+             details["foreign_name_from_original"] = details.get("original_name")
+
+
+    return details
+
+
+# --- 辅助函数，用于 core_processor.py 调用 ---
+def search_movie_and_get_imdb_id(
+    movie_title: str, 
+    api_key: str, 
+    movie_year: Optional[Union[int, str]] = None,
+    original_language: Optional[str] = None
+) -> Optional[str]:
+    """
+    搜索电影，选择最佳匹配，并返回其 IMDb ID。
+    """
+    logger.info(f"TMDb辅助: 为电影 '{movie_title}' ({movie_year or 'N/A'}) 获取 IMDb ID...")
+    search_results = search_movie_tmdb(movie_title, api_key, year=movie_year)
+    best_match = select_best_movie_match(movie_title, search_results, original_language=original_language)
+
+    if best_match and best_match.get("id"):
+        movie_id = best_match["id"]
+        logger.debug(f"  最佳电影匹配: '{best_match.get('title')}' (ID: {movie_id})")
+        details = get_movie_details_tmdb(movie_id, api_key, append_to_response="external_ids")
+        if details and details.get("external_ids", {}).get("imdb_id"):
+            imdb_id = details["external_ids"]["imdb_id"]
+            logger.info(f"  成功获取 IMDb ID: {imdb_id} for '{best_match.get('title')}'")
+            return imdb_id
+        else:
+            logger.warning(f"  未能从电影详情 (ID: {movie_id}) 中获取 IMDb ID。")
+    else:
+        logger.warning(f"  未能为电影 '{movie_title}' 找到合适的 TMDb 匹配。")
+    return None
+
+
 
 # --- 示例用法 (测试时可以取消注释) ---
-if __name__ == '__main__':
-    # 你需要将 'YOUR_TMDB_API_KEY' 替换为你的真实 TMDb API Key
-    # 或者从配置文件或环境变量中读取
-    TEST_API_KEY = os.environ.get("TMDB_API_KEY_TEST", None) # 尝试从环境变量获取
-    if not TEST_API_KEY:
-        print("错误：请设置 TMDB_API_KEY_TEST 环境变量或直接在代码中提供测试 API Key。")
-    else:
-        logger.info(f"使用 TMDb API Key: {TEST_API_KEY[:5]}... 进行测试")
+# if __name__ == '__main__':
+#     TEST_API_KEY = os.environ.get("TMDB_API_KEY_TEST", None)
+#     if not TEST_API_KEY:
+#         try:
+#             # from dotenv import load_dotenv
+#             # from dotenv import find_dotenv
+#             # 尝试从当前工作目录或上级目录加载 .env 文件
+#             env_path = find_dotenv(usecwd=True, raise_error_if_not_found=False)
+#             if env_path:
+#                 logger.info(f"从 {env_path} 加载 .env 文件")
+#                 load_dotenv(env_path)
+#                 TEST_API_KEY = os.environ.get("TMDB_API_KEY_TEST", None)
+#             else:
+#                 logger.info(".env 文件未找到。")
+#         except ImportError:
+#             logger.info("'python-dotenv' 未安装，无法从 .env 文件加载 API Key。")
+#             pass
 
-        # 1. 测试搜索电影
-        logger.info("\n--- 测试搜索电影 'Inception' ---")
-        search_results = search_movie_tmdb("Inception", TEST_API_KEY, year=2010)
-        if search_results and search_results.get("results"):
-            inception_movie = search_results["results"][0]
-            logger.info(f"找到电影: {inception_movie.get('title')} (ID: {inception_movie.get('id')})")
-            movie_id_to_test = inception_movie.get('id')
+#     if not TEST_API_KEY:
+#         # 如果仍然没有API Key，可以提示用户或使用一个占位符（但实际请求会失败）
+#         TEST_API_KEY = "42985eb2e0cbdf2b2c88f2f30990be40" # 替换为你的真实API Key进行测试
+#         if TEST_API_KEY == "YOUR_TMDB_API_KEY_PLACEHOLDER":
+#             logger.error("错误：请设置 TMDB_API_KEY_TEST 环境变量，或在项目根目录创建 .env 文件并定义 TMDB_API_KEY_TEST，或直接在代码中提供测试 API Key。")
+#             # exit() # 如果没有key，可以选择退出测试
 
-            if movie_id_to_test:
-                # 2. 测试获取电影详情
-                logger.info(f"\n--- 测试获取电影详情 (ID: {movie_id_to_test}) ---")
-                movie_details = get_movie_details_tmdb(movie_id_to_test, TEST_API_KEY)
-                if movie_details:
-                    logger.info(f"电影标题: {movie_details.get('title')}")
-                    logger.info(f"电影概述: {movie_details.get('overview')[:100]}...")
-                    if movie_details.get("credits") and movie_details["credits"].get("cast"):
-                        logger.info("部分演员:")
-                        for i, actor in enumerate(movie_details["credits"]["cast"]):
-                            if i < 3: # 只打印前3个
-                                logger.info(f"  - {actor.get('name')} 饰 {actor.get('character')} (Person ID: {actor.get('id')})")
-                            else:
-                                break
-                        # 假设我们想获取第一个演员的详情
-                        if movie_details["credits"]["cast"]:
-                            first_actor_id = movie_details["credits"]["cast"][0].get("id")
-                            first_actor_name = movie_details["credits"]["cast"][0].get("name")
-                            if first_actor_id:
-                                # 3. 测试获取人物详情
-                                logger.info(f"\n--- 测试获取人物 '{first_actor_name}' 详情 (ID: {first_actor_id}) ---")
-                                person_details = get_person_details_tmdb(first_actor_id, TEST_API_KEY)
-                                if person_details:
-                                    logger.info(f"人物名称: {person_details.get('name')}")
-                                    logger.info(f"出生日期: {person_details.get('birthday')}")
-                                    logger.info(f"简介 (部分): {person_details.get('biography')[:100] if person_details.get('biography') else 'N/A'}...")
-        else:
-            logger.warning("搜索电影 'Inception' 未返回结果或结果格式不正确。")
+#     if TEST_API_KEY and TEST_API_KEY != "YOUR_TMDB_API_KEY_PLACEHOLDER":
+#         logger.info(f"使用 TMDb API Key: {TEST_API_KEY[:5]}... 进行测试")
 
-        # 4. 测试搜索人物
-        logger.info("\n--- 测试搜索人物 'Leonardo DiCaprio' ---")
-        person_search_results = search_person_tmdb("Leonardo DiCaprio", TEST_API_KEY)
-        if person_search_results and person_search_results.get("results"):
-            leo = person_search_results["results"][0]
-            logger.info(f"找到人物: {leo.get('name')} (ID: {leo.get('id')}), Known for: {leo.get('known_for_department')}")
-        else:
-            logger.warning("搜索人物 'Leonardo DiCaprio' 未返回结果。")
+#         # --- 测试电影搜索与选择 ---
+#         logger.info("\n=== 测试电影搜索与选择 ===")
+        
+#         movie_test_cases = [
+#             {"query": "盗梦空间", "year": 2010, "original_language": "en", "expected_id": 27205, "comment": "中文名，精确年份"},
+#             {"query": "Inception", "year": 2010, "original_language": "en", "expected_id": 27205, "comment": "英文名，精确年份"},
+#             {"query": "黑客帝国", "year": None, "original_language": "en", "expected_id": 603, "comment": "无年份，应选第一部"},
+#             {"query": "玩具总动员", "year": 1995, "original_language": "en", "expected_id": 862, "comment": "经典动画"},
+#             {"query": "流浪地球", "year": 2019, "original_language": "zh", "expected_id": 530175, "comment": "中文电影"},
+#             {"query": "一个不存在的电影标题XYZ123", "year": 2023, "comment": "测试无结果"},
+#         ]
 
-        logger.info("\n--- TMDb Handler 测试结束 ---")
+#         for case in movie_test_cases:
+#             logger.info(f"\n--- 测试电影: '{case['query']}' (年份: {case.get('year', 'N/A')}, 原始语言: {case.get('original_language', 'N/A')}) ---")
+#             raw_search_results = search_movie_tmdb(case["query"], TEST_API_KEY, year=case.get("year"))
+            
+#             if raw_search_results and raw_search_results.get("results"):
+#                 logger.debug(f"  原始搜索结果 (前3条):")
+#                 for i, r_movie in enumerate(raw_search_results["results"]):
+#                     if i < 3:
+#                         logger.debug(f"    - '{r_movie.get('title')}' (ID: {r_movie.get('id')}, Pop: {r_movie.get('popularity')}, Year: {r_movie.get('release_date', '')[:4]}, Lang: {r_movie.get('original_language')})")
+#                     else:
+#                         break
+#             elif raw_search_results:
+#                  logger.debug(f"  原始搜索结果为空列表。")
+#             else:
+#                 logger.debug(f"  原始搜索API调用失败或未返回结果。")
+
+#             selected_movie = select_best_movie_match(case["query"], raw_search_results, original_language=case.get("original_language"))
+            
+#             if selected_movie:
+#                 logger.info(f"  >> 选中电影: '{selected_movie.get('title')}' (ID: {selected_movie.get('id')}, Pop: {selected_movie.get('popularity')}, Year: {selected_movie.get('release_date', '')[:4]}, Lang: {selected_movie.get('original_language')})")
+#                 if "expected_id" in case and selected_movie.get("id") != case["expected_id"]:
+#                     logger.warning(f"    !! 注意: 选中ID {selected_movie.get('id')} 与期望ID {case['expected_id']} 不符。")
+                
+#                 # 测试 get_movie_details_tmdb 和补充英文标题
+#                 movie_details = get_movie_details_tmdb(selected_movie.get("id"), TEST_API_KEY)
+#                 if movie_details:
+#                     logger.debug(f"    获取详情: 标题='{movie_details.get('title')}', 原标题='{movie_details.get('original_title')}', 补充英文标题='{movie_details.get('english_title', 'N/A')}'")
+#                     logger.debug(f"    IMDb ID from details: {movie_details.get('external_ids', {}).get('imdb_id', 'N/A')}")
+
+#             else:
+#                 logger.info(f"  >> 未能为 '{case['query']}' 选中任何电影。")
+#                 if "expected_id" in case: # 如果期望有结果但没有，也提示
+#                     logger.warning(f"    !! 注意: 期望找到电影 (ID: {case['expected_id']}) 但未选中任何结果。")
+#             logger.info("--------------------------------------------------")
+
+#         # --- 测试人物搜索与选择 ---
+#         logger.info("\n\n=== 测试人物搜索与选择 ===")
+#         person_test_cases = [
+#             {"query": "莱昂纳多·迪卡普里奥", "target_media_year": 2010, "known_for_titles": ["Inception", "盗梦空间"], "expected_id": 6193, "comment": "中文名，带年份和作品提示"},
+#             {"query": "Leonardo DiCaprio", "target_media_year": 1997, "known_for_titles": ["Titanic"], "expected_id": 6193, "comment": "英文名，带年份和作品提示"},
+#             {"query": "刘德华", "target_media_year": None, "known_for_titles": ["无间道"], "expected_id": 3810, "comment": "无年份，有作品提示"},
+#             {"query": "斯嘉丽·约翰逊", "target_media_year": 2019, "known_for_titles": ["Avengers", "Marriage Story"], "expected_id": 1245, "comment": "多作品提示"},
+#             {"query": "张三李四王五XYZ", "comment": "测试无结果"}, # 测试一个不太可能存在的名字
+#             {"query": "李", "comment": "测试常见姓氏，可能匹配不准或返回多个"}, # 测试常见姓氏
+#         ]
+
+#         for case in person_test_cases:
+#             logger.info(f"\n--- 测试人物: '{case['query']}' (年份提示: {case.get('target_media_year', 'N/A')}, 作品提示: {case.get('known_for_titles', 'N/A')}) ---")
+#             raw_person_results = search_person_tmdb(case["query"], TEST_API_KEY)
+
+#             if raw_person_results and raw_person_results.get("results"):
+#                 logger.debug(f"  原始搜索结果 (前3条 'Acting' 部门):")
+#                 count = 0
+#                 for r_person in raw_person_results["results"]:
+#                     if r_person.get("known_for_department") == "Acting":
+#                         logger.debug(f"    - '{r_person.get('name')}' (ID: {r_person.get('id')}, Pop: {r_person.get('popularity')}, Dept: {r_person.get('known_for_department')})")
+#                         known_for_preview = [wk.get('title', wk.get('name', 'N/A')) for wk in r_person.get("known_for", [])[:2]]
+#                         logger.debug(f"      Known for (preview): {known_for_preview}")
+#                         count += 1
+#                     if count >= 3:
+#                         break
+#                 if count == 0:
+#                      logger.debug(f"  原始搜索结果中未找到 'Acting' 部门的演员。")
+#             elif raw_person_results:
+#                 logger.debug(f"  原始搜索结果为空列表。")
+#             else:
+#                 logger.debug(f"  原始搜索API调用失败或未返回结果。")
+
+#             selected_person = select_best_person_match(
+#                 case["query"], 
+#                 raw_person_results, 
+#                 target_media_year=case.get("target_media_year"),
+#                 known_for_titles=case.get("known_for_titles")
+#             )
+
+#             if selected_person:
+#                 logger.info(f"  >> 选中人物: '{selected_person.get('name')}' (ID: {selected_person.get('id')}, Pop: {selected_person.get('popularity')})")
+#                 if "expected_id" in case and selected_person.get("id") != case["expected_id"]:
+#                     logger.warning(f"    !! 注意: 选中ID {selected_person.get('id')} 与期望ID {case['expected_id']} 不符。")
+                
+#                 # 测试 get_person_details_tmdb
+#                 person_details = get_person_details_tmdb(selected_person.get("id"), TEST_API_KEY)
+#                 if person_details:
+#                     logger.debug(f"    获取详情: 姓名='{person_details.get('name')}', 原名='{person_details.get('original_name')}', 补充英文名='{person_details.get('english_name_from_translations', 'N/A')}', 补充外文原名='{person_details.get('foreign_name_from_original', 'N/A')}'")
+#                     logger.debug(f"    IMDb ID from details: {person_details.get('external_ids', {}).get('imdb_id', 'N/A')}")
+#             else:
+#                 logger.info(f"  >> 未能为 '{case['query']}' 选中任何人物。")
+#                 if "expected_id" in case:
+#                     logger.warning(f"    !! 注意: 期望找到人物 (ID: {case['expected_id']}) 但未选中任何结果。")
+#             logger.info("--------------------------------------------------")
+            
+#         # 测试辅助函数 search_movie_and_get_imdb_id
+#         logger.info("\n\n=== 测试辅助函数 search_movie_and_get_imdb_id ===")
+#         test_movie_for_imdb = "阿凡达"
+#         test_movie_year_for_imdb = 2009
+#         imdb_id_result = search_movie_and_get_imdb_id(test_movie_for_imdb, TEST_API_KEY, movie_year=test_movie_year_for_imdb)
+#         if imdb_id_result:
+#             logger.info(f"为 '{test_movie_for_imdb}' ({test_movie_year_for_imdb}) 获取到的 IMDb ID: {imdb_id_result} (期望: tt0499549)")
+#         else:
+#             logger.warning(f"未能为 '{test_movie_for_imdb}' ({test_movie_year_for_imdb}) 获取 IMDb ID。")
+
+
+#         logger.info("\n--- TMDb Handler 所有测试结束 ---")
+
+#     else: # API Key 未配置
+#         logger.error("TMDb API Key 未配置，跳过 TMDb Handler 测试。")
