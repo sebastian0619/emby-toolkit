@@ -114,29 +114,28 @@ class MediaProcessor:
             logger.error(f"从数据库读取已处理记录失败: {e}", exc_info=True)
         return log_set
 
-    def save_to_processed_log(self, item_id: str, item_name: Optional[str] = None, score: Optional[float] = None): # <--- 1. 添加 score 参数
+    def save_to_processed_log(self, item_id: str, item_name: Optional[str] = None, score: Optional[float] = None):
         """将成功处理的媒体项ID、名称和评分保存到SQLite数据库和内存缓存中。"""
         try:
             conn = self._get_db_connection()
             cursor = conn.cursor()
             
-            # 2. 修改 SQL 语句以包含 score 列
-            # 使用 REPLACE INTO 来确保如果 item_id 已存在，则更新记录 (包括分数和时间戳)
             cursor.execute(
                 "REPLACE INTO processed_log (item_id, item_name, processed_at, score) VALUES (?, ?, CURRENT_TIMESTAMP, ?)",
-                (item_id, item_name if item_name else f"未知项目(ID:{item_id})", score) # <--- 3. 传递 score 给 SQL
+                (item_id, item_name if item_name else f"未知项目(ID:{item_id})", score)
             )
             conn.commit()
             conn.close()
             
-            # 内存缓存 self.processed_items_cache 通常只用于快速检查 item_id 是否处理过，
-            # 不需要存储 score，所以这部分逻辑不变。
+            # 先准备好评分的显示字符串
+            score_display = f"{score:.1f}" if score is not None else "N/A" # <--- 计算好显示字符串
+
             if item_id not in self.processed_items_cache:
                 self.processed_items_cache.add(item_id)
-                # 4. 更新日志消息以包含分数
-                logger.info(f"Item ID '{item_id}' ('{item_name}') 已添加到已处理记录 (数据库[评分:{score:.1f if score is not None else 'N/A'}]和内存)。")
+                logger.info(f"Item ID '{item_id}' ('{item_name}') 已添加到已处理记录 (数据库[评分:{score_display}]和内存)。") # <--- 使用 score_display
             else:
-                logger.debug(f"Item ID '{item_id}' ('{item_name}') 已更新/确认在已处理记录 (数据库[评分:{score:.1f if score is not None else 'N/A'}])。")
+                # 如果 logger.debug 这行也需要显示 score，同样处理
+                logger.debug(f"Item ID '{item_id}' ('{item_name}') 已更新/确认在已处理记录 (数据库[评分:{score_display}])。") # <--- 使用 score_display
         except Exception as e:
             logger.error(f"保存已处理记录到数据库失败 (Item ID: {item_id}): {e}", exc_info=True)
 
@@ -912,7 +911,7 @@ class MediaProcessor:
             # 你需要在 __init__ 中加载这个配置，或者在这里直接用 self.config.get
             # MIN_SCORE_FOR_REVIEW = float(self.config.get("min_score_for_review", 6.0))
             # 为简化，我们先硬编码一个值，后续你可以改成从配置读取
-            MIN_SCORE_FOR_REVIEW = 4.0 
+            MIN_SCORE_FOR_REVIEW = float(self.config.get("min_score_for_review", 6.0)) 
             
             if processing_score < MIN_SCORE_FOR_REVIEW:
                 logger.warning(f"  处理评分 ({processing_score:.1f}) 低于阈值 ({MIN_SCORE_FOR_REVIEW:.1f})，将额外记录到失败/待复核日志。")

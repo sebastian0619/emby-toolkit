@@ -4,11 +4,15 @@
           <n-layout-header :bordered="false" class="app-header">
             <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
               <span>Emby 演员管理</span>
-              <n-switch v-model:value="isDarkTheme" size="small">
-                <template #checked>暗色</template>
-                <template #unchecked>亮色</template>
-              </n-switch>
+                <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="font-size: 12px; color: #999;">v{{ appVersion }}</span>
+                <n-switch v-model:value="isDarkTheme" size="small">
+                  <template #checked>暗色</template>
+                  <template #unchecked>亮色</template>
+                </n-switch>
+              </div>
             </div>
+
           </n-layout-header>
           <n-layout has-sider>
             <n-layout-sider
@@ -105,7 +109,7 @@ const currentComponentKey = ref('settings-emby');
 const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲', message: '等待任务', progress: 0 });
 const showStatusArea = ref(true);
 const activeMenuKey = computed(() => route.name);
-
+const appVersion = ref(__APP_VERSION__);
 
 const renderIcon = (iconComponent) => {
   return () => h(NIcon, null, { default: () => h(iconComponent) });

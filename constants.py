@@ -66,7 +66,7 @@ CONFIG_SECTION_TRANSLATION = "Translation"
 CONFIG_OPTION_TRANSLATOR_ENGINES = "translator_engines_order"
 CONFIG_SECTION_DOMESTIC_SOURCE = "DomesticSource"
 CONFIG_OPTION_DOMESTIC_SOURCE_MODE = "domestic_source_mode"
-
+DEFAULT_MIN_SCORE_FOR_REVIEW = 6.0
 
 # --- 演员状态文本映射 (用于 /api/search_media) ---
 ACTOR_STATUS_TEXT_MAP = {

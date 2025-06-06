@@ -219,7 +219,7 @@ def load_config() -> Dict[str, Any]:
         constants.CONFIG_OPTION_LOCAL_DATA_PATH: getattr(constants, 'DEFAULT_LOCAL_DATA_PATH', ""),
 
         "delay_between_items_sec": str(getattr(constants, 'DEFAULT_DELAY_BETWEEN_ITEMS_SEC', 0.5)),
-
+        "min_score_for_review": str(getattr(constants, 'DEFAULT_MIN_SCORE_FOR_REVIEW', 6.0)),
         "schedule_enabled": str(getattr(constants, 'DEFAULT_SCHEDULE_ENABLED', False)).lower(),
         "schedule_cron": getattr(constants, 'DEFAULT_SCHEDULE_CRON', "0 3 * * *"),
         "schedule_force_reprocess": str(getattr(constants, 'DEFAULT_SCHEDULE_FORCE_REPROCESS', False)).lower(),
@@ -282,7 +282,7 @@ def load_config() -> Dict[str, Any]:
 
     # --- General Section ---
     app_cfg["delay_between_items_sec"] = config_parser.getfloat("General", "delay_between_items_sec")
-
+    app_cfg["min_score_for_review"] = config_parser.getfloat("General", "min_score_for_review")
     # --- Scheduler Section ---
     app_cfg["schedule_enabled"] = config_parser.getboolean("Scheduler", "schedule_enabled") # 用于全量扫描
     app_cfg["schedule_cron"] = config_parser.get("Scheduler", "schedule_cron")
@@ -293,6 +293,7 @@ def load_config() -> Dict[str, Any]:
     logger.debug(f"load_config: 返回的 app_cfg['libraries_to_process'] = {app_cfg.get('libraries_to_process')}")
     logger.debug(f"load_config: 返回的 app_cfg['data_source_mode'] = {app_cfg.get('data_source_mode')}")
     logger.debug(f"load_config: 返回的 app_cfg['schedule_enabled'] (for scan) = {app_cfg.get('schedule_enabled')}")
+    logger.debug(f"load_config: 返回的 app_cfg['min_score_for_review'] = {app_cfg.get('min_score_for_review')}")
     return app_cfg
 
 def save_config(new_config: Dict[str, Any]):
@@ -360,7 +361,7 @@ def save_config(new_config: Dict[str, Any]):
 
     # --- General Section ---
     config.set("General", "delay_between_items_sec", str(new_config.get("delay_between_items_sec", "0.5")))
-
+    config.set("General", "min_score_for_review", str(new_config.get("min_score_for_review", "6.0")))
     # --- Scheduler Section ---
     config.set("Scheduler", "schedule_enabled", str(new_config.get("schedule_enabled", False)).lower())
     config.set("Scheduler", "schedule_cron", str(new_config.get("schedule_cron", "0 3 * * *")))

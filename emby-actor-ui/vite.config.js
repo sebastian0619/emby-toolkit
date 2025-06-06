@@ -1,15 +1,19 @@
 // vite.config.js
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import { version } from './package.json'
 
 export default defineConfig({
   plugins: [vue()],
+  define: {
+    __APP_VERSION__: JSON.stringify(version)
+  },
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:5257', // <<--- !!! 修改为你 Flask 应用的地址 !!!
-        changeOrigin: true, // 需要虚拟主机站点
-        // rewrite: (path) => path.replace(/^\/api/, '') // 如果后端API路径不包含/api前缀，则需要重写
+        target: 'http://localhost:5257',
+        changeOrigin: true,
+        // rewrite: (path) => path.replace(/^\/api/, '')
       }
     }
   }
