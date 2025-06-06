@@ -36,6 +36,7 @@ COPY emby_handler.py .
 COPY utils.py .
 COPY logger_setup.py .
 COPY constants.py .
+COPY local_data_handler.py .
 # 如果有 templates 目录并且 Flask 会用到，则复制
 # COPY templates/ ./templates/
 # 如果有 /config 目录的需求，可以在运行时通过 volume 挂载，或者在这里创建
