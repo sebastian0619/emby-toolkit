@@ -95,6 +95,7 @@ def get_db_connection() -> sqlite3.Connection:
     if not os.path.exists(os.path.dirname(DB_PATH)): # 检查数据库文件所在的目录是否存在
         logger.warning(f"数据库目录 {os.path.dirname(DB_PATH)} 不存在，get_db_connection 可能失败。")
     conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=20)
     conn.row_factory = sqlite3.Row
     return conn
 
