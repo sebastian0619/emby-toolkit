@@ -1404,7 +1404,6 @@ def serve_assets(filename):
 def serve_favicon():
     return send_from_directory('static', 'favicon.ico')
 
-
 @app.route('/api/export_person_map', methods=['GET'])
 def api_export_person_map():
     """
@@ -1545,27 +1544,30 @@ def api_import_person_map():
             logger.error(f"导入文件时发生严重错误: {e}", exc_info=True)
             return jsonify({"error": f"处理文件时发生错误: {e}"}), 500
     else:
-        return jsonify({"error": "无效的文件类型，请上传 .csv 文件"}), 400   
+        return jsonify({"error": "无效的文件类型，请上传 .csv 文件"}), 400    
 
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve_vue_app(path):
-    # 检查请求的路径是否指向一个实际存在于 static 文件夹中的文件
-    # 例如 /assets/index.js, /favicon.ico 等
-    # safe_join 可以防止路径遍历攻击
-    potential_file_path = safe_join(app.static_folder, path)
-    
-    if path != "" and os.path.exists(potential_file_path) and os.path.isfile(potential_file_path):
-        # 如果是真实存在的文件，则直接返回该文件
-        return send_from_directory(app.static_folder, path)
-    else:
-        # 如果路径是空的（即根路径'/'），或者路径不是一个真实存在的文件
-        # (例如 /ReviewList, /actions-status 等前端路由)
-        # 则总是返回前端应用的入口 index.html
-        return send_from_directory(app.static_folder, 'index.html')
- 
+    abs_static_folder = os.path.abspath(app.static_folder)
+    requested_file_abs_path = safe_join(abs_static_folder, path)
 
+    if not requested_file_abs_path or not requested_file_abs_path.startswith(abs_static_folder):
+        logger.warning(f"Potential invalid path access: '{path}', serving index.html")
+        return send_from_directory(app.static_folder, 'index.html')
+
+    if not path or not os.path.exists(requested_file_abs_path) or not os.path.isfile(requested_file_abs_path):
+        logger.debug(f"Path '{path}' not found as a static file or is root, serving index.html from {app.static_folder}")
+        index_html_path = safe_join(app.static_folder, 'index.html')
+        if not os.path.exists(index_html_path):
+            logger.error(f"CRITICAL: index.html not found at {index_html_path}")
+            return "Frontend application not found (index.html missing).", 404
+        return send_from_directory(app.static_folder, 'index.html')
+    else:
+        logger.debug(f"Serving static file: '{path}' from {app.static_folder}")
+        return send_from_directory(app.static_folder, path)
+    
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
     init_db()
