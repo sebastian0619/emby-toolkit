@@ -96,4 +96,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }} 
           # platforms: linux/amd64,linux/arm64 # (可选)
           cache-from: type=gha 
+<<<<<<< HEAD
           cache-to: type=gha,mode=max
+=======
+          cache-to: type=gha,mode=max
+>>>>>>> f12caf6fdf5f0a6557c26c1cb9a906b33b68cf46
