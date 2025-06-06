@@ -611,6 +611,34 @@ def enrich_and_match_douban_cast_to_emby(
 
     logger.info(f"enrich_and_match_douban_cast_to_emby: 处理完成，返回 {len(results)} 个匹配/增强的演员信息。")
     return results
+
+def api_specific_sync_map_task(api_task_name: str): # <--- API 专属的，接收一个任务名参数
+    logger.info(f"'{api_task_name}': API专属同步任务开始执行。")
+    if media_processor_instance and \
+       media_processor_instance.emby_url and \
+       media_processor_instance.emby_api_key:
+        try:
+            sync_handler_instance = SyncHandler(
+                db_path=DB_PATH,
+                emby_url=media_processor_instance.emby_url,
+                emby_api_key=media_processor_instance.emby_api_key,
+                emby_user_id=media_processor_instance.emby_user_id
+            )
+            logger.info(f"'{api_task_name}': SyncHandler 实例已创建 (API)。")
+            sync_handler_instance.sync_emby_person_map_to_db(
+                update_status_callback=update_status_from_thread
+            )
+            logger.info(f"'{api_task_name}': 同步操作完成 (API)。")
+        except NameError as ne:
+             logger.error(f"'{api_task_name}' (API) 无法执行：SyncHandler 类未定义或未导入。错误: {ne}", exc_info=True)
+             update_status_from_thread(-1, "错误：同步功能组件未找到")
+        except Exception as e_sync:
+            logger.error(f"'{api_task_name}' (API) 执行过程中发生严重错误: {e_sync}", exc_info=True)
+            update_status_from_thread(-1, f"错误：同步失败 ({str(e_sync)[:50]}...)")
+    else:
+        logger.error(f"'{api_task_name}' (API) 无法执行：MediaProcessor 未初始化或 Emby 配置不完整。")
+        update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
+
 # --- Flask 路由 ---
 @app.route('/webhook/emby', methods=['POST'])
 def emby_webhook():
@@ -634,6 +662,78 @@ def emby_webhook():
     return jsonify({"status": "event_not_handled"}), 200
 
 
+@app.route('/trigger_full_scan', methods=['POST'])
+def trigger_full_scan():
+    force_reprocess = request.form.get('force_reprocess_all') == 'on'
+    action_message = "全量媒体库扫描"
+    if force_reprocess: action_message += " (强制重处理所有)"
+
+    def full_scan_task_internal(force_flag): # 内部任务函数
+        if media_processor_instance:
+            media_processor_instance.process_full_library(
+                update_status_callback=update_status_from_thread,
+                force_reprocess_all=force_flag
+            )
+        else:
+            logger.error("全量扫描无法执行：MediaProcessor 未初始化。")
+            update_status_from_thread(-1, "错误：核心处理器未就绪")
+
+    thread = threading.Thread(target=_execute_task_with_lock, args=(full_scan_task_internal, action_message, force_reprocess))
+    thread.start()
+    flash(f"{action_message}任务已在后台启动。", "info")
+    return redirect(url_for('settings_page'))
+
+@app.route('/trigger_sync_person_map', methods=['POST'])
+def trigger_sync_person_map(): # WebUI 用的
+    # ... (你的 if not media_processor_instance 和 if task_lock.locked() 检查逻辑不变) ...
+
+    task_name = "同步Emby人物映射表 (WebUI)"
+    logger.info(f"收到手动触发 '{task_name}' 的请求。")
+
+    def sync_map_task_internal_for_webui(): # <--- 这是 WebUI 专属的内部任务函数
+        logger.info(f"'{task_name}': WebUI专属同步任务开始执行。")
+        if media_processor_instance and \
+           media_processor_instance.emby_url and \
+           media_processor_instance.emby_api_key:
+            try:
+                sync_handler_instance = SyncHandler(
+                    db_path=DB_PATH,
+                    emby_url=media_processor_instance.emby_url,
+                    emby_api_key=media_processor_instance.emby_api_key,
+                    emby_user_id=media_processor_instance.emby_user_id
+                )
+                logger.info(f"'{task_name}': SyncHandler 实例已创建 (WebUI)。")
+                sync_handler_instance.sync_emby_person_map_to_db(
+                    update_status_callback=update_status_from_thread
+                )
+                logger.info(f"'{task_name}': 同步操作完成 (WebUI)。")
+            except NameError as ne:
+                 logger.error(f"'{task_name}' (WebUI) 无法执行：SyncHandler 类未定义或未导入。错误: {ne}", exc_info=True)
+                 update_status_from_thread(-1, "错误：同步功能组件未找到")
+            except Exception as e_sync:
+                logger.error(f"'{task_name}' (WebUI) 执行过程中发生严重错误: {e_sync}", exc_info=True)
+                update_status_from_thread(-1, f"错误：同步失败 ({str(e_sync)[:50]}...)")
+        else:
+            logger.error(f"'{task_name}' (WebUI) 无法执行：MediaProcessor 未初始化或 Emby 配置不完整。")
+            update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
+
+    # WebUI 路由调用它自己的内部任务函数
+    thread = threading.Thread(target=_execute_task_with_lock, args=(sync_map_task_internal_for_webui, task_name))
+    thread.start()
+
+    flash(f"'{task_name}' 任务已在后台启动。", "info")
+    return redirect(url_for('settings_page'))
+
+@app.route('/trigger_stop_task', methods=['POST'])
+def trigger_stop_task():
+    global background_task_status
+    if media_processor_instance and hasattr(media_processor_instance, 'signal_stop'):
+        media_processor_instance.signal_stop()
+        flash("已发送停止后台任务的请求。任务将在当前步骤完成后停止。", "info")
+        background_task_status["message"] = "正在尝试停止任务..."
+    else:
+        flash("错误：服务未就绪或不支持停止操作。", "error")
+    return redirect(url_for('settings_page'))
 
 @app.route('/status')
 def get_status():

@@ -114,27 +114,29 @@ class MediaProcessor:
             logger.error(f"从数据库读取已处理记录失败: {e}", exc_info=True)
         return log_set
 
-    def save_to_processed_log(self, item_id: str, item_name: Optional[str] = None, score: Optional[float] = None):
+    def save_to_processed_log(self, item_id: str, item_name: Optional[str] = None, score: Optional[float] = None): # <--- 1. 添加 score 参数
         """将成功处理的媒体项ID、名称和评分保存到SQLite数据库和内存缓存中。"""
         try:
             conn = self._get_db_connection()
             cursor = conn.cursor()
             
+            # 2. 修改 SQL 语句以包含 score 列
+            # 使用 REPLACE INTO 来确保如果 item_id 已存在，则更新记录 (包括分数和时间戳)
             cursor.execute(
                 "REPLACE INTO processed_log (item_id, item_name, processed_at, score) VALUES (?, ?, CURRENT_TIMESTAMP, ?)",
-                (item_id, item_name if item_name else f"未知项目(ID:{item_id})", score)
+                (item_id, item_name if item_name else f"未知项目(ID:{item_id})", score) # <--- 3. 传递 score 给 SQL
             )
             conn.commit()
             conn.close()
             
-            # 先准备好评分的显示字符串
-            score_display = f"{score:.1f}" if score is not None else "N/A"
-
+            # 内存缓存 self.processed_items_cache 通常只用于快速检查 item_id 是否处理过，
+            # 不需要存储 score，所以这部分逻辑不变。
             if item_id not in self.processed_items_cache:
                 self.processed_items_cache.add(item_id)
-                logger.info(f"Item ID '{item_id}' ('{item_name}') 已添加到已处理记录 (数据库[评分:{score_display}]和内存)。") # <--- 使用 score_display
+                # 4. 更新日志消息以包含分数
+                logger.info(f"Item ID '{item_id}' ('{item_name}') 已添加到已处理记录 (数据库[评分:{score:.1f if score is not None else 'N/A'}]和内存)。")
             else:
-                logger.debug(f"Item ID '{item_id}' ('{item_name}') 已更新/确认在已处理记录 (数据库[评分:{score_display}])。") # <--- 使用 score_display
+                logger.debug(f"Item ID '{item_id}' ('{item_name}') 已更新/确认在已处理记录 (数据库[评分:{score:.1f if score is not None else 'N/A'}])。")
         except Exception as e:
             logger.error(f"保存已处理记录到数据库失败 (Item ID: {item_id}): {e}", exc_info=True)
 
@@ -151,22 +153,24 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"清除数据库已处理记录失败: {e}", exc_info=True)
 
-    def save_to_failed_log(self, item_id: str, item_name: Optional[str], error_msg: str, item_type: Optional[str] = None, score: Optional[float] = None):
+    def save_to_failed_log(self, item_id: str, item_name: Optional[str], error_msg: str, item_type: Optional[str] = None, score: Optional[float] = None): # <--- 1. 添加 score 参数
         """将处理失败的媒体项信息和评分保存到SQLite数据库。"""
         try:
             conn = self._get_db_connection()
             cursor = conn.cursor()
 
+            # 2. 修改 SQL 语句以包含 score 列
+            # 使用 REPLACE INTO 来确保如果 item_id 已存在，则更新记录
             cursor.execute(
                 "REPLACE INTO failed_log (item_id, item_name, failed_at, error_message, item_type, score) VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, ?)",
-                (item_id, item_name if item_name else f"未知项目(ID:{item_id})", error_msg, item_type if item_type else "未知类型", score)
+                (item_id, item_name if item_name else f"未知项目(ID:{item_id})", error_msg, item_type if item_type else "未知类型", score) # <--- 3. 传递 score 给 SQL
             )
             conn.commit()
             conn.close()
             
-            # 先准备好评分的显示字符串
-            score_display_for_log = f"(评分为: {score:.1f})" if score is not None else "(评分未记录/不适用)"
-            logger.info(f"Item ID '{item_id}' ('{item_name}') 已作为失败/待复核项记录到数据库。原因: {error_msg} {score_display_for_log}") # <--- 使用 score_display_for_log
+            # 4. 更新日志消息以包含分数
+            score_info = f"(评分为: {score:.1f})" if score is not None else "(评分未记录/不适用)"
+            logger.info(f"Item ID '{item_id}' ('{item_name}') 已作为失败/待复核项记录到数据库。原因: {error_msg} {score_info}")
         except Exception as e:
             logger.error(f"保存失败记录到数据库失败 (Item ID: {item_id}): {e}", exc_info=True)
 
@@ -531,39 +535,39 @@ class MediaProcessor:
                 if conn_process_cast: conn_process_cast.commit()
                 return processed_cast_intermediate
 
-            # --- 步骤 3: 处理筛选出的新候选演员 (TMDb搜索、IMDb获取、映射表交互) ---
+            # --- 步骤 3: 处理筛选出的新候选演员 (TMDb搜索、IMDb获取、映射表交互与更新) ---
             logger.info(f"步骤3: 开始处理 {len(new_candidates_for_processing)} 位新候选演员 (TMDb/IMDb匹配与关联)...")
-            if self.tmdb_api_key and new_candidates_for_processing: # 只有在有TMDb Key和新候选时才执行
+            if self.tmdb_api_key and new_candidates_for_processing:
                 for candidate_from_douban in new_candidates_for_processing: # 遍历从豆瓣来的、且不在Emby原始列表中的候选
                     if self.is_stop_requested(): break
                     
-                    # 为每个豆瓣候选人重置此标志
                     found_and_updated_existing_emby_actor = False 
 
                     name_from_candidate_zh = candidate_from_douban.get("Name")
                     original_name_from_candidate = candidate_from_douban.get("OriginalName")
                     role_from_candidate = candidate_from_douban.get("Role")
-                    douban_id_of_candidate = candidate_from_douban.get("DoubanCelebrityId")
+                    douban_id_of_candidate = candidate_from_douban.get("DoubanCelebrityId") # 这个ID应该来自步骤2的格式化
 
                     logger.debug(f"  步骤3: 处理豆瓣候选: '{name_from_candidate_zh}' (DoubanID: {douban_id_of_candidate})")
 
-                    # 初始化此候选人的外部ID
+                    # --- 确保 douban_id_of_candidate 是有效的 ---
+                    if not douban_id_of_candidate:
+                        logger.warning(f"    豆瓣候选人 '{name_from_candidate_zh}' 缺少 DoubanCelebrityId，无法有效利用此信息进行精确匹配或更新。")
+                        # 根据你的策略，这里可以选择 continue 跳过，或者继续尝试仅基于名字的TMDb搜索
+
                     matched_tmdb_id: Optional[str] = None
                     matched_imdb_id: Optional[str] = None
-                    tmdb_name_from_api: Optional[str] = None # 从TMDb API获取的规范名字
+                    tmdb_name_from_api: Optional[str] = None
 
                     # 1. 为此豆瓣候选人获取 TMDb 和 IMDb ID
-                    #    优先使用中文名搜索，如果中文名不是中文（或为空）且有外文名，则用外文名
                     search_query_for_tmdb = name_from_candidate_zh
-                    if not utils.contains_chinese(str(search_query_for_tmdb or "")): # 如果中文名不是中文
-                        if original_name_from_candidate: # 且有外文名
+                    if not utils.contains_chinese(str(search_query_for_tmdb or "")):
+                        if original_name_from_candidate:
                             search_query_for_tmdb = original_name_from_candidate
-                        # 如果外文名也没有，search_query_for_tmdb 可能是空或非中文字符串
-                    
-                    if not search_query_for_tmdb and original_name_from_candidate: # 如果中文名完全为空，但有外文名
+                    elif not search_query_for_tmdb and original_name_from_candidate:
                         search_query_for_tmdb = original_name_from_candidate
                     
-                    if search_query_for_tmdb and search_query_for_tmdb.strip(): # 确保搜索词非空
+                    if search_query_for_tmdb and search_query_for_tmdb.strip():
                         logger.info(f"    步骤3.1: TMDb搜索人物 '{search_query_for_tmdb}' (源自豆瓣候选 '{name_from_candidate_zh}')")
                         tmdb_search_results = tmdb_handler.search_person_tmdb(search_query_for_tmdb, self.tmdb_api_key)
                         
@@ -571,18 +575,15 @@ class MediaProcessor:
                         media_year_for_known_for = int(media_info.get("ProductionYear")) if media_info.get("ProductionYear") and str(media_info.get("ProductionYear")).isdigit() else None
                         
                         selected_tmdb_person = tmdb_handler.select_best_person_match(
-                            search_query_for_tmdb, 
-                            tmdb_search_results,
+                            search_query_for_tmdb, tmdb_search_results,
                             target_media_year=media_year_for_known_for,
                             known_for_titles=media_title_for_known_for
                         )
 
                         if selected_tmdb_person and selected_tmdb_person.get("id"):
                             matched_tmdb_id = str(selected_tmdb_person.get("id"))
-                            tmdb_name_from_api = selected_tmdb_person.get("name") # TMDb返回的名字
+                            tmdb_name_from_api = selected_tmdb_person.get("name")
                             logger.info(f"      TMDb匹配成功: '{tmdb_name_from_api}' (ID: {matched_tmdb_id})")
-
-                            # 获取TMDb人物详情以提取IMDb ID
                             tmdb_details = tmdb_handler.get_person_details_tmdb(int(matched_tmdb_id), self.tmdb_api_key, append_to_response="external_ids")
                             if tmdb_details and tmdb_details.get("external_ids", {}).get("imdb_id"):
                                 matched_imdb_id = tmdb_details["external_ids"]["imdb_id"]
@@ -595,104 +596,126 @@ class MediaProcessor:
                     # 2. 尝试将此豆瓣候选人（及其新获取的ID）与 processed_cast_intermediate 中的 Emby 演员关联
                     target_emby_pid_for_map_update: Optional[str] = None
                     target_emby_name_for_map: str = name_from_candidate_zh # 默认使用豆瓣名
-                    found_matching_emby_actor_idx = -1 # 用于后续更新 processed_cast_intermediate
+                    found_matching_emby_actor_idx = -1
 
-                    # 匹配优先级: 1. IMDb ID, 2. TMDb ID, 3. 名字 (如果需要更宽松的匹配)
-                    # 我们这里主要依赖ID进行强关联，名字匹配在步骤2.5已经做过筛选了
-                    # 但如果Emby原始演员的ID不全，名字匹配仍然重要
+                    # --- 核心关联逻辑开始 ---
+                    # 遍历 processed_cast_intermediate (Emby原始演员列表)
+                    for i, emby_actor_entry in enumerate(processed_cast_intermediate):
+                        if not emby_actor_entry.get("EmbyPersonId"): continue # 只关联有EmbyPID的原始演员
 
-                    # 尝试通过 IMDb ID 关联
-                    if matched_imdb_id:
-                        for i, p_actor in enumerate(processed_cast_intermediate):
-                            if p_actor.get("EmbyPersonId") and p_actor.get("ImdbId") == matched_imdb_id:
-                                target_emby_pid_for_map_update = p_actor["EmbyPersonId"]
-                                target_emby_name_for_map = p_actor.get("Name", name_from_candidate_zh) # 优先用Emby列表中的名字
-                                found_matching_emby_actor_idx = i
-                                logger.info(f"      通过IMDb ID '{matched_imdb_id}' 关联到 EmbyPID: {target_emby_pid_for_map_update}")
-                                break
-                    
-                    # 如果IMDb没关联上，尝试通过 TMDb ID 关联
-                    if not target_emby_pid_for_map_update and matched_tmdb_id:
-                        for i, p_actor in enumerate(processed_cast_intermediate):
-                            if p_actor.get("EmbyPersonId") and p_actor.get("TmdbPersonId") == matched_tmdb_id:
-                                target_emby_pid_for_map_update = p_actor["EmbyPersonId"]
-                                target_emby_name_for_map = p_actor.get("Name", name_from_candidate_zh)
-                                found_matching_emby_actor_idx = i
-                                logger.info(f"      通过TMDb ID '{matched_tmdb_id}' 关联到 EmbyPID: {target_emby_pid_for_map_update}")
-                                break
-                    
-                    # （可选）如果ID都没关联上，最后再尝试一次更严格的名字匹配（如果步骤2.5的筛选不够用）
-                    # if not target_emby_pid_for_map_update:
-                    #     for i, p_actor in enumerate(processed_cast_intermediate):
-                    #         # ... 此处可以加入更精确的名字匹配逻辑 ...
-                    #         pass
+                        current_emby_pid = emby_actor_entry["EmbyPersonId"]
+                        current_emby_name = emby_actor_entry.get("Name")
+                        current_emby_orig_name = emby_actor_entry.get("OriginalName")
+                        current_emby_imdb_id = emby_actor_entry.get("ImdbId")
+                        current_emby_tmdb_id = emby_actor_entry.get("TmdbPersonId")
+                        current_emby_douban_id = emby_actor_entry.get("DoubanCelebrityId") # Emby原始条目中的豆瓣ID
 
-                    if target_emby_pid_for_map_update: # 如果成功关联到了一个已有的 Emby Person
-                        logger.info(f"    步骤3.2: 豆瓣候选 '{name_from_candidate_zh}' (D:{douban_id_of_candidate}) 将关联到 EmbyPID '{target_emby_pid_for_map_update}' 并更新映射表。")
+                        # 标记是否通过某种方式匹配上了
+                        is_match = False
+                        match_reason = ""
+
+                        # 规则1: 通过豆瓣候选人新获取的 IMDb ID 与 Emby 演员的 IMDb ID 匹配
+                        if matched_imdb_id and current_emby_imdb_id and matched_imdb_id == current_emby_imdb_id:
+                            is_match = True
+                            match_reason = f"IMDb ID ({matched_imdb_id})"
                         
-                        # 从映射表或Emby原始数据中获取该EmbyPID当前已有的其他ID，用于COALESCE逻辑
-                        # (这一步可以省略，因为_update_person_map_entry_in_processor的UPSERT会处理COALESCE)
+                        # 规则2: 通过豆瓣候选人新获取的 TMDb ID 与 Emby 演员的 TMDb ID 匹配
+                        if not is_match and matched_tmdb_id and current_emby_tmdb_id and matched_tmdb_id == current_emby_tmdb_id:
+                            is_match = True
+                            match_reason = f"TMDb ID ({matched_tmdb_id})"
+
+                        # 规则3: 通过豆瓣候选人自身的 Douban ID 与 Emby 演员的 Douban ID 匹配
+                        # (前提是Emby原始数据中可能存有正确的豆瓣名人ID，或者步骤0时已写入)
+                        if not is_match and douban_id_of_candidate and current_emby_douban_id and douban_id_of_candidate == current_emby_douban_id:
+                            is_match = True
+                            match_reason = f"Douban ID ({douban_id_of_candidate})"
+
+                        # 规则4: 通过名字匹配 (作为最后的尝试，如果ID都匹配不上)
+                        if not is_match:
+                            emby_name_lower = str(current_emby_name or "").lower().strip()
+                            emby_orig_name_lower = str(current_emby_orig_name or "").lower().strip()
+                            cand_name_zh_lower = str(name_from_candidate_zh or "").lower().strip()
+                            cand_name_orig_lower = str(original_name_from_candidate or "").lower().strip()
+
+                            if cand_name_zh_lower and (cand_name_zh_lower == emby_name_lower or cand_name_zh_lower == emby_orig_name_lower):
+                                is_match = True
+                                match_reason = f"名字匹配 (豆瓣中文名: '{name_from_candidate_zh}')"
+                            elif cand_name_orig_lower and (cand_name_orig_lower == emby_name_lower or cand_name_orig_lower == emby_orig_name_lower):
+                                is_match = True
+                                match_reason = f"名字匹配 (豆瓣外文名: '{original_name_from_candidate}')"
+                        
+                        if is_match:
+                            target_emby_pid_for_map_update = current_emby_pid
+                            target_emby_name_for_map = current_emby_name # 使用Emby列表中的名字作为基础
+                            found_matching_emby_actor_idx = i
+                            logger.info(f"      成功关联! 豆瓣候选 '{name_from_candidate_zh}' (D:{douban_id_of_candidate}) 通过 [{match_reason}] 关联到 EmbyPID: {target_emby_pid_for_map_update} ('{target_emby_name_for_map}')")
+                            break # 找到了匹配，处理这个豆瓣候选人结束
+                    # --- 核心关联逻辑结束 ---
+
+                    if target_emby_pid_for_map_update: 
+                        logger.info(f"    步骤3.2: 准备为 EmbyPID '{target_emby_pid_for_map_update}' 更新映射表，使用豆瓣候选 '{name_from_candidate_zh}' (D:{douban_id_of_candidate}) 及匹配到的TMDb/IMDb信息。")
+                        
+                        # 准备传递给 _update_person_map_entry_in_processor 的参数
+                        # emby_name 参数应该是这个 Emby Person 在映射表中最权威的名字，通常是 Emby 上的名字
+                        # 或者如果 tmdb_name_from_api 更佳，也可以考虑使用
+                        name_for_map_update = tmdb_name_from_api or target_emby_name_for_map # 优先用TMDb获取的名字
+
+                        logger.info(f"      调用 _update_person_map_entry_in_processor WITH:")
+                        logger.info(f"        emby_pid: {target_emby_pid_for_map_update}")
+                        logger.info(f"        emby_name: {name_for_map_update}") # 用于更新映射表的 emby_person_name
+                        logger.info(f"        imdb_id: {matched_imdb_id}")
+                        logger.info(f"        tmdb_id: {matched_tmdb_id}")
+                        logger.info(f"        tmdb_name_override: {tmdb_name_from_api}")
+                        logger.info(f"        douban_id: {douban_id_of_candidate}")
+                        logger.info(f"        douban_name_override: {name_from_candidate_zh}")
 
                         self._update_person_map_entry_in_processor(
                             cursor_process_cast,
                             emby_pid=target_emby_pid_for_map_update,
-                            emby_name=target_emby_name_for_map, # 使用关联上的Emby演员的名字
-                            imdb_id=matched_imdb_id, # 新获取的IMDb ID
-                            tmdb_id=matched_tmdb_id, # 新获取的TMDb ID
-                            tmdb_name_override=tmdb_name_from_api, # 从TMDb获取的名字
-                            douban_id=douban_id_of_candidate, # 这个豆瓣候选人自身的豆瓣ID
-                            douban_name_override=name_from_candidate_zh # 豆瓣候选人的名字
+                            emby_name=name_for_map_update, 
+                            imdb_id=matched_imdb_id, 
+                            tmdb_id=matched_tmdb_id, 
+                            tmdb_name_override=tmdb_name_from_api,
+                            douban_id=douban_id_of_candidate, 
+                            douban_name_override=name_from_candidate_zh
                         )
                         
                         # 更新 processed_cast_intermediate 中该演员的信息
                         if found_matching_emby_actor_idx != -1:
                             p_actor_ref = processed_cast_intermediate[found_matching_emby_actor_idx]
-                            # 补充或更新ID (只有当新ID存在且旧ID不存在或不同时)
-                            if douban_id_of_candidate and p_actor_ref.get("DoubanCelebrityId") != douban_id_of_candidate:
+                            if douban_id_of_candidate: # 总是用豆瓣候选人的豆瓣ID更新
                                 p_actor_ref["DoubanCelebrityId"] = douban_id_of_candidate
                                 p_actor_ref["ProviderIds"]["Douban"] = douban_id_of_candidate
-                            if matched_tmdb_id and p_actor_ref.get("TmdbPersonId") != matched_tmdb_id:
+                            if matched_tmdb_id: # 如果匹配到了新的TMDb ID
                                 p_actor_ref["TmdbPersonId"] = matched_tmdb_id
                                 p_actor_ref["ProviderIds"]["Tmdb"] = matched_tmdb_id
-                            if matched_imdb_id and p_actor_ref.get("ImdbId") != matched_imdb_id:
+                            if matched_imdb_id: # 如果匹配到了新的IMDb ID
                                 p_actor_ref["ImdbId"] = matched_imdb_id
                                 p_actor_ref["ProviderIds"]["Imdb"] = matched_imdb_id
                             
                             # 更新名字和角色
-                            # 如果TMDb名字更规范，可以考虑使用 (你需要定义规范化逻辑)
                             if tmdb_name_from_api and p_actor_ref.get("Name") != tmdb_name_from_api:
-                                # p_actor_ref["Name"] = tmdb_name_from_api # 决定是否覆盖
-                                pass 
-                            # 使用豆瓣候选人的角色名更新，因为它可能更准确或已清理
+                                logger.info(f"      将 Emby 演员 '{p_actor_ref.get('Name')}' 的名字更新为 TMDb 名字 '{tmdb_name_from_api}' (EmbyPID: {target_emby_pid_for_map_update})")
+                                p_actor_ref["Name"] = tmdb_name_from_api 
+                            elif name_from_candidate_zh and p_actor_ref.get("Name") != name_from_candidate_zh and not tmdb_name_from_api: # 如果没有TMDb名，但豆瓣名不同
+                                # logger.info(f"      将 Emby 演员 '{p_actor_ref.get('Name')}' 的名字更新为豆瓣名 '{name_from_candidate_zh}' (EmbyPID: {target_emby_pid_for_map_update})")
+                                # p_actor_ref["Name"] = name_from_candidate_zh # 谨慎使用，可能导致非中文名被覆盖
+                                pass
+
                             if role_from_candidate and p_actor_ref.get("Role") != role_from_candidate:
+                                logger.info(f"      将 Emby 演员 '{p_actor_ref.get('Name')}' 的角色从 '{p_actor_ref.get('Role')}' 更新为豆瓣角色 '{role_from_candidate}' (EmbyPID: {target_emby_pid_for_map_update})")
                                 p_actor_ref["Role"] = role_from_candidate
-                                p_actor_ref["_source_comment"] = f"role_updated_by_douban_candidate; orig_role: '{p_actor_ref.get('Role')}'"
-
-
-                        found_and_updated_existing_emby_actor = True # 标记这个豆瓣候选人被处理了
+                                p_actor_ref["_source_comment"] = f"role_updated_by_douban; orig_role: '{p_actor_ref.get('Role')}'"
+                        
+                        found_and_updated_existing_emby_actor = True
                     
-                    # 这个判断现在是在 for candidate_from_douban 循环的内部，针对每个候选人
                     if not found_and_updated_existing_emby_actor:
-                        # 这个豆瓣候选人没有匹配到任何已知的 Emby Person，根据你的策略“其他都丢弃”
-                        logger.info(f"    步骤3.3: 豆瓣候选 '{name_from_candidate_zh}' (DoubanID:{douban_id_of_candidate}, TMDbID:{matched_tmdb_id}, IMDbID:{matched_imdb_id}) 未能关联到任何现有Emby演员，丢弃此候选。")
-                        # 注意：如果丢弃，它就不会进入 final_cast_candidates，也不会被用来更新Emby
-                        # 如果你想保留它（即使没有EmbyPID），你需要在这里把它添加到 processed_cast_intermediate
-                        # 例如：
-                        # else: # 未关联到Emby演员，但仍想保留其信息用于最终列表
-                        #     processed_cast_intermediate.append({
-                        #         "Name": tmdb_name_from_api or name_from_candidate_zh, # 优先用TMDb名
-                        #         "OriginalName": original_name_from_candidate,
-                        #         "Role": role_from_candidate,
-                        #         "EmbyPersonId": None, # 没有Emby PID
-                        #         "TmdbPersonId": matched_tmdb_id,
-                        #         "DoubanCelebrityId": douban_id_of_candidate,
-                        #         "ImdbId": matched_imdb_id,
-                        #         "ProviderIds": {"Tmdb": matched_tmdb_id, "Douban": douban_id_of_candidate, "Imdb": matched_imdb_id},
-                        #         "_source": "new_candidate_from_douban_with_external_ids",
-                        #         "_source_comment": f"tmdb_name:{tmdb_name_from_api or ''}"
-                        #     })
-            else: # TMDb API Key 未配置或没有新的豆瓣候选人
-                 logger.info(f"步骤3: 跳过TMDb与映射表处理 (TMDb Key: {'Y' if self.tmdb_api_key else 'N'}, 新候选数: {len(new_candidates_for_processing)})")
+                        logger.info(f"    步骤3.3: 豆瓣候选 '{name_from_candidate_zh}' (DoubanID:{douban_id_of_candidate}, TMDbID:{matched_tmdb_id}, IMDbID:{matched_imdb_id}) 未能关联到任何现有Emby演员，根据策略丢弃此候选。")
+            else:
+                 logger.info(f"步骤3: 跳过TMDb与映射表处理 (TMDb Key: {'Y' if self.tmdb_api_key else 'N'}, 或新候选数为0)")
+
+            # ... (后续步骤 4 和 5，以及 try...except...finally 块与之前的版本相同) ...
+            # (确保它们作用于 processed_cast_intermediate，并且最终的 commit 和 close 在 finally 外部的 try 块的末尾)
 
             # --- 步骤 4: 最终翻译步骤 ---
             # (这部分代码与我上一个回复中的版本相同，作用于 processed_cast_intermediate)
