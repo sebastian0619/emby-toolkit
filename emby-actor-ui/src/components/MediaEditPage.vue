@@ -190,72 +190,47 @@ const moveActorDown = (index) => {
 const isRefreshingFromDouban = ref(false);
 
 const refreshCastFromDouban = async () => {
-  if (!itemDetails.value || !itemDetails.value.item_id) { // 使用 itemDetails.value
+  if (!itemDetails.value || !itemDetails.value.item_id) {
     message.error("没有正在编辑的媒体项的ID。");
     return;
   }
   isRefreshingFromDouban.value = true;
   try {
-    const itemId = itemDetails.value.item_id; // 从 itemDetails 获取 item_id
-    console.info(`[MediaEditPage] 请求从豆瓣刷新演员，ItemID: ${itemId}`); // 使用你定义的 logger 或 console.log
+    const itemId = itemDetails.value.item_id;
+    
+    // ✨ 调用新的API端点
+    const response = await axios.post(`/api/preview_processed_cast/${itemId}`);
+    const processedActorsFromApi = response.data;
 
-    // 调用后端 API
-    // 后端 API 应该只需要 item_id，它会自己去获取媒体名等信息
-    const response = await axios.post(`/api/refresh_cast_from_douban_by_name/${itemId}`);
-    const refreshedActorsFromApi = response.data;
+    if (processedActorsFromApi && Array.isArray(processedActorsFromApi)) {
+      if (processedActorsFromApi.length === 0) {
+        message.info("处理器返回了一个空的演员列表。");
+        // 你可以选择清空UI上的列表
+        // editableCast.value = []; 
+        return;
+      } 
+      
+      // ✨ 用返回的完整列表直接替换UI上的列表
+      // 这是最简单直接的方式，确保UI和处理结果完全一致
+      editableCast.value = processedActorsFromApi.map((actor, index) => ({
+        _temp_id: `actor-${Date.now()}-${index}`, // 为v-for生成临时key
+        embyPersonId: actor.embyPersonId || '',
+        name: actor.name || '',
+        role: actor.role || '',
+        imdbId: actor.imdbId || '',
+        doubanId: actor.doubanId || '',
+        tmdbId: actor.tmdbId || '',
+        matchStatus: actor.matchStatus || '已刷新'
+      }));
 
-    if (refreshedActorsFromApi && Array.isArray(refreshedActorsFromApi)) {
-      if (refreshedActorsFromApi.length === 0) {
-        message.info("豆瓣未返回可匹配到当前演员的更新信息。");
-      } else {
-        let updateCount = 0;
-        let notFoundInEditableCast = 0;
-
-        refreshedActorsFromApi.forEach(apiActor => {
-          // apiActor 应该包含 embyPersonId 和要更新的字段
-          if (!apiActor.embyPersonId) {
-            console.warn("[MediaEditPage] 从API收到的刷新演员信息缺少 embyPersonId:", apiActor);
-            return; // 跳过没有 embyPersonId 的条目
-          }
-
-          const existingActorIndex = editableCast.value.findIndex(
-            (editableActor) => editableActor.embyPersonId === apiActor.embyPersonId
-          );
-
-          if (existingActorIndex !== -1) {
-            // 更新找到的演员信息
-            // 我们只更新后端返回的字段，如果用户在前端对其他字段做了修改，这些修改会保留
-            // （除非后端返回的字段也包含了那些，那么会被覆盖）
-            const targetActor = editableCast.value[existingActorIndex];
-            targetActor.name = apiActor.name !== undefined ? apiActor.name : targetActor.name;
-            targetActor.role = apiActor.role !== undefined ? apiActor.role : targetActor.role;
-            targetActor.doubanId = apiActor.doubanId !== undefined ? apiActor.doubanId : targetActor.doubanId;
-            targetActor.imdbId = apiActor.imdbId !== undefined ? apiActor.imdbId : targetActor.imdbId;
-            targetActor.tmdbId = apiActor.tmdbId !== undefined ? apiActor.tmdbId : targetActor.tmdbId;
-            targetActor.matchStatus = apiActor.matchStatus || '未知豆瓣状态';
-            updateCount++;
-          } else {
-            notFoundInEditableCast++;
-            console.warn(`[MediaEditPage] 从API收到的演员 (EmbyPID: ${apiActor.embyPersonId}) 在当前编辑列表中未找到。`);
-          }
-        });
-
-        if (updateCount > 0) {
-          message.success(`已从豆瓣更新 ${updateCount} 位演员的信息。请检查。`);
-        } else if (notFoundInEditableCast === refreshedActorsFromApi.length && refreshedActorsFromApi.length > 0) {
-          message.warning("豆瓣返回了演员信息，但未能匹配到当前编辑列表中的任何演员。");
-        } else if (refreshedActorsFromApi.length > 0) { // 有返回但一个都没更新上
-             message.info("豆瓣返回了演员信息，但没有需要更新的匹配项。");
-        }
-        // 如果 updateCount 为 0 且 refreshedActorsFromApi 为空，则上面已有提示
-
-      }
+      message.success(`演员列表已根据核心处理器预览结果刷新 (${processedActorsFromApi.length}位)。请检查并保存。`);
+      
     } else {
-      message.error("从豆瓣刷新演员信息失败或返回格式不正确。");
+      message.error("刷新演员信息失败或返回格式不正确。");
     }
   } catch (error) {
-    console.error("从豆瓣刷新演员失败:", error);
-    message.error(error.response?.data?.error || "从豆瓣刷新演员失败，请查看控制台日志。");
+    console.error("刷新演员列表失败:", error);
+    message.error(error.response?.data?.error || "刷新演员列表失败，请查看控制台日志。");
   } finally {
     isRefreshingFromDouban.value = false;
   }

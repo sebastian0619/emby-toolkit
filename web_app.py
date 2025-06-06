@@ -926,96 +926,89 @@ def api_save_config():
         logger.error(f"API /api/config (POST) 保存配置时发生错误: {e}", exc_info=True)
         return jsonify({"error": f"保存配置时发生服务器内部错误: {str(e)}"}), 500
 
-# --- 新增 API 端点：获取待复核列表 ---
-@app.route('/api/review_items')
+# --- API 端点：获取待复核列表 ---
+@app.route('/api/review_items', methods=['GET'])
 def api_get_review_items():
+     # --- 在这里加上魔法日志 ---
+    print("--- HELLO, I AM THE NEWEST API FUNCTION! ---") 
+    logger.info("--- HELLO, I AM THE NEWEST API FUNCTION! ---")
+    # --- -------------------- ---
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
-    query_filter = request.args.get('query', '', type=str).strip() # 按媒体名搜索的查询词
+    query_filter = request.args.get('query', '', type=str).strip()
 
-    # 基本的参数校验
     if page < 1: page = 1
     if per_page < 1: per_page = 10
-    if per_page > 100: per_page = 100 # 限制每页最大数量
+    if per_page > 100: per_page = 100
 
     offset = (page - 1) * per_page
     
-    items_to_review = [] # 存储最终结果的列表
-    total_matching_items = 0 # 符合条件的总项目数
+    items_to_review = []
+    total_matching_items = 0
     
+    conn = None
     try:
-        conn = get_db_connection() # 使用你已有的获取数据库连接的函数
+        conn = get_db_connection()
         cursor = conn.cursor()
         
-        # 构建 SQL 查询条件
-        # 我们主要查找 error_message 中包含特定关键词的记录
-        # 你可以根据实际存入 failed_log 的 error_message 内容调整这些关键词
-        # 例如："评分过低", "人工复核", "待复核"
-        # 使用 OR 连接多个可能的关键词
-        where_clauses = []
+        # --- 终极简化：移除所有 error_message 筛选 ---
+        # 既然 failed_log 表中的所有记录都需要复核，我们就不需要任何关键词过滤了。
+        
+        where_clause = ""
         sql_params = []
 
-        # 关键词筛选 error_message
-        # 注意：这里的关键词需要和你写入 failed_log 时使用的 error_message 格式匹配
-        # 例如，如果 error_message 是 "处理评分过低(4.9)，建议人工复核。"
-        # 那么 LIKE '%评分过低%' 或者 LIKE '%人工复核%' 都能匹配到
-        review_keywords = ["评分过低", "人工复核", "待复核"] # 你可以扩展这个列表
-        keyword_conditions = " OR ".join(["error_message LIKE ?"] * len(review_keywords))
-        where_clauses.append(f"({keyword_conditions})")
-        for kw in review_keywords:
-            sql_params.append(f"%{kw}%")
-
-        if query_filter: # 如果有名称搜索条件
-            where_clauses.append("item_name LIKE ?")
+        # 只在用户输入搜索词时才添加 WHERE 条件
+        if query_filter:
+            where_clause = "WHERE item_name LIKE ?"
             sql_params.append(f"%{query_filter}%")
-        
-        full_where_clause = " AND ".join(where_clauses) if where_clauses else "1=1" # 如果没有条件，则全选（理论上应该总有关键词条件）
+        # --- 简化结束 ---
 
-        # 1. 查询符合条件的总项目数 (用于分页)
-        count_sql = f"SELECT COUNT(DISTINCT item_id) FROM failed_log WHERE {full_where_clause}"
-        # logger.debug(f"Review items count SQL: {count_sql} with params: {sql_params}")
-        count_row = cursor.execute(count_sql, tuple(sql_params)).fetchone()
+        # 1. 查询总数 (WHERE 条件要么为空，要么是按名称搜索)
+        count_sql = f"SELECT COUNT(*) FROM failed_log {where_clause}"
+        cursor.execute(count_sql, tuple(sql_params))
+        count_row = cursor.fetchone()
         if count_row:
             total_matching_items = count_row[0]
 
-        # 2. 查询当前页的项目数据
-        # 我们选择每个 item_id 最新的那条失败/待复核记录 (如果 item_id 在 failed_log 中不是主键的话)
-        # 但由于我们之前将 failed_log 的 item_id 设为 PRIMARY KEY，所以每个 item_id 只有一条记录，简化了查询
+        # --- 在这里加上确认日志 ---
+        print(f"DATABASE CHECK: Found a total of {total_matching_items} items.")
+        logger.info(f"DATABASE CHECK: Found a total of {total_matching_items} items.")
+        # --- -------------------- ---
+
+        # 2. 查询当前页的数据
         items_sql = f"""
             SELECT item_id, item_name, failed_at, error_message, item_type, score 
             FROM failed_log 
-            WHERE {full_where_clause}
+            {where_clause}
             ORDER BY failed_at DESC 
             LIMIT ? OFFSET ?
         """
+        # 将分页参数添加到参数列表
         params_for_page_query = sql_params + [per_page, offset]
-        # logger.debug(f"Review items data SQL: {items_sql} with params: {params_for_page_query}")
+        cursor.execute(items_sql, tuple(params_for_page_query))
+        fetched_rows = cursor.fetchall()
         
-        fetched_rows = cursor.execute(items_sql, tuple(params_for_page_query)).fetchall()
         for row in fetched_rows:
-            items_to_review.append(dict(row)) # 将 sqlite3.Row 转换为字典
-
-        conn.close()
-        
-        total_pages = (total_matching_items + per_page - 1) // per_page if total_matching_items > 0 else 0
-        
-        logger.info(f"API /api/review_items: 返回 {len(items_to_review)} 条待复核项目 (总计: {total_matching_items}, 第 {page}/{total_pages} 页)")
-        return jsonify({
-            "items": items_to_review,
-            "total_items": total_matching_items,
-            "total_pages": total_pages,
-            "current_page": page,
-            "per_page": per_page,
-            "query": query_filter # 返回当前的搜索词，方便前端显示
-        })
+            items_to_review.append(dict(row))
 
     except Exception as e:
         logger.error(f"API /api/review_items 获取数据失败: {e}", exc_info=True)
-        # 确保在发生异常时也关闭连接（如果已打开）
-        if 'conn' in locals() and conn:
-            try: conn.close()
-            except: pass
         return jsonify({"error": "获取待复核列表时发生服务器内部错误"}), 500
+    finally:
+        if conn:
+            conn.close()
+            
+    total_pages = (total_matching_items + per_page - 1) // per_page if total_matching_items > 0 else 0
+    
+    logger.info(f"API /api/review_items: 返回 {len(items_to_review)} 条待复核项目 (总计: {total_matching_items}, 第 {page}/{total_pages} 页)")
+    return jsonify({
+        "items": items_to_review,
+        "total_items": total_matching_items,
+        "total_pages": total_pages,
+        "current_page": page,
+        "per_page": per_page,
+        "query": query_filter
+    })
     
 @app.route('/api/actions/reprocess_item/<item_id>', methods=['POST'])
 def api_reprocess_item(item_id):
@@ -1257,69 +1250,65 @@ def api_get_media_for_editing(item_id):
     
     logger.info(f"API: 成功为项目 {item_id} 构建编辑详情，准备返回。演员数: {len(current_cast_for_frontend)}")
     return jsonify(response_data)
+#--- 从豆瓣刷新演员表 ---
+@app.route('/api/preview_processed_cast/<item_id>', methods=['POST'])
+def api_preview_processed_cast(item_id):
+    """
+    一个轻量级的API，用于预览单个媒体项经过核心处理器处理后的演员列表。
+    它只返回处理结果，不执行任何数据库更新或Emby更新。
+    """
+    if not media_processor_instance:
+        return jsonify({"error": "核心处理器未就绪"}), 503
 
-@app.route('/api/refresh_cast_from_douban_by_name/<item_id>', methods=['POST'])
-def api_refresh_cast_from_douban_by_name(item_id):
-    if not media_processor_instance or not media_processor_instance.douban_api:
-        return jsonify({"error": "豆瓣API处理器未就绪"}), 503
+    logger.info(f"API: 收到为 ItemID {item_id} 预览处理后演员的请求。")
 
-    emby_details = emby_handler.get_emby_item_details(item_id, media_processor_instance.emby_url, media_processor_instance.emby_api_key, media_processor_instance.emby_user_id)
-    if not emby_details:
-        return jsonify({"error": "无法获取当前媒体的Emby详情"}), 404
-    
-    current_emby_cast_list_formatted = [] # 转换为 enrich_and_match 需要的格式
-    for person in emby_details.get("People", []):
-        if person.get("Id") and person.get("Name"):
-            current_emby_cast_list_formatted.append({
-                "embyPersonId": str(person["Id"]),
-                "name": person["Name"], # Emby 原始名字，用于日志或后备
-                "provider_ids": person.get("ProviderIds", {})
-            })
-    
-    media_name = emby_details.get("Name")
-    media_type = "movie" if emby_details.get("Type") == "Movie" else ("tv" if emby_details.get("Type") == "Series" else None)
-    year = str(emby_details.get("ProductionYear", ""))
-    # imdb_id_media = emby_details.get("ProviderIds", {}).get("Imdb") # 这个imdbid是媒体的，不是演员的
-
-    if not media_name or not media_type:
-        return jsonify({"error": "媒体名称或类型未知，无法从豆瓣搜索"}), 400
-
-    logger.info(f"API: 正在为媒体 '{media_name}' (类型: {media_type}, 年份: {year}) 从豆瓣【强制按片名】获取演员...")
-    douban_cast_data = media_processor_instance.douban_api.get_acting(
-        name=media_name, 
-        mtype=media_type, 
-        year=year,
-        force_name_search=True # <--- 强制使用名称搜索
-    )
-
-    if douban_cast_data.get("error") or not douban_cast_data.get("cast"):
-        return jsonify({"error": "从豆瓣获取演员信息失败或列表为空", "details": douban_cast_data.get("message")}), 502
-
-    douban_actors_from_api = douban_cast_data["cast"]
-    logger.info(f"API: 从豆瓣获取到 {len(douban_actors_from_api)} 位演员 for '{media_name}'.")
-
-    conn = None
-    refreshed_and_matched_cast = []
+    # 步骤 1: 获取当前媒体的 Emby 详情
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        refreshed_and_matched_cast = enrich_and_match_douban_cast_to_emby(
-            douban_actors_api_data=douban_actors_from_api,
-            current_emby_cast_list=current_emby_cast_list_formatted,
-            tmdb_api_key=media_processor_instance.tmdb_api_key,
-            db_cursor=cursor
+        item_details = emby_handler.get_emby_item_details(
+            item_id,
+            media_processor_instance.emby_url,
+            media_processor_instance.emby_api_key,
+            media_processor_instance.emby_user_id
         )
+        if not item_details:
+            return jsonify({"error": "无法获取当前媒体的Emby详情"}), 404
     except Exception as e:
-        logger.error(f"API /api/refresh_cast_from_douban_by_name 处理过程中发生错误: {e}", exc_info=True)
-        if conn: conn.close()
-        return jsonify({"error": "刷新演员信息时发生内部错误"}), 500
-    finally:
-        if conn:
-            conn.close()
-            
-    logger.info(f"API: 为媒体 {item_id} 从豆瓣刷新并匹配到 {len(refreshed_and_matched_cast)} 个演员信息。")
-    return jsonify(refreshed_and_matched_cast)
+        logger.error(f"API /preview_processed_cast: 获取Emby详情失败 for ID {item_id}: {e}", exc_info=True)
+        return jsonify({"error": f"获取Emby详情时发生错误: {e}"}), 500
 
+    # 步骤 2: 调用核心处理方法
+    try:
+        current_emby_cast_raw = item_details.get("People", [])
+        
+        # 直接调用 MediaProcessor 的核心方法
+        processed_cast_result = media_processor_instance._process_cast_list(
+            current_emby_cast_people=current_emby_cast_raw,
+            media_info=item_details
+        )
+        
+        # 步骤 3: 将处理结果转换为前端友好的格式
+        # processed_cast_result 的格式是内部格式，我们需要转换为前端期望的格式
+        # (embyPersonId, name, role, imdbId, doubanId, tmdbId)
+        
+        cast_for_frontend = []
+        for actor_data in processed_cast_result:
+            cast_for_frontend.append({
+                "embyPersonId": actor_data.get("EmbyPersonId"),
+                "name": actor_data.get("Name"),
+                "role": actor_data.get("Role"),
+                "imdbId": actor_data.get("ImdbId"),
+                "doubanId": actor_data.get("DoubanCelebrityId"),
+                "tmdbId": actor_data.get("TmdbPersonId"),
+                "matchStatus": "已刷新" # 可以根据 actor_data['_source_comment'] 提供更详细的状态
+            })
+
+        logger.info(f"API: 成功为 ItemID {item_id} 预览了处理后的演员列表，返回 {len(cast_for_frontend)} 位演员。")
+        return jsonify(cast_for_frontend)
+
+    except Exception as e:
+        logger.error(f"API /preview_processed_cast: 调用 _process_cast_list 时发生错误 for ID {item_id}: {e}", exc_info=True)
+        return jsonify({"error": "在服务器端处理演员列表时发生内部错误"}), 500
+    
 @app.route('/api/update_media_cast/<item_id>', methods=['POST'])
 def api_update_edited_cast(item_id):
     if not media_processor_instance: # media_processor_instance 持有 Emby 配置和数据库路径
@@ -1444,73 +1433,73 @@ if __name__ == '__main__':
         except Exception as e_scheduler_start:
             logger.error(f"APScheduler 启动失败: {e_scheduler_start}", exc_info=True)
     setup_scheduled_tasks()
-    app.run(host='0.0.0.0', port=5257, debug=getattr(constants, 'DEBUG_MODE', False))
+    app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=constants.DEBUG_MODE)
 
-if __name__ == '__main__':
-    RUN_MANUAL_TESTS = False  # <--- 在这里控制是否运行测试代码
+# if __name__ == '__main__':
+#     RUN_MANUAL_TESTS = False  # <--- 在这里控制是否运行测试代码
 
-    logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
-    init_db()
-    initialize_media_processor() # 确保 media_processor_instance 被创建并配置好
-    # ... (scheduler setup) ...
+#     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
+#     init_db()
+#     initialize_media_processor() # 确保 media_processor_instance 被创建并配置好
+#     # ... (scheduler setup) ...
 
-    # --- !!! 测试 _process_cast_list 方法 !!! ---
-    if RUN_MANUAL_TESTS and media_processor_instance and media_processor_instance.emby_url:
-        TEST_MEDIA_ID_TO_PROCESS = "464188" # 测试电视剧《白蛇传》
+#     # --- !!! 测试 _process_cast_list 方法 !!! ---
+#     if RUN_MANUAL_TESTS and media_processor_instance and media_processor_instance.emby_url:
+#         TEST_MEDIA_ID_TO_PROCESS = "464188" # 测试电视剧《白蛇传》
         
-        logger.info(f"--- 开始手动测试 _process_cast_list for MEDIA ID: {TEST_MEDIA_ID_TO_PROCESS} ---")
+#         logger.info(f"--- 开始手动测试 _process_cast_list for MEDIA ID: {TEST_MEDIA_ID_TO_PROCESS} ---")
 
-        raw_media_item_details = None # <--- 修改变量名
-        try:
-            raw_media_item_details = emby_handler.get_emby_item_details( # <--- 修改变量名
-                TEST_MEDIA_ID_TO_PROCESS,
-                media_processor_instance.emby_url,
-                media_processor_instance.emby_api_key,
-                media_processor_instance.emby_user_id
-            )
-        except Exception as e_get_raw:
-            logger.error(f"测试：获取原始 MEDIA 详情失败 (ID: {TEST_MEDIA_ID_TO_PROCESS}): {e_get_raw}", exc_info=True)
+#         raw_media_item_details = None # <--- 修改变量名
+#         try:
+#             raw_media_item_details = emby_handler.get_emby_item_details( # <--- 修改变量名
+#                 TEST_MEDIA_ID_TO_PROCESS,
+#                 media_processor_instance.emby_url,
+#                 media_processor_instance.emby_api_key,
+#                 media_processor_instance.emby_user_id
+#             )
+#         except Exception as e_get_raw:
+#             logger.error(f"测试：获取原始 MEDIA 详情失败 (ID: {TEST_MEDIA_ID_TO_PROCESS}): {e_get_raw}", exc_info=True)
         
-        # 打印获取到的原始详情，用于调试
-        if raw_media_item_details:
-            logger.info(f"DEBUG_DETAILS: 原始获取到的 raw_media_item_details 内容 (部分键): {{'Name': '{raw_media_item_details.get('Name')}', 'Type': '{raw_media_item_details.get('Type')}', 'Id': '{raw_media_item_details.get('Id')}', 'HasPeopleField': {'People' in raw_media_item_details}, 'PeopleFieldType': {type(raw_media_item_details.get('People')).__name__ if 'People' in raw_media_item_details else 'N/A'} }}")
-            # 如果想看完整内容，取消下面这行的注释，但可能会很长
-            # logger.info(f"DEBUG_DETAILS_FULL: {raw_media_item_details}")
-        else:
-            logger.error("DEBUG_DETAILS: raw_media_item_details 为 None，获取失败。")
+#         # 打印获取到的原始详情，用于调试
+#         if raw_media_item_details:
+#             logger.info(f"DEBUG_DETAILS: 原始获取到的 raw_media_item_details 内容 (部分键): {{'Name': '{raw_media_item_details.get('Name')}', 'Type': '{raw_media_item_details.get('Type')}', 'Id': '{raw_media_item_details.get('Id')}', 'HasPeopleField': {'People' in raw_media_item_details}, 'PeopleFieldType': {type(raw_media_item_details.get('People')).__name__ if 'People' in raw_media_item_details else 'N/A'} }}")
+#             # 如果想看完整内容，取消下面这行的注释，但可能会很长
+#             # logger.info(f"DEBUG_DETAILS_FULL: {raw_media_item_details}")
+#         else:
+#             logger.error("DEBUG_DETAILS: raw_media_item_details 为 None，获取失败。")
 
-        # --- 核心判断逻辑 ---
-        # 检查 raw_media_item_details 是否有效，并且 People 字段是否存在且是一个列表
-        if raw_media_item_details and isinstance(raw_media_item_details.get("People"), list):
-            original_emby_people = raw_media_item_details.get("People", []) # 如果People键不存在，默认为空列表
+#         # --- 核心判断逻辑 ---
+#         # 检查 raw_media_item_details 是否有效，并且 People 字段是否存在且是一个列表
+#         if raw_media_item_details and isinstance(raw_media_item_details.get("People"), list):
+#             original_emby_people = raw_media_item_details.get("People", []) # 如果People键不存在，默认为空列表
             
-            # 即使 People 列表存在但为空，也应该继续，让 _process_cast_list 尝试从豆瓣补充
-            logger.info(f"测试：获取到 MEDIA '{raw_media_item_details.get('Name')}' 的原始 People 列表，数量: {len(original_emby_people)}")
-            if original_emby_people: # 只在列表非空时打印前3条
-                logger.debug(f"测试：原始 People (前3条): {original_emby_people[:3]}")
+#             # 即使 People 列表存在但为空，也应该继续，让 _process_cast_list 尝试从豆瓣补充
+#             logger.info(f"测试：获取到 MEDIA '{raw_media_item_details.get('Name')}' 的原始 People 列表，数量: {len(original_emby_people)}")
+#             if original_emby_people: # 只在列表非空时打印前3条
+#                 logger.debug(f"测试：原始 People (前3条): {original_emby_people[:3]}")
 
-            logger.info(f"测试：准备调用 media_processor_instance._process_cast_list...")
-            try:
-                final_cast_list = media_processor_instance._process_cast_list(
-                    original_emby_people,
-                    raw_media_item_details # <--- 修改变量名
-                )
-                # ... (打印 final_cast_list) ...
-            except Exception as e_proc_cast:
-                logger.error(f"测试：调用 _process_cast_list 时发生错误: {e_proc_cast}", exc_info=True)
+#             logger.info(f"测试：准备调用 media_processor_instance._process_cast_list...")
+#             try:
+#                 final_cast_list = media_processor_instance._process_cast_list(
+#                     original_emby_people,
+#                     raw_media_item_details # <--- 修改变量名
+#                 )
+#                 # ... (打印 final_cast_list) ...
+#             except Exception as e_proc_cast:
+#                 logger.error(f"测试：调用 _process_cast_list 时发生错误: {e_proc_cast}", exc_info=True)
         
-        else: # raw_media_item_details 无效，或者 People 字段不存在/不是列表
-            logger.error(f"测试：未能获取 MEDIA {TEST_MEDIA_ID_TO_PROCESS} 的原始详情，或详情中无有效People列表，无法继续测试 _process_cast_list。")
+#         else: # raw_media_item_details 无效，或者 People 字段不存在/不是列表
+#             logger.error(f"测试：未能获取 MEDIA {TEST_MEDIA_ID_TO_PROCESS} 的原始详情，或详情中无有效People列表，无法继续测试 _process_cast_list。")
 
-        logger.info(f"--- 手动测试 _process_cast_list 结束 ---")
-    # # --- 测试代码结束 --- #
+#         logger.info(f"--- 手动测试 _process_cast_list 结束 ---")
+#     # # --- 测试代码结束 --- #
 
-    # app.run(...) # 你可以暂时注释掉 app.run，这样脚本执行完测试就结束了，方便看日志
-    # 或者保留它，测试完后再通过浏览器访问应用
+#     # app.run(...) # 你可以暂时注释掉 app.run，这样脚本执行完测试就结束了，方便看日志
+#     # 或者保留它，测试完后再通过浏览器访问应用
 
-    app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=constants.DEBUG_MODE, use_reloader=not constants.DEBUG_MODE)
-    # 注意: debug=True 配合 use_reloader=True (Flask默认) 会导致 atexit 执行两次或行为异常。
-    # 在生产中，use_reloader 应为 False。为了开发方便，可以暂时接受 atexit 的一些小问题。
-    # 或者在 debug 模式下，考虑不依赖 atexit，而是通过其他方式（如信号处理）来触发清理。
-    # 最简单的是，开发时接受它，部署时确保 use_reloader=False。
-# --- 主程序入口结束 ---
+#     app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=constants.DEBUG_MODE, use_reloader=not constants.DEBUG_MODE)
+#     # 注意: debug=True 配合 use_reloader=True (Flask默认) 会导致 atexit 执行两次或行为异常。
+#     # 在生产中，use_reloader 应为 False。为了开发方便，可以暂时接受 atexit 的一些小问题。
+#     # 或者在 debug 模式下，考虑不依赖 atexit，而是通过其他方式（如信号处理）来触发清理。
+#     # 最简单的是，开发时接受它，部署时确保 use_reloader=False。
+# # --- 主程序入口结束 ---

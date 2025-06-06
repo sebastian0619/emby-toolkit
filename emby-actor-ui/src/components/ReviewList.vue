@@ -6,7 +6,6 @@
         <n-alert title="加载错误" type="error">{{ error }}</n-alert>
       </div>
       <div v-else>
-        <!-- 可以添加一个搜索框 -->
         <n-input
           v-model:value="searchQuery"
           placeholder="按媒体名称搜索..."
@@ -29,6 +28,7 @@
           size="small"
           :row-key="row => row.item_id"
           :loading="loadingAction[currentRowId]"
+          remote 
         />
         <n-empty v-else-if="!loading && reviewItems.length === 0" description="没有需要复核的媒体项。" style="margin-top: 20px;" />
         <p v-if="loading && reviewItems.length === 0">正在加载...</p>
@@ -57,8 +57,8 @@ const currentPage = ref(1);
 const itemsPerPage = ref(15);
 const searchQuery = ref('');
 
-const loadingAction = ref({}); // 用于跟踪单行操作的加载状态, e.g. { "itemId1": true }
-const currentRowId = ref(null); // 用于 NDataTable 的 :loading
+const loadingAction = ref({}); 
+const currentRowId = ref(null); 
 
 const formatDate = (timestamp) => {
   if (!timestamp) return 'N/A';
@@ -75,8 +75,7 @@ const formatDate = (timestamp) => {
   }
 };
 
-// --- 操作按钮的函数 ---
-const goToEditPage = (row) => { // 改个名字，更清晰
+const goToEditPage = (row) => { 
   if (row && row.item_id) {
     router.push({ name: 'MediaEditPage', params: { itemId: row.item_id } });
   } else {
@@ -88,11 +87,9 @@ const handleMarkAsProcessed = async (row) => {
   currentRowId.value = row.item_id;
   loadingAction.value[row.item_id] = true;
   try {
-    // 后端 API 端点 `/api/actions/mark_item_processed/{item_id}` (假设)
-    // 这个API应该将项目从 failed_log 移到 processed_log (或直接删除)
     await axios.post(`/api/actions/mark_item_processed/${row.item_id}`);
     message.success(`项目 "${row.item_name}" 已标记为已处理。`);
-    fetchReviewItems(); // 重新获取列表
+    fetchReviewItems(); 
   } catch (err) {
     console.error("标记为已处理失败:", err);
     message.error(`标记项目 "${row.item_name}" 为已处理失败: ${err.response?.data?.error || err.message}`);
@@ -136,44 +133,40 @@ const columns = computed(() => [
   {
     title: '操作',
     key: 'actions',
-    width: 220, // 调整宽度以容纳两个按钮
+    width: 220, 
     align: 'center',
     fixed: 'right',
     render(row) {
       return h(NSpace, { justify: 'center' }, {
         default: () => [
-          // 按钮1: 手动编辑 (直接跳转，不需要 Popconfirm)
           h(NButton,
             {
               size: 'small',
-              type: 'primary', // 可以给个类型
-              onClick: () => goToEditPage(row) // 直接调用 goToEditPage，注意这里没有 scope 了，直接用 row
+              type: 'primary', 
+              onClick: () => goToEditPage(row) 
             },
-            { default: () => '手动编辑' } // 按钮的文本
+            { default: () => '手动编辑' } 
           ),
 
-          // 按钮2: 标记已处理 (使用 Popconfirm)
           h(NPopconfirm,
-            { // Popconfirm 的 props
+            { 
               onPositiveClick: () => handleMarkAsProcessed(row),
-              // positiveText: "确定", // 可以自定义按钮文字
-              // negativeText: "取消"
             },
-            { // Popconfirm 的插槽
-              trigger: () => h(NButton, // 触发器是一个按钮
+            { 
+              trigger: () => h(NButton, 
                 {
                   size: 'small',
                   type: 'success',
                   ghost: true,
                   loading: loadingAction.value[row.item_id] && currentRowId.value === row.item_id,
-                  disabled: loadingAction.value[row.item_id] // 假设 disabled 条件也类似
+                  disabled: loadingAction.value[row.item_id] 
                 },
                 {
                   icon: () => h(NIcon, { component: MarkDoneIcon }),
                   default: () => '标记已处理'
                 }
               ),
-              default: () => `确定要将 "${row.item_name}" 标记为已处理吗？这将把它从复核列表移除。` // Popconfirm 的提示内容
+              default: () => `确定要将 "${row.item_name}" 标记为已处理吗？这将把它从复核列表移除。` 
             }
           ),
         ]
@@ -207,7 +200,7 @@ const fetchReviewItems = async () => {
         params: {
             page: currentPage.value,
             per_page: itemsPerPage.value,
-            query: searchQuery.value, // 添加搜索查询参数
+            query: searchQuery.value, 
         }
     });
     reviewItems.value = response.data.items;
@@ -222,7 +215,7 @@ const fetchReviewItems = async () => {
 };
 
 const handleSearch = () => {
-  currentPage.value = 1; // 搜索时回到第一页
+  currentPage.value = 1;
   fetchReviewItems();
 };
 
