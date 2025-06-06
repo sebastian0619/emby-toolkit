@@ -18,35 +18,35 @@ COPY emby-actor-ui/ ./
 RUN npm run build # 构建产物在 /app/emby-actor-ui/dist/
 
 # --- 阶段 2: 构建最终的生产镜像 ---
-FROM python:3.11-slim
+# FROM python:3.11-slim
 
-WORKDIR /app
+# WORKDIR /app
 
-# 安装 Python 依赖 (先复制 requirements.txt 以利用缓存)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# # 安装 Python 依赖 (先复制 requirements.txt 以利用缓存)
+# COPY requirements.txt .
+# RUN pip install --no-cache-dir -r requirements.txt
 
-# 拷贝后端源码
-# (确保你复制了所有必要的后端文件和目录)
-COPY web_app.py .
-COPY core_processor.py .
-COPY douban.py .
-COPY tmdb_handler.py .
-COPY emby_handler.py .
-COPY utils.py .
-COPY logger_setup.py .
-COPY constants.py .
-# 如果有 templates 目录并且 Flask 会用到，则复制
-# COPY templates/ ./templates/
-# 如果有 /config 目录的需求，可以在运行时通过 volume 挂载，或者在这里创建
-# RUN mkdir -p /config 
+# # 拷贝后端源码
+# # (确保你复制了所有必要的后端文件和目录)
+# COPY web_app.py .
+# COPY core_processor.py .
+# COPY douban.py .
+# COPY tmdb_handler.py .
+# COPY emby_handler.py .
+# COPY utils.py .
+# COPY logger_setup.py .
+# COPY constants.py .
+# # 如果有 templates 目录并且 Flask 会用到，则复制
+# # COPY templates/ ./templates/
+# # 如果有 /config 目录的需求，可以在运行时通过 volume 挂载，或者在这里创建
+# # RUN mkdir -p /config 
 
-# 从前端构建阶段拷贝编译好的静态文件到 Flask 的静态文件目录
-COPY --from=frontend-build /app/emby-actor-ui/dist /app/static
+# # 从前端构建阶段拷贝编译好的静态文件到 Flask 的静态文件目录
+# COPY --from=frontend-build /app/emby-actor-ui/dist /app/static
 
-# 暴露 Flask 应用的端口 (例如 5000)
-EXPOSE 5257
+# # 暴露 Flask 应用的端口 (例如 5000)
+# EXPOSE 5257
 
-# 启动程序 (使用 Gunicorn 或 Waitress 替换 Flask 开发服务器用于生产)
-# CMD ["gunicorn", "--bind", "0.0.0.0:5000", "web_app:app"]
-CMD ["python", "web_app.py"]
+# # 启动程序 (使用 Gunicorn 或 Waitress 替换 Flask 开发服务器用于生产)
+# # CMD ["gunicorn", "--bind", "0.0.0.0:5000", "web_app:app"]
+# CMD ["python", "web_app.py"]
