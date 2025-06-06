@@ -3,7 +3,8 @@ import os
 import sqlite3
 import emby_handler
 import configparser
-from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory, safe_join
+from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory
+from werkzeug.utils import safe_join
 import threading
 import time
 from typing import Optional, Dict, Any, List # 确保 List 被导入
