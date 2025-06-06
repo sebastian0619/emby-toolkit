@@ -1542,15 +1542,44 @@ def api_import_person_map():
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve(path):
-    # static_folder 现在是 'dist'
-    static_folder_path = app.static_folder 
+    # --- "天眼" 日志开始 ---
+    logger.info("=========================================================")
+    logger.info(f"SERVE_VUE_APP: Received request for path: '{path}'")
+    
+    # 1. 打印 Flask 应用的根路径和静态文件夹的绝对路径
+    app_root_path = app.root_path
+    static_folder_abs_path = os.path.abspath(app.static_folder)
+    logger.info(f"  - Flask App Root Path (app.root_path): {app_root_path}")
+    logger.info(f"  - Configured Static Folder (app.static_folder): '{app.static_folder}'")
+    logger.info(f"  - Absolute Static Folder Path: {static_folder_abs_path}")
 
-    # 如果请求的路径指向一个真实存在的文件，则返回该文件
-    if path != "" and os.path.exists(os.path.join(static_folder_path, path)):
-        return send_from_directory(static_folder_path, path)
-    # 否则，返回前端应用的入口 index.html
+    # 2. 构造请求文件的绝对路径
+    requested_file_abs_path = os.path.join(static_folder_abs_path, path)
+    logger.info(f"  - Trying to find file at absolute path: {requested_file_abs_path}")
+
+    # 3. 检查文件是否存在
+    file_exists = os.path.exists(requested_file_abs_path)
+    is_a_file = os.path.isfile(requested_file_abs_path)
+    logger.info(f"  - Does this path exist? os.path.exists() -> {file_exists}")
+    if file_exists:
+        logger.info(f"  - Is it a file? os.path.isfile() -> {is_a_file}")
+    # --- "天眼" 日志结束 ---
+
+    if path != "" and file_exists and is_a_file:
+        logger.info(f"  >>> DECISION: Serving static file '{path}'")
+        logger.info("=========================================================\n")
+        return send_from_directory(static_folder_abs_path, path)
     else:
-        return send_from_directory(static_folder_path, 'index.html')
+        index_html_path = os.path.join(static_folder_abs_path, 'index.html')
+        logger.info(f"  - Path is not a static file. Trying to serve index.html from: {index_html_path}")
+        if not os.path.exists(index_html_path):
+            logger.error("  >>> CRITICAL ERROR: index.html NOT FOUND at the expected location!")
+            logger.info("=========================================================\n")
+            return "Frontend entrypoint (index.html) not found.", 404
+            
+        logger.info("  >>> DECISION: Serving 'index.html'")
+        logger.info("=========================================================\n")
+        return send_from_directory(static_folder_abs_path, 'index.html')
     
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
