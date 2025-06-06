@@ -31,21 +31,26 @@ app = Flask(__name__)
 # vue_dev_server_origin = "http://localhost:5173"
 # CORS(app, resources={r"/api/*": {"origins": vue_dev_server_origin}})
 # --- 路径和配置定义 ---
-app = Flask(__name__, static_folder='static', static_url_path='')
 APP_DATA_DIR_ENV = os.environ.get("APP_DATA_DIR")
-JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
 
-if APP_DATA_DIR_ENV: # 如果设置了环境变量 (例如在 Dockerfile 中)
+if APP_DATA_DIR_ENV:
+    # 如果在 Docker 中，并且设置了 APP_DATA_DIR 环境变量 (例如设置为 "/config")
     PERSISTENT_DATA_PATH = APP_DATA_DIR_ENV
-    logger.info(f"使用环境变量 APP_DATA_DIR 指定的持久化路径: {PERSISTENT_DATA_PATH}")
+    logger.info(f"检测到 APP_DATA_DIR 环境变量，将使用持久化数据路径: {PERSISTENT_DATA_PATH}")
 else:
-    # 本地开发环境：在项目根目录下创建一个名为 'local_data' 的文件夹
-    # BASE_DIR 通常是 web_app.py 所在的目录
-    BASE_DIR_FOR_DATA = os.path.dirname(os.path.abspath(__file__)) # web_app.py 所在目录
-    PERSISTENT_DATA_PATH = os.path.join(BASE_DIR_FOR_DATA, "local_data")
+    # 本地开发环境：在 web_app.py 文件所在的目录的上一级，创建一个名为 'local_data' 的文件夹
+    # 或者，如果你希望 local_data 与 web_app.py 同级，可以调整 BASE_DIR_FOR_DATA
+    # BASE_DIR_FOR_DATA = os.path.dirname(os.path.abspath(__file__)) # web_app.py 所在目录
+    # PERSISTENT_DATA_PATH = os.path.join(BASE_DIR_FOR_DATA, "local_data")
+    
+    # 更常见的本地开发做法：数据目录在项目根目录（假设 web_app.py 在项目根目录或子目录）
+    # 如果 web_app.py 在项目根目录:
+    PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+    # 如果 web_app.py 在类似 src/ 的子目录，你可能需要 os.path.dirname(PROJECT_ROOT)
+    PERSISTENT_DATA_PATH = os.path.join(PROJECT_ROOT, "local_data")
     logger.info(f"未检测到 APP_DATA_DIR 环境变量，将使用本地开发数据路径: {PERSISTENT_DATA_PATH}")
-# --- 路径和配置定义结束 ---
 
+# 确保这个持久化数据目录存在 (无论是在本地还是在容器内)
 try:
     if not os.path.exists(PERSISTENT_DATA_PATH):
         os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
@@ -55,12 +60,14 @@ except OSError as e:
     # 在这种情况下，程序可能无法继续，可以考虑退出或抛出异常
     # raise RuntimeError(f"无法创建必要的数据目录: {PERSISTENT_DATA_PATH}") from e
 
-# --- 后续所有 CONFIG_FILE_PATH 和 DB_PATH 都基于这个 PERSISTENT_DATA_PATH ---
-CONFIG_FILE_NAME = getattr(constants, 'CONFIG_FILE_NAME', "config.ini") # 从常量获取或默认
-CONFIG_FILE_PATH = os.path.join(PERSISTENT_DATA_PATH, constants.CONFIG_FILE_NAME)
+CONFIG_FILE_NAME = getattr(constants, 'CONFIG_FILE_NAME', "config.ini")
+CONFIG_FILE_PATH = os.path.join(PERSISTENT_DATA_PATH, CONFIG_FILE_NAME)
 
-DB_NAME = getattr(constants, 'DB_NAME', "emby_actor_processor.sqlite") # 从常量获取或默认
-DB_PATH = os.path.join(PERSISTENT_DATA_PATH, constants.DB_NAME)
+DB_NAME = getattr(constants, 'DB_NAME', "emby_actor_processor.sqlite")
+DB_PATH = os.path.join(PERSISTENT_DATA_PATH, DB_NAME)
+
+logger.info(f"配置文件路径 (CONFIG_FILE_PATH) 设置为: {CONFIG_FILE_PATH}")
+logger.info(f"数据库文件路径 (DB_PATH) 设置为: {DB_PATH}")
 
 
 # --- 全局变量 ---
@@ -75,6 +82,7 @@ task_lock = threading.Lock() # 用于确保后台任务串行执行
 
 scheduler = BackgroundScheduler(timezone=str(pytz.timezone(constants.TIMEZONE)))
 JOB_ID_FULL_SCAN = "scheduled_full_scan"
+JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
 # --- 全局变量结束 ---
 
 # --- 数据库辅助函数 ---

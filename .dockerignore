@@ -1,17 +1,39 @@
-__pycache__/
+# .dockerignore
+
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Node.js modules (前端构建阶段会处理，不需要复制到后端镜像的源码中)
+emby-actor-ui/node_modules 
+node_modules
+
+# Python virtual environment (如果使用)
+.venv
+venv
+ENV
+env
+*/__pycache__
 *.pyc
 *.pyo
-.git/
-.gitignore
-.dockerignore
-Dockerfile
-README.md 
-# 其他你不想包含在镜像中的本地文件或文件夹
-# 例如，如果你的测试数据很大，或者有本地的虚拟环境文件夹
-.venv/
-venv/
-*.log 
-# config.ini, processed_media_log.txt, translation_cache.json 
-# 这些运行时数据和配置，我们通常通过Docker卷(volume)来持久化，而不是直接打入镜像。
-# 但如果希望镜像启动时有一个初始的、空的配置文件，可以不忽略它。
-# 暂时我们可以先不忽略它们，让它们作为初始文件进入镜像。
+
+# IDE and OS specific files
+.vscode
+.idea
+*.DS_Store
+Thumbs.db
+
+# Local development data and sensitive files
+local_data/  # <--- 关键！忽略整个 local_data 目录
+*.sqlite # 也可以更具体地忽略所有 sqlite 文件，以防万一
+*.sqlite-journal # SQLite 临时文件
+config.ini # 如果你有一个模板或默认的 config.ini 想复制，则不要忽略它，但要忽略 local_data/config.ini
+
+# Frontend build artifacts if they are outside the main copy source for the build stage
+# (通常 npm run build 的输出在 dist，我们是从构建阶段复制 dist，所以不需要在这里忽略 emby-actor-ui/dist)
+# emby-actor-ui/dist/ 
+
+# Other sensitive or large files not needed in the image
+secrets.env # 如果有
+*.log # 通常日志文件不应包含在镜像中
