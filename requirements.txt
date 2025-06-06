@@ -1,4 +1,4 @@
-Flask
+Flask>=2.2.0
 requests
 APScheduler
 pytz
