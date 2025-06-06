@@ -35,77 +35,64 @@
           <div v-if="editableCast.length === 0 && !isLoading" style="text-align: center; color: #999; padding: 20px;">
             当前没有演员信息可供编辑。
           </div>
-          <n-space vertical>
-            <n-card v-for="(actor, index) in editableCast" :key="actor._temp_id" size="small" style="margin-bottom: 12px;">
-             <template #header>
-              <span style="font-weight: normal;">
-                演员 {{ index + 1 }} (Emby Person ID: {{ actor.embyPersonId }})
-               <n-tag 
-          v-if="actor.matchStatus && actor.matchStatus !== '原始'" 
-          :type="getMatchStatusType(actor.matchStatus)" 
-          size="small" 
-          style="margin-left: 10px;"
-        >
-          {{ actor.matchStatus }}
-        </n-tag>
-              </span>
-             </template>
-                  <template #header-extra>
-                    <n-space>
-                      <n-button
-                        type="default"
-                        size="tiny"
-                        ghost
-                        @click="moveActorUp(index)"
-                        :disabled="index === 0"
-                        title="上移"
-                      >
-                        <template #icon><n-icon><ArrowUpIcon /></n-icon></template>
-                      </n-button>
-                      <n-button
-                        type="default" 
-                        size="tiny"
-                        ghost
-                        @click="moveActorDown(index)"
-                        :disabled="index === editableCast.length - 1"
-                        title="下移"
-                      >
-                        <template #icon><n-icon><ArrowDownIcon /></n-icon></template>
-                      </n-button>
-                      <n-popconfirm @positive-click="removeActor(index)">
-                        <template #trigger>
-                          <n-button
-                            type="error"
-                            size="tiny"
-                            ghost
-                            title="删除"
-                          >
-                             <template #icon><n-icon><TrashIcon /></n-icon></template>
-                          </n-button>
-                        </template>
-                        确定要从本次编辑中移除这位演员吗？
-                      </n-popconfirm>
-                    </n-space>
-                  </template>
-              <n-grid x-gap="12" :cols="10"> {/* 尝试用一个较大的基数，然后用 span 控制 */}
-                    <n-form-item-gi :span="2" label="演员名" label-placement="top" :show-label="index === 0">
-                      <n-input v-model:value="actor.name" placeholder="演员名" />
-                    </n-form-item-gi>
-                    <n-form-item-gi :span="2" label="角色名" label-placement="top" :show-label="index === 0">
-                      <n-input v-model:value="actor.role" placeholder="角色名" />
-                    </n-form-item-gi>
-                    <n-form-item-gi :span="2" label="IMDb ID" label-placement="top" :show-label="index === 0">
-                      <n-input v-model:value="actor.imdbId" placeholder="IMDb ID" />
-                    </n-form-item-gi>
-                    <n-form-item-gi :span="2" label="豆瓣ID" label-placement="top" :show-label="index === 0">
-                      <n-input v-model:value="actor.doubanId" placeholder="豆瓣名人ID" />
-                    </n-form-item-gi>
-                    <n-form-item-gi :span="2" label="TMDb ID" label-placement="top" :show-label="index === 0">
-                      <n-input v-model:value="actor.tmdbId" placeholder="TMDb Person ID" />
-                    </n-form-item-gi>
-                  </n-grid>
-            </n-card>
-          </n-space>
+          
+          <!-- 修改开始：将 n-space 替换为 n-grid -->
+          <n-grid :cols="'1 768:2'" :x-gap="16" :y-gap="16">
+            <n-grid-item v-for="(actor, index) in editableCast" :key="actor._temp_id">
+              <n-card size="small">
+                <template #header>
+                  <span style="font-weight: normal;">
+                    演员 {{ index + 1 }} (Emby Person ID: {{ actor.embyPersonId }})
+                    <n-tag 
+                      v-if="actor.matchStatus && actor.matchStatus !== '原始'" 
+                      :type="getMatchStatusType(actor.matchStatus)" 
+                      size="small" 
+                      style="margin-left: 10px;"
+                    >
+                      {{ actor.matchStatus }}
+                    </n-tag>
+                  </span>
+                </template>
+                <template #header-extra>
+                  <n-space>
+                    <n-button type="default" size="tiny" ghost @click="moveActorUp(index)" :disabled="index === 0" title="上移">
+                      <template #icon><n-icon><ArrowUpIcon /></n-icon></template>
+                    </n-button>
+                    <n-button type="default" size="tiny" ghost @click="moveActorDown(index)" :disabled="index === editableCast.length - 1" title="下移">
+                      <template #icon><n-icon><ArrowDownIcon /></n-icon></template>
+                    </n-button>
+                    <n-popconfirm @positive-click="removeActor(index)">
+                      <template #trigger>
+                        <n-button type="error" size="tiny" ghost title="删除">
+                          <template #icon><n-icon><TrashIcon /></n-icon></template>
+                        </n-button>
+                      </template>
+                      确定要从本次编辑中移除这位演员吗？
+                    </n-popconfirm>
+                  </n-space>
+                </template>
+                <n-grid x-gap="12" :cols="10">
+                  <n-form-item-gi :span="2" label="演员名" label-placement="top" :show-label="index < 2">
+                    <n-input v-model:value="actor.name" placeholder="演员名" />
+                  </n-form-item-gi>
+                  <n-form-item-gi :span="2" label="角色名" label-placement="top" :show-label="index < 2">
+                    <n-input v-model:value="actor.role" placeholder="角色名" />
+                  </n-form-item-gi>
+                  <n-form-item-gi :span="2" label="IMDb ID" label-placement="top" :show-label="index < 2">
+                    <n-input v-model:value="actor.imdbId" placeholder="IMDb ID" />
+                  </n-form-item-gi>
+                  <n-form-item-gi :span="2" label="豆瓣ID" label-placement="top" :show-label="index < 2">
+                    <n-input v-model:value="actor.doubanId" placeholder="豆瓣名人ID" />
+                  </n-form-item-gi>
+                  <n-form-item-gi :span="2" label="TMDb ID" label-placement="top" :show-label="index < 2">
+                    <n-input v-model:value="actor.tmdbId" placeholder="TMDb Person ID" />
+                  </n-form-item-gi>
+                </n-grid>
+              </n-card>
+            </n-grid-item>
+          </n-grid>
+          <!-- 修改结束 -->
+
         </n-form>
         
         <div style="margin-top:20px; margin-bottom: 20px;"> 
@@ -125,7 +112,7 @@
           <n-space justify="end">
             <n-button @click="goBack">返回列表</n-button>
             <n-button type="primary" @click="handleSaveChanges" :loading="isSaving">
-              保存修改 (功能待实现)
+              保存修改
             </n-button>
           </n-space>
         </template>
@@ -386,7 +373,7 @@ isSaving.value = true;
 
 <style scoped>
 .media-edit-page {
-  max-width: 900px;
+  max-width: 1200px;
   margin: 0 auto;
 }
 </style>
