@@ -3,7 +3,7 @@ import os
 import sqlite3
 import emby_handler
 import configparser
-from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory
+from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory, safe_join
 import threading
 import time
 from typing import Optional, Dict, Any, List # 确保 List 被导入
@@ -1487,13 +1487,24 @@ def serve_favicon():
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve_vue_app(path):
-    # 检查请求的路径是否指向一个实际存在的文件（例如 API 路由）
-    # 如果不是，就返回 index.html
-    # 这里的逻辑可以更复杂，但对于单页应用，直接返回 index.html 通常是可行的
-    if os.path.exists(os.path.join(app.static_folder, path)):
-        return send_from_directory(app.static_folder, path)
-    else:
+    # 尝试构建静态文件的完整路径
+    # 使用 safe_join 防止路径遍历攻击，尽管在这里风险较低
+    requested_file_path = safe_join(app.static_folder, path)
+
+    # 1. 如果请求的是根路径 (path is empty) 或者请求的路径不是一个实际存在的文件
+    #    则提供 index.html，让 Vue Router 处理。
+    # 2. 如果请求的路径是一个实际存在于 static_folder 中的文件 (例如 /assets/main.js, /favicon.ico)
+    #    则直接提供该文件。
+    if not path or not os.path.exists(requested_file_path) or not os.path.isfile(requested_file_path):
+        # logger.debug(f"Path '{path}' not found as a static file or is root, serving index.html")
+        index_path = safe_join(app.static_folder, 'index.html')
+        if not os.path.exists(index_path): # 极端情况：index.html 也不存在
+            logger.error(f"CRITICAL: index.html not found in static folder: {app.static_folder}")
+            return "Frontend not found", 404
         return send_from_directory(app.static_folder, 'index.html')
+    else:
+        # logger.debug(f"Serving static file: {path}")
+        return send_from_directory(app.static_folder, path)
 
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
@@ -1506,6 +1517,7 @@ if __name__ == '__main__':
         except Exception as e_scheduler_start:
             logger.error(f"APScheduler 启动失败: {e_scheduler_start}", exc_info=True)
     setup_scheduled_tasks()
+    app.run(host='0.0.0.0', port=5257, debug=getattr(constants, 'DEBUG_MODE', False))
 
 if __name__ == '__main__':
     RUN_MANUAL_TESTS = False  # <--- 在这里控制是否运行测试代码

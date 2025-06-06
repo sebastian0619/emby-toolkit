@@ -39,7 +39,7 @@ COPY local_data_handler.py .
 COPY templates/ ./templates/ 
 
 # 从前端构建阶段拷贝编译好的静态文件
-COPY --from=frontend-build /app/emby-actor-ui/dist /app/static
+COPY --from=frontend-build /app/emby-actor-ui/dist/. /app/static/
 
 # 声明 /config 目录为一个卷，期望在运行时被挂载
 # Dockerfile 本身不应该包含实际的配置文件或数据库文件到这个目录
