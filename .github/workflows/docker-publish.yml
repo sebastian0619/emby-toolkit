@@ -1,99 +1,80 @@
 name: Docker Image CI & CD for Emby Actor Processor
 
-# 触发条件
 on:
   push:
     branches:
-      - main  # 当 main 分支有推送时触发 (用于构建 :latest 镜像)
+      - main
     tags:
-      - 'v*.*.*' # 当 vX.Y.Z 格式的标签被推送时触发 (用于构建版本化镜像)
-  # (可选) 手动触发
+      - 'v*.*.*'
   workflow_dispatch:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest # 使用最新的Ubuntu运行器
+    runs-on: ubuntu-latest
 
-    permissions: 
+    permissions:
       contents: read
-      packages: write 
+      packages: write
 
     steps:
-      # 步骤1: 检出代码
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 步骤2: 设置 QEMU (可选, 用于多平台构建)
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      # 步骤3: 设置 Docker Buildx
       - name: Set up Docker Buildx
-        id: buildx # 给这个步骤一个id，方便后续引用其输出（如果需要）
+        id: buildx
         uses: docker/setup-buildx-action@v3
+        
+      # 我们不再需要登录 Docker Hub 或提取元数据来进行这个特定的解析测试
 
-      # 步骤4: 登录到 Docker Hub
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      # --- 核心调试步骤：在 CI 中动态创建并使用一个极简 Dockerfile ---
+      - name: Create Minimal Dockerfile in CI and Attempt Build
+        run: |
+          echo "Creating a minimal Dockerfile named Minimal_Dockerfile_CI ..."
+          # 使用 printf 来精确控制内容和换行符 (确保是 LF)
+          printf "FROM alpine:latest\nRUN echo 'Minimal Dockerfile in CI built successfully!'" > ./Minimal_Dockerfile_CI
+          
+          echo "--- Minimal_Dockerfile_CI Content (cat) ---"
+          cat ./Minimal_Dockerfile_CI
+          echo "--- End of Minimal_Dockerfile_CI Content ---"
+          echo ""
+          echo "--- Minimal_Dockerfile_CI Hexdump (xxd) ---"
+          xxd ./Minimal_Dockerfile_CI
+          echo "--- End of Minimal_Dockerfile_CI Hexdump ---"
+          echo ""
+          echo "Attempting to build Minimal_Dockerfile_CI..."
+          # 直接使用 docker buildx build 命令进行测试，不涉及 docker/build-push-action 的复杂性
+          docker buildx build --progress=plain -f ./Minimal_Dockerfile_CI -t testimage:ci-minimal .
 
-      # 步骤5: (可选) 登录到 GitHub Container Registry (GHCR)
-      # - name: Log in to GitHub Container Registry
+      # --- 你原来的构建和推送步骤暂时注释掉，直到我们解决解析问题 ---
+      # - name: Log in to Docker Hub
       #   uses: docker/login-action@v3
       #   with:
-      #     registry: ghcr.io
-      #     username: ${{ github.actor }}
-      #     password: ${{ secrets.GITHUB_TOKEN }}
+      #     username: ${{ secrets.DOCKERHUB_USERNAME }}
+      #     password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 步骤6: 提取 Docker 元数据 (镜像名, 标签)
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/emby-actor-processor 
-            # ghcr.io/${{ github.repository_owner }}/emby-actor-processor
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=edge,branch=main 
-            type=raw,value=latest,enable={{is_default_branch}}
+      # - name: Extract Docker metadata
+      #   id: meta
+      #   uses: docker/metadata-action@v5
+      #   with:
+      #     images: |
+      #       ${{ secrets.DOCKERHUB_USERNAME }}/emby-actor-processor
+      #     tags: |
+      #       type=semver,pattern={{version}}
+      #       type=semver,pattern={{major}}.{{minor}}
+      #       type=semver,pattern={{major}}
+      #       type=edge,branch=main
+      #       type=raw,value=latest,enable={{is_default_branch}}
 
-      # --- 新增的调试步骤 ---
-      - name: Display Dockerfile content and hex dump
-        run: |
-          echo "--- Dockerfile Content (cat ./Dockerfile) ---"
-          cat ./Dockerfile
-          echo "--- End of Dockerfile Content (cat) ---"
-          echo ""
-          echo "--- Dockerfile Line Endings (file command) ---"
-          file ./Dockerfile
-          echo "--- End of Dockerfile Line Endings (file command) ---"
-          echo ""
-          echo "--- Dockerfile Hexdump (first 100 bytes using xxd) ---"
-          # ubuntu-latest runner 通常包含 xxd (属于 vim-common 或类似包)
-          # 如果没有，可以先安装: sudo apt-get update && sudo apt-get install -y xxd
-          head -c 100 ./Dockerfile | xxd
-          echo "--- End of Dockerfile Hexdump ---"
-          echo ""
-          echo "--- Docker Buildx Version ---"
-          docker buildx version
-          echo "--- Docker Version ---"
-          docker version
-      # --- 调试步骤结束 ---
-
-      # 步骤7: 构建并推送 Docker 镜像
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: . 
-          file: ./Dockerfile 
-          push: true 
-          tags: ${{ steps.meta.outputs.tags }} 
-          labels: ${{ steps.meta.outputs.labels }} 
-          # platforms: linux/amd64,linux/arm64 # (可选)
-          cache-from: type=gha 
-          cache-to: type=gha,mode=max
+      # - name: Build and push Docker image
+      #   uses: docker/build-push-action@v5
+      #   with:
+      #     context: .
+      #     file: ./Dockerfile # 指向你原来的 Dockerfile
+      #     push: true 
+      #     tags: ${{ steps.meta.outputs.tags }}
+      #     labels: ${{ steps.meta.outputs.labels }}
+      #     cache-from: type=gha
+      #     cache-to: type=gha,mode=max
