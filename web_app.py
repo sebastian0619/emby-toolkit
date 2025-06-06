@@ -32,6 +32,7 @@ app = Flask(__name__)
 # CORS(app, resources={r"/api/*": {"origins": vue_dev_server_origin}})
 # --- 路径和配置定义 ---
 APP_DATA_DIR_ENV = os.environ.get("APP_DATA_DIR")
+app = Flask(__name__, static_folder='static', static_url_path='')
 
 if APP_DATA_DIR_ENV:
     # 如果在 Docker 中，并且设置了 APP_DATA_DIR 环境变量 (例如设置为 "/config")
