@@ -3,7 +3,7 @@ import os
 import sqlite3
 import emby_handler
 import configparser
-from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context
+from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory
 import threading
 import time
 from typing import Optional, Dict, Any, List # 确保 List 被导入
@@ -31,6 +31,7 @@ app = Flask(__name__)
 # vue_dev_server_origin = "http://localhost:5173"
 # CORS(app, resources={r"/api/*": {"origins": vue_dev_server_origin}})
 # --- 路径和配置定义 ---
+app = Flask(__name__, static_folder='static', static_url_path='')
 APP_DATA_DIR_ENV = os.environ.get("APP_DATA_DIR")
 JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
 
@@ -1463,6 +1464,27 @@ def api_update_edited_cast(item_id):
     except Exception as e:
         logger.error(f"API /api/update_media_cast Error for {item_id}: {e}", exc_info=True)
         return jsonify({"error": "保存演员信息时发生服务器内部错误"}), 500
+    
+@app.route('/assets/<path:filename>')
+def serve_assets(filename):
+    return send_from_directory('static/assets', filename)
+
+@app.route('/favicon.ico')
+def serve_favicon():
+    return send_from_directory('static', 'favicon.ico')
+
+# 对于所有未匹配到 API 的 GET 请求，都返回前端的 index.html
+# 这使得 Vue Router 的 history 模式能够正常工作
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve_vue_app(path):
+    # 检查请求的路径是否指向一个实际存在的文件（例如 API 路由）
+    # 如果不是，就返回 index.html
+    # 这里的逻辑可以更复杂，但对于单页应用，直接返回 index.html 通常是可行的
+    if os.path.exists(os.path.join(app.static_folder, path)):
+        return send_from_directory(app.static_folder, path)
+    else:
+        return send_from_directory(app.static_folder, 'index.html')
 
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")

@@ -3,6 +3,7 @@ requests
 APScheduler
 pytz
 translators 
+gunicorn
 # 如果 douban.py 或其他模块间接依赖了 sqlalchemy 或 zhconv，也需要加上
 # sqlalchemy
 # zhconv
