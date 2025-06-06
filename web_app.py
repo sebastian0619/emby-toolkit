@@ -612,204 +612,28 @@ def enrich_and_match_douban_cast_to_emby(
     logger.info(f"enrich_and_match_douban_cast_to_emby: 处理完成，返回 {len(results)} 个匹配/增强的演员信息。")
     return results
 # --- Flask 路由 ---
-# @app.route('/')
-# def index():
-#     return redirect(url_for('settings_page'))
+@app.route('/webhook/emby', methods=['POST'])
+def emby_webhook():
+    data = request.json
+    logger.info(f"收到Emby Webhook: {data.get('Event') if data else '未知数据'}")
+    item_id = data.get("Item", {}).get("Id") if data else None
+    event_type = data.get("Event") if data else None
+    trigger_events = ["item.add", "library.new"] # 你想触发处理的事件
 
-# @app.route('/settings', methods=['GET', 'POST'])
-# def settings_page():
-#     if request.method == 'POST':
-#         # ... (你的 POST 逻辑，这部分应该没问题) ...
-#         new_conf = {
-#             "emby_server_url": request.form.get("emby_server_url", "").strip(),
-#             "emby_api_key": request.form.get("emby_api_key", "").strip(),
-#             "emby_user_id": request.form.get("emby_user_id", "").strip(),
-#             "local_data_path": request.form.get("local_data_path", "").strip(),
-#             "data_source_mode": request.form.get("data_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE), # 确保这里获取正确
-#             "tmdb_api_key": request.form.get("tmdb_api_key", "").strip(),
-#             "translator_engines_order": [eng.strip() for eng in request.form.get("translator_engines_order", "").split(',') if eng.strip()],
-#             "delay_between_items_sec": float(request.form.get("delay_between_items_sec", 0.5)),
-#             "refresh_emby_after_update": "refresh_emby_after_update" in request.form,
-#             "api_douban_default_cooldown_seconds": float(request.form.get("api_douban_default_cooldown_seconds", constants.DEFAULT_API_COOLDOWN_SECONDS_FALLBACK)),
-#             "schedule_enabled": "schedule_enabled" in request.form,
-#             "schedule_cron": request.form.get("schedule_cron", "0 3 * * *").strip(),
-#             "schedule_force_reprocess": "schedule_force_reprocess" in request.form,
-#         }
-#         new_conf["schedule_sync_map_enabled"] = "schedule_sync_map_enabled" in request.form
-#         new_conf["schedule_sync_map_cron"] = request.form.get("schedule_sync_map_cron", "0 1 * * *").strip()
-#         selected_libs_from_form = request.form.getlist("libraries_to_process")
-#         new_conf["libraries_to_process"] = selected_libs_from_form
-#         if not new_conf.get("translator_engines_order"):
-#             new_conf["translator_engines_order"] = constants.DEFAULT_TRANSLATOR_ENGINES_ORDER
-        
-#         logger.debug(f"settings_page POST - 从表单获取的 new_conf: {new_conf}")
-#         save_config(new_conf) # 假设 save_config 存在
-#         flash("配置已保存！媒体库选择和定时任务已根据新配置更新。", "success")
-#         return redirect(url_for('settings_page'))
-
-#     # --- GET 请求逻辑 ---
-#     current_config = load_config() # load_config() 返回包含所有配置的字典
-#     available_engines = constants.AVAILABLE_TRANSLATOR_ENGINES
-#     current_engines_list = current_config.get("translator_engines_order", constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
-#     current_engine_str = ",".join(current_engines_list)
-
-#     selected_libraries = current_config.get("libraries_to_process", [])
-
-#     # --- 核心调试和修改开始 ---
-#     logger.debug(f"SETTINGS_PAGE_GET (Before extraction): current_config IS: {current_config}")
-#     logger.debug(f"SETTINGS_PAGE_GET (Before extraction): current_config['data_source_mode'] IS [{current_config.get('data_source_mode')}]")
-#     logger.debug(f"SETTINGS_PAGE_GET (Before extraction): constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE IS [{constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE}]")
-
-#     # 显式提取 domestic_source_mode 的值
-#     # 我们期望 constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE 的值是 "data_source_mode"
-#     # 或者如果 load_config 中用的是 "domestic_source_mode" 作为键，那这里也应该是 "domestic_source_mode"
-#     # 根据之前的日志，load_config 返回的字典中，键是 "data_source_mode"
-#     key_for_dsm_in_config_dict = "data_source_mode" # 这是 load_config 实际使用的键
-    
-#     current_domestic_source_mode_value = current_config.get(key_for_dsm_in_config_dict)
-    
-#     logger.debug(f"SETTINGS_PAGE_GET (After extraction): Extracted current_domestic_source_mode_value (from key '{key_for_dsm_in_config_dict}') IS [{current_domestic_source_mode_value}]")
-#     # --- 核心调试和修改结束 ---
-
-#     template_context = {
-#         'config': current_config, # 仍然传递完整的 config，其他地方可能需要
-#         'available_engines': available_engines,
-#         'current_engine_str': current_engine_str,
-#         'domestic_source_options_in_template': constants.DOMESTIC_SOURCE_OPTIONS,
-#         # 'constant_config_option_domestic_source_mode': constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, # 我们暂时不直接用这个来get
-#         'task_status': background_task_status, # 假设 background_task_status 已定义
-#         'app_version': constants.APP_VERSION,
-#         'selected_libraries': selected_libraries,
-#         'type': type, # 为了让模板中的 type() 能工作
-#         'current_dsm_value_for_template': current_domestic_source_mode_value # 将显式提取的值传递给模板
-#     }
-
-#     # 再次确认传递给模板前的值
-#     logger.debug(f"SETTINGS_PAGE_GET (Before render_template): template_context['config']['{key_for_dsm_in_config_dict}'] IS [{template_context.get('config', {}).get(key_for_dsm_in_config_dict)}]")
-#     logger.debug(f"SETTINGS_PAGE_GET (Before render_template): template_context['current_dsm_value_for_template'] IS [{template_context.get('current_dsm_value_for_template')}]")
-
-#     return render_template('settings.html', **template_context)
-
-# def api_specific_sync_map_task(api_task_name: str): # <--- API 专属的，接收一个任务名参数
-#     logger.info(f"'{api_task_name}': API专属同步任务开始执行。")
-#     if media_processor_instance and \
-#        media_processor_instance.emby_url and \
-#        media_processor_instance.emby_api_key:
-#         try:
-#             sync_handler_instance = SyncHandler(
-#                 db_path=DB_PATH,
-#                 emby_url=media_processor_instance.emby_url,
-#                 emby_api_key=media_processor_instance.emby_api_key,
-#                 emby_user_id=media_processor_instance.emby_user_id
-#             )
-#             logger.info(f"'{api_task_name}': SyncHandler 实例已创建 (API)。")
-#             sync_handler_instance.sync_emby_person_map_to_db(
-#                 update_status_callback=update_status_from_thread
-#             )
-#             logger.info(f"'{api_task_name}': 同步操作完成 (API)。")
-#         except NameError as ne:
-#              logger.error(f"'{api_task_name}' (API) 无法执行：SyncHandler 类未定义或未导入。错误: {ne}", exc_info=True)
-#              update_status_from_thread(-1, "错误：同步功能组件未找到")
-#         except Exception as e_sync:
-#             logger.error(f"'{api_task_name}' (API) 执行过程中发生严重错误: {e_sync}", exc_info=True)
-#             update_status_from_thread(-1, f"错误：同步失败 ({str(e_sync)[:50]}...)")
-#     else:
-#         logger.error(f"'{api_task_name}' (API) 无法执行：MediaProcessor 未初始化或 Emby 配置不完整。")
-#         update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
-# @app.route('/webhook/emby', methods=['POST'])
-# def emby_webhook():
-#     data = request.json
-#     logger.info(f"收到Emby Webhook: {data.get('Event') if data else '未知数据'}")
-#     item_id = data.get("Item", {}).get("Id") if data else None
-#     event_type = data.get("Event") if data else None
-#     trigger_events = ["item.add", "library.new"] # 你想触发处理的事件
-
-#     if item_id and event_type in trigger_events:
-#         logger.info(f"Webhook事件 '{event_type}'，准备处理 Item ID: {item_id}")
-#         def webhook_task_internal(item_id_to_process):
-#             if media_processor_instance:
-#                 media_processor_instance.process_single_item(item_id_to_process)
-#             else:
-#                 logger.error(f"Webhook处理 Item ID {item_id_to_process} 失败：MediaProcessor 未初始化。")
-#         # 使用通用任务执行器
-#         thread = threading.Thread(target=_execute_task_with_lock, args=(webhook_task_internal, f"Webhook处理 Item ID: {item_id}", item_id))
-#         thread.start()
-#         return jsonify({"status": "processing_triggered", "item_id": item_id}), 202
-#     return jsonify({"status": "event_not_handled"}), 200
+    if item_id and event_type in trigger_events:
+        logger.info(f"Webhook事件 '{event_type}'，准备处理 Item ID: {item_id}")
+        def webhook_task_internal(item_id_to_process):
+            if media_processor_instance:
+                media_processor_instance.process_single_item(item_id_to_process)
+            else:
+                logger.error(f"Webhook处理 Item ID {item_id_to_process} 失败：MediaProcessor 未初始化。")
+        # 使用通用任务执行器
+        thread = threading.Thread(target=_execute_task_with_lock, args=(webhook_task_internal, f"Webhook处理 Item ID: {item_id}", item_id))
+        thread.start()
+        return jsonify({"status": "processing_triggered", "item_id": item_id}), 202
+    return jsonify({"status": "event_not_handled"}), 200
 
 
-# @app.route('/trigger_full_scan', methods=['POST'])
-# def trigger_full_scan():
-#     force_reprocess = request.form.get('force_reprocess_all') == 'on'
-#     action_message = "全量媒体库扫描"
-#     if force_reprocess: action_message += " (强制重处理所有)"
-
-#     def full_scan_task_internal(force_flag): # 内部任务函数
-#         if media_processor_instance:
-#             media_processor_instance.process_full_library(
-#                 update_status_callback=update_status_from_thread,
-#                 force_reprocess_all=force_flag
-#             )
-#         else:
-#             logger.error("全量扫描无法执行：MediaProcessor 未初始化。")
-#             update_status_from_thread(-1, "错误：核心处理器未就绪")
-
-#     thread = threading.Thread(target=_execute_task_with_lock, args=(full_scan_task_internal, action_message, force_reprocess))
-#     thread.start()
-#     flash(f"{action_message}任务已在后台启动。", "info")
-#     return redirect(url_for('settings_page'))
-
-# @app.route('/trigger_sync_person_map', methods=['POST'])
-# def trigger_sync_person_map(): # WebUI 用的
-#     # ... (你的 if not media_processor_instance 和 if task_lock.locked() 检查逻辑不变) ...
-
-#     task_name = "同步Emby人物映射表 (WebUI)"
-#     logger.info(f"收到手动触发 '{task_name}' 的请求。")
-
-#     def sync_map_task_internal_for_webui(): # <--- 这是 WebUI 专属的内部任务函数
-#         logger.info(f"'{task_name}': WebUI专属同步任务开始执行。")
-#         if media_processor_instance and \
-#            media_processor_instance.emby_url and \
-#            media_processor_instance.emby_api_key:
-#             try:
-#                 sync_handler_instance = SyncHandler(
-#                     db_path=DB_PATH,
-#                     emby_url=media_processor_instance.emby_url,
-#                     emby_api_key=media_processor_instance.emby_api_key,
-#                     emby_user_id=media_processor_instance.emby_user_id
-#                 )
-#                 logger.info(f"'{task_name}': SyncHandler 实例已创建 (WebUI)。")
-#                 sync_handler_instance.sync_emby_person_map_to_db(
-#                     update_status_callback=update_status_from_thread
-#                 )
-#                 logger.info(f"'{task_name}': 同步操作完成 (WebUI)。")
-#             except NameError as ne:
-#                  logger.error(f"'{task_name}' (WebUI) 无法执行：SyncHandler 类未定义或未导入。错误: {ne}", exc_info=True)
-#                  update_status_from_thread(-1, "错误：同步功能组件未找到")
-#             except Exception as e_sync:
-#                 logger.error(f"'{task_name}' (WebUI) 执行过程中发生严重错误: {e_sync}", exc_info=True)
-#                 update_status_from_thread(-1, f"错误：同步失败 ({str(e_sync)[:50]}...)")
-#         else:
-#             logger.error(f"'{task_name}' (WebUI) 无法执行：MediaProcessor 未初始化或 Emby 配置不完整。")
-#             update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
-
-#     # WebUI 路由调用它自己的内部任务函数
-#     thread = threading.Thread(target=_execute_task_with_lock, args=(sync_map_task_internal_for_webui, task_name))
-#     thread.start()
-
-#     flash(f"'{task_name}' 任务已在后台启动。", "info")
-#     return redirect(url_for('settings_page'))
-
-# @app.route('/trigger_stop_task', methods=['POST'])
-# def trigger_stop_task():
-#     global background_task_status
-#     if media_processor_instance and hasattr(media_processor_instance, 'signal_stop'):
-#         media_processor_instance.signal_stop()
-#         flash("已发送停止后台任务的请求。任务将在当前步骤完成后停止。", "info")
-#         background_task_status["message"] = "正在尝试停止任务..."
-#     else:
-#         flash("错误：服务未就绪或不支持停止操作。", "error")
-#     return redirect(url_for('settings_page'))
 
 @app.route('/status')
 def get_status():
