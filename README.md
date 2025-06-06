@@ -8,13 +8,13 @@
 
 ## ✨ 功能特性
 
-*   **演员信息处理**：自动翻译演员名、角色名。
-*   **外部数据源集成**：从豆瓣、TMDb 等平台获取更丰富的演员信息（如外部ID、规范化名称等）。
-*   **演员映射管理**：允许用户手动或自动同步 Emby 人物与外部数据源人物的映射关系。
-*   **处理质量评估**：对处理后的演员信息进行打分，方便用户复核低质量结果。
+*   **演员信息处理**：自动翻译演员名、角色名、从豆瓣数据源获取中文角色名。
+*   **外部数据源集成**：从豆瓣获取更丰富的演员信息，通过TMDB比对（如TMDBID、IMDBID充实演员映射表）。
+*   **演员映射管理**：允许用户手动或自动同步 Emby 演员与外部数据源演员的映射关系，还可以直接导入别人分享的演员映射表。
+*   **处理质量评估**：程序综合各方面因素自动对处理后的演员信息进行打分，低于阈值（自行设置）的分数会列入待复核列表，方便用户手动重新处理，特别是外语影视，机翻的效果很尬的。
 *   **定时任务**：支持定时全量扫描媒体库和同步人物映射表。
-*   **Web 用户界面**：提供 Vue 构建的现代化 Web UI 进行配置和操作。
 *   **Docker 支持**：易于通过 Docker 部署和运行。
+*   **实时处理新片**：自动处理Emby新入库资源，需配置webhook:http://ip:5257/webhook/emby 请求内容类型：application/json 勾选：新媒体已添加
 
 
 ## 🚀 快速开始
@@ -44,7 +44,7 @@
 
     services:
       emby-actor-processor:
-        image: yourdockerhubusername/emby-actor-processor:latest # 将 'yourdockerhubusername' 替换为你的 Docker Hub 用户名
+        image: hbq0405/emby-actor-processor:latest # 将 'yourdockerhubusername' 替换为你的 Docker Hub 用户名
         container_name: emby-actor-processor
         ports:
           - "5257:5257" # 将容器的 5257 端口映射到宿主机的 5257 端口 (左边可以改成你希望的宿主机端口)
@@ -58,11 +58,6 @@
           # - PGID=1000            # (可选) 如果需要指定运行组ID
         restart: unless-stopped
     ```
-    **请务必修改：**
-    *   `yourdockerhubusername/emby-actor-processor:latest`: 替换为你的实际 Docker Hub 镜像名称和标签。
-    *   `/path/to/your/app_data/emby_actor_processor_config`: 替换为你第一步创建的宿主机持久化数据目录的绝对路径。
-    *   左边的端口 `5257`：如果你想通过宿主机的其他端口访问，可以修改它。容器内部应用监听的是 `5257` 端口（根据你之前的 `EXPOSE` 和 `app.run`）。
-
     然后在 `docker-compose.yml` 文件所在的目录下运行：
     ```bash
     docker-compose up -d
@@ -78,7 +73,7 @@
       -e APP_DATA_DIR="/config" \
       -e TZ="Asia/Shanghai" \
       --restart unless-stopped \
-      yourdockerhubusername/emby-actor-processor:latest
+      hbq0405/emby-actor-processor:latest
     ```
     同样，请替换占位符。
 
@@ -95,13 +90,13 @@
 *   **Emby 配置**:
     *   Emby 服务器 URL
     *   Emby API Key
-    *   Emby 用户 ID (可选)
+    *   Emby 用户 ID 
     *   要处理的媒体库
     *   更新后是否刷新 Emby 媒体项
 *   **数据源配置**:
     *   TMDb API Key (v3)
     *   翻译引擎顺序 (例如 `bing,google,baidu`)
-    *   本地数据源路径 (神刮工具 actor_data 目录，如果使用本地数据源模式)
+    *   本地数据源路径 (神医Pro版本地豆瓣数据源 actor_data 目录，如果使用本地数据源模式)
     *   豆瓣数据源处理策略
 *   **定时任务配置**:
     *   是否启用定时全量扫描及 CRON 表达式

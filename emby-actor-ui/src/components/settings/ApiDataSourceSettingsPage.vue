@@ -12,7 +12,7 @@
       </n-form-item-grid-item>
 
       <n-divider title-placement="left">数据源配置</n-divider>
-      <n-form-item-grid-item label="本地数据源路径 (神刮工具 actor_data 目录)" path="local_data_path">
+      <n-form-item-grid-item label="本地数据源路径 (神医本地豆瓣缓存目录)" path="local_data_path">
           <n-input v-model:value="configModel.local_data_path" placeholder="例如: /path/to/your/actor_data" />
       </n-form-item-grid-item>
 

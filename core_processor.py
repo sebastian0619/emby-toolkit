@@ -169,7 +169,7 @@ class MediaProcessor:
             
             # 4. 更新日志消息以包含分数
             score_info = f"(评分为: {score:.1f})" if score is not None else "(评分未记录/不适用)"
-            logger.info(f"Item ID '{item_id}' ('{item_name}') 已作为失败/待复核项记录到数据库。原因: {error_msg} {score_info}")
+            logger.info(f"Item ID '{item_id}' ('{item_name}') 已作为失败/待手动处理项记录到数据库。原因: {error_msg} {score_info}")
         except Exception as e:
             logger.error(f"保存失败记录到数据库失败 (Item ID: {item_id}): {e}", exc_info=True)
 
@@ -914,11 +914,11 @@ class MediaProcessor:
             MIN_SCORE_FOR_REVIEW = float(self.config.get("min_score_for_review", 6.0)) 
             
             if processing_score < MIN_SCORE_FOR_REVIEW:
-                logger.warning(f"  处理评分 ({processing_score:.1f}) 低于阈值 ({MIN_SCORE_FOR_REVIEW:.1f})，将额外记录到失败/待复核日志。")
+                logger.warning(f"  处理评分 ({processing_score:.1f}) 低于阈值 ({MIN_SCORE_FOR_REVIEW:.1f})，将额外记录到失败/待手动处理日志。")
                 self.save_to_failed_log(
                     item_id=emby_item_id, 
                     item_name=item_name_for_log, 
-                    error_msg=f"处理评分过低({processing_score:.1f})，建议人工复核。", # 更清晰的错误信息
+                    error_msg=f"处理评分过低({processing_score:.1f})，建议手动处理。", # 更清晰的错误信息
                     item_type=item_type_for_log,
                     score=processing_score # 传递分数
                 )

@@ -1,6 +1,6 @@
 <!-- src/components/ReviewList.vue -->
 <template>
-  <n-card title="待人工复核列表" :bordered="false" size="large">
+  <n-card title="待手动处理列表" :bordered="false" size="large">
     <n-spin :show="loading">
       <div v-if="error" class="error-message">
         <n-alert title="加载错误" type="error">{{ error }}</n-alert>
@@ -30,7 +30,7 @@
           :loading="loadingAction[currentRowId]"
           remote 
         />
-        <n-empty v-else-if="!loading && reviewItems.length === 0" description="没有需要复核的媒体项。" style="margin-top: 20px;" />
+        <n-empty v-else-if="!loading && reviewItems.length === 0" description="没有需要手动处理的媒体项。" style="margin-top: 20px;" />
         <p v-if="loading && reviewItems.length === 0">正在加载...</p>
       </div>
     </n-spin>
@@ -166,7 +166,7 @@ const columns = computed(() => [
                   default: () => '标记已处理'
                 }
               ),
-              default: () => `确定要将 "${row.item_name}" 标记为已处理吗？这将把它从复核列表移除。` 
+              default: () => `确定要将 "${row.item_name}" 标记为已处理吗？这将把它从手动处理列表移除。` 
             }
           ),
         ]

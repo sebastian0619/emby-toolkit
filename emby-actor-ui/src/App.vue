@@ -120,11 +120,11 @@ const renderIcon = (iconComponent) => {
 const menuOptions = ref([
   { label: 'Emby 配置', key: 'settings-emby', icon: renderIcon(EmbyIcon) },
   { label: '数据源', key: 'settings-api', icon: renderIcon(ApiIcon) },
-  { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
   { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
   { type: 'divider', key: 'd1' },
   { label: '全量处理', key: 'actions-status', icon: renderIcon(ActionsIcon) },
   { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
+  { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
 ]);
 
 function handleMenuUpdate(key, item) { // item 是被点击的菜单项对象
