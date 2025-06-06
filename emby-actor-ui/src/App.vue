@@ -63,7 +63,9 @@
                 </n-card>
               </div>
               <div class="page-content-inner-wrapper">
-               <router-view />
+               <router-view v-slot="slotProps">
+                <component :is="slotProps.Component" :task-status="backgroundTaskStatus" />
+              </router-view>
               </div>
             </n-layout-content>
           </n-layout>
@@ -161,7 +163,7 @@ onMounted(async () => {
     appMessage.error(`初始化应用配置失败: ${globalConfigError.value}`);
   }
   await fetchStatus();
-  statusIntervalId = setInterval(fetchStatus, 3000);
+  statusIntervalId = setInterval(fetchStatus, 1000);
 });
 
 onBeforeUnmount(() => {

@@ -395,7 +395,7 @@ class MediaProcessor:
             logger.debug(f"    MediaProcessor: Executing UPSERT for EmbyPID {emby_pid} with PARAMS: {params}")
             cursor.execute(sql_upsert, params)
             if cursor.rowcount > 0:
-                logger.info(f"    MediaProcessor: EmbyPID {emby_pid} UPSERTED/UPDATED in person_identity_map. Rowcount: {cursor.rowcount}")
+                logger.debug(f"    MediaProcessor: EmbyPID {emby_pid} UPSERTED/UPDATED in person_identity_map. Rowcount: {cursor.rowcount}")
                 return True
             else:
                 logger.debug(f"    MediaProcessor: EmbyPID {emby_pid} UPSERT executed but rowcount is 0 (no change or no operation).")
@@ -471,7 +471,7 @@ class MediaProcessor:
                     year=str(media_info.get("ProductionYear", "")),
                     douban_id_override=media_info.get("ProviderIds", {}).get("Douban")
                 )
-                logger.info(f"步骤1: 豆瓣API get_acting 返回的原始数据 douban_data: {douban_data}")
+                logger.debug(f"步骤1: 豆瓣API get_acting 返回的原始数据 douban_data: {douban_data}")
                 if douban_data and not douban_data.get("error") and isinstance(douban_data.get("cast"), list):
                     douban_api_actors_raw = douban_data["cast"]
                     logger.info(f"步骤1: 从豆瓣API获取到 {len(douban_api_actors_raw)} 位演员条目。")
@@ -659,14 +659,14 @@ class MediaProcessor:
                         # 或者如果 tmdb_name_from_api 更佳，也可以考虑使用
                         name_for_map_update = tmdb_name_from_api or target_emby_name_for_map # 优先用TMDb获取的名字
 
-                        logger.info(f"      调用 _update_person_map_entry_in_processor WITH:")
-                        logger.info(f"        emby_pid: {target_emby_pid_for_map_update}")
-                        logger.info(f"        emby_name: {name_for_map_update}") # 用于更新映射表的 emby_person_name
-                        logger.info(f"        imdb_id: {matched_imdb_id}")
-                        logger.info(f"        tmdb_id: {matched_tmdb_id}")
-                        logger.info(f"        tmdb_name_override: {tmdb_name_from_api}")
-                        logger.info(f"        douban_id: {douban_id_of_candidate}")
-                        logger.info(f"        douban_name_override: {name_from_candidate_zh}")
+                        logger.debug(f"      调用 _update_person_map_entry_in_processor WITH:")
+                        logger.debug(f"        emby_pid: {target_emby_pid_for_map_update}")
+                        logger.debug(f"        emby_name: {name_for_map_update}") # 用于更新映射表的 emby_person_name
+                        logger.debug(f"        imdb_id: {matched_imdb_id}")
+                        logger.debug(f"        tmdb_id: {matched_tmdb_id}")
+                        logger.debug(f"        tmdb_name_override: {tmdb_name_from_api}")
+                        logger.debug(f"        douban_id: {douban_id_of_candidate}")
+                        logger.debug(f"        douban_name_override: {name_from_candidate_zh}")
 
                         self._update_person_map_entry_in_processor(
                             cursor_process_cast,

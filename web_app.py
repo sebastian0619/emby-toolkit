@@ -3,7 +3,7 @@ import os
 import sqlite3
 import emby_handler
 import configparser
-from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory
+from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory,Response
 from werkzeug.utils import safe_join
 import threading
 import time
@@ -13,12 +13,13 @@ from apscheduler.triggers.cron import CronTrigger
 import pytz # 用于处理时区
 import atexit # 用于应用退出处理
 from core_processor import MediaProcessor, SyncHandler
-#from flask_cors import CORS # 导入 CORS
+import csv
+from io import StringIO
 
 # --- 核心模块导入 ---
 import constants # 你的常量定义
 from core_processor import MediaProcessor # 核心处理逻辑
-from logger_setup import logger # 日志记录器
+from logger_setup import logger, frontend_log_queue # 日志记录器和前端日志队列
 # emby_handler 和 utils 会在需要的地方被 core_processor 或此文件中的函数调用
 # 如果直接在此文件中使用它们的功能，也需要在这里导入
 import utils       # 例如，用于 /api/search_media
@@ -436,6 +437,7 @@ def _execute_task_with_lock(task_function, task_name: str, *args, **kwargs):
         return
 
     with task_lock:
+        frontend_log_queue.clear()
         if media_processor_instance:
             media_processor_instance.clear_stop_signal()
         else: # 如果 media_processor_instance 未初始化成功
@@ -834,12 +836,17 @@ def api_search_media():
     })
 
 
-
-@app.route('/api/status', methods=['GET']) # <--- 添加这个路由
+#--- 日志 ---
+@app.route('/api/status', methods=['GET'])
 def api_get_task_status():
-    global background_task_status # 确保能访问到全局的 background_task_status
-    # logger.debug(f"API /api/status (GET) 被调用，返回状态: {background_task_status}") # 可选的调试日志
-    return jsonify(background_task_status)
+    global background_task_status, frontend_log_queue
+    
+    status_data = background_task_status.copy() # 复制一份，避免线程问题
+    
+    # 将日志队列的内容添加到返回数据中
+    status_data['logs'] = list(frontend_log_queue)
+    
+    return jsonify(status_data)
 
 @app.route('/api/emby_libraries')
 def api_get_emby_libraries():
@@ -1420,7 +1427,149 @@ def serve_vue_app(path):
         logger.debug(f"Serving static file: '{path}' from {app.static_folder}")
         return send_from_directory(app.static_folder, path)
 
+# --- 导出/导入演员映射表 API ---
+
+@app.route('/api/export_person_map', methods=['GET'])
+def api_export_person_map():
+    """
+    导出 person_identity_map 表为 CSV 文件。
+    """
+    logger.info("API: 收到导出人物映射表的请求。")
     
+    def generate_csv():
+        # 使用 StringIO 作为内存中的文件缓冲区
+        string_io = StringIO()
+        
+        # 获取数据库连接
+        conn = None
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # 定义CSV文件的表头
+            # 我们只导出核心ID，名字可以由程序自动关联，减少文件大小和复杂性
+            headers = [
+                'emby_person_id', 
+                'imdb_id', 
+                'tmdb_person_id', 
+                'douban_celebrity_id',
+                'emby_person_name' # 包含名字方便用户查看
+            ]
+            
+            # 创建CSV写入器
+            writer = csv.DictWriter(string_io, fieldnames=headers)
+            
+            # 写入表头
+            writer.writeheader()
+            yield string_io.getvalue() # 流式返回表头
+            string_io.seek(0)
+            string_io.truncate(0)
+
+            # 查询所有映射数据
+            cursor.execute(f"SELECT {', '.join(headers)} FROM person_identity_map")
+            
+            # 逐行写入CSV
+            for row in cursor:
+                writer.writerow(dict(row))
+                yield string_io.getvalue() # 流式返回每一行
+                string_io.seek(0)
+                string_io.truncate(0)
+
+        except Exception as e:
+            logger.error(f"导出映射表时发生错误: {e}", exc_info=True)
+            # 如果出错，可以考虑返回一个错误信息的文本
+            yield f"Error exporting data: {e}"
+        finally:
+            if conn:
+                conn.close()
+
+    # 创建一个文件名，包含日期
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    filename = f"person_identity_map_backup_{timestamp}.csv"
+    
+    # 使用 Response 对象来设置HTTP头，告诉浏览器这是一个需要下载的文件
+    response = Response(stream_with_context(generate_csv()), mimetype='text/csv')
+    response.headers.set("Content-Disposition", "attachment", filename=filename)
+    
+    return response
+
+
+@app.route('/api/import_person_map', methods=['POST'])
+def api_import_person_map():
+    """
+    从上传的 CSV 文件导入数据到 person_identity_map 表。
+    """
+    logger.info("API: 收到导入人物映射表的请求。")
+    
+    # 检查是否有文件被上传
+    if 'file' not in request.files:
+        return jsonify({"error": "请求中未找到文件部分"}), 400
+    
+    file = request.files['file']
+    
+    if file.filename == '':
+        return jsonify({"error": "未选择文件"}), 400
+
+    if file and file.filename.endswith('.csv'):
+        try:
+            # 读取文件内容
+            # 为了处理不同编码，最好先解码
+            stream = StringIO(file.stream.read().decode("utf-8"), newline=None)
+            csv_reader = csv.DictReader(stream)
+            
+            # 准备统计数据
+            stats = {"total": 0, "inserted": 0, "updated": 0, "skipped": 0, "errors": 0}
+            
+            conn = get_db_connection()
+            cursor = conn.cursor()
+
+            for row in csv_reader:
+                stats["total"] += 1
+                emby_pid = row.get('emby_person_id')
+                
+                if not emby_pid:
+                    stats["skipped"] += 1
+                    continue
+                
+                # 使用 REPLACE INTO (UPSERT) 逻辑来插入或更新
+                # 这会根据 PRIMARY KEY 或 UNIQUE 约束来工作
+                # 确保你的 emby_person_id 是 UNIQUE 的
+                sql = """
+                    REPLACE INTO person_identity_map (
+                        emby_person_id, emby_person_name, imdb_id, 
+                        tmdb_person_id, douban_celebrity_id, last_updated_at
+                    ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """
+                params = (
+                    emby_pid,
+                    row.get('emby_person_name'),
+                    row.get('imdb_id'),
+                    row.get('tmdb_person_id'),
+                    row.get('douban_celebrity_id')
+                )
+                
+                try:
+                    cursor.execute(sql, params)
+                    # cursor.rowcount 在 REPLACE 语句中，如果是插入则为1，如果是替换则为2
+                    if cursor.rowcount > 0:
+                        # 简单起见，我们不区分插入和更新，都算成功
+                        stats["updated"] += 1 # 或者你可以用更复杂的逻辑来区分
+                except Exception as e_row:
+                    stats["errors"] += 1
+                    logger.error(f"导入行 {row} 时出错: {e_row}")
+
+            conn.commit()
+            conn.close()
+            
+            message = f"导入完成。总行数: {stats['total']}, 成功处理: {stats['updated']}, 跳过: {stats['skipped']}, 错误: {stats['errors']}."
+            logger.info(f"API: {message}")
+            return jsonify({"message": message}), 200
+
+        except Exception as e:
+            logger.error(f"导入文件时发生严重错误: {e}", exc_info=True)
+            return jsonify({"error": f"处理文件时发生错误: {e}"}), 500
+    else:
+        return jsonify({"error": "无效的文件类型，请上传 .csv 文件"}), 400    
 
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
