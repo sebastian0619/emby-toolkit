@@ -1,5 +1,5 @@
 # --- 阶段 1: 构建前端 ---
-FROM node:20-alpine AS frontend-build # 使用 alpine 版本减小此阶段镜像体积
+FROM node:20-alpine AS frontend-build 
 
 WORKDIR /app
 
