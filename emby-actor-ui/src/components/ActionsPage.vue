@@ -1,6 +1,17 @@
 <template>
   <div>
     <n-h2>手动操作</n-h2>
+    <n-alert 
+      v-if="taskStatus.is_running" 
+      title="后台任务运行中" 
+      type="warning" 
+      style="margin-bottom: 20px;"
+      closable
+    >
+      当前有后台任务正在执行 ({{ taskStatus.current_action }})。
+      在此期间，任何需要写入数据库的操作都可能会失败。
+      建议等待当前任务完成后再进行其他操作。
+    </n-alert>
 
     <!-- 全量扫描区域 -->
     <n-card title="全量媒体库扫描">
@@ -28,7 +39,7 @@
         >
           启动全量扫描
         </n-button>
-        <p style="font-size: 0.85em; color: #888; margin-top: 5px;">注意：全量扫描可能非常耗时。</p>
+        <p style="font-size: 0.85em; color: #888; margin-top: 5px;">友情提示：全量扫描耗时较长，大约3-5分钟才能处理一部影片，建议定时夜里悄悄的干活。</p>
       </n-space>
     </n-card>
 

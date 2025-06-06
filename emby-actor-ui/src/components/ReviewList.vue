@@ -1,6 +1,14 @@
 <!-- src/components/ReviewList.vue -->
 <template>
   <n-card title="待手动处理列表" :bordered="false" size="large">
+    <n-alert 
+      v-if="taskStatus.is_running" 
+      title="后台任务运行中" 
+      type="warning" 
+      style="margin-bottom: 15px;"
+    >
+      后台任务正在运行，此时“手动处理”等操作可能会失败。
+    </n-alert>
     <n-spin :show="loading">
       <div v-if="error" class="error-message">
         <n-alert title="加载错误" type="error">{{ error }}</n-alert>
@@ -213,6 +221,13 @@ const fetchReviewItems = async () => {
     loading.value = false;
   }
 };
+
+defineProps({
+  taskStatus: {
+    type: Object,
+    required: true
+  }
+});
 
 const handleSearch = () => {
   currentPage.value = 1;

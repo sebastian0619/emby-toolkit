@@ -95,7 +95,6 @@ def get_db_connection() -> sqlite3.Connection:
     if not os.path.exists(os.path.dirname(DB_PATH)): # 检查数据库文件所在的目录是否存在
         logger.warning(f"数据库目录 {os.path.dirname(DB_PATH)} 不存在，get_db_connection 可能失败。")
     conn = sqlite3.connect(DB_PATH)
-    conn = sqlite3.connect(DB_PATH, timeout=20)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -1052,6 +1051,8 @@ def api_reprocess_item(item_id):
 
 @app.route('/api/actions/mark_item_processed/<item_id>', methods=['POST'])
 def api_mark_item_processed(item_id):
+    if task_lock.locked():
+        return jsonify({"error": "后台有长时间任务正在运行，请稍后再试。"}), 409
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
