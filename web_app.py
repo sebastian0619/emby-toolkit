@@ -744,100 +744,6 @@ def trigger_stop_task():
 def get_status():
     return jsonify(background_task_status)
 
-# --- API 端点 for 搜索 (骨架，需要你填充 Emby 搜索和更完善的状态判断) ---
-@app.route('/api/search_media')
-def api_search_media():
-    query = request.args.get('query', '', type=str).strip()
-    scope = request.args.get('scope', 'all', type=str)
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 20, type=int)
-
-    if page < 1: page = 1
-    if per_page < 1: per_page = 10
-    if per_page > 100: per_page = 100
-
-    offset = (page - 1) * per_page
-    results: List[Dict[str, Any]] = [] # 明确类型
-    total_items = 0
-    item_ids_on_page: List[str] = [] # 明确类型
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    # TODO: scope 'all' 需要真实的 Emby 搜索集成
-    if scope == "all":
-        logger.warning("'/api/search_media' scope 'all' 的 Emby 搜索部分尚未完全实现。将临时使用已处理数据。")
-        # 临时使用已处理数据代替，你需要替换为真实的 Emby 搜索逻辑
-        # emby_search_results = emby_handler.search_emby_library(query, page, per_page, media_processor_instance.emby_url, ...)
-        # total_items = emby_search_results.get('total_count', 0)
-        # item_ids_on_page = [item['Id'] for item in emby_search_results.get('items', [])]
-        # --- 临时代码 ---
-        count_sql = "SELECT COUNT(*) FROM processed_log WHERE item_name LIKE ?" if query else "SELECT COUNT(*) FROM processed_log"
-        items_sql = "SELECT item_id FROM processed_log WHERE item_name LIKE ? ORDER BY processed_at DESC LIMIT ? OFFSET ?" if query else "SELECT item_id FROM processed_log ORDER BY processed_at DESC LIMIT ? OFFSET ?"
-        params = ('%' + query + '%',) if query else ()
-        total_items = cursor.execute(count_sql, params).fetchone()[0]
-        item_ids_on_page = [row['item_id'] for row in cursor.execute(items_sql, params + (per_page, offset) if query else (per_page, offset)).fetchall()]
-        # --- 临时代码结束 ---
-    elif scope == "processed":
-        count_sql = "SELECT COUNT(*) FROM processed_log WHERE item_name LIKE ?" if query else "SELECT COUNT(*) FROM processed_log"
-        items_sql = "SELECT item_id FROM processed_log WHERE item_name LIKE ? ORDER BY processed_at DESC LIMIT ? OFFSET ?" if query else "SELECT item_id FROM processed_log ORDER BY processed_at DESC LIMIT ? OFFSET ?"
-        params = ('%' + query + '%',) if query else ()
-        total_items = cursor.execute(count_sql, params).fetchone()[0]
-        item_ids_on_page = [row['item_id'] for row in cursor.execute(items_sql, params + (per_page, offset) if query else (per_page, offset)).fetchall()]
-    elif scope == "failed":
-        count_sql = "SELECT COUNT(*) FROM failed_log WHERE item_name LIKE ?" if query else "SELECT COUNT(*) FROM failed_log"
-        items_sql = "SELECT item_id FROM failed_log WHERE item_name LIKE ? ORDER BY failed_at DESC LIMIT ? OFFSET ?" if query else "SELECT item_id FROM failed_log ORDER BY failed_at DESC LIMIT ? OFFSET ?"
-        params = ('%' + query + '%',) if query else ()
-        total_items = cursor.execute(count_sql, params).fetchone()[0]
-        item_ids_on_page = [row['item_id'] for row in cursor.execute(items_sql, params + (per_page, offset) if query else (per_page, offset)).fetchall()]
-    else:
-        conn.close()
-        return jsonify({"error": "无效的搜索范围"}), 400
-
-    for item_id_str in item_ids_on_page:
-        if not media_processor_instance: break
-        emby_details = None
-        try:
-            emby_details = emby_handler.get_emby_item_details(item_id_str, media_processor_instance.emby_url, media_processor_instance.emby_api_key, media_processor_instance.emby_user_id)
-        except Exception as e: logger.error(f"API search: 获取Emby详情失败 for ID {item_id_str}: {e}")
-
-        item_result = {
-            "emby_id": item_id_str,
-            "name": emby_details.get("Name", "未知") if emby_details else "获取Emby信息失败",
-            "year": emby_details.get("ProductionYear") if emby_details else None,
-            "type": emby_details.get("Type") if emby_details else None,
-            "overall_status": "pending", "failure_reason": None, "actors": []
-        }
-        processed_entry = cursor.execute("SELECT * FROM processed_log WHERE item_id = ?", (item_id_str,)).fetchone()
-        failed_entry = cursor.execute("SELECT * FROM failed_log WHERE item_id = ?", (item_id_str,)).fetchone()
-        if failed_entry: item_result["overall_status"], item_result["failure_reason"] = "failed", failed_entry["error_message"]
-        elif processed_entry: item_result["overall_status"] = "processed"
-
-        if emby_details and emby_details.get("People"):
-            for person in emby_details.get("People", []):
-                if person.get("Type") == "Actor":
-                    actor_name, actor_role = person.get("Name"), person.get("Role")
-                    actor_status_code = "ok"
-                    if item_result["overall_status"] == "failed": actor_status_code = "parent_failed"
-                    elif item_result["overall_status"] == "pending":
-                        actor_status_code = "pending_translation"
-                        # TODO: 更精确的状态判断，例如检查翻译缓存或 utils.contains_chinese
-                        # if actor_name and not utils.contains_chinese(actor_name): actor_status_code = "name_untranslated"
-                        # if actor_role and not utils.contains_chinese(actor_role): actor_status_code = "character_untranslated"
-                    item_result["actors"].append({
-                        "name": actor_name, "character": actor_role,
-                        "status_code": actor_status_code,
-                        "status_text": constants.ACTOR_STATUS_TEXT_MAP.get(actor_status_code, "未知")
-                    })
-        results.append(item_result)
-    conn.close()
-    total_pages = (total_items + per_page - 1) // per_page if total_items > 0 else 0
-    return jsonify({
-        "items": results, "total_items": total_items, "total_pages": total_pages,
-        "current_page": page, "per_page": per_page, "query": query, "scope": scope
-    })
-
-
 #--- 日志 ---
 @app.route('/api/status', methods=['GET'])
 def api_get_task_status():
@@ -894,7 +800,49 @@ atexit.register(application_exit_handler)
 logger.info("已注册应用程序退出处理程序 (atexit)。")
 # --- 应用退出处理结束 ---
 
-# --- 主程序入口 ---
+# --- API 端点 搜索媒体库 ---
+@app.route('/api/search_emby_library', methods=['GET'])
+def api_search_emby_library():
+    query = request.args.get('query', '')
+    if not query.strip():
+        return jsonify({"error": "搜索词不能为空"}), 400
+
+    if not media_processor_instance:
+        return jsonify({"error": "核心处理器未就绪"}), 503
+
+    try:
+        # ✨✨✨ 调用改造后的函数，并传入 search_term ✨✨✨
+        search_results = emby_handler.get_emby_library_items(
+            base_url=media_processor_instance.emby_url,
+            api_key=media_processor_instance.emby_api_key,
+            user_id=media_processor_instance.emby_user_id,
+            media_type_filter="Movie,Series", # 搜索时指定类型
+            search_term=query # <--- 传递搜索词
+        )
+        
+        if search_results is None:
+            return jsonify({"error": "搜索时发生服务器错误"}), 500
+
+        # 将搜索结果转换为前端表格期望的格式 (这部分逻辑不变)
+        formatted_results = []
+        for item in search_results:
+            formatted_results.append({
+                "item_id": item.get("Id"),
+                "item_name": item.get("Name"),
+                "item_type": item.get("Type"),
+                "failed_at": None,
+                "error_message": f"来自 Emby 库的搜索结果 (年份: {item.get('ProductionYear', 'N/A')})",
+                "score": None
+            })
+        
+        return jsonify({
+            "items": formatted_results,
+            "total_items": len(formatted_results)
+        })
+
+    except Exception as e:
+        logger.error(f"API /api/search_emby_library Error: {e}", exc_info=True)
+        return jsonify({"error": "搜索时发生未知服务器错误"}), 500
 
 # --- API 端点：获取当前配置 ---
 @app.route('/api/config', methods=['GET'])

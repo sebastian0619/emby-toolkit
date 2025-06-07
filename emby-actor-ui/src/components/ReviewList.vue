@@ -1,6 +1,6 @@
-<!-- src/components/ReviewList.vue -->
+<!-- ReviewList.vue -->
 <template>
-  <n-card title="待手动处理列表" :bordered="false" size="large">
+  <n-card title="媒体库浏览器" :bordered="false" size="large">
     <n-alert 
       v-if="taskStatus.is_running" 
       title="后台任务运行中" 
@@ -14,22 +14,26 @@
         <n-alert title="加载错误" type="error">{{ error }}</n-alert>
       </div>
       <div v-else>
+        <!-- 搜索框 -->
         <n-input
           v-model:value="searchQuery"
-          placeholder="按媒体名称搜索..."
+          placeholder="输入媒体名称搜索整个 Emby 库..."
           clearable
           @keyup.enter="handleSearch"
-          style="margin-bottom: 15px; max-width: 300px;"
+          @clear="handleSearch"
+          style="margin-bottom: 15px; max-width: 400px;"
         >
           <template #suffix>
             <n-icon :component="SearchIcon" @click="handleSearch" style="cursor: pointer;" />
           </template>
         </n-input>
 
+        <!-- 表格 -->
+        <!-- ✨✨✨ 确保这里使用 tableData ✨✨✨ -->
         <n-data-table
-          v-if="reviewItems.length > 0"
+          v-if="tableData.length > 0"
           :columns="columns"
-          :data="reviewItems"
+          :data="tableData"
           :pagination="paginationProps"
           :bordered="false"
           striped
@@ -38,8 +42,14 @@
           :loading="loadingAction[currentRowId]"
           remote 
         />
-        <n-empty v-else-if="!loading && reviewItems.length === 0" description="没有需要手动处理的媒体项。" style="margin-top: 20px;" />
-        <p v-if="loading && reviewItems.length === 0">正在加载...</p>
+        <!-- ✨✨✨ 确保这里也使用 tableData ✨✨✨ -->
+        <n-empty 
+          v-else-if="!loading && tableData.length === 0" 
+          :description="isShowingSearchResults ? '在 Emby 库中未找到匹配项。' : '没有需要手动处理的媒体项。'" 
+          style="margin-top: 20px;" 
+        />
+        <!-- ✨✨✨ 确保这里也使用 tableData ✨✨✨ -->
+        <p v-if="loading && tableData.length === 0">正在加载...</p>
       </div>
     </n-spin>
   </n-card>
@@ -54,20 +64,24 @@ import {
     useMessage
 } from 'naive-ui';
 import { SearchOutline as SearchIcon, PlayForwardOutline as ReprocessIcon, CheckmarkCircleOutline as MarkDoneIcon } from '@vicons/ionicons5';
+
+// --- 基础设置 ---
 const router = useRouter();
 const message = useMessage();
 
-const reviewItems = ref([]);
+// --- 状态变量 ---
+const tableData = ref([]);
 const loading = ref(true);
 const error = ref(null);
 const totalItems = ref(0);
 const currentPage = ref(1);
 const itemsPerPage = ref(15);
 const searchQuery = ref('');
+const loadingAction = ref({});
+const currentRowId = ref(null);
+const isShowingSearchResults = ref(false);
 
-const loadingAction = ref({}); 
-const currentRowId = ref(null); 
-
+// --- 表格列定义 ---
 const formatDate = (timestamp) => {
   if (!timestamp) return 'N/A';
   try {
@@ -83,7 +97,7 @@ const formatDate = (timestamp) => {
   }
 };
 
-const goToEditPage = (row) => { 
+const goToEditPage = (row) => {
   if (row && row.item_id) {
     router.push({ name: 'MediaEditPage', params: { itemId: row.item_id } });
   } else {
@@ -97,7 +111,8 @@ const handleMarkAsProcessed = async (row) => {
   try {
     await axios.post(`/api/actions/mark_item_processed/${row.item_id}`);
     message.success(`项目 "${row.item_name}" 已标记为已处理。`);
-    fetchReviewItems(); 
+    // 刷新列表
+    fetchReviewItems();
   } catch (err) {
     console.error("标记为已处理失败:", err);
     message.error(`标记项目 "${row.item_name}" 为已处理失败: ${err.response?.data?.error || err.message}`);
@@ -106,7 +121,6 @@ const handleMarkAsProcessed = async (row) => {
     currentRowId.value = null;
   }
 };
-
 
 const columns = computed(() => [
   {
@@ -141,7 +155,7 @@ const columns = computed(() => [
   {
     title: '操作',
     key: 'actions',
-    width: 220, 
+    width: 220,
     align: 'center',
     fixed: 'right',
     render(row) {
@@ -150,40 +164,42 @@ const columns = computed(() => [
           h(NButton,
             {
               size: 'small',
-              type: 'primary', 
-              onClick: () => goToEditPage(row) 
+              type: 'primary',
+              onClick: () => goToEditPage(row)
             },
-            { default: () => '手动编辑' } 
+            { default: () => '手动编辑' }
           ),
-
-          h(NPopconfirm,
-            { 
+          // 只有在非搜索结果时，才显示“标记已处理”按钮
+          !isShowingSearchResults.value ? h(NPopconfirm,
+            {
               onPositiveClick: () => handleMarkAsProcessed(row),
             },
-            { 
-              trigger: () => h(NButton, 
+            {
+              trigger: () => h(NButton,
                 {
                   size: 'small',
                   type: 'success',
                   ghost: true,
                   loading: loadingAction.value[row.item_id] && currentRowId.value === row.item_id,
-                  disabled: loadingAction.value[row.item_id] 
+                  disabled: loadingAction.value[row.item_id]
                 },
                 {
                   icon: () => h(NIcon, { component: MarkDoneIcon }),
                   default: () => '标记已处理'
                 }
               ),
-              default: () => `确定要将 "${row.item_name}" 标记为已处理吗？这将把它从手动处理列表移除。` 
+              default: () => `确定要将 "${row.item_name}" 标记为已处理吗？`
             }
-          ),
+          ) : null,
         ]
       });
     }
   }
 ]);
 
+// --- 分页逻辑 ---
 const paginationProps = computed(() => ({
+    disabled: isShowingSearchResults.value,
     page: currentPage.value,
     pageSize: itemsPerPage.value,
     itemCount: totalItems.value,
@@ -191,48 +207,81 @@ const paginationProps = computed(() => ({
     pageSizes: [10, 15, 20, 30, 50, 100],
     onChange: (page) => {
         currentPage.value = page;
-        fetchReviewItems();
+        if (!isShowingSearchResults.value) {
+            fetchReviewItems();
+        }
     },
     onUpdatePageSize: (pageSize) => {
         itemsPerPage.value = pageSize;
         currentPage.value = 1;
-        fetchReviewItems();
+        if (!isShowingSearchResults.value) {
+            fetchReviewItems();
+        }
     }
 }));
 
+// --- 数据获取逻辑 ---
 const fetchReviewItems = async () => {
   loading.value = true;
   error.value = null;
+  isShowingSearchResults.value = false;
   try {
     const response = await axios.get(`/api/review_items`, {
         params: {
             page: currentPage.value,
             per_page: itemsPerPage.value,
-            query: searchQuery.value, 
         }
     });
-    reviewItems.value = response.data.items;
+    tableData.value = response.data.items;
     totalItems.value = response.data.total_items;
   } catch (err) {
-    console.error("获取列表失败:", err);
-    error.value = "加载列表失败。" + (err.response?.data?.error || err.message);
-    message.error(error.value);
+    handleFetchError(err, "加载待处理列表失败。");
   } finally {
     loading.value = false;
   }
 };
 
+const searchEmbyLibrary = async () => {
+  loading.value = true;
+  error.value = null;
+  isShowingSearchResults.value = true;
+  try {
+    const response = await axios.get(`/api/search_emby_library`, {
+        params: { query: searchQuery.value }
+    });
+    tableData.value = response.data.items;
+    totalItems.value = response.data.total_items;
+  } catch (err) {
+    handleFetchError(err, "搜索 Emby 媒体库失败。");
+  } finally {
+    loading.value = false;
+  }
+};
+
+const handleFetchError = (err, defaultMessage) => {
+    console.error(defaultMessage, err);
+    error.value = defaultMessage + (err.response?.data?.error || err.message);
+    message.error(error.value);
+};
+
+// --- 搜索处理 ---
+const handleSearch = () => {
+  if (searchQuery.value.trim()) {
+    currentPage.value = 1;
+    searchEmbyLibrary();
+  } else {
+    currentPage.value = 1;
+    fetchReviewItems();
+  }
+};
+
+// --- 生命周期钩子 ---
 defineProps({
   taskStatus: {
     type: Object,
     required: true
   }
 });
-
-const handleSearch = () => {
-  currentPage.value = 1;
-  fetchReviewItems();
-};
 
 onMounted(() => {
   fetchReviewItems();

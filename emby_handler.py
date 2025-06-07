@@ -345,93 +345,85 @@ def get_emby_libraries(base_url: str, api_key: str, user_id: Optional[str] = Non
 def get_emby_library_items(
     base_url: str,
     api_key: str,
-    media_type_filter: Optional[str] = None,  # 例如 "Movie", "Series"
+    media_type_filter: Optional[str] = None,
     user_id: Optional[str] = None,
-    library_ids: Optional[List[str]] = None  # <--- 新增这个参数
+    library_ids: Optional[List[str]] = None,
+    search_term: Optional[str] = None  # <--- 新增：搜索关键词参数
 ) -> Optional[List[Dict[str, Any]]]:
     """
     获取指定媒体库中特定类型的媒体项目列表。
-    :param base_url: Emby 服务器 URL
-    :param api_key: Emby API Key
-    :param media_type_filter: 要获取的媒体类型 (例如 "Movie", "Series")
-    :param user_id: Emby 用户 ID (可选, 但推荐)
-    :param library_ids: 一个包含媒体库ID的列表。如果为 None 或空，则不获取任何项目。
-    :return: 媒体项目列表，或在失败时返回 None。
+    如果提供了 search_term，则在所有库中进行搜索。
     """
     if not base_url or not api_key:
         logger.error("get_emby_library_items: base_url 或 api_key 未提供。")
         return None
 
-    # 如果没有指定 library_ids 或者列表为空，则不处理任何库
+    # 如果是搜索模式，API 端点和参数会不同
+    if search_term and search_term.strip():
+        logger.info(f"进入搜索模式，关键词: '{search_term}'")
+        # 搜索时，我们通常使用 /Users/{UserId}/Items 端点，并且不限制 ParentId
+        api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+        params = {
+            "api_key": api_key,
+            "SearchTerm": search_term.strip(),
+            "IncludeItemTypes": media_type_filter or "Movie,Series", # 搜索时必须指定类型
+            "Recursive": "true",
+            "Fields": "Id,Name,Type,ProductionYear,ProviderIds,Path",
+            "Limit": 100 # 限制搜索结果数量
+        }
+        try:
+            response = requests.get(api_url, params=params, timeout=20)
+            response.raise_for_status()
+            data = response.json()
+            items = data.get("Items", [])
+            logger.info(f"搜索到 {len(items)} 个匹配项。")
+            return items
+        except requests.exceptions.RequestException as e:
+            logger.error(f"搜索 Emby 时发生网络错误: {e}")
+            return None
+
+    # --- 以下是您原有的、非搜索模式下的代码，保持不变 ---
     if not library_ids:
-        logger.info(
-            "get_emby_library_items: 未指定要处理的媒体库ID (library_ids为空或None)，不获取任何项目。")
-        return []  # 返回空列表表示没有项目
+        logger.info("get_emby_library_items: 未指定要处理的媒体库ID，不获取任何项目。")
+        return []
 
     all_items_from_selected_libraries: List[Dict[str, Any]] = []
-
     for lib_id in library_ids:
-        if not lib_id or not lib_id.strip():  # 跳过空的库ID
-            logger.warning(f"get_emby_library_items: 遇到一个空的库ID，已跳过。")
+        if not lib_id or not lib_id.strip():
             continue
 
         api_url = f"{base_url.rstrip('/')}/Items"
-        params: Dict[str, Any] = {  # 明确类型
+        params = {
             "api_key": api_key,
-            "Recursive": "true",  # 递归获取子文件夹中的项目
-            "ParentId": lib_id,  # <--- 这是核心：按库ID过滤
-            "Fields": "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines",  # 获取更多有用的字段
-            # "SortBy": "SortName", # 可以根据需要添加排序
-            # "SortOrder": "Ascending",
+            "Recursive": "true",
+
+            "ParentId": lib_id,
+            "Fields": "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines",
         }
-        if media_type_filter:  # 如果指定了媒体类型，则加入过滤
+        if media_type_filter:
             params["IncludeItemTypes"] = media_type_filter
-        else:  # 否则获取常见的媒体类型
+        else:
             params["IncludeItemTypes"] = "Movie,Series,Video"
 
-        if user_id:  # 如果提供了用户ID，加入参数以获取该用户可见的项目
-            # 对于 /Items 端点，通常是通过 /Users/{UserId}/Items 来获取用户特定视图
-            # 或者在请求 /Items 时，某些 Emby 版本可能接受 UserId 参数
-            # 更可靠的方式是调整 api_url
-            # api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
-            # 但 ParentId 应该仍然有效。如果 ParentId 和 UserId 一起用在 /Items 上效果不好，
-            # 可能需要先获取库的 UserData (如果适用) 或调整策略。
-            # 我们先假设 ParentId 在 /Items 上是主要的过滤方式。
-            # 如果要严格按用户视图，可能需要先获取用户视图下的库ID。
-            # 为简单起见，我们先这样，如果发现权限问题再调整。
-            params["UserId"] = user_id  # 尝试添加 UserId，看是否有效
-            logger.debug(
-                f"get_emby_library_items: 将使用 UserID '{user_id}' 进行过滤。")
+        if user_id:
+            params["UserId"] = user_id
 
-        logger.debug(
-            f"get_emby_library_items: Requesting items from library ID '{lib_id}'. URL: {api_url}, Params: {params}")
+        logger.debug(f"Requesting items from library ID '{lib_id}'. URL: {api_url}, Params: {params}")
         try:
-            response = requests.get(api_url, params=params, timeout=30)  # 增加超时
+            response = requests.get(api_url, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
             items_in_lib = data.get("Items", [])
             if items_in_lib:
-                logger.info(
-                    f"从库 ID '{lib_id}' (类型: {media_type_filter or '所有'}) 获取到 {len(items_in_lib)} 个项目。")
+                logger.info(f"从库 ID '{lib_id}' (类型: {media_type_filter or '所有'}) 获取到 {len(items_in_lib)} 个项目。")
                 all_items_from_selected_libraries.extend(items_in_lib)
             else:
-                logger.info(
-                    f"库 ID '{lib_id}' (类型: {media_type_filter or '所有'}) 中未找到项目。")
-        except requests.exceptions.RequestException as e:
-            logger.error(f"请求库 '{lib_id}' 中的项目失败: {e}", exc_info=True)
-            # 可以选择让整个函数失败返回 None，或者跳过这个库继续处理其他库
-            # return None # 如果一个库失败则整体失败
-            continue  # 跳过这个失败的库
-        except json.JSONDecodeError as e:
-            logger.error(
-                f"解析库 '{lib_id}' 项目响应失败: {e}. Response: {response.text[:500] if response else 'N/A'}", exc_info=True)
-            continue  # 跳过这个失败的库
+                logger.info(f"库 ID '{lib_id}' (类型: {media_type_filter or '所有'}) 中未找到项目。")
         except Exception as e:
-            logger.error(f"获取库 '{lib_id}' 项目时发生未知错误: {e}", exc_info=True)
+            logger.error(f"请求库 '{lib_id}' 中的项目失败: {e}", exc_info=True)
             continue
 
-    logger.info(
-        f"总共从选定的 {len(library_ids)} 个库中获取到 {len(all_items_from_selected_libraries)} 个项目。")
+    logger.info(f"总共从选定的 {len(library_ids)} 个库中获取到 {len(all_items_from_selected_libraries)} 个项目。")
     return all_items_from_selected_libraries
 
 
