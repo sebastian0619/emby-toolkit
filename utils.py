@@ -40,37 +40,48 @@ def contains_chinese(text: Optional[str]) -> bool:
 
 def clean_character_name_static(character_name: Optional[str]) -> str:
     """
-    清理角色名，移除常见的前缀和后缀。
-    这是一个静态方法，可以被任何地方调用。
+    清理角色名，移除常见的前缀、后缀，并处理中英混合的情况。
     """
     if not character_name:
         return ""
     
     name = str(character_name).strip()
     
+    # ✨ --- 新增：处理中英混合的核心逻辑 --- ✨
+    # 匹配模式：(一串中文字符) + (可选的空格、斜杠、空格) + (一串英文字母、数字、空格、点)
+    # 例如："叶文洁 Ye Wenjie", "索尔·杜兰 / Saul Durand"
+    # 我们只保留第一个捕获组（中文部分）
+    # \u4e00-\u9fa5 匹配中文字符
+    # [a-zA-Z0-9\s\.]+ 匹配英文、数字、空格和点
+    match = re.match(r'^([\u4e00-\u9fa5·\s]+)[\s/]+[a-zA-Z0-9\s\.]+$', name)
+    if match:
+        # 如果匹配成功，直接使用捕获到的中文部分
+        name = match.group(1).strip()
+        # logger.debug(f"中英混合清理: '{character_name}' -> '{name}'") # 如果需要可以加日志
+    # ✨ --- 新增结束 --- ✨
+
     # 移除 "饰 " 或 "饰" 前缀
     if name.startswith("饰 "):
         name = name[2:].strip()
-    elif name.startswith("饰"): # 处理没有空格的情况
+    elif name.startswith("饰"):
         name = name[1:].strip()
         
-    # 处理斜杠，只取第一个角色
+    # 再次处理斜杠（可能在上面的正则没处理掉的复杂情况）
     if '/' in name:
         name = name.split('/')[0].strip()
         
-    # 移除 (voice), [voice], (v.o.) 等标记 (不区分大小写)
-    # 确保括号是转义的，因为它们在正则表达式中有特殊含义
+    # 移除 (voice), [voice], (v.o.) 等标记
     voice_patterns = [
-        r'\s*\((?:voice|VOICE|Voice)\)\s*$',       # (voice), (VOICE), (Voice)
-        r'\s*\[(?:voice|VOICE|Voice)\]\s*$',       # [voice], [VOICE], [Voice]
-        r'\s*\((?:v\.o\.|V\.O\.)\)\s*$',           # (v.o.), (V.O.)
-        r'\s*配\s音\s*$',                         # "配音" 后缀 (如果需要)
-        r'\s*配\s*$',                             # 单独的 "配" 后缀 (如果需要)
+        r'\s*\((?:voice|VOICE|Voice)\)\s*$',
+        r'\s*\[(?:voice|VOICE|Voice)\]\s*$',
+        r'\s*\((?:v\.o\.|V\.O\.)\)\s*$',
+        r'\s*配\s*音\s*$',
+        r'\s*配\s*$',
     ]
     for pattern in voice_patterns:
         name = re.sub(pattern, '', name, flags=re.IGNORECASE).strip()
         
-    # 再次移除可能因上述操作产生的多余前缀 "饰 " (例如 "饰 配音" 清理后可能剩下 "饰 ")
+    # 再次清理可能残留的 "饰"
     if name.startswith("饰 "):
         name = name[2:].strip()
     elif name.startswith("饰"):

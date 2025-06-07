@@ -701,9 +701,12 @@ class MediaProcessor:
                                 # p_actor_ref["Name"] = name_from_candidate_zh # 谨慎使用，可能导致非中文名被覆盖
                                 pass
 
-                            if role_from_candidate and p_actor_ref.get("Role") != role_from_candidate:
-                                logger.info(f"      将 Emby 演员 '{p_actor_ref.get('Name')}' 的角色从 '{p_actor_ref.get('Role')}' 更新为豆瓣角色 '{role_from_candidate}' (EmbyPID: {target_emby_pid_for_map_update})")
-                                p_actor_ref["Role"] = role_from_candidate
+                            # ✨ 在更新前，先对从豆瓣来的角色名进行清理 ✨
+                            cleaned_role_from_candidate = utils.clean_character_name_static(role_from_candidate)
+
+                            if cleaned_role_from_candidate and p_actor_ref.get("Role") != cleaned_role_from_candidate:
+                                logger.info(f"      将 Emby 演员 '{p_actor_ref.get('Name')}' 的角色从 '{p_actor_ref.get('Role')}' 更新为已清理的豆瓣角色 '{cleaned_role_from_candidate}' (原始豆瓣角色: '{role_from_candidate}')")
+                                p_actor_ref["Role"] = cleaned_role_from_candidate # <--- 使用清理后的值
                                 p_actor_ref["_source_comment"] = f"role_updated_by_douban; orig_role: '{p_actor_ref.get('Role')}'"
                         
                         found_and_updated_existing_emby_actor = True

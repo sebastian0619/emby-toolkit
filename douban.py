@@ -67,14 +67,51 @@ class DoubanApi:
             logger.warning("DoubanApi 初始化：未提供数据库路径 (db_path)，翻译缓存功能将不可用或受限。")
 
     @classmethod
-    def _get_translation_from_db(cls, original_text: str) -> Optional[Dict[str, Any]]:
-        if not cls._db_path: return None
+    def _get_translation_from_db(cls, text: str, by_translated_text: bool = False, cursor: Optional[sqlite3.Cursor] = None) -> Optional[Dict[str, Any]]:
+        """
+        从数据库获取翻译缓存。
+        :param text: 要查询的文本 (可以是原文或译文)。
+        :param by_translated_text: 如果为 True，则通过译文反查原文。
+        :param cursor: (可选) 使用外部提供的数据库游标，避免重复开关连接。
+        :return: 包含原文、译文和引擎的字典，或 None。
+        """
+        conn_was_provided = cursor is not None
+        internal_conn: Optional[sqlite3.Connection] = None
+
+        if not conn_was_provided and not cls._db_path:
+            logger.warning("DoubanApi._get_translation_from_db: DB path not set, cannot get cache.")
+            return None
+
         try:
-            conn = sqlite3.connect(cls._db_path); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-            cursor.execute("SELECT translated_text, engine_used FROM translation_cache WHERE original_text = ?", (original_text,))
-            row = cursor.fetchone(); conn.close()
-            return {"translated_text": row["translated_text"], "engine_used": row["engine_used"]} if row else None
-        except Exception as e: logger.error(f"DB读取翻译缓存失败 for '{original_text}': {e}", exc_info=True); return None
+            if not cursor:
+                internal_conn = sqlite3.connect(cls._db_path)
+                internal_conn.row_factory = sqlite3.Row
+                cursor = internal_conn.cursor()
+
+            # 根据查询模式选择不同的SQL语句
+            if by_translated_text:
+                # 通过译文反查
+                sql = "SELECT original_text, translated_text, engine_used FROM translation_cache WHERE translated_text = ?"
+            else:
+                # 默认通过原文查询
+                sql = "SELECT original_text, translated_text, engine_used FROM translation_cache WHERE original_text = ?"
+            
+            cursor.execute(sql, (text,))
+            row = cursor.fetchone()
+            
+            # 如果是内部创建的连接，在这里就关闭它
+            if not conn_was_provided and internal_conn:
+                internal_conn.close()
+
+            return dict(row) if row else None
+
+        except Exception as e:
+            logger.error(f"DB读取翻译缓存失败 for '{text}' (by_translated: {by_translated_text}): {e}", exc_info=True)
+            # 如果出错，也确保关闭内部连接
+            if not conn_was_provided and internal_conn:
+                try: internal_conn.close()
+                except Exception: pass
+            return None
 
     @classmethod
     def _save_translation_to_db(cls, original_text: str, translated_text: Optional[str], 
@@ -405,22 +442,7 @@ class DoubanApi:
                 finally: DoubanApi._session = None
             logger.info("DoubanApi close 方法执行完毕。")
 
-    @classmethod
-    def _get_translation_from_db(cls, original_text: str) -> Optional[Dict[str, Any]]:
-        if not cls._db_path: 
-            logger.warning("DoubanApi._get_translation_from_db: DB path not set, cannot get cache.")
-            return None
-        try:
-            # 读取操作可以继续使用独立的短连接，通常问题不大
-            conn = sqlite3.connect(cls._db_path); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-            cursor.execute("SELECT translated_text, engine_used FROM translation_cache WHERE original_text = ?", (original_text,))
-            row = cursor.fetchone()
-            conn.close() # 及时关闭连接
-            return {"translated_text": row["translated_text"], "engine_used": row["engine_used"]} if row else None
-        except Exception as e: 
-            logger.error(f"DB读取翻译缓存失败 for '{original_text}': {e}", exc_info=True)
-            return None
-        
+      
     @classmethod
     def _save_translation_to_db(cls, original_text: str, translated_text: Optional[str], 
                                 engine_used: Optional[str], cursor: Optional[sqlite3.Cursor] = None): # <--- 添加可选的 cursor 参数
