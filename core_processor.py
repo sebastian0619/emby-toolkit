@@ -744,6 +744,38 @@ class MediaProcessor:
                 
                 if original_role_in_actor_data != final_role_to_set:
                     processed_cast_intermediate[actor_data_idx]["Role"] = final_role_to_set
+                # ✨ --- 新增：角色名填充与增强逻辑 --- ✨
+                # 在所有翻译和清理都完成后，我们再执行这个新逻辑
+                
+                # 首先，我们需要知道媒体类型是否是动画
+                # 我们可以从 media_info 中获取 Genres
+                genres = media_info.get("Genres", [])
+                is_animation = "Animation" in genres or "动画" in genres
+
+                # 获取当前可能已经被翻译过的最终角色名
+                current_role = processed_cast_intermediate[actor_data_idx].get("Role", "").strip()
+
+                final_role = current_role # 默认最终角色名就是当前角色名
+
+                if is_animation:
+                    # 规则1：动画，角色名不为空
+                    if current_role:
+                        # 避免重复添加 (配音)
+                        if not current_role.endswith("(配音)"):
+                            final_role = f"{current_role} (配音)"
+                    # 规则2：动画，角色名为空
+                    else:
+                        final_role = "配音"
+                else:
+                    # 规则3：非动画，角色名为空
+                    if not current_role:
+                        final_role = "演员"
+                        
+                # 如果角色名发生了变化，则更新并记录日志
+                if final_role != current_role:
+                    logger.info(f"  角色名优化: '{current_role}' -> '{final_role}' (演员: {actor_data_val.get('Name', '未知')}, 动画: {is_animation})")
+                    processed_cast_intermediate[actor_data_idx]["Role"] = final_role
+                # ✨ --- 新增逻辑结束 --- ✨
 
             # --- 步骤 5: 最终去重 ---
             # (这部分代码与我上一个回复中的版本相同，作用于 processed_cast_intermediate，结果放入 final_unique_cast)
