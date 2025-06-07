@@ -865,13 +865,13 @@ class MediaProcessor:
             
             # ✨ 可选的锁定并刷新逻辑 ✨
             # 建议在 config 中增加一个 'lock_cast_before_refresh' 选项 (True/False)
-            if self.config.get("lock_cast_before_refresh", True):
-                logger.info(f"准备为项目 {emby_item_id} 锁定 'Cast' 字段并刷新...")
-                emby_handler.lock_emby_item_field(emby_item_id, "Cast", self.emby_url, self.emby_api_key, self.emby_user_id)
-                emby_handler.refresh_emby_item_metadata(emby_item_id, self.emby_url, self.emby_api_key, recursive=(item_type_for_log == "Series"))
-            elif self.config.get("refresh_emby_after_update", False): # 如果不锁定，但仍然想刷新（可能会覆盖角色名）
-                logger.info(f"准备为项目 {emby_item_id} 触发元数据刷新 (未锁定)...")
-                emby_handler.refresh_emby_item_metadata(emby_item_id, self.emby_url, self.emby_api_key, recursive=(item_type_for_log == "Series"))
+            # if self.config.get("lock_cast_before_refresh", True):
+            #     logger.info(f"准备为项目 {emby_item_id} 锁定 'Cast' 字段并刷新...")
+            #     emby_handler.lock_emby_item_field(emby_item_id, "Cast", self.emby_url, self.emby_api_key, self.emby_user_id)
+            #     emby_handler.refresh_emby_item_metadata(emby_item_id, self.emby_url, self.emby_api_key, recursive=(item_type_for_log == "Series"))
+            # elif self.config.get("refresh_emby_after_update", False): # 如果不锁定，但仍然想刷新（可能会覆盖角色名）
+            #     logger.info(f"准备为项目 {emby_item_id} 触发元数据刷新 (未锁定)...")
+            #     emby_handler.refresh_emby_item_metadata(emby_item_id, self.emby_url, self.emby_api_key, recursive=(item_type_for_log == "Series"))
 
             return True
         else:
