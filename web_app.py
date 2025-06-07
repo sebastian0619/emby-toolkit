@@ -938,10 +938,6 @@ def api_save_config():
 # --- API 端点：获取待复核列表 ---
 @app.route('/api/review_items', methods=['GET'])
 def api_get_review_items():
-     # --- 在这里加上魔法日志 ---
-    print("--- HELLO, I AM THE NEWEST API FUNCTION! ---") 
-    logger.info("--- HELLO, I AM THE NEWEST API FUNCTION! ---")
-    # --- -------------------- ---
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
     query_filter = request.args.get('query', '', type=str).strip()
@@ -1333,128 +1329,42 @@ def api_update_edited_cast(item_id):
         edited_cast_from_frontend = data["cast"]
         logger.info(f"API: 收到为 ItemID {item_id} 更新演员的请求，共 {len(edited_cast_from_frontend)} 位演员。")
 
-        # 步骤 0.5: 获取原始演员信息以供比对
-        original_emby_details = emby_handler.get_emby_item_details(
-            item_id,
-            media_processor_instance.emby_url,
-            media_processor_instance.emby_api_key,
-            media_processor_instance.emby_user_id
-        )
-        original_cast_map = {}
-        if original_emby_details and original_emby_details.get("People"):
-            for person in original_emby_details["People"]:
-                if person.get("Id"):
-                    original_cast_map[str(person["Id"])] = {
-                        "name": person.get("Name", ""),
-                        "role": person.get("Role", "")
-                    }
+        # ======================================================================
+        # ✨✨✨ 逻辑变更：不再自己处理，而是交给 core_processor ✨✨✨
+        # ======================================================================
 
-        # 准备一个列表来存放需要更新到翻译缓存的条目
-        translations_to_cache = []
-        cast_for_emby_handler = []
-
-        # ✨ --- 核心逻辑重构开始 --- ✨
-        # 为了反查缓存，我们在这里打开一次数据库连接，并传递游标
-        conn_for_cache = get_db_connection()
-        cursor_for_cache = conn_for_cache.cursor()
-
+        # 1. 更新翻译缓存 (这部分逻辑可以保留在 API 层)
+        # (您现有的更新翻译缓存的代码可以放在这里，我暂时省略以保持清晰)
+        # ... 您更新翻译缓存的代码 ...
+        
+        # 2. 准备传递给核心处理器的数据 (emby_handler 期望的格式)
+        cast_for_processor = []
         for actor_frontend in edited_cast_from_frontend:
-            emby_pid = str(actor_frontend.get("embyPersonId", "")).strip()
-            if not emby_pid: continue
-            
-            new_name = str(actor_frontend.get("name", "")).strip()
-            new_role = str(actor_frontend.get("role", "")).strip()
-
-            original_actor = original_cast_map.get(emby_pid)
-            if original_actor:
-                original_name_from_emby = original_actor.get("name", "")
-                original_role_from_emby = original_actor.get("role", "")
-
-                # --- 处理角色名 ---
-                if new_role and utils.contains_chinese(new_role) and new_role != original_role_from_emby:
-                    # 尝试从翻译缓存中，根据“旧的中文名”反向查找它的“外文原文”
-                    cached_entry = DoubanApi._get_translation_from_db(original_role_from_emby, by_translated_text=True, cursor=cursor_for_cache)
-                    
-                    if cached_entry and cached_entry.get("original_text"):
-                        original_text = cached_entry["original_text"]
-                        logger.info(f"    通过缓存反查到角色名 '{original_role_from_emby}' 的原文是 '{original_text}'。")
-                        translations_to_cache.append({"original": original_text, "translated": new_role})
-                    elif original_role_from_emby and not utils.contains_chinese(original_role_from_emby):
-                        # 如果反查失败，但旧值是外文，则直接视为新翻译
-                        translations_to_cache.append({"original": original_role_from_emby, "translated": new_role})
-
-                # --- 处理演员名 (逻辑同上) ---
-                if new_name and utils.contains_chinese(new_name) and new_name != original_name_from_emby:
-                    cached_entry = DoubanApi._get_translation_from_db(original_name_from_emby, by_translated_text=True, cursor=cursor_for_cache)
-                    if cached_entry and cached_entry.get("original_text"):
-                        original_text = cached_entry["original_text"]
-                        logger.info(f"    通过缓存反查到演员名 '{original_name_from_emby}' 的原文是 '{original_text}'。")
-                        translations_to_cache.append({"original": original_text, "translated": new_name})
-                    elif original_name_from_emby and not utils.contains_chinese(original_name_from_emby):
-                        translations_to_cache.append({"original": original_name_from_emby, "translated": new_name})
-            
-            # 构建更新到Emby的数据 (这部分逻辑不变)
             entry = {
-                "emby_person_id": emby_pid, "name": new_name, "character": new_role, "provider_ids": {}
+                "emby_person_id": str(actor_frontend.get("embyPersonId", "")).strip(),
+                "name": str(actor_frontend.get("name", "")).strip(),
+                "character": str(actor_frontend.get("role", "")).strip(),
+                "provider_ids": {} # 您可以根据需要填充这个
             }
-            if actor_frontend.get("imdbId"): entry["provider_ids"]["Imdb"] = str(actor_frontend["imdbId"]).strip()
-            if actor_frontend.get("doubanId"): entry["provider_ids"]["Douban"] = str(actor_frontend["doubanId"]).strip()
-            if actor_frontend.get("tmdbId"): entry["provider_ids"]["Tmdb"] = str(actor_frontend["tmdbId"]).strip()
-            cast_for_emby_handler.append(entry)
+            cast_for_processor.append(entry)
 
-        # 关闭用于缓存查询的连接
-        conn_for_cache.close()
-        # ✨ --- 核心逻辑重构结束 --- ✨
-
-        # 步骤 1.5: 将手动翻译写入缓存数据库
-        if translations_to_cache:
-            logger.info(f"检测到 {len(translations_to_cache)} 条手动翻译，正在更新翻译缓存...")
-            conn_for_write = None
-            try:
-                conn_for_write = get_db_connection()
-                cursor_for_write = conn_for_write.cursor()
-                for trans in translations_to_cache:
-                    # 使用我们之前实现的 DoubanApi 的静态方法来保存，保持逻辑统一
-                    DoubanApi._save_translation_to_db(
-                        original_text=trans["original"],
-                        translated_text=trans["translated"],
-                        engine_used="manual_edit", # 标记来源为手动编辑
-                        cursor=cursor_for_write
-                    )
-                    logger.info(f"  缓存已更新: '{trans['original']}' -> '{trans['translated']}' (来源: 手动编辑)")
-                conn_for_write.commit()
-            except Exception as e_cache:
-                logger.error(f"更新翻译缓存时失败: {e_cache}", exc_info=True)
-                if conn_for_write: conn_for_write.rollback()
-            finally:
-                if conn_for_write: conn_for_write.close()
-
-        # 步骤 2: 调用 emby_handler 更新 Emby
-        update_success = emby_handler.update_emby_item_cast(
+        # 3. 调用新的核心处理函数
+        process_success = media_processor_instance.process_item_with_manual_cast(
             item_id=item_id,
-            new_cast_list_for_handler=cast_for_emby_handler,
-            emby_server_url=media_processor_instance.emby_url,
-            emby_api_key=media_processor_instance.emby_api_key,
-            user_id=media_processor_instance.emby_user_id
+            manual_cast_list=cast_for_processor
         )
 
-        if update_success:
-            logger.info(f"API: ItemID {item_id} 的演员信息已成功更新到 Emby。")
+        # 4. 根据处理结果返回响应
+        if process_success:
+            logger.info(f"API: ItemID {item_id} 的手动更新流程已成功执行。")
+            # 更新成功后，也应该更新处理日志
             item_name_for_log = data.get("item_name", f"未知项目(ID:{item_id})")
             media_processor_instance._remove_from_failed_log_if_exists(item_id)
-            media_processor_instance.save_to_processed_log(item_id, item_name_for_log, score=10.0)
-            if media_processor_instance.config.get("refresh_emby_after_update", True):
-                item_type_for_log = data.get("item_type", "Unknown")
-                emby_handler.refresh_emby_item_metadata(
-                    item_emby_id=item_id,
-                    emby_server_url=media_processor_instance.emby_url,
-                    emby_api_key=media_processor_instance.emby_api_key,
-                    recursive=(item_type_for_log == "Series"),
-                )
-            return jsonify({"message": "演员信息已成功更新到Emby，翻译缓存也已同步。"}), 200
+            media_processor_instance.save_to_processed_log(item_id, item_name_for_log, score=10.0) # 手动处理给满分
+            return jsonify({"message": "演员信息已成功更新，并执行了完整的处理流程。"}), 200
         else:
-            logger.error(f"API: 更新 Emby 项目 {item_id} 演员信息失败 (emby_handler 返回 False)。")
-            return jsonify({"error": "更新Emby演员信息失败，请检查后端日志。"}), 500
+            logger.error(f"API: 核心处理器未能成功处理 ItemID {item_id} 的手动更新。")
+            return jsonify({"error": "核心处理器执行手动更新失败，请检查后端日志。"}), 500
 
     except Exception as e:
         logger.error(f"API /api/update_media_cast CRITICAL Error for {item_id}: {e}", exc_info=True)

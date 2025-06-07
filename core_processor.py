@@ -743,8 +743,11 @@ class MediaProcessor:
     
     def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False) -> bool:
         """
-        处理单个 Emby 媒体项目（电影或剧集）的演员信息。
+        处理单个 Emby 媒体项目（电影或剧集）的演员信息，遵循清晰的六步流程。
         """
+        # ======================================================================
+        # 步骤 0: 准备阶段 - 检查和获取数据
+        # ======================================================================
         if self.is_stop_requested():
             logger.info(f"任务已请求停止，跳过处理 Item ID: {emby_item_id}")
             return False
@@ -755,187 +758,187 @@ class MediaProcessor:
 
         if not all([self.emby_url, self.emby_api_key, self.emby_user_id]):
             logger.error(f"Emby配置不完整，无法处理 Item ID: {emby_item_id}")
-            # **1. 在早期失败时，也调用 save_to_failed_log，score 可以为 None**
             self.save_to_failed_log(emby_item_id, f"未知项目(ID:{emby_item_id})", "Emby配置不完整", "未知类型", score=None)
             return False
 
         logger.info(f"开始处理单个Emby Item ID: {emby_item_id}")
-        item_details: Optional[Dict[str, Any]] = None
-        item_name_for_log = f"未知项目(ID:{emby_item_id})"
-        item_type_for_log = "未知类型"
-
         try:
-            item_details = emby_handler.get_emby_item_details(
-                emby_item_id,
-                self.emby_url,
-                self.emby_api_key,
-                self.emby_user_id
-            )
-            if item_details:
-                item_name_for_log = item_details.get("Name", item_name_for_log)
-                item_type_for_log = item_details.get("Type", item_type_for_log)
-            else:
-                logger.error(f"无法获取Emby项目 {emby_item_id} 的详情（emby_handler返回None），处理中止。")
-                # **1. 早期失败记录**
-                self.save_to_failed_log(emby_item_id, item_name_for_log, "无法获取Emby项目详情(API返回None)", item_type_for_log, score=None)
+            item_details = emby_handler.get_emby_item_details(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+            if not item_details:
+                logger.error(f"无法获取Emby项目 {emby_item_id} 的详情，处理中止。")
+                self.save_to_failed_log(emby_item_id, f"未知项目(ID:{emby_item_id})", "无法获取Emby项目详情", "未知类型", score=None)
                 return False
-        except Exception as e_get_details:
-            logger.error(f"获取Emby项目 {emby_item_id} 详情时发生异常: {e_get_details}", exc_info=True)
-            # **1. 早期失败记录**
-            self.save_to_failed_log(emby_item_id, item_name_for_log, f"获取Emby详情异常: {e_get_details}", item_type_for_log, score=None)
+        except Exception as e:
+            logger.error(f"获取Emby项目 {emby_item_id} 详情时发生异常: {e}", exc_info=True)
+            self.save_to_failed_log(emby_item_id, f"未知项目(ID:{emby_item_id})", f"获取Emby详情异常: {e}", "未知类型", score=None)
             return False
 
-        if self.is_stop_requested():
-            logger.info(f"停止信号：获取Emby详情后中止 (Item ID: {emby_item_id})")
-            return False # 虽然未完成，但不是严格意义上的“失败”，不记录到failed_log
-
+        item_name_for_log = item_details.get("Name", f"未知项目(ID:{emby_item_id})")
+        item_type_for_log = item_details.get("Type", "未知类型")
         current_emby_cast_raw = item_details.get("People", [])
-        original_emby_cast_count = len(current_emby_cast_raw) # **2. 获取原始演员数量**
-        logger.info(f"媒体 '{item_name_for_log}' 原始Emby People数量: {original_emby_cast_count} (将从中提取演员)")
+        original_emby_cast_count = len(current_emby_cast_raw)
+        logger.info(f"媒体 '{item_name_for_log}' 原始Emby People数量: {original_emby_cast_count}")
 
-        if self.is_stop_requested():
-            logger.info(f"停止信号：调用 _process_cast_list 前中止 (Item ID: {emby_item_id})")
-            return False
-
+        # ======================================================================
+        # 步骤 1: 核心处理 - 调用 _process_cast_list 一次
+        # ======================================================================
+        if self.is_stop_requested(): return False
         final_cast_for_item = self._process_cast_list(current_emby_cast_raw, item_details)
-        # ...
-        final_cast_for_item = self._process_cast_list(current_emby_cast_raw, item_details)
-        logger.debug(f"从 _process_cast_list 返回的演员列表（检查角色名）: {json.dumps(final_cast_for_item, indent=2, ensure_ascii=False)}")
-        # ...
+        logger.debug(f"从 _process_cast_list 返回的演员列表（共 {len(final_cast_for_item)} 位）: {json.dumps(final_cast_for_item, indent=2, ensure_ascii=False)}")
 
-        if self.is_stop_requested():
-            logger.info(f"停止信号：_process_cast_list 执行完毕，更新Emby前中止 (Item ID: {emby_item_id})")
-            return False
-
+        # ======================================================================
+        # 步骤 2: 前置更新 - 更新被翻译的 Person 名字 (两步更新法之第一步)
+        # ======================================================================
+        if self.is_stop_requested(): return False
         logger.info("开始前置步骤：检查并更新被翻译的演员名字...")
-        # 创建一个原始名字的映射，方便对比
         original_names_map = {p.get("Id"): p.get("Name") for p in current_emby_cast_raw if p.get("Id")}
-        
         for actor in final_cast_for_item:
             if self.is_stop_requested(): break
-            
             actor_id = actor.get("EmbyPersonId")
             new_name = actor.get("Name")
             original_name = original_names_map.get(actor_id)
-
-            # 如果名字被修改了 (通常是翻译导致)
             if actor_id and new_name and original_name and new_name != original_name:
-                logger.info(f"检测到演员名字变更：'...' -> '...' (ID: ...)。正在更新 Person 条目...")
-                update_person_success = emby_handler.update_person_details(
+                logger.info(f"检测到演员名字变更：'{original_name}' -> '{new_name}' (ID: {actor_id})。正在更新 Person 条目...")
+                emby_handler.update_person_details(
                     person_id=actor_id,
                     new_data={"Name": new_name},
                     emby_server_url=self.emby_url,
                     emby_api_key=self.emby_api_key,
-                    user_id=self.emby_user_id  # <--- ✨✨✨ 请确保加上这一行！ ✨✨✨
-)
-                if not update_person_success:
-                    logger.warning(f"更新演员 '{new_name}' (ID: {actor_id}) 的名字失败，后续关联可能不准确。")
+                    user_id=self.emby_user_id
+                )
         logger.info("演员名字前置更新检查完成。")
-        # **3. 调用打分方法**
+
+        # ======================================================================
+        # 步骤 3: 质量评估 - 对处理结果打分
+        # ======================================================================
+        if self.is_stop_requested(): return False
         processing_score = self._evaluate_cast_processing_quality(final_cast_for_item, original_emby_cast_count)
         logger.info(f"对媒体 '{item_name_for_log}' (ID: {emby_item_id}) 的处理评分为: {processing_score:.1f}")
 
-        # 构建 cast_for_emby_update (这部分逻辑保持不变)
-        cast_for_emby_update: List[Dict[str, Any]] = []
-        for actor_data in final_cast_for_item:
-            actor_name = actor_data.get("Name")
-            if not actor_name or not str(actor_name).strip():
-                logger.warning(f"process_single_item: 跳过无效的演员条目（缺少或空白Name）：{actor_data}")
-                continue
-            entry_for_emby_handler = {
-                "name": str(actor_name).strip(),
-                "character": str(actor_data.get("Role", "")).strip(),
-                "provider_ids": actor_data.get("ProviderIds", {}).copy()
-            }
-            emby_person_id = actor_data.get("EmbyPersonId")
-            if emby_person_id and str(emby_person_id).strip():
-                entry_for_emby_handler["emby_person_id"] = str(emby_person_id).strip()
-            cast_for_emby_update.append(entry_for_emby_handler)
-        
-        logger.debug(f"process_single_item: 准备发送给 emby_handler.update_emby_item_cast 的 cast_for_emby_update (共 {len(cast_for_emby_update)} 条)")
-
+        # ======================================================================
+        # 步骤 4: 最终更新 - 更新媒体的演员列表 (两步更新法之第二步)
+        # ======================================================================
+        if self.is_stop_requested(): return False
         update_success = False
-        # 处理特殊情况：如果处理后演员列表为空，但原始列表不为空，可能不进行更新或标记为低分
-        if not cast_for_emby_update and original_emby_cast_count > 0:
-            logger.warning(f"媒体 '{item_name_for_log}' 处理后演员列表为空，但原始有 {original_emby_cast_count} 位演员。将不执行Emby更新，并可能记录为低分处理。")
-            update_success = False # 明确标记更新未成功（因为没有东西可更新，或者我们决定不更新）
-            # processing_score 此时可能已经是0了，如果 _evaluate_cast_processing_quality 已处理此情况
-        elif not cast_for_emby_update and original_emby_cast_count == 0:
-            logger.info(f"媒体 '{item_name_for_log}' 原始无演员，处理后也无演员。无需更新Emby。")
-            update_success = True # 视为“成功”，因为无事可做，评分应该是10
+        if not final_cast_for_item and original_emby_cast_count > 0:
+            logger.warning(f"媒体 '{item_name_for_log}' 处理后演员列表为空，但原始有 {original_emby_cast_count} 位演员。将不执行Emby更新。")
         else:
+            # 格式转换：将内部格式转换为 emby_handler 期望的格式
+            cast_for_emby_handler = [
+                {
+                    "name": actor.get("Name"),
+                    "character": actor.get("Role"),
+                    "emby_person_id": actor.get("EmbyPersonId"),
+                    "provider_ids": actor.get("ProviderIds")
+                }
+                for actor in final_cast_for_item
+            ]
+            
             try:
                 logger.info(f"准备更新Emby项目 '{item_name_for_log}' 的演员信息...")
-                logger.debug(f"将发送给 emby_handler 的完整演员列表 (cast_for_emby_update): {json.dumps(cast_for_emby_update, indent=2, ensure_ascii=False)}")
                 update_success = emby_handler.update_emby_item_cast(
                     item_id=emby_item_id,
-                    new_cast_list_for_handler=cast_for_emby_update,
+                    new_cast_list_for_handler=cast_for_emby_handler,
                     emby_server_url=self.emby_url,
                     emby_api_key=self.emby_api_key,
                     user_id=self.emby_user_id
                 )
-            except Exception as e_update_cast:
-                logger.error(f"更新Emby项目 {emby_item_id} ('{item_name_for_log}') 演员信息时发生严重异常: {e_update_cast}", exc_info=True)
-                # **4. 在异常情况下，也记录分数**
-                self.save_to_failed_log(emby_item_id, item_name_for_log, f"更新Emby演员时发生严重异常: {e_update_cast}", item_type_for_log, score=processing_score)
-                return False # 标记为处理失败
+            except Exception as e:
+                logger.error(f"更新Emby项目演员信息时发生严重异常: {e}", exc_info=True)
+                self.save_to_failed_log(emby_item_id, item_name_for_log, f"更新Emby演员时异常: {e}", item_type_for_log, score=processing_score)
+                return False
 
-        # **5. 根据 update_success 和 processing_score 记录日志**
+        # ======================================================================
+        # 步骤 5: 收尾工作 - 日志记录和可选的锁定与刷新
+        # ======================================================================
         if update_success:
             logger.info(f"Emby项目 {emby_item_id} ('{item_name_for_log}') 演员信息更新操作调用成功 (评分为: {processing_score:.1f})。")
             
-            # 从配置中读取阈值，如果没有就用默认值，例如 6.0
-            # 你需要在 __init__ 中加载这个配置，或者在这里直接用 self.config.get
-            # MIN_SCORE_FOR_REVIEW = float(self.config.get("min_score_for_review", 6.0))
-            # 为简化，我们先硬编码一个值，后续你可以改成从配置读取
-            MIN_SCORE_FOR_REVIEW = float(self.config.get("min_score_for_review", 6.0)) 
-            
+            MIN_SCORE_FOR_REVIEW = float(self.config.get("min_score_for_review", 6.0))
             if processing_score < MIN_SCORE_FOR_REVIEW:
-                logger.warning(f"  处理评分 ({processing_score:.1f}) 低于阈值 ({MIN_SCORE_FOR_REVIEW:.1f})，将额外记录到失败/待手动处理日志。")
-                self.save_to_failed_log(
-                    item_id=emby_item_id, 
-                    item_name=item_name_for_log, 
-                    error_msg=f"处理评分过低({processing_score:.1f})，建议手动处理。", # 更清晰的错误信息
-                    item_type=item_type_for_log,
-                    score=processing_score # 传递分数
-                )
-                # 即使评分低，如果Emby更新调用本身没报错，我们还是认为它在 processed_log 中是“已处理”
-                self.save_to_processed_log(emby_item_id, item_name_for_log, score=processing_score)
+                logger.warning(f"处理评分 ({processing_score:.1f}) 低于阈值 ({MIN_SCORE_FOR_REVIEW:.1f})，将记录为待手动处理。")
+                self.save_to_failed_log(emby_item_id, item_name_for_log, f"处理评分过低({processing_score:.1f})", item_type_for_log, score=processing_score)
             else:
-                # 评分达标，正常记录到 processed_log
-                # **重要：如果之前因为评分低在 failed_log 中有记录，现在应该删除它**
-                self._remove_from_failed_log_if_exists(emby_item_id) # 需要实现这个辅助方法
-                self.save_to_processed_log(emby_item_id, item_name_for_log, score=processing_score)
+                self._remove_from_failed_log_if_exists(emby_item_id)
             
-            # 刷新Emby元数据 (这部分逻辑保持不变)
-            if self.config.get("refresh_emby_after_update", True):
-                if self.is_stop_requested():
-                    logger.info(f"停止信号：刷新Emby元数据前中止 (Item ID: {emby_item_id})")
-                    return True 
-                
-                logger.info(f"准备为项目 {emby_item_id} ('{item_name_for_log}') 触发Emby元数据刷新...")
-                try:
-                    emby_handler.refresh_emby_item_metadata(
-                        item_emby_id=emby_item_id,
-                        emby_server_url=self.emby_url,
-                        emby_api_key=self.emby_api_key,
-                        recursive=(item_type_for_log == "Series"),
-                    )
-                except Exception as e_refresh:
-                     logger.error(f"刷新Emby元数据失败 for '{item_name_for_log}' (ID: {emby_item_id}): {e_refresh}", exc_info=True)
-            return True # 即使刷新失败，更新操作本身是成功的
+            self.save_to_processed_log(emby_item_id, item_name_for_log, score=processing_score)
+            
+            # ✨ 可选的锁定并刷新逻辑 ✨
+            # 建议在 config 中增加一个 'lock_cast_before_refresh' 选项 (True/False)
+            if self.config.get("lock_cast_before_refresh", True):
+                logger.info(f"准备为项目 {emby_item_id} 锁定 'Cast' 字段并刷新...")
+                emby_handler.lock_emby_item_field(emby_item_id, "Cast", self.emby_url, self.emby_api_key, self.emby_user_id)
+                emby_handler.refresh_emby_item_metadata(emby_item_id, self.emby_url, self.emby_api_key, recursive=(item_type_for_log == "Series"))
+            elif self.config.get("refresh_emby_after_update", False): # 如果不锁定，但仍然想刷新（可能会覆盖角色名）
+                logger.info(f"准备为项目 {emby_item_id} 触发元数据刷新 (未锁定)...")
+                emby_handler.refresh_emby_item_metadata(emby_item_id, self.emby_url, self.emby_api_key, recursive=(item_type_for_log == "Series"))
+
+            return True
         else:
-            # 如果 emby_handler.update_emby_item_cast 返回 False, 
-            # 或者我们因为处理后列表为空而将 update_success 设为 False
             logger.error(f"Emby项目 {emby_item_id} ('{item_name_for_log}') 演员信息更新失败或未执行 (评分为: {processing_score:.1f})。")
-            self.save_to_failed_log(
-                item_id=emby_item_id, 
-                item_name=item_name_for_log, 
-                error_msg="更新Emby演员信息失败(API调用失败或处理后无演员)", 
-                item_type=item_type_for_log,
-                score=processing_score # 记录分数
-            )
+            self.save_to_failed_log(emby_item_id, item_name_for_log, "更新Emby演员信息失败", item_type_for_log, score=processing_score)
             return False
+        
+    def process_item_with_manual_cast(self, item_id: str, manual_cast_list: List[Dict[str, Any]]) -> bool:
+        """
+        使用手动编辑的演员列表来处理单个媒体项目。
+        这个函数是为手动编辑 API 设计的，它会执行完整的“两步更新+锁定刷新”流程。
+        """
+        logger.info(f"开始使用手动编辑的演员列表处理 Item ID: {item_id}")
+        
+        # 1. 获取原始 Emby 详情，用于对比名字变更
+        try:
+            item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+            if not item_details:
+                logger.error(f"手动处理失败：无法获取项目 {item_id} 的详情。")
+                return False
+            current_emby_cast_raw = item_details.get("People", [])
+            item_name_for_log = item_details.get("Name", f"ID:{item_id}")
+            item_type_for_log = item_details.get("Type", "Unknown")
+        except Exception as e:
+            logger.error(f"手动处理失败：获取项目 {item_id} 详情时异常: {e}")
+            return False
+
+        # 2. 前置更新：更新被手动修改了名字的 Person 条目
+        logger.info("手动处理：开始前置更新演员名字...")
+        original_names_map = {p.get("Id"): p.get("Name") for p in current_emby_cast_raw if p.get("Id")}
+        for actor in manual_cast_list:
+            actor_id = actor.get("emby_person_id")
+            new_name = actor.get("name")
+            original_name = original_names_map.get(actor_id)
+            if actor_id and new_name and original_name and new_name != original_name:
+                logger.info(f"手动处理：检测到名字变更 '{original_name}' -> '{new_name}' (ID: {actor_id})")
+                emby_handler.update_person_details(
+                    person_id=actor_id,
+                    new_data={"Name": new_name},
+                    emby_server_url=self.emby_url,
+                    emby_api_key=self.emby_api_key,
+                    user_id=self.emby_user_id
+                )
+        logger.info("手动处理：演员名字前置更新完成。")
+
+        # 3. 最终更新：将手动编辑的列表更新到媒体
+        logger.info(f"手动处理：准备将 {len(manual_cast_list)} 位演员更新到 Emby...")
+        update_success = emby_handler.update_emby_item_cast(
+            item_id=item_id,
+            new_cast_list_for_handler=manual_cast_list,
+            emby_server_url=self.emby_url,
+            emby_api_key=self.emby_api_key,
+            user_id=self.emby_user_id
+        )
+
+        if not update_success:
+            logger.error(f"手动处理失败：更新 Emby 项目 {item_id} 演员信息时失败。")
+            return False
+
+        # # 4. 收尾工作：刷新EMBY
+        # logger.info(f"手动处理：演员更新成功，准备锁定并刷新...")
+        # if self.config.get("lock_cast_before_refresh", True):
+        #     emby_handler.lock_emby_item_field(item_id, "Cast", self.emby_url, self.emby_api_key, self.emby_user_id)
+        #     emby_handler.refresh_emby_item_metadata(item_id, self.emby_url, self.emby_api_key, recursive=(item_type_for_log == "Series"))
+        
+        logger.info(f"手动处理 Item ID: {item_id} ('{item_name_for_log}') 完成。")
+        return True
         
     def _remove_from_failed_log_if_exists(self, item_id: str):
         """如果 item_id 存在于 failed_log 中，则删除它。"""
