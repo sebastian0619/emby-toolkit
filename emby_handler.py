@@ -86,7 +86,47 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
         logger.error(
             f"获取Emby项目详情时发生未知错误 (ItemID: {item_id}, UserID: {user_id}): {e}\n{traceback.format_exc()}")
         return None
+def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
+    """
+    更新一个 Person 条目本身的信息 (例如，只更新名字)。
+    使用 /Users/{UserId}/Items/{ItemId} 端点，因为它对所有 Item 类型都更可靠。
+    """
+    if not all([person_id, new_data, emby_server_url, emby_api_key, user_id]): # <--- 新增 user_id 检查
+        logger.error("update_person_details: 参数不足 (需要 user_id)。")
+        return False
 
+    # ✨✨✨ 关键修改：使用包含 UserID 的端点 ✨✨✨
+    api_url = f"{emby_server_url.rstrip('/')}/Users/{user_id}/Items/{person_id}"
+    params = {"api_key": emby_api_key}
+    
+    try:
+        # 步骤 1: 获取 Person 的当前完整信息
+        logger.debug(f"准备获取 Person 详情 (ID: {person_id}, UserID: {user_id}) at {api_url}")
+        response_get = requests.get(api_url, params=params, timeout=10)
+        response_get.raise_for_status()
+        person_to_update = response_get.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"更新Person前获取其详情失败 (ID: {person_id}, UserID: {user_id}): {e}")
+        return False
+
+    # 步骤 2: 将新数据合并到获取到的对象中
+    for key, value in new_data.items():
+        person_to_update[key] = value
+    
+    # 步骤 3: 使用 POST /Items/{ItemId} (不带UserID) 来更新
+    # 更新操作通常是全局的，不针对特定用户
+    update_url = f"{emby_server_url.rstrip('/')}/Items/{person_id}"
+    headers = {'Content-Type': 'application/json'}
+
+    logger.info(f"准备更新 Person (ID: {person_id}) 的信息，新数据: {new_data}")
+    try:
+        response_post = requests.post(update_url, json=person_to_update, headers=headers, params=params, timeout=15)
+        response_post.raise_for_status()
+        logger.info(f"成功更新 Person (ID: {person_id}) 的信息。")
+        return True
+    except requests.exceptions.RequestException as e:
+        logger.error(f"更新 Person (ID: {person_id}) 时发生错误: {e}")
+        return False
 
 def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str, Any]],
                           emby_server_url: str, emby_api_key: str, user_id: str) -> bool:

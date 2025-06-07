@@ -40,25 +40,34 @@ def contains_chinese(text: Optional[str]) -> bool:
 
 def clean_character_name_static(character_name: Optional[str]) -> str:
     """
-    清理角色名，移除常见的前缀、后缀，并处理中英混合的情况。
+    清理角色名，移除常见的前缀、后缀，并处理中英混合及国家代码的情况。
     """
     if not character_name:
         return ""
     
     name = str(character_name).strip()
     
-    # ✨ --- 新增：处理中英混合的核心逻辑 --- ✨
-    # 匹配模式：(一串中文字符) + (可选的空格、斜杠、空格) + (一串英文字母、数字、空格、点)
-    # 例如："叶文洁 Ye Wenjie", "索尔·杜兰 / Saul Durand"
-    # 我们只保留第一个捕获组（中文部分）
-    # \u4e00-\u9fa5 匹配中文字符
-    # [a-zA-Z0-9\s\.]+ 匹配英文、数字、空格和点
+    # ✨✨✨ ================== 新增：移除 (voice XX) 模式 ================== ✨✨✨
+    # 这个正则表达式会匹配以下模式:
+    # - (voice UK), (voice, UK), (配音, US) 等
+    # - \s*      : 匹配任意数量的空格
+    # - \(       : 匹配左括号
+    # - (?: ... ) : 非捕获组，用于匹配多个选项
+    # - voice|配音 : 匹配 "voice" 或 "配音"
+    # - [,\s]*   : 匹配可选的逗号和/或空格
+    # - [A-Z]{2} : 匹配两个大写字母（国家代码）
+    # - \)       : 匹配右括号
+    # - $        : 确保这个模式在字符串的末尾
+    country_code_pattern = r'\s*\((?:voice|配音)[,\s]*[A-Z]{2}\)\s*$'
+    name = re.sub(country_code_pattern, '', name, flags=re.IGNORECASE).strip()
+    # ✨✨✨ ================== 新增逻辑结束 ================== ✨✨✨
+
+    # --- 您原有的清理逻辑保持不变，并在此基础上继续执行 ---
+
+    # 处理中英混合的核心逻辑
     match = re.match(r'^([\u4e00-\u9fa5·\s]+)[\s/]+[a-zA-Z0-9\s\.]+$', name)
     if match:
-        # 如果匹配成功，直接使用捕获到的中文部分
         name = match.group(1).strip()
-        # logger.debug(f"中英混合清理: '{character_name}' -> '{name}'") # 如果需要可以加日志
-    # ✨ --- 新增结束 --- ✨
 
     # 移除 "饰 " 或 "饰" 前缀
     if name.startswith("饰 "):
@@ -66,11 +75,12 @@ def clean_character_name_static(character_name: Optional[str]) -> str:
     elif name.startswith("饰"):
         name = name[1:].strip()
         
-    # 再次处理斜杠（可能在上面的正则没处理掉的复杂情况）
+    # 再次处理斜杠
     if '/' in name:
         name = name.split('/')[0].strip()
         
-    # 移除 (voice), [voice], (v.o.) 等标记
+    # 移除通用的 (voice), [voice], (v.o.) 等标记
+    # 这个列表现在可以简化，因为更复杂的模式已经被上面处理掉了
     voice_patterns = [
         r'\s*\((?:voice|VOICE|Voice)\)\s*$',
         r'\s*\[(?:voice|VOICE|Voice)\]\s*$',
