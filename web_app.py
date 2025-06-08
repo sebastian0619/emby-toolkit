@@ -214,110 +214,72 @@ def load_config() -> Dict[str, Any]:
     从 config.ini 文件加载配置。
     如果文件不存在或缺少某些项，则使用默认值。
     """
-    # 使用 getattr 从 constants 获取默认值，如果常量未定义则使用硬编码的后备值
-    # 确保所有在 constants.py 中为配置项定义的 DEFAULT_XXX 常量都存在
-    defaults = {
-        constants.CONFIG_OPTION_EMBY_SERVER_URL: getattr(constants, 'DEFAULT_EMBY_SERVER_URL', ""),
-        constants.CONFIG_OPTION_EMBY_API_KEY: getattr(constants, 'DEFAULT_EMBY_API_KEY', ""),
-        constants.CONFIG_OPTION_EMBY_USER_ID: getattr(constants, 'DEFAULT_EMBY_USER_ID', ""),
-        "refresh_emby_after_update": str(getattr(constants, 'DEFAULT_REFRESH_EMBY_AFTER_UPDATE', True)).lower(),
-        constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS: "",
-
-        constants.CONFIG_OPTION_TMDB_API_KEY: getattr(constants, 'FALLBACK_TMDB_API_KEY', ""),
-
-        constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN: str(getattr(constants, 'DEFAULT_API_COOLDOWN_SECONDS_FALLBACK', 1.0)),
-
-        constants.CONFIG_OPTION_TRANSLATOR_ENGINES: ",".join(getattr(constants, 'DEFAULT_TRANSLATOR_ENGINES_ORDER', ['bing', 'google'])),
-
-        constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE: getattr(constants, 'DEFAULT_DOMESTIC_SOURCE_MODE', "local_then_online"),
-        
-        constants.CONFIG_OPTION_LOCAL_DATA_PATH: getattr(constants, 'DEFAULT_LOCAL_DATA_PATH', ""),
-
-        "delay_between_items_sec": str(getattr(constants, 'DEFAULT_DELAY_BETWEEN_ITEMS_SEC', 0.5)),
-        "min_score_for_review": str(getattr(constants, 'DEFAULT_MIN_SCORE_FOR_REVIEW', 6.0)),
-        "schedule_enabled": str(getattr(constants, 'DEFAULT_SCHEDULE_ENABLED', False)).lower(),
-        "schedule_cron": getattr(constants, 'DEFAULT_SCHEDULE_CRON', "0 3 * * *"),
-        "schedule_force_reprocess": str(getattr(constants, 'DEFAULT_SCHEDULE_FORCE_REPROCESS', False)).lower(),
-        "schedule_sync_map_enabled": str(getattr(constants, 'DEFAULT_SCHEDULE_SYNC_MAP_ENABLED', False)).lower(),
-        "schedule_sync_map_cron": getattr(constants, 'DEFAULT_SCHEDULE_SYNC_MAP_CRON', "0 1 * * *"),
-        # ✨✨✨ 新增：网络请求相关的默认值 ✨✨✨
-        "user_agent": getattr(constants, 'DEFAULT_USER_AGENT', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'),
-        "accept_language": getattr(constants, 'DEFAULT_ACCEPT_LANGUAGE', 'zh-CN,zh;q=0.9,en;q=0.8')
-    }
-
-    config_parser = configparser.ConfigParser(defaults=defaults)
-    # config_parser.optionxform = str # 如果需要保留选项名大小写
-
-    expected_sections = [
-        constants.CONFIG_SECTION_EMBY, constants.CONFIG_SECTION_TMDB,
-        constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_SECTION_TRANSLATION,
-        constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_SECTION_LOCAL_DATA,
-        "General", "Scheduler"
-        "General", "Scheduler",
-        "Network" # ✨✨✨ 新增：网络设置节 ✨✨✨
-    ]
-
+    config_parser = configparser.ConfigParser()
+    
+    # 先读取文件，如果文件存在的话
     if os.path.exists(CONFIG_FILE_PATH):
         try:
             config_parser.read(CONFIG_FILE_PATH, encoding='utf-8')
             logger.info(f"配置已从 '{CONFIG_FILE_PATH}' 加载。")
         except configparser.Error as e:
-            logger.error(f"读取配置文件 '{CONFIG_FILE_PATH}' 失败: {e}。将使用默认值。")
-            config_parser = configparser.ConfigParser(defaults=defaults)
+            logger.error(f"读取配置文件 '{CONFIG_FILE_PATH}' 失败: {e}。")
     else:
-        logger.warning(f"配置文件 '{CONFIG_FILE_PATH}' 未找到，将使用默认值。请通过设置页面保存一次以创建文件。")
+        logger.warning(f"配置文件 '{CONFIG_FILE_PATH}' 未找到。")
 
+    # 定义所有期望的节，如果不存在就创建
+    expected_sections = [
+        constants.CONFIG_SECTION_EMBY, constants.CONFIG_SECTION_TMDB,
+        constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_SECTION_TRANSLATION,
+        constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_SECTION_LOCAL_DATA,
+        "General", "Scheduler", "Network"
+    ]
     for section_name in expected_sections:
         if not config_parser.has_section(section_name):
             config_parser.add_section(section_name)
-            logger.debug(f"load_config: 添加了缺失的配置节 [{section_name}]")
 
     app_cfg: Dict[str, Any] = {}
 
+    # ✨✨✨ 关键修改：使用 fallback 参数来提供默认值 ✨✨✨
+    # getXXX 系列方法都有一个 fallback 参数，当选项不存在时，它会返回这个值而不是报错
+    
     # --- Emby Section ---
-    app_cfg["emby_server_url"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_SERVER_URL)
-    app_cfg["emby_api_key"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_API_KEY)
-    app_cfg["emby_user_id"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_USER_ID)
-    app_cfg["refresh_emby_after_update"] = config_parser.getboolean(constants.CONFIG_SECTION_EMBY, "refresh_emby_after_update")
-    libraries_str = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS)
+    app_cfg["emby_server_url"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_SERVER_URL, fallback="")
+    app_cfg["emby_api_key"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_API_KEY, fallback="")
+    app_cfg["emby_user_id"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_USER_ID, fallback="")
+    app_cfg["refresh_emby_after_update"] = config_parser.getboolean(constants.CONFIG_SECTION_EMBY, "refresh_emby_after_update", fallback=True)
+    libraries_str = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, fallback="")
     app_cfg["libraries_to_process"] = [lib_id.strip() for lib_id in libraries_str.split(',') if lib_id.strip()]
 
     # --- TMDB Section ---
-    app_cfg["tmdb_api_key"] = config_parser.get(constants.CONFIG_SECTION_TMDB, constants.CONFIG_OPTION_TMDB_API_KEY)
+    app_cfg["tmdb_api_key"] = config_parser.get(constants.CONFIG_SECTION_TMDB, constants.CONFIG_OPTION_TMDB_API_KEY, fallback="")
 
     # --- Douban API Section ---
-    app_cfg["api_douban_default_cooldown_seconds"] = config_parser.getfloat(constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN)
+    app_cfg["api_douban_default_cooldown_seconds"] = config_parser.getfloat(constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN, fallback=1.0)
 
     # --- Translation Section ---
-    engines_str = config_parser.get(constants.CONFIG_SECTION_TRANSLATION, constants.CONFIG_OPTION_TRANSLATOR_ENGINES)
+    engines_str = config_parser.get(constants.CONFIG_SECTION_TRANSLATION, constants.CONFIG_OPTION_TRANSLATOR_ENGINES, fallback="bing,google")
     app_cfg["translator_engines_order"] = [eng.strip() for eng in engines_str.split(',') if eng.strip()]
-    if not app_cfg["translator_engines_order"]:
-        app_cfg["translator_engines_order"] = getattr(constants, 'DEFAULT_TRANSLATOR_ENGINES_ORDER', ['bing', 'google'])
 
-    # --- Domestic Source Section (数据源模式) ---
-    app_cfg["data_source_mode"] = config_parser.get(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE)
-
-    # --- Local Data Source Section ---
-    app_cfg["local_data_path"] = config_parser.get(constants.CONFIG_SECTION_LOCAL_DATA, constants.CONFIG_OPTION_LOCAL_DATA_PATH).strip()
+    # --- Domestic Source & Local Data Sections ---
+    app_cfg["data_source_mode"] = config_parser.get(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, fallback="local_then_online")
+    app_cfg["local_data_path"] = config_parser.get(constants.CONFIG_SECTION_LOCAL_DATA, constants.CONFIG_OPTION_LOCAL_DATA_PATH, fallback="").strip()
 
     # --- General Section ---
-    app_cfg["delay_between_items_sec"] = config_parser.getfloat("General", "delay_between_items_sec")
-    app_cfg["min_score_for_review"] = config_parser.getfloat("General", "min_score_for_review")
-    app_cfg["process_episodes"] = config_parser.getboolean("General", "process_episodes")
-    # ✨✨✨ 新增：加载网络配置 ✨✨✨
-    app_cfg["user_agent"] = config_parser.get("Network", "user_agent")
-    app_cfg["accept_language"] = config_parser.get("Network", "accept_language")
-    # --- Scheduler Section ---
-    app_cfg["schedule_enabled"] = config_parser.getboolean("Scheduler", "schedule_enabled") # 用于全量扫描
-    app_cfg["schedule_cron"] = config_parser.get("Scheduler", "schedule_cron")
-    app_cfg["schedule_force_reprocess"] = config_parser.getboolean("Scheduler", "schedule_force_reprocess")
-    app_cfg["schedule_sync_map_enabled"] = config_parser.getboolean("Scheduler", "schedule_sync_map_enabled")
-    app_cfg["schedule_sync_map_cron"] = config_parser.get("Scheduler", "schedule_sync_map_cron")
+    app_cfg["delay_between_items_sec"] = config_parser.getfloat("General", "delay_between_items_sec", fallback=0.5)
+    app_cfg["min_score_for_review"] = config_parser.getfloat("General", "min_score_for_review", fallback=6.0)
+    app_cfg["process_episodes"] = config_parser.getboolean("General", "process_episodes", fallback=True) # ✨ 使用 fallback
 
-    logger.debug(f"load_config: 返回的 app_cfg['libraries_to_process'] = {app_cfg.get('libraries_to_process')}")
-    logger.debug(f"load_config: 返回的 app_cfg['data_source_mode'] = {app_cfg.get('data_source_mode')}")
-    logger.debug(f"load_config: 返回的 app_cfg['schedule_enabled'] (for scan) = {app_cfg.get('schedule_enabled')}")
-    logger.debug(f"load_config: 返回的 app_cfg['min_score_for_review'] = {app_cfg.get('min_score_for_review')}")
+    # --- Network Section ---
+    app_cfg["user_agent"] = config_parser.get("Network", "user_agent", fallback='Mozilla/5.0 ...')
+    app_cfg["accept_language"] = config_parser.get("Network", "accept_language", fallback='zh-CN,zh;q=0.9')
+
+    # --- Scheduler Section ---
+    app_cfg["schedule_enabled"] = config_parser.getboolean("Scheduler", "schedule_enabled", fallback=False)
+    app_cfg["schedule_cron"] = config_parser.get("Scheduler", "schedule_cron", fallback="0 3 * * *")
+    app_cfg["schedule_force_reprocess"] = config_parser.getboolean("Scheduler", "schedule_force_reprocess", fallback=False)
+    app_cfg["schedule_sync_map_enabled"] = config_parser.getboolean("Scheduler", "schedule_sync_map_enabled", fallback=False)
+    app_cfg["schedule_sync_map_cron"] = config_parser.get("Scheduler", "schedule_sync_map_cron", fallback="0 1 * * *")
+
     return app_cfg
 
 def save_config(new_config: Dict[str, Any]):
