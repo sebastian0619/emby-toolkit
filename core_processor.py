@@ -750,13 +750,14 @@ class MediaProcessor:
     def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False) -> bool:
         """
         处理单个 Emby 媒体项目。
-        如果项目是剧集 (Series)，则会递归处理其下的所有剧集 (Episodes)。
+        - 如果是电影，直接处理。
+        - 如果是剧集，递归处理所有分集。
+        - 如果是单集，则找到其所属剧集并处理整部剧。
         """
         if self.is_stop_requested():
             logger.info(f"任务已请求停止，跳过处理 Item ID: {emby_item_id}")
             return False
 
-        # --- 步骤 0: 获取项目详情并判断类型 ---
         try:
             item_details = emby_handler.get_emby_item_details(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
             if not item_details:
@@ -771,36 +772,30 @@ class MediaProcessor:
         item_type = item_details.get("Type")
         item_name_for_log = item_details.get("Name", f"ID:{emby_item_id}")
 
-        # --- 步骤 1: 根据类型决定处理方式 ---
+        # --- 保持你原有的、正确的 if/elif 结构 ---
         if item_type == "Series":
-            logger.info(f"检测到项目 '{item_name_for_log}' (ID: {emby_item_id}) 是一个剧集，将开始递归处理其所有剧集...")
+            logger.info(f"检测到项目 '{item_name_for_log}' (ID: {emby_item_id}) 是一个剧集，将开始递归处理...")
             
-            # 首先，处理剧集本身的演员表（主演）
             logger.info(f"--- 正在处理剧集 '{item_name_for_log}' 本身的演员信息 ---")
             self._process_item_core_logic(item_details, force_reprocess_this_item)
             
-            # 然后，获取并处理所有剧集
             episodes = emby_handler.get_episodes_for_series(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
-            if episodes is None:
-                logger.error(f"获取剧集 '{item_name_for_log}' 的剧集列表失败。")
-                return False # 或者可以只标记剧集本身处理失败
-
-            total_episodes = len(episodes)
-            logger.info(f"共找到 {total_episodes} 集，开始逐一处理...")
-            for i, episode in enumerate(episodes):
-                if self.is_stop_requested():
-                    logger.info("剧集递归处理被中断。")
-                    return False
-                
-                episode_id = episode.get("Id")
-                episode_name = episode.get("Name", f"ID:{episode_id}")
-                logger.info(f"--- 正在处理第 {i+1}/{total_episodes} 集: '{episode_name}' (ID: {episode_id}) ---")
-                self._process_item_core_logic(episode, force_reprocess_this_item)
-                
-                # 项目间延迟
-                delay = float(self.config.get("delay_between_items_sec", 0.5))
-                if delay > 0 and i < total_episodes - 1:
-                    time.sleep(delay)
+            if episodes:
+                total_episodes = len(episodes)
+                logger.info(f"共找到 {total_episodes} 集，开始逐一处理...")
+                for i, episode in enumerate(episodes):
+                    if self.is_stop_requested():
+                        logger.info("剧集递归处理被中断。")
+                        return False
+                    
+                    episode_id = episode.get("Id")
+                    episode_name = episode.get("Name", f"ID:{episode_id}")
+                    logger.info(f"--- 正在处理第 {i+1}/{total_episodes} 集: '{episode_name}' (ID: {episode_id}) ---")
+                    self._process_item_core_logic(episode, force_reprocess_this_item)
+                    
+                    delay = float(self.config.get("delay_between_items_sec", 0.5))
+                    if delay > 0 and i < total_episodes - 1:
+                        time.sleep(delay)
             
             logger.info(f"剧集 '{item_name_for_log}' 的所有剧集处理完毕。")
             return True
@@ -809,9 +804,23 @@ class MediaProcessor:
             logger.info(f"检测到项目 '{item_name_for_log}' (ID: {emby_item_id}) 是一部电影，将进行标准处理...")
             return self._process_item_core_logic(item_details, force_reprocess_this_item)
             
+        # ✨✨✨ 只在这里增加对 Episode 的处理 ✨✨✨
+        elif item_type == "Episode":
+            logger.info(f"检测到项目 '{item_name_for_log}' (ID: {emby_item_id}) 是一个单集。")
+            series_id = item_details.get("SeriesId")
+            if series_id:
+                series_name = item_details.get("SeriesName", f"ID: {series_id}")
+                logger.info(f"该单集属于剧集 '{series_name}' (ID: {series_id})。将重定向任务以处理整部剧集。")
+                # ✨ 关键：重新调用自己，但传入的是剧集的ID ✨
+                return self.process_single_item(series_id, force_reprocess_this_item)
+            else:
+                logger.warning(f"单集 '{item_name_for_log}' 缺少所属的 SeriesId，无法处理。将仅处理该单集本身。")
+                # 如果找不到SeriesId，就只处理这一集本身，作为后备方案
+                return self._process_item_core_logic(item_details, force_reprocess_this_item)
+        
         else:
-            logger.warning(f"项目 '{item_name_for_log}' (ID: {emby_item_id}) 的类型为 '{item_type}'，当前逻辑只处理 Movie 和 Series，已跳过。")
-            return True # 视为处理成功，因为它不需要处理
+            logger.warning(f"项目 '{item_name_for_log}' (ID: {emby_item_id}) 的类型为 '{item_type}'，已跳过。")
+            return True
 
     def _process_item_core_logic(self, item_details: Dict[str, Any], force_reprocess_this_item: bool = False) -> bool:
         """

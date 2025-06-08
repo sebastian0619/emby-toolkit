@@ -700,27 +700,33 @@ def emby_webhook():
     event_type = data.get("Event") if data else "未知事件"
     logger.info(f"收到Emby Webhook: {event_type}")
     
+    # 我们关心的事件列表
+    trigger_events = ["item.add", "library.new"] 
+
+    if event_type not in trigger_events:
+        logger.info(f"Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
+        return jsonify({"status": "event_ignored_not_in_trigger_list"}), 200
+
+    # ✨ 核心修改：不再关心事件类型，只要有Item ID就处理 ✨
     item = data.get("Item", {}) if data else {}
     item_id = item.get("Id")
     item_name = item.get("Name", "未知项目")
+    item_type = item.get("Type")
     
-    # 我们只关心新增的电影和剧集
-    trigger_events = ["item.add", "library.new"] 
-    trigger_types = ["Movie", "Series"]
+    # 我们只处理有ID，并且类型是电影或剧集或单集的项目
+    # 注意：即使是 library.new 事件，如果它由神医插件等聚合，也可能包含Item信息
+    trigger_types = ["Movie", "Series", "Episode"]
 
-    if item_id and event_type in trigger_events and item.get("Type") in trigger_types:
-        logger.info(f"Webhook事件 '{event_type}' 触发，项目 '{item_name}' (ID: {item_id}) 已加入处理队列。")
+    if item_id and item_type in trigger_types:
+        logger.info(f"Webhook事件 '{event_type}' 触发，项目 '{item_name}' (ID: {item_id}, 类型: {item_type}) 已加入处理队列。")
         
-        # 将任务放入队列
         webhook_task_queue.put(item_id)
-        
-        # 确保工人线程在运行
         start_webhook_worker_if_not_running()
         
         return jsonify({"status": "task_queued", "item_id": item_id}), 202
-        
-    logger.debug(f"Webhook事件 '{event_type}' (项目: {item_name}) 被忽略（不符合触发条件）。")
-    return jsonify({"status": "event_ignored"}), 200
+    
+    logger.debug(f"Webhook事件 '{event_type}' (项目: {item_name}, 类型: {item_type}) 被忽略（缺少ItemID或类型不匹配）。")
+    return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
 
 
 @app.route('/trigger_full_scan', methods=['POST'])
