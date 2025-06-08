@@ -1159,11 +1159,11 @@ class MediaProcessor:
         return enriched_cast
     
     # ✨✨✨一键翻译演员列表的核心方法 ✨✨✨
-    def translate_cast_roles_only(self, cast_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def translate_cast_list(self, cast_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        只翻译演员列表中的角色名，不执行任何其他操作。
+        翻译演员列表中的演员名和角色名，不执行任何其他操作。
         """
-        logger.info(f"开始“纯翻译”模式：处理 {len(cast_list)} 位演员的角色名。")
+        logger.info(f"开始“纯翻译”模式：处理 {len(cast_list)} 位演员的姓名和角色。")
         
         translated_cast = [dict(actor) for actor in cast_list]
         
@@ -1172,30 +1172,43 @@ class MediaProcessor:
 
         try:
             for i, actor in enumerate(translated_cast):
-                role_to_translate = actor.get('role', '').strip()
                 actor_name_for_log = actor.get('name', '未知演员')
-
-                # 如果角色名为空，或者已经是中文，则跳过
-                if not role_to_translate or utils.contains_chinese(role_to_translate):
-                    continue
-
-                # 调用我们已有的翻译字段函数
-                translated_role = self._translate_actor_field(
-                    text=role_to_translate,
-                    field_name="角色名(一键翻译)",
-                    actor_name_for_log=actor_name_for_log,
-                    db_cursor_for_cache=cursor
-                )
                 
-                if translated_role and translated_role != role_to_translate:
-                    logger.info(f"  -> 角色名翻译: '{role_to_translate}' -> '{translated_role}' (演员: {actor_name_for_log})")
-                    translated_cast[i]['role'] = translated_role
-                    translated_cast[i]['matchStatus'] = '已翻译' # 更新状态方便UI显示
+                # --- 翻译演员名 ---
+                name_to_translate = actor.get('name', '').strip()
+                if name_to_translate and not utils.contains_chinese(name_to_translate):
+                    translated_name = self._translate_actor_field(
+                        text=name_to_translate,
+                        field_name="演员名(一键翻译)",
+                        actor_name_for_log=name_to_translate, # 用原文做日志
+                        db_cursor_for_cache=cursor
+                    )
+                    if translated_name and translated_name != name_to_translate:
+                        logger.info(f"  -> 演员名翻译: '{name_to_translate}' -> '{translated_name}'")
+                        translated_cast[i]['name'] = translated_name
+                        actor_name_for_log = translated_name # 后续日志用新名字
 
-            conn.commit() # 提交可能产生的翻译缓存
+                # --- 翻译角色名 ---
+                role_to_translate = actor.get('role', '').strip()
+                if role_to_translate and not utils.contains_chinese(role_to_translate):
+                    translated_role = self._translate_actor_field(
+                        text=role_to_translate,
+                        field_name="角色名(一键翻译)",
+                        actor_name_for_log=actor_name_for_log, # 使用更新后的演员名
+                        db_cursor_for_cache=cursor
+                    )
+                    if translated_role and translated_role != role_to_translate:
+                        logger.info(f"  -> 角色名翻译: '{role_to_translate}' -> '{translated_role}' (演员: {actor_name_for_log})")
+                        translated_cast[i]['role'] = translated_role
+
+                # 只要有任何一项被翻译，就更新状态
+                if translated_cast[i].get('name') != actor.get('name') or translated_cast[i].get('role') != actor.get('role'):
+                    translated_cast[i]['matchStatus'] = '已翻译'
+
+            conn.commit()
 
         except Exception as e:
-            logger.error(f"在 translate_cast_roles_only 中发生错误: {e}", exc_info=True)
+            logger.error(f"在 translate_cast_list 中发生错误: {e}", exc_info=True)
             if conn: conn.rollback()
         finally:
             if conn: conn.close()

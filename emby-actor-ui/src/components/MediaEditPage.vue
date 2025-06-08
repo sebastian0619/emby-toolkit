@@ -52,14 +52,13 @@
               >
                 从豆瓣刷新
               </n-button>
-              <!-- ✨✨✨ 1. 添加新按钮 ✨✨✨ -->
               <n-button
                 type="info"
-                @click="translateAllRoles"
-                :loading="isTranslatingRoles"
+                @click="translateAllFields" 
+                :loading="isTranslating" 
                 :disabled="isLoading"
               >
-                一键翻译角色名
+                一键翻译
               </n-button>
             </n-space>
           </n-form-item>
@@ -172,8 +171,7 @@ const searchLinks = ref({ google_search_wiki: '' });
 const isParsingFromUrl = ref(false);
 const urlToParse = ref('');
 const isRefreshingFromDouban = ref(false);
-// ✨✨✨ 2. 添加新按钮的状态变量 ✨✨✨
-const isTranslatingRoles = ref(false);
+const isTranslating = ref(false);
 
 
 // watch 和其他方法 (removeActor, moveActor, etc.) 保持不变
@@ -295,31 +293,31 @@ const handleEnrich = async (newCastFromWeb) => {
   }
 };
 
-// ✨✨✨ 3. 添加新按钮的点击处理函数 ✨✨✨
-const translateAllRoles = async () => {
+// ✨✨✨ 一键翻译 ✨✨✨
+const translateAllFields = async () => {
   if (!editableCast.value || editableCast.value.length === 0) {
     message.warning("演员列表为空，无需翻译。");
     return;
   }
-  isTranslatingRoles.value = true;
-  message.info("正在请求后端翻译所有非中文角色名...");
+  isTranslating.value = true;
+  message.info("正在请求后端翻译所有非中文的姓名和角色名...");
   try {
-    const response = await axios.post('/api/actions/translate_roles', { cast: editableCast.value });
+    // ✨ 调用新的API路径 ✨
+    const response = await axios.post('/api/actions/translate_cast', { cast: editableCast.value });
     const translatedList = response.data;
 
-    // 用后端返回的翻译后列表，直接更新UI
     editableCast.value = translatedList.map((actor, index) => ({
       ...actor,
       _temp_id: `translated-actor-${Date.now()}-${index}`
     }));
     
-    message.success("角色名翻译完成！");
+    message.success("翻译完成！");
 
   } catch (error) {
-    console.error("一键翻译角色名失败:", error);
+    console.error("一键翻译失败:", error);
     message.error(error.response?.data?.error || "翻译失败，请检查后端日志。");
   } finally {
-    isTranslatingRoles.value = false;
+    isTranslating.value = false;
   }
 };
 

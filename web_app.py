@@ -1562,31 +1562,8 @@ def api_parse_cast_from_url():
         logger.error(f"解析 URL '{url_to_parse}' 时发生未知错误: {e}", exc_info=True)
         return jsonify({"error": "解析时发生未知的服务器错误"}), 500
 # ✨✨✨ 更新演员表 ✨✨✨
-@app.route('/api/actions/enrich_cast_list', methods=['POST'])
-def api_enrich_cast_list():
-    if not media_processor_instance:
-        return jsonify({"error": "核心处理器未就绪"}), 503
-        
-    data = request.json
-    current_cast = data.get('current_cast')
-    new_cast_from_web = data.get('new_cast_from_web')
-
-    if not isinstance(current_cast, list) or not isinstance(new_cast_from_web, list):
-        return jsonify({"error": "请求体必须包含 'current_cast' 和 'new_cast_from_web' 两个列表。"}), 400
-
-    try:
-        # 调用新的、更安全的核心方法
-        enriched_list = media_processor_instance.enrich_cast_list(current_cast, new_cast_from_web)
-        
-        return jsonify(enriched_list)
-        
-    except Exception as e:
-        logger.error(f"丰富演员列表时发生错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器在丰富演员列表时发生内部错误。"}), 500
-    
-# ✨✨✨ 一键翻译API端点 ✨✨✨
-@app.route('/api/actions/translate_roles', methods=['POST'])
-def api_translate_roles():
+@app.route('/api/actions/translate_cast', methods=['POST'])
+def api_translate_cast():
     if not media_processor_instance:
         return jsonify({"error": "核心处理器未就绪"}), 503
         
@@ -1597,13 +1574,13 @@ def api_translate_roles():
         return jsonify({"error": "请求体必须包含 'cast' 列表。"}), 400
 
     try:
-        # 调用新的纯翻译方法
-        translated_list = media_processor_instance.translate_cast_roles_only(current_cast)
+        # 调用新的、功能更全的翻译方法
+        translated_list = media_processor_instance.translate_cast_list(current_cast)
         return jsonify(translated_list)
         
     except Exception as e:
-        logger.error(f"一键翻译角色名时发生错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器在翻译角色名时发生内部错误。"}), 500
+        logger.error(f"一键翻译演员列表时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在翻译时发生内部错误。"}), 500
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
