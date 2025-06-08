@@ -1,9 +1,14 @@
-Flask
-requests
-APScheduler
-pytz
-translators 
+# requirements.txt
+
+# --- Web 框架与服务器 ---
+Flask>=2.0
 gunicorn
-# 如果 douban.py 或其他模块间接依赖了 sqlalchemy 或 zhconv，也需要加上
-# sqlalchemy
-# zhconv
+
+# --- 核心功能 ---
+requests         # 用于发送所有HTTP请求
+beautifulsoup4   # 用于解析网页HTML (web_parser.py 强依赖)
+translators      # 用于翻译演员名和角色名
+
+# --- 定时任务 ---
+APScheduler
+pytz             # APScheduler 的时区依赖
