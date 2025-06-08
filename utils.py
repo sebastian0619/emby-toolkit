@@ -47,56 +47,44 @@ def clean_character_name_static(character_name: Optional[str]) -> str:
     
     name = str(character_name).strip()
     
-    # ✨✨✨ ================== 新增：移除 (voice XX) 模式 ================== ✨✨✨
-    # 这个正则表达式会匹配以下模式:
-    # - (voice UK), (voice, UK), (配音, US) 等
-    # - \s*      : 匹配任意数量的空格
-    # - \(       : 匹配左括号
-    # - (?: ... ) : 非捕获组，用于匹配多个选项
-    # - voice|配音 : 匹配 "voice" 或 "配音"
-    # - [,\s]*   : 匹配可选的逗号和/或空格
-    # - [A-Z]{2} : 匹配两个大写字母（国家代码）
-    # - \)       : 匹配右括号
-    # - $        : 确保这个模式在字符串的末尾
+    # 1. 移除复杂的后缀模式，如 (voice UK)
+    # 这个模式已经包含了 (voice XX) 的情况
     country_code_pattern = r'\s*\((?:voice|配音)[,\s]*[A-Z]{2}\)\s*$'
     name = re.sub(country_code_pattern, '', name, flags=re.IGNORECASE).strip()
-    # ✨✨✨ ================== 新增逻辑结束 ================== ✨✨✨
 
-    # --- 您原有的清理逻辑保持不变，并在此基础上继续执行 ---
+    # 2. ✨✨✨ 修复核心：集中处理所有已知的前缀 ✨✨✨
+    # 按照从长到短的顺序检查，防止 "配音" 被 "配" 错误处理
+    prefixes_to_remove = ["饰 ", "饰", "配音 ", "配音", "配 "]
+    # 循环检查，直到没有前缀匹配为止，这可以处理 "饰 配音 角色名" 这样的情况
+    cleaned_in_loop = True
+    while cleaned_in_loop:
+        cleaned_in_loop = False
+        for prefix in prefixes_to_remove:
+            if name.lower().startswith(prefix): # 使用 lower() 使匹配不区分大小写（如果需要）
+                name = name[len(prefix):].strip()
+                cleaned_in_loop = True
+                break # 找到并移除一个前缀后，重新开始循环
 
-    # 处理中英混合的核心逻辑
+    # 3. 处理中英混合的核心逻辑 (例如 "中文名 / English Name")
     match = re.match(r'^([\u4e00-\u9fa5·\s]+)[\s/]+[a-zA-Z0-9\s\.]+$', name)
     if match:
         name = match.group(1).strip()
 
-    # 移除 "饰 " 或 "饰" 前缀
-    if name.startswith("饰 "):
-        name = name[2:].strip()
-    elif name.startswith("饰"):
-        name = name[1:].strip()
-        
-    # 再次处理斜杠
+    # 再次处理简单的斜杠分隔
     if '/' in name:
         name = name.split('/')[0].strip()
         
-    # 移除通用的 (voice), [voice], (v.o.) 等标记
-    # 这个列表现在可以简化，因为更复杂的模式已经被上面处理掉了
-    voice_patterns = [
-        r'\s*\((?:voice|VOICE|Voice)\)\s*$',
-        r'\s*\[(?:voice|VOICE|Voice)\]\s*$',
-        r'\s*\((?:v\.o\.|V\.O\.)\)\s*$',
-        r'\s*配\s*音\s*$',
-        r'\s*配\s*$',
+    # 4. 移除通用的后缀标记 (voice), [voice], (v.o.), 配音
+    # 注意：这里的 '配音' 和 '配' 只作为后缀处理
+    voice_patterns_suffix = [
+        r'\s*\((?:voice|v\.o\.)\)\s*$', # 整合了 (voice) 和 (v.o.)
+        r'\s*\[voice\]\s*$',
+        r'\s*配\s*音\s*$', # 只在结尾时移除
+        r'\s*配\s*$',      # 只在结尾时移除
     ]
-    for pattern in voice_patterns:
+    for pattern in voice_patterns_suffix:
         name = re.sub(pattern, '', name, flags=re.IGNORECASE).strip()
         
-    # 再次清理可能残留的 "饰"
-    if name.startswith("饰 "):
-        name = name[2:].strip()
-    elif name.startswith("饰"):
-        name = name[1:].strip()
-
     return name.strip()
 
 def translate_text_with_translators(
