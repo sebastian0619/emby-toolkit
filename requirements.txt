@@ -13,3 +13,7 @@ translators      # 用于翻译演员名和角色名
 # --- 定时任务 ---
 APScheduler
 pytz             # APScheduler 的时区依赖
+
+# --- AI 翻译功能 ---
+openai           # 用于 OpenAI 及兼容的API (如硅基流动)
+zhipuai          # 用于智谱AI

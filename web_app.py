@@ -212,11 +212,10 @@ def init_db():
 def load_config() -> Dict[str, Any]:
     """
     从 config.ini 文件加载配置。
-    如果文件不存在或缺少某些项，则使用默认值。
+    如果文件不存在或缺少任何节或选项，都能安全地使用默认值。
     """
     config_parser = configparser.ConfigParser()
     
-    # 先读取文件，如果文件存在的话
     if os.path.exists(CONFIG_FILE_PATH):
         try:
             config_parser.read(CONFIG_FILE_PATH, encoding='utf-8')
@@ -231,7 +230,7 @@ def load_config() -> Dict[str, Any]:
         constants.CONFIG_SECTION_EMBY, constants.CONFIG_SECTION_TMDB,
         constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_SECTION_TRANSLATION,
         constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_SECTION_LOCAL_DATA,
-        "General", "Scheduler", "Network"
+        "General", "Scheduler", "Network", "AITranslation" # 确保AI的节在这里
     ]
     for section_name in expected_sections:
         if not config_parser.has_section(section_name):
@@ -239,41 +238,43 @@ def load_config() -> Dict[str, Any]:
 
     app_cfg: Dict[str, Any] = {}
 
-    # ✨✨✨ 关键修改：使用 fallback 参数来提供默认值 ✨✨✨
-    # getXXX 系列方法都有一个 fallback 参数，当选项不存在时，它会返回这个值而不是报错
+    # --- 使用 fallback 参数来提供默认值，确保万无一失 ---
     
-    # --- Emby Section ---
-    app_cfg["emby_server_url"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_SERVER_URL, fallback="")
-    app_cfg["emby_api_key"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_API_KEY, fallback="")
-    app_cfg["emby_user_id"] = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_USER_ID, fallback="")
+    # Emby Section
+    app_cfg["emby_server_url"] = config_parser.get(constants.CONFIG_SECTION_EMBY, "emby_server_url", fallback="")
+    app_cfg["emby_api_key"] = config_parser.get(constants.CONFIG_SECTION_EMBY, "emby_api_key", fallback="")
+    app_cfg["emby_user_id"] = config_parser.get(constants.CONFIG_SECTION_EMBY, "emby_user_id", fallback="")
     app_cfg["refresh_emby_after_update"] = config_parser.getboolean(constants.CONFIG_SECTION_EMBY, "refresh_emby_after_update", fallback=True)
-    libraries_str = config_parser.get(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, fallback="")
+    libraries_str = config_parser.get(constants.CONFIG_SECTION_EMBY, "libraries_to_process", fallback="")
     app_cfg["libraries_to_process"] = [lib_id.strip() for lib_id in libraries_str.split(',') if lib_id.strip()]
 
-    # --- TMDB Section ---
-    app_cfg["tmdb_api_key"] = config_parser.get(constants.CONFIG_SECTION_TMDB, constants.CONFIG_OPTION_TMDB_API_KEY, fallback="")
-
-    # --- Douban API Section ---
-    app_cfg["api_douban_default_cooldown_seconds"] = config_parser.getfloat(constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN, fallback=1.0)
-
-    # --- Translation Section ---
-    engines_str = config_parser.get(constants.CONFIG_SECTION_TRANSLATION, constants.CONFIG_OPTION_TRANSLATOR_ENGINES, fallback="bing,google")
+    # TMDB, Douban, Translation, etc.
+    app_cfg["tmdb_api_key"] = config_parser.get(constants.CONFIG_SECTION_TMDB, "tmdb_api_key", fallback="")
+    app_cfg["api_douban_default_cooldown_seconds"] = config_parser.getfloat(constants.CONFIG_SECTION_API_DOUBAN, "api_douban_default_cooldown_seconds", fallback=1.0)
+    engines_str = config_parser.get(constants.CONFIG_SECTION_TRANSLATION, "translator_engines_order", fallback="bing,google")
     app_cfg["translator_engines_order"] = [eng.strip() for eng in engines_str.split(',') if eng.strip()]
+    app_cfg["data_source_mode"] = config_parser.get(constants.CONFIG_SECTION_DOMESTIC_SOURCE, "data_source_mode", fallback="local_then_online")
+    app_cfg["local_data_path"] = config_parser.get(constants.CONFIG_SECTION_LOCAL_DATA, "local_data_path", fallback="").strip()
 
-    # --- Domestic Source & Local Data Sections ---
-    app_cfg["data_source_mode"] = config_parser.get(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, fallback="local_then_online")
-    app_cfg["local_data_path"] = config_parser.get(constants.CONFIG_SECTION_LOCAL_DATA, constants.CONFIG_OPTION_LOCAL_DATA_PATH, fallback="").strip()
-
-    # --- General Section ---
+    # General Section
     app_cfg["delay_between_items_sec"] = config_parser.getfloat("General", "delay_between_items_sec", fallback=0.5)
     app_cfg["min_score_for_review"] = config_parser.getfloat("General", "min_score_for_review", fallback=6.0)
-    app_cfg["process_episodes"] = config_parser.getboolean("General", "process_episodes", fallback=True) # ✨ 使用 fallback
+    app_cfg["process_episodes"] = config_parser.getboolean("General", "process_episodes", fallback=True)
 
-    # --- Network Section ---
-    app_cfg["user_agent"] = config_parser.get("Network", "user_agent", fallback='Mozilla/5.0 ...')
-    app_cfg["accept_language"] = config_parser.get("Network", "accept_language", fallback='zh-CN,zh;q=0.9')
+    # Network Section
+    app_cfg["user_agent"] = config_parser.get("Network", "user_agent", fallback='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36')
+    app_cfg["accept_language"] = config_parser.get("Network", "accept_language", fallback='zh-CN,zh;q=0.9,en;q=0.8')
 
-    # --- Scheduler Section ---
+    # ✨✨✨ 关键修复：把AI配置的 fallback 也加上 ✨✨✨
+    app_cfg["ai_translation_enabled"] = config_parser.getboolean("AITranslation", "ai_translation_enabled", fallback=False)
+    app_cfg["ai_provider"] = config_parser.get("AITranslation", "ai_provider", fallback="openai")
+    app_cfg["ai_api_key"] = config_parser.get("AITranslation", "ai_api_key", fallback="")
+    app_cfg["ai_model_name"] = config_parser.get("AITranslation", "ai_model_name", fallback="gpt-3.5-turbo")
+    app_cfg["ai_base_url"] = config_parser.get("AITranslation", "ai_base_url", fallback="")
+    app_cfg["ai_translation_prompt"] = config_parser.get("AITranslation", "ai_translation_prompt", fallback=constants.DEFAULT_AI_TRANSLATION_PROMPT)
+    # ✨✨✨ 修复结束 ✨✨✨
+
+    # Scheduler Section
     app_cfg["schedule_enabled"] = config_parser.getboolean("Scheduler", "schedule_enabled", fallback=False)
     app_cfg["schedule_cron"] = config_parser.get("Scheduler", "schedule_cron", fallback="0 3 * * *")
     app_cfg["schedule_force_reprocess"] = config_parser.getboolean("Scheduler", "schedule_force_reprocess", fallback=False)
@@ -284,11 +285,11 @@ def load_config() -> Dict[str, Any]:
 
 def save_config(new_config: Dict[str, Any]):
     config = configparser.ConfigParser()
-    # 如果配置文件已存在，先读取它，保留不由UI管理的注释或部分
+    
     if os.path.exists(CONFIG_FILE_PATH):
         config.read(CONFIG_FILE_PATH, encoding='utf-8')
 
-    # ✨ 关键修复：在设置任何值之前，确保所有节都存在 ✨
+    # ✨✨✨ 关键修复：在设置任何值之前，确保所有节都存在 ✨✨✨
     all_sections_to_manage = [
         constants.CONFIG_SECTION_EMBY,
         constants.CONFIG_SECTION_TMDB,
@@ -298,45 +299,56 @@ def save_config(new_config: Dict[str, Any]):
         constants.CONFIG_SECTION_LOCAL_DATA,
         "General",
         "Scheduler",
-        "Network"  # 我们为 User-Agent 新增的节
+        "Network",
+        "AITranslation" # 确保AI的节在这里
     ]
 
     for section_name in all_sections_to_manage:
         if not config.has_section(section_name):
-            logger.info(f"配置文件中缺少节 '[{section_name}]'，将自动创建。")
+            logger.info(f"保存配置：配置文件中缺少节 '[{section_name}]'，将自动创建。")
             config.add_section(section_name)
-    # ✨ 修复结束 ✨
+    # ✨✨✨ 修复结束 ✨✨✨
 
-    # EMBY节
-    config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_SERVER_URL, str(new_config.get("emby_server_url", "")))
-    config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_API_KEY, str(new_config.get("emby_api_key", "")))
-    config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_USER_ID, str(new_config.get("emby_user_id", "")))
-    config.set(constants.CONFIG_SECTION_EMBY, "refresh_emby_after_update", str(new_config.get("refresh_emby_after_update", True)).lower())
+    # --- 现在可以安全地设置每个配置项了 ---
     
+    # Emby Section
+    config.set(constants.CONFIG_SECTION_EMBY, "emby_server_url", str(new_config.get("emby_server_url", "")))
+    config.set(constants.CONFIG_SECTION_EMBY, "emby_api_key", str(new_config.get("emby_api_key", "")))
+    config.set(constants.CONFIG_SECTION_EMBY, "emby_user_id", str(new_config.get("emby_user_id", "")))
+    config.set(constants.CONFIG_SECTION_EMBY, "refresh_emby_after_update", str(new_config.get("refresh_emby_after_update", True)).lower())
     libraries_list = new_config.get("libraries_to_process", [])
     if not isinstance(libraries_list, list):
         libraries_list = [lib_id.strip() for lib_id in str(libraries_list).split(',') if lib_id.strip()]
-    config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, ",".join(map(str, libraries_list)))
+    config.set(constants.CONFIG_SECTION_EMBY, "libraries_to_process", ",".join(map(str, libraries_list)))
 
-    config.set(constants.CONFIG_SECTION_TMDB, constants.CONFIG_OPTION_TMDB_API_KEY, str(new_config.get("tmdb_api_key", "")))
-    config.set(constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN, str(new_config.get("api_douban_default_cooldown_seconds", 1.0)))
-
+    # TMDB, Douban, Translation, etc.
+    config.set(constants.CONFIG_SECTION_TMDB, "tmdb_api_key", str(new_config.get("tmdb_api_key", "")))
+    config.set(constants.CONFIG_SECTION_API_DOUBAN, "api_douban_default_cooldown_seconds", str(new_config.get("api_douban_default_cooldown_seconds", 1.0)))
     engines_list = new_config.get("translator_engines_order", [])
     if not isinstance(engines_list, list) or not engines_list:
         engines_list = constants.DEFAULT_TRANSLATOR_ENGINES_ORDER
-    config.set(constants.CONFIG_SECTION_TRANSLATION, constants.CONFIG_OPTION_TRANSLATOR_ENGINES, ",".join(engines_list))
+    config.set(constants.CONFIG_SECTION_TRANSLATION, "translator_engines_order", ",".join(engines_list))
+    config.set(constants.CONFIG_SECTION_DOMESTIC_SOURCE, "data_source_mode", str(new_config.get("data_source_mode", "local_then_online")))
+    config.set(constants.CONFIG_SECTION_LOCAL_DATA, "local_data_path", str(new_config.get("local_data_path", "")))
 
-    config.set(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, str(new_config.get("data_source_mode", "local_then_online")))
-    config.set(constants.CONFIG_SECTION_LOCAL_DATA, constants.CONFIG_OPTION_LOCAL_DATA_PATH, str(new_config.get("local_data_path", "")))
-    # General节
+    # General Section
     config.set("General", "delay_between_items_sec", str(new_config.get("delay_between_items_sec", "0.5")))
     config.set("General", "min_score_for_review", str(new_config.get("min_score_for_review", "6.0")))
     config.set("General", "process_episodes", str(new_config.get("process_episodes", True)).lower())
-    
-    # 网络配置节
+
+    # Network Section
     config.set("Network", "user_agent", str(new_config.get("user_agent", "")))
     config.set("Network", "accept_language", str(new_config.get("accept_language", "")))
-    # 定时任务节
+
+    # AITranslation Section
+    config.set("AITranslation", "ai_translation_enabled", str(new_config.get("ai_translation_enabled", False)).lower())
+    config.set("AITranslation", "ai_provider", str(new_config.get("ai_provider", "openai")))
+    config.set("AITranslation", "ai_api_key", str(new_config.get("ai_api_key", "")))
+    config.set("AITranslation", "ai_model_name", str(new_config.get("ai_model_name", "gpt-3.5-turbo")))
+    config.set("AITranslation", "ai_base_url", str(new_config.get("ai_base_url", "")))
+    config.set("AITranslation", "ai_translation_prompt", str(new_config.get("ai_translation_prompt", "")))
+
+    # Scheduler Section
     config.set("Scheduler", "schedule_enabled", str(new_config.get("schedule_enabled", False)).lower())
     config.set("Scheduler", "schedule_cron", str(new_config.get("schedule_cron", "0 3 * * *")))
     config.set("Scheduler", "schedule_force_reprocess", str(new_config.get("schedule_force_reprocess", False)).lower())

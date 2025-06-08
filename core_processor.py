@@ -14,6 +14,7 @@ import emby_handler
 import utils # 导入我们上面修改的 utils.py
 from logger_setup import logger
 import constants
+from ai_translator import AITranslator # ✨✨✨ 导入新的AI翻译器 ✨✨✨
 
 # DoubanApi 的导入和可用性检查
 try:
@@ -37,6 +38,7 @@ except ImportError:
 
 class MediaProcessor:
     def __init__(self, config: Dict[str, Any]):
+        # config 这个参数，是已经从 load_config() 加载好的、一个标准的 Python 字典
         self.config = config
         self.db_path = config.get('db_path')
         if not self.db_path:
@@ -44,30 +46,43 @@ class MediaProcessor:
             raise ValueError("数据库路径 (db_path) 未在配置中提供给 MediaProcessor。")
 
         self.douban_api = None
-        # 使用 hasattr 检查常量是否存在，避免 AttributeError
-        douban_api_available_flag = getattr(constants, 'DOUBAN_API_AVAILABLE', False)
-        if douban_api_available_flag:
+        if getattr(constants, 'DOUBAN_API_AVAILABLE', False):
             try:
                 self.douban_api = DoubanApi(db_path=self.db_path)
-                logger.info("DoubanApi 实例已在 MediaProcessor 中创建 (使用数据库缓存)。")
+                logger.info("DoubanApi 实例已在 MediaProcessor 中创建。")
             except Exception as e:
                 logger.error(f"MediaProcessor 初始化 DoubanApi 失败: {e}", exc_info=True)
-                self.douban_api = DoubanApi(db_path=self.db_path) # 假实例
         else:
-            logger.warning("DoubanApi 常量指示不可用或未定义，将使用假的 DoubanApi 实例。")
-            self.douban_api = DoubanApi(db_path=self.db_path) # 假实例
+            logger.warning("DoubanApi 常量指示不可用，将不使用豆瓣功能。")
 
+        # 从 config 字典中安全地获取所有配置
         self.emby_url = self.config.get("emby_server_url")
         self.emby_api_key = self.config.get("emby_api_key")
         self.emby_user_id = self.config.get("emby_user_id")
-        self.tmdb_api_key = self.config.get("tmdb_api_key", "") # <--- 确保加载
+        self.tmdb_api_key = self.config.get("tmdb_api_key", "")
         self.translator_engines = self.config.get("translator_engines_order", constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
-        self.data_source_mode = config.get("data_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE)
-        self.local_data_path = config.get("local_data_path", constants.DEFAULT_LOCAL_DATA_PATH).strip()
-        self.libraries_to_process = config.get("libraries_to_process", [])
+        self.data_source_mode = self.config.get("data_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE)
+        self.local_data_path = self.config.get("local_data_path", "").strip()
+        self.libraries_to_process = self.config.get("libraries_to_process", [])
 
-        self._stop_event = threading.Event() # 确保 threading 已导入
+        self._stop_event = threading.Event()
         self.processed_items_cache = self._load_processed_log_from_db()
+
+        # ✨✨✨ 关键修复：从 config 字典中获取AI配置 ✨✨✨
+        self.ai_translator = None
+        # .get("ai_translation_enabled", False) 会安全地处理键不存在的情况
+        self.ai_translation_enabled = self.config.get("ai_translation_enabled", False) 
+        
+        if self.ai_translation_enabled:
+            try:
+                # 把整个 config 字典传给 AITranslator，让它自己去取需要的配置
+                self.ai_translator = AITranslator(self.config)
+                logger.info("AI翻译器已成功初始化并启用。")
+            except Exception as e:
+                logger.error(f"AI翻译器初始化失败，将禁用AI翻译功能: {e}")
+                self.ai_translation_enabled = False # 初始化失败，自动关闭开关
+        else:
+            logger.info("AI翻译功能未启用。")
 
         logger.info(f"MediaProcessor 初始化完成。Emby URL: {self.emby_url}, UserID: {self.emby_user_id}")
         logger.info(f"  TMDb API Key: {'已配置' if self.tmdb_api_key else '未配置'}")
@@ -176,88 +191,62 @@ class MediaProcessor:
 
     def _translate_actor_field(self, text: Optional[str], field_name: str, 
                                actor_name_for_log: str, 
-                               db_cursor_for_cache: sqlite3.Cursor) -> Optional[str]: # 添加 db_cursor_for_cache 参数
+                               db_cursor_for_cache: sqlite3.Cursor) -> Optional[str]:
         """
-        翻译演员的特定字段（名字或角色名），使用缓存和在线翻译引擎。
-        使用传入的数据库游标 db_cursor_for_cache 来保存新的翻译缓存。
+        翻译演员的特定字段，智能选择AI或传统翻译引擎。
         """
-        if self.is_stop_requested():
-            logger.debug(f"翻译字段 '{field_name}' for '{actor_name_for_log}' 前检测到停止信号，跳过。")
-            return text # 返回原文，因为任务已停止
-
         if not text or not text.strip():
-            # logger.debug(f"字段 '{field_name}' for '{actor_name_for_log}' 为空或全空白，无需翻译。")
-            return text # 如果原文就是空或空白，直接返回
+            return text
 
-        # 检查是否已包含中文，如果是，则不翻译 (utils.contains_chinese 需要可用)
+        # 检查是否已包含中文，如果是，则不翻译
         if utils.contains_chinese(text):
-            # logger.debug(f"字段 '{field_name}' ('{text}') for '{actor_name_for_log}' 已包含中文，跳过翻译。")
             return text
 
         text_stripped = text.strip()
-        # 跳过单字母或双大写字母的逻辑 (保持你原有的逻辑)
+        
+        # 跳过单字母或双大写字母
         if len(text_stripped) == 1 and 'A' <= text_stripped.upper() <= 'Z':
-            logger.debug(f"字段 '{field_name}' ('{text_stripped}') for '{actor_name_for_log}' 为单字母，跳过翻译。")
             return text
         if len(text_stripped) == 2 and text_stripped.isupper() and text_stripped.isalpha():
-            logger.debug(f"字段 '{field_name}' ('{text_stripped}') for '{actor_name_for_log}' 为双大写字母，跳过翻译。")
             return text
 
-        # 1. 从数据库读取翻译缓存
-        # DoubanApi._get_translation_from_db 是类方法，它自己管理连接进行读取，这通常没问题，因为读操作锁级别较低
-        cached_entry = None
-        if self.douban_api and hasattr(DoubanApi, '_get_translation_from_db'):
-             cached_entry = DoubanApi._get_translation_from_db(text_stripped) 
-
-        if cached_entry:
+        # 1. 优先从数据库读取缓存
+        cached_entry = DoubanApi._get_translation_from_db(text_stripped)
+        if cached_entry and cached_entry.get("translated_text"):
             cached_translation = cached_entry.get("translated_text")
             engine_used = cached_entry.get("engine_used")
-            if cached_translation and cached_translation.strip(): # 缓存命中且有有效翻译
-                logger.info(f"数据库翻译缓存命中 for '{text_stripped}' -> '{cached_translation}' (引擎: {engine_used}, 演员: {actor_name_for_log}, 字段: {field_name})")
-                return cached_translation
-            else: # 缓存中存的是 None 或空字符串，表示之前翻译失败或无结果
-                logger.info(f"数据库翻译缓存命中 (空值/之前失败) for '{text_stripped}' (演员: {actor_name_for_log}, 字段: {field_name})，将重新尝试在线翻译。")
-                # 不返回 text，让流程继续到在线翻译
+            logger.info(f"数据库翻译缓存命中 for '{text_stripped}' -> '{cached_translation}' (引擎: {engine_used})")
+            return cached_translation
 
-        # 2. 如果缓存未命中或缓存的是失败记录，则进行在线翻译
-        logger.info(f"准备在线翻译字段 '{field_name}': '{text_stripped}' (演员: {actor_name_for_log})")
-        translation_result = utils.translate_text_with_translators( # 调用 utils 中的翻译函数
-            text_stripped,
-            engine_order=self.translator_engines # self.translator_engines 来自配置
-        ) 
-        logger.debug(f"在线翻译API调用后，translation_result for '{text_stripped}': {translation_result}")
-        
-        translated_text_online: Optional[str] = None
-        used_engine_online: str = "unknown"
-        if translation_result and isinstance(translation_result, dict):
-            translated_text_online = translation_result.get("text")
-            used_engine_online = translation_result.get("engine", "unknown")
+        # 2. 如果缓存未命中，根据配置选择翻译方式
+        final_translation = None
+        final_engine = "unknown"
 
-        if translated_text_online and translated_text_online.strip():
-            final_translation = translated_text_online.strip()
-            logger.info(f"在线翻译成功 ({used_engine_online}): '{text_stripped}' -> '{final_translation}' (演员: {actor_name_for_log}, 字段: {field_name})")
-            
-            # 3. 保存新的翻译结果到数据库缓存，使用传入的游标
-            if self.douban_api and hasattr(DoubanApi, '_save_translation_to_db'):
-                DoubanApi._save_translation_to_db(
-                    text_stripped, 
-                    final_translation, 
-                    used_engine_online, 
-                    cursor=db_cursor_for_cache # <--- 传递游标
-                )
+        if self.ai_translation_enabled and self.ai_translator:
+            # --- 使用AI翻译 ---
+            final_translation = self.ai_translator.translate(text_stripped)
+            final_engine = self.ai_translator.provider
+        else:
+            # --- 使用传统翻译引擎 ---
+            logger.info(f"AI翻译未启用或初始化失败，回退到传统翻译引擎处理: '{text_stripped}'")
+            translation_result = utils.translate_text_with_translators(
+                text_stripped,
+                engine_order=self.translator_engines
+            )
+            if translation_result and translation_result.get("text"):
+                final_translation = translation_result["text"]
+                final_engine = translation_result["engine"]
+
+        # 3. 处理翻译结果
+        if final_translation and final_translation.strip() and final_translation.strip().lower() != text_stripped.lower():
+            # 翻译成功，存入缓存并返回结果
+            DoubanApi._save_translation_to_db(text_stripped, final_translation, final_engine, cursor=db_cursor_for_cache)
             return final_translation
         else:
-            logger.warning(f"在线翻译失败或返回空 for '{text_stripped}' (演员: {actor_name_for_log}, 字段: {field_name}, 尝试引擎: {used_engine_online})")
-            
-            # 3. 保存翻译失败的状态 (None) 到数据库缓存，使用传入的游标
-            if self.douban_api and hasattr(DoubanApi, '_save_translation_to_db'):
-                DoubanApi._save_translation_to_db(
-                    text_stripped, 
-                    None, # 保存 None 表示翻译失败
-                    f"failed_or_empty_via_{used_engine_online}", 
-                    cursor=db_cursor_for_cache # <--- 传递游标
-                )
-            return text # 在线翻译失败，返回原文
+            # 翻译失败或返回原文，将失败状态存入缓存，并返回原文
+            logger.warning(f"所有翻译引擎都未能翻译 '{text_stripped}' 或返回了原文。")
+            DoubanApi._save_translation_to_db(text_stripped, None, f"failed_or_same_via_{final_engine}", cursor=db_cursor_for_cache)
+            return text
 
     def _evaluate_cast_processing_quality(self, final_cast: List[Dict[str, Any]], original_emby_cast_count: int) -> float:
         """
