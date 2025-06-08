@@ -30,55 +30,93 @@
           </n-descriptions-item>
         </n-descriptions>
 
+        <n-divider title-placement="left" style="margin-top: 20px;">辅助工具</n-divider>
+        <n-space vertical>
+          <!-- 外部搜索按钮 -->
+          <n-form-item label="外部搜索" label-placement="left">
+            <n-space>
+              <n-button 
+                tag="a" 
+                :href="searchLinks.google_url" 
+                target="_blank" 
+                :disabled="!searchLinks.google_url"
+                :loading="isFetchingSearchLinks"
+              >
+                Google 搜索
+              </n-button>
+              <!-- ✨✨✨ 百度搜索按钮已移除 ✨✨✨ -->
+            </n-space>
+          </n-form-item>
+          
+          <!-- 从URL提取 -->
+          <n-form-item label="从URL提取" label-placement="left">
+            <n-input-group>
+              <n-input 
+                v-model:value="urlToParse" 
+                placeholder="在此粘贴包含演员表的网页URL (如 IMDb, 维基百科)"
+                clearable
+              />
+              <n-button 
+                type="primary" 
+                @click="parseCastFromUrl" 
+                :loading="isParsingFromUrl"
+                :disabled="!urlToParse"
+              >
+                提取
+              </n-button>
+            </n-input-group>
+          </n-form-item>
+        </n-space>
+
         <n-divider title-placement="left" style="margin-top: 20px;">演员列表</n-divider>
-          <n-form label-placement="left" label-width="auto" style="margin-top: 10px;">
-            <!-- ... -->
-            
-            <!-- ✨ 1. 修改外层 n-grid 的 cols 属性，实现多列响应式布局 ✨ -->
-            <n-grid :cols="'1 640:2 1024:3 1280:4'" :x-gap="16" :y-gap="16">
-              <n-grid-item v-for="(actor, index) in editableCast" :key="actor._temp_id">
-                <n-card size="small">
-                  <template #header>
-                    <!-- 卡片头部可以保持不变，或者简化 -->
-                    <span style="font-weight: normal;">
-                      演员 {{ index + 1 }}
-                      <n-text depth="3" style="font-size: 0.8em; margin-left: 5px;">(ID: {{ actor.embyPersonId }})</n-text>
-                    </span>
-                  </template>
-                  <template #header-extra>
-                    <!-- 上移、下移、删除按钮保持不变 -->
-                    <n-space>
-                      <!-- ... -->
-                    </n-space>
-                  </template>
-                  
-                  <!-- ✨ 2. 修改内层 n-grid，只保留演员名和角色名 ✨ -->
-                  <n-grid x-gap="12" :cols="2">
-                    <n-form-item-gi :span="1" label="演员名" label-placement="top">
-                      <n-input v-model:value="actor.name" placeholder="演员名" />
-                    </n-form-item-gi>
-                    <n-form-item-gi :span="1" label="角色名" label-placement="top">
-                      <n-input v-model:value="actor.role" placeholder="角色名" />
-                    </n-form-item-gi>
-                  </n-grid>
-                  
-                </n-card>
-              </n-grid-item>
-            </n-grid>
-            
-          </n-form>
+        <n-form label-placement="left" label-width="auto" style="margin-top: 10px;">
+          <n-grid :cols="'1 640:2 1024:3 1280:4'" :x-gap="16" :y-gap="16">
+            <n-grid-item v-for="(actor, index) in editableCast" :key="actor._temp_id">
+              <n-card size="small">
+                <template #header>
+                  <span style="font-weight: normal;">
+                    演员 {{ index + 1 }}
+                    <n-text depth="3" style="font-size: 0.8em; margin-left: 5px;" v-if="actor.embyPersonId">(ID: {{ actor.embyPersonId }})</n-text>
+                    <n-text depth="3" style="font-size: 0.8em; margin-left: 5px;" v-else>(新)</n-text>
+                  </span>
+                </template>
+                <template #header-extra>
+                  <n-space>
+                    <n-button text @click="moveActorUp(index)" :disabled="index === 0">
+                      <n-icon :component="ArrowUpIcon" />
+                    </n-button>
+                    <n-button text @click="moveActorDown(index)" :disabled="index === editableCast.length - 1">
+                      <n-icon :component="ArrowDownIcon" />
+                    </n-button>
+                    <n-button text type="error" @click="removeActor(index)">
+                      <n-icon :component="TrashIcon" />
+                    </n-button>
+                  </n-space>
+                </template>
+                <n-grid x-gap="12" :cols="2">
+                  <n-form-item-gi :span="1" label="演员名" label-placement="top">
+                    <n-input v-model:value="actor.name" placeholder="演员名" />
+                  </n-form-item-gi>
+                  <n-form-item-gi :span="1" label="角色名" label-placement="top">
+                    <n-input v-model:value="actor.role" placeholder="角色名" />
+                  </n-form-item-gi>
+                </n-grid>
+              </n-card>
+            </n-grid-item>
+          </n-grid>
+        </n-form>
         
         <div style="margin-top:20px; margin-bottom: 20px;"> 
-         <n-button
-          type="default"
-          @click="refreshCastFromDouban"
-          :loading="isRefreshingFromDouban"
-          style="margin-right: 10px;"
-          :disabled="isLoading || !itemDetails || !itemDetails.item_id" 
-        >
-          从豆瓣刷新演员表
-         </n-button>
-        <n-text depth="3" style="font-size: 0.85em;">(此操作将尝试用豆瓣信息更新下方列表中的现有演员)</n-text>
+          <n-button
+            type="default"
+            @click="refreshCastFromDouban"
+            :loading="isRefreshingFromDouban"
+            style="margin-right: 10px;"
+            :disabled="isLoading || !itemDetails || !itemDetails.item_id" 
+          >
+            从豆瓣刷新演员表
+          </n-button>
+          <n-text depth="3" style="font-size: 0.85em;">(此操作将尝试用豆瓣信息更新下方列表中的现有演员)</n-text>
         </div>
 
         <template #action>
@@ -101,11 +139,11 @@
 </template>
 
 <script setup>
-import { NIcon } from 'naive-ui';
-import { ref, computed, watch, onMounted } from 'vue';
+import { NIcon, NInput, NInputGroup, NGrid, NGridItem, NFormItem, NFormItemGi } from 'naive-ui';
+import { ref, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import axios from 'axios';
-import { NTag, NPageHeader, NDivider, NSpin, NCard, NDescriptions, NDescriptionsItem, NButton, NSpace, NAlert, useMessage } from 'naive-ui';
+import { NTag, NPageHeader, NDivider, NSpin, NCard, NDescriptions, NDescriptionsItem, NButton, NSpace, NAlert, useMessage, useDialog } from 'naive-ui';
 import {
   ArrowUpOutline as ArrowUpIcon,
   ArrowDownOutline as ArrowDownIcon,
@@ -115,11 +153,18 @@ import {
 const route = useRoute();
 const router = useRouter();
 const message = useMessage();
-const editableCast = ref([]);
+const dialog = useDialog();
+
 const itemId = ref(null);
 const isLoading = ref(true);
-const itemDetails = ref(null); // 存储从后端获取的媒体完整信息
+const itemDetails = ref(null);
+const editableCast = ref([]);
 const isSaving = ref(false);
+
+const isFetchingSearchLinks = ref(false);
+const searchLinks = ref({ google_url: '' }); // 只保留 google_url
+const isParsingFromUrl = ref(false);
+const urlToParse = ref('');
 
 watch(() => itemDetails.value, (newItemDetails) => {
   if (newItemDetails && newItemDetails.current_emby_cast) {
@@ -131,13 +176,12 @@ watch(() => itemDetails.value, (newItemDetails) => {
       imdbId: actor.imdbId || '',
       doubanId: actor.doubanId || '',
       tmdbId: actor.tmdbId || '',
-      matchStatus: actor.matchStatus || '原始' // 初始状态为“原始”或从API获取
+      matchStatus: actor.matchStatus || '原始'
     }));
-    console.log("Editable cast initialized:", editableCast.value);
   } else {
     editableCast.value = [];
   }
-}, { deep: true }); // deep watch 以防万一，但通常 newItemDetails 替换时就会触发
+}, { deep: true });
 
 const removeActor = (index) => {
   editableCast.value.splice(index, 1);
@@ -145,17 +189,17 @@ const removeActor = (index) => {
 };
 
 const moveActorUp = (index) => {
-  if (index > 0 && editableCast.value && editableCast.value.length > index) {
-    const actorToMove = editableCast.value.splice(index, 1)[0]; // 从原位置移除
-    editableCast.value.splice(index - 1, 0, actorToMove); // 插入到新位置
+  if (index > 0) {
+    const actorToMove = editableCast.value.splice(index, 1)[0];
+    editableCast.value.splice(index - 1, 0, actorToMove);
     message.info("演员顺序已调整（上移）。");
   }
 };
 
 const moveActorDown = (index) => {
-  if (editableCast.value && editableCast.value.length > index + 1) {
-    const actorToMove = editableCast.value.splice(index, 1)[0]; // 从原位置移除
-    editableCast.value.splice(index + 1, 0, actorToMove); // 插入到新位置
+  if (index < editableCast.value.length - 1) {
+    const actorToMove = editableCast.value.splice(index, 1)[0];
+    editableCast.value.splice(index + 1, 0, actorToMove);
     message.info("演员顺序已调整（下移）。");
   }
 };
@@ -163,30 +207,20 @@ const moveActorDown = (index) => {
 const isRefreshingFromDouban = ref(false);
 
 const refreshCastFromDouban = async () => {
-  if (!itemDetails.value || !itemDetails.value.item_id) {
-    message.error("没有正在编辑的媒体项的ID。");
-    return;
-  }
+  if (!itemDetails.value?.item_id) return;
   isRefreshingFromDouban.value = true;
   try {
-    const itemId = itemDetails.value.item_id;
-    
-    // ✨ 调用新的API端点
-    const response = await axios.post(`/api/preview_processed_cast/${itemId}`);
+    const response = await axios.post(`/api/preview_processed_cast/${itemDetails.value.item_id}`);
     const processedActorsFromApi = response.data;
 
     if (processedActorsFromApi && Array.isArray(processedActorsFromApi)) {
       if (processedActorsFromApi.length === 0) {
         message.info("处理器返回了一个空的演员列表。");
-        // 你可以选择清空UI上的列表
-        // editableCast.value = []; 
         return;
-      } 
+      }
       
-      // ✨ 用返回的完整列表直接替换UI上的列表
-      // 这是最简单直接的方式，确保UI和处理结果完全一致
       editableCast.value = processedActorsFromApi.map((actor, index) => ({
-        _temp_id: `actor-${Date.now()}-${index}`, // 为v-for生成临时key
+        _temp_id: `actor-${Date.now()}-${index}`,
         embyPersonId: actor.embyPersonId || '',
         name: actor.name || '',
         role: actor.role || '',
@@ -195,124 +229,141 @@ const refreshCastFromDouban = async () => {
         tmdbId: actor.tmdbId || '',
         matchStatus: actor.matchStatus || '已刷新'
       }));
-
-      message.success(`演员列表已根据核心处理器预览结果刷新 (${processedActorsFromApi.length}位)。请检查并保存。`);
-      
+      message.success(`演员列表已根据核心处理器预览结果刷新 (${processedActorsFromApi.length}位)。`);
     } else {
       message.error("刷新演员信息失败或返回格式不正确。");
     }
   } catch (error) {
     console.error("刷新演员列表失败:", error);
-    message.error(error.response?.data?.error || "刷新演员列表失败，请查看控制台日志。");
+    message.error(error.response?.data?.error || "刷新演员列表失败。");
   } finally {
     isRefreshingFromDouban.value = false;
   }
 };
 
-const getMatchStatusType = (status) => {
-  if (status && status.includes('已匹配')) return 'success';
-  if (status && status.includes('待确认')) return 'warning';
-  if (status === 'refreshed_from_douban') return 'info'; // 可以自定义
-  return 'default';
+const fetchSearchLinks = async () => {
+  if (!itemId.value) return;
+  isFetchingSearchLinks.value = true;
+  try {
+    const response = await axios.get(`/api/generate_search_links/${itemId.value}`);
+    searchLinks.value = response.data;
+  } catch (error) {
+    console.error("获取搜索链接失败:", error);
+    message.error("获取外部搜索链接失败。");
+  } finally {
+    isFetchingSearchLinks.value = false;
+  }
+};
+
+const parseCastFromUrl = async () => {
+  if (!urlToParse.value.trim()) {
+    message.warning("请输入要解析的URL。");
+    return;
+  }
+  isParsingFromUrl.value = true;
+  try {
+    const response = await axios.post('/api/parse_cast_from_url', { url: urlToParse.value });
+    const newCastFromWeb = response.data;
+
+    if (newCastFromWeb && Array.isArray(newCastFromWeb) && newCastFromWeb.length > 0) {
+      message.success(`成功提取 ${newCastFromWeb.length} 位演员信息，正在与当前列表进行匹配更新...`);
+      // 直接调用“仅丰富”逻辑
+      handleEnrich(newCastFromWeb);
+    } else {
+      message.info(response.data.message || "未从该URL中找到有效的演员信息。");
+    }
+  } catch (error) {
+    console.error("从URL解析演员失败:", error);
+    message.error(error.response?.data?.error || "解析失败，请检查URL或后端日志。");
+  } finally {
+    isParsingFromUrl.value = false;
+  }
+};
+
+const handleEnrich = async (newCastFromWeb) => {
+  try {
+    const payload = {
+      current_cast: editableCast.value,
+      new_cast_from_web: newCastFromWeb
+    };
+    // 调用新的、安全的后端API
+    const response = await axios.post('/api/actions/enrich_cast_list', payload);
+    const enrichedList = response.data;
+
+    // 用后端返回的、已丰富的列表更新UI
+    editableCast.value = enrichedList.map((actor, index) => ({
+      ...actor,
+      _temp_id: `enriched-actor-${Date.now()}-${index}`
+    }));
+    
+    message.success("列表已更新！请检查匹配结果并保存。");
+    urlToParse.value = '';
+
+  } catch (error) {
+    console.error("丰富列表失败:", error);
+    message.error(error.response?.data?.error || "更新列表时发生错误，请检查后端日志。");
+  }
 };
 
 const fetchMediaDetails = async () => {
   if (!itemId.value) {
-    message.error("无效的媒体项ID！");
     isLoading.value = false;
     return;
   }
   isLoading.value = true;
   try {
     const response = await axios.get(`/api/media_with_cast_for_editing/${itemId.value}`);
-    if (response.data) {
-      itemDetails.value = response.data;
-      console.log("获取到的媒体详情:", itemDetails.value);
-    } else {
-      message.error("未能获取媒体详情数据。");
-      itemDetails.value = null; // 清空以显示错误提示
-    }
-  } catch (error) {
+    itemDetails.value = response.data;
+    fetchSearchLinks();
+  } catch (error)
+  {
     console.error("获取媒体详情失败:", error);
-    message.error(error.response?.data?.error || "获取媒体详情失败，请查看控制台日志。");
-    itemDetails.value = null; // 清空以显示错误提示
+    message.error(error.response?.data?.error || "获取媒体详情失败。");
+    itemDetails.value = null;
   } finally {
     isLoading.value = false;
   }
 };
 
 onMounted(() => {
-  itemId.value = route.params.itemId; // 从路由参数中获取 itemId
+  itemId.value = route.params.itemId;
   if (itemId.value) {
     fetchMediaDetails();
   } else {
     message.error("未提供媒体项ID！");
     isLoading.value = false;
-    // 可以选择导航回列表页
-    // router.replace({ name: 'ReviewList' });
   }
 });
 
 const goBack = () => {
-  router.push({ name: 'ReviewList' }); // 或者 router.go(-1) 返回上一页
+  router.push({ name: 'ReviewList' });
 };
 
 const handleSaveChanges = async () => {
-  if (!itemDetails.value || !itemDetails.value.item_id) {
-    message.error("没有有效的媒体项ID来保存更改。");
-    return;
-  }
-  if (!editableCast.value || editableCast.value.length === 0) {
-    // 如果用户删光了所有演员，需要确认是否真的要清空演员列表
-    // 这里我们先假设至少要有一个演员，或者由后端 emby_handler 处理空列表的情况
-    // message.warning("演员列表为空，确定要这样保存吗？（此功能待完善确认）");
-    // return;
-    // 或者，如果允许清空演员，直接继续
-    console.warn("[MediaEditPage] 准备保存一个空的演员列表。");
-  }
-
-isSaving.value = true;
+  if (!itemDetails.value?.item_id) return;
+  isSaving.value = true;
   try {
-    const itemIdToSave = itemDetails.value.item_id;
-    
-    // 准备发送给后端的数据
     const castPayload = editableCast.value.map(actor => ({
-      embyPersonId: actor.embyPersonId, // 必须
-      name: actor.name,                 // 必须
-      role: actor.role || '',           // 可选，空字符串代替null
-      imdbId: actor.imdbId || null,     // 发送null如果为空
+      embyPersonId: actor.embyPersonId,
+      name: actor.name,
+      role: actor.role || '',
+      imdbId: actor.imdbId || null,
       doubanId: actor.doubanId || null,
       tmdbId: actor.tmdbId || null
     }));
 
     const payload = {
       cast: castPayload,
-      // （可选）传递 item_name 和 item_type 给后端用于日志或刷新
       item_name: itemDetails.value.item_name,
       item_type: itemDetails.value.item_type
     };
 
-    console.log(`[MediaEditPage] 发送给 /api/update_media_cast/${itemIdToSave} 的数据:`, payload);
-    await axios.post(`/api/update_media_cast/${itemIdToSave}`, payload);
-
+    await axios.post(`/api/update_media_cast/${itemDetails.value.item_id}`, payload);
     message.success("演员信息已成功更新到Emby！");
-    
-    // 保存成功后，导航回列表页
-    // 在导航前，可以考虑给用户一点时间看成功消息，或者直接跳转
-    // setTimeout(() => { // 可选的延迟
-    //   router.push({ name: 'ReviewList' });
-    // }, 1500);
-    
-    // 为了能立即看到列表刷新，最好是 ReviewList 页面在 onActivated 或 onMounted 时重新获取数据
-    // 或者这里 $emit 一个事件给父组件（如果 ReviewList 是父组件或通过布局管理）
-    // emit('castUpdated'); // 如果 ReviewList 监听这个事件来刷新
-    
-    // 最简单直接的方式：
-    router.push({ name: 'ReviewList' }); // 假设 ReviewList 在激活时会重新加载数据
-
+    router.push({ name: 'ReviewList' });
   } catch (error) {
     console.error("保存修改失败:", error);
-    message.error(error.response?.data?.error || "保存修改失败，请查看后端日志。");
+    message.error(error.response?.data?.error || "保存修改失败。");
   } finally {
     isSaving.value = false;
   }
@@ -326,30 +377,22 @@ isSaving.value = true;
 }
 </style>
 <style>
-/* 这是一个全局样式块，专门解决演员列表标签的显示问题 */
-
-/* 针对4列布局 (1280px以上) */
+/* 全局样式保持不变 */
 @media (min-width: 1280px) {
   .n-grid-item:nth-child(n + 5) .n-form-item .n-form-item-label {
     display: none !important;
   }
 }
-
-/* 针对3列布局 (1024px - 1279px) */
 @media (min-width: 1024px) and (max-width: 1279.98px) {
   .n-grid-item:nth-child(n + 4) .n-form-item .n-form-item-label {
     display: none !important;
   }
 }
-
-/* 针对2列布局 (640px - 1023px) */
 @media (min-width: 640px) and (max-width: 1023.98px) {
   .n-grid-item:nth-child(n + 3) .n-form-item .n-form-item-label {
     display: none !important;
   }
 }
-
-/* 针对1列布局 (640px以下) */
 @media (max-width: 639.98px) {
   .n-grid-item:nth-child(n + 2) .n-form-item .n-form-item-label {
     display: none !important;

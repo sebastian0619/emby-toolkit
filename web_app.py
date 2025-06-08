@@ -17,7 +17,6 @@ import atexit # 用于应用退出处理
 from core_processor import MediaProcessor, SyncHandler
 import csv
 from io import StringIO
-
 # --- 核心模块导入 ---
 import constants # 你的常量定义
 from core_processor import MediaProcessor # 核心处理逻辑
@@ -31,7 +30,13 @@ static_folder='static'
 app = Flask(__name__)
 # CORS(app) # 最简单的全局启用 CORS，允许所有源
 # app.secret_key = os.urandom(24) # 用于 flash 消息等
-
+# ✨✨✨ 新增：导入我们创建的网页解析器 ✨✨✨
+try:
+    from web_parser import parse_cast_from_url, ParserError
+    WEB_PARSER_AVAILABLE = True
+except ImportError:
+    logger.error("web_parser.py 未找到或无法导入，从URL提取功能将不可用。")
+    WEB_PARSER_AVAILABLE = False
 # vue_dev_server_origin = "http://localhost:5173"
 # CORS(app, resources={r"/api/*": {"origins": vue_dev_server_origin}})
 # --- 路径和配置定义 ---
@@ -227,7 +232,10 @@ def load_config() -> Dict[str, Any]:
         "schedule_cron": getattr(constants, 'DEFAULT_SCHEDULE_CRON', "0 3 * * *"),
         "schedule_force_reprocess": str(getattr(constants, 'DEFAULT_SCHEDULE_FORCE_REPROCESS', False)).lower(),
         "schedule_sync_map_enabled": str(getattr(constants, 'DEFAULT_SCHEDULE_SYNC_MAP_ENABLED', False)).lower(),
-        "schedule_sync_map_cron": getattr(constants, 'DEFAULT_SCHEDULE_SYNC_MAP_CRON', "0 1 * * *")
+        "schedule_sync_map_cron": getattr(constants, 'DEFAULT_SCHEDULE_SYNC_MAP_CRON', "0 1 * * *"),
+        # ✨✨✨ 新增：网络请求相关的默认值 ✨✨✨
+        "user_agent": getattr(constants, 'DEFAULT_USER_AGENT', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'),
+        "accept_language": getattr(constants, 'DEFAULT_ACCEPT_LANGUAGE', 'zh-CN,zh;q=0.9,en;q=0.8')
     }
 
     config_parser = configparser.ConfigParser(defaults=defaults)
@@ -238,6 +246,8 @@ def load_config() -> Dict[str, Any]:
         constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_SECTION_TRANSLATION,
         constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_SECTION_LOCAL_DATA,
         "General", "Scheduler"
+        "General", "Scheduler",
+        "Network" # ✨✨✨ 新增：网络设置节 ✨✨✨
     ]
 
     if os.path.exists(CONFIG_FILE_PATH):
@@ -286,6 +296,9 @@ def load_config() -> Dict[str, Any]:
     # --- General Section ---
     app_cfg["delay_between_items_sec"] = config_parser.getfloat("General", "delay_between_items_sec")
     app_cfg["min_score_for_review"] = config_parser.getfloat("General", "min_score_for_review")
+    # ✨✨✨ 新增：加载网络配置 ✨✨✨
+    app_cfg["user_agent"] = config_parser.get("Network", "user_agent")
+    app_cfg["accept_language"] = config_parser.get("Network", "accept_language")
     # --- Scheduler Section ---
     app_cfg["schedule_enabled"] = config_parser.getboolean("Scheduler", "schedule_enabled") # 用于全量扫描
     app_cfg["schedule_cron"] = config_parser.get("Scheduler", "schedule_cron")
@@ -317,6 +330,7 @@ def save_config(new_config: Dict[str, Any]):
         constants.CONFIG_SECTION_LOCAL_DATA,    # 用于 local_data_path
         "General",                              # 通用设置
         "Scheduler"                             # 定时任务设置
+        "Network" # ✨✨✨ 新增：网络设置节 ✨✨✨
     ]
 
     # 2. 确保所有这些节都存在于 config 对象中，如果不存在则添加
@@ -365,6 +379,9 @@ def save_config(new_config: Dict[str, Any]):
     # --- General Section ---
     config.set("General", "delay_between_items_sec", str(new_config.get("delay_between_items_sec", "0.5")))
     config.set("General", "min_score_for_review", str(new_config.get("min_score_for_review", "6.0")))
+    # ✨✨✨ 新增：保存网络配置 ✨✨✨
+    config.set("Network", "user_agent", str(new_config.get("user_agent", "")))
+    config.set("Network", "accept_language", str(new_config.get("accept_language", "")))
     # --- Scheduler Section ---
     config.set("Scheduler", "schedule_enabled", str(new_config.get("schedule_enabled", False)).lower())
     config.set("Scheduler", "schedule_cron", str(new_config.get("schedule_cron", "0 3 * * *")))
@@ -1459,7 +1476,68 @@ def api_import_person_map():
             return jsonify({"error": f"处理文件时发生错误: {e}"}), 500
     else:
         return jsonify({"error": "无效的文件类型，请上传 .csv 文件"}), 400    
+# ✨✨✨  API 端点 1: 生成外部搜索链接 ✨✨✨
+@app.route('/api/parse_cast_from_url', methods=['POST'])
+def api_parse_cast_from_url():
+    if not WEB_PARSER_AVAILABLE:
+        return jsonify({"error": "网页解析功能在服务器端不可用。"}), 501
 
+    data = request.json
+    url_to_parse = data.get('url')
+
+    if not url_to_parse:
+        return jsonify({"error": "请求中未提供 'url' 参数"}), 400
+
+    logger.info(f"API: 收到从 URL 解析演员表的请求: {url_to_parse}")
+
+    try:
+        # 加载配置并准备请求头
+        current_config = load_config()
+        user_agent = current_config.get('user_agent')
+        accept_language = current_config.get('accept_language')
+        
+        custom_headers = {}
+        if user_agent:
+            custom_headers['User-Agent'] = user_agent
+        if accept_language:
+            custom_headers['Accept-Language'] = accept_language
+        
+        # 将请求头传递给解析器
+        parsed_cast = parse_cast_from_url(url_to_parse, custom_headers=custom_headers)
+        
+        if parsed_cast:
+            frontend_cast = [{"name": item['actor'], "role": item['character']} for item in parsed_cast]
+            return jsonify(frontend_cast)
+        else:
+            return jsonify({"message": "未找到有效的演员信息，请检查URL或网页内容。"}), 200
+
+    except ParserError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"解析 URL '{url_to_parse}' 时发生未知错误: {e}", exc_info=True)
+        return jsonify({"error": "解析时发生未知的服务器错误"}), 500
+# ✨✨✨  API 端点 2: 更新演员表 ✨✨✨
+@app.route('/api/actions/enrich_cast_list', methods=['POST'])
+def api_enrich_cast_list():
+    if not media_processor_instance:
+        return jsonify({"error": "核心处理器未就绪"}), 503
+        
+    data = request.json
+    current_cast = data.get('current_cast')
+    new_cast_from_web = data.get('new_cast_from_web')
+
+    if not isinstance(current_cast, list) or not isinstance(new_cast_from_web, list):
+        return jsonify({"error": "请求体必须包含 'current_cast' 和 'new_cast_from_web' 两个列表。"}), 400
+
+    try:
+        # 调用新的、更安全的核心方法
+        enriched_list = media_processor_instance.enrich_cast_list(current_cast, new_cast_from_web)
+        
+        return jsonify(enriched_list)
+        
+    except Exception as e:
+        logger.error(f"丰富演员列表时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在丰富演员列表时发生内部错误。"}), 500
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')

@@ -1147,6 +1147,70 @@ class MediaProcessor:
         # 如果有其他需要关闭的资源，例如数据库连接池（如果使用的话），在这里关闭
         logger.info("MediaProcessor close 方法执行完毕。")
 
+    def enrich_cast_list(self, current_cast: List[Dict[str, Any]], new_cast_from_web: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        使用从网页提取的新列表来丰富（Enrich）当前演员列表。
+        只更新匹配到的演员，所有未匹配的演员（无论新旧）都将被忽略或保留原样。
+        """
+        logger.info(f"开始“仅丰富”模式：使用 {len(new_cast_from_web)} 位新演员信息来更新 {len(current_cast)} 位当前演员。")
+        
+        # 创建一个最终列表的副本，我们将在这个副本上进行修改
+        enriched_cast = [dict(actor) for actor in current_cast]
+        
+        # 用于记录哪些新演员已经被使用，避免重复匹配
+        used_new_actor_indices = set()
+
+        # 遍历当前列表中的每一个演员
+        for i, current_actor in enumerate(enriched_cast):
+            current_name = current_actor.get('name', '').strip()
+            if not current_name:
+                continue
+
+            # 在新列表中寻找能与当前演员匹配的项
+            for j, new_actor in enumerate(new_cast_from_web):
+                if j in used_new_actor_indices:
+                    continue # 这个新演员已经被用过了
+
+                new_name = new_actor.get('name', '').strip()
+                if not new_name:
+                    continue
+
+                # --- 匹配逻辑 (与之前相同) ---
+                is_match = False
+                if current_name.lower() == new_name.lower():
+                    is_match = True
+                else:
+                    # 利用翻译缓存进行交叉匹配
+                    # 注意：这里假设 DoubanApi._get_translation_from_db 是一个可用的静态或类方法
+                    cached_translation_fwd = DoubanApi._get_translation_from_db(current_name)
+                    if cached_translation_fwd and cached_translation_fwd.get('translated_text', '').lower() == new_name.lower():
+                        is_match = True
+                    else:
+                        cached_translation_bwd = DoubanApi._get_translation_from_db(new_name)
+                        if cached_translation_bwd and cached_translation_bwd.get('translated_text', '').lower() == current_name.lower():
+                            is_match = True
+                
+                if is_match:
+                    logger.info(f"匹配成功: 当前演员 '{current_name}' <=> 新信息 '{new_name}'")
+                    
+                    # ✨ 只更新需要的字段，主要是角色名 ✨
+                    new_role = new_actor.get('role')
+                    if new_role:
+                        logger.info(f"  -> 角色名更新: '{current_actor.get('role')}' -> '{new_role}'")
+                        enriched_cast[i]['role'] = new_role
+                    
+                    # ✨ 更新状态，方便前端显示 ✨
+                    enriched_cast[i]['matchStatus'] = '已更新'
+                    
+                    used_new_actor_indices.add(j)
+                    break # 为 current_actor 找到匹配，跳出内层循环
+
+        unmatched_count = len(new_cast_from_web) - len(used_new_actor_indices)
+        if unmatched_count > 0:
+            logger.info(f"{unmatched_count} 位从网页提取的演员未能匹配任何现有演员，已被丢弃。")
+
+        logger.info(f"“仅丰富”模式完成，返回 {len(enriched_cast)} 位演员。")
+        return enriched_cast
 class SyncHandler:
     def __init__(self, db_path: str, emby_url: str, emby_api_key: str, emby_user_id: Optional[str]):
         self.db_path = db_path
