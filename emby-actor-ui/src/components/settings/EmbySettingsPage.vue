@@ -13,6 +13,14 @@
       <n-form-item-grid-item label="更新后刷新 Emby 媒体项">
         <n-switch v-model:value="configModel.refresh_emby_after_update" />
       </n-form-item-grid-item>
+      <n-form-item-grid-item label="深度处理剧集" path="process_episodes">
+        <n-space align="center">
+          <n-switch v-model:value="configModel.process_episodes" />
+          <n-text :depth="3" type="error" style="font-size: 0.85em;">
+            不建议开启，处理剧集时会深入每一集，耗时极长。
+          </n-text>
+        </n-space>
+      </n-form-item-grid-item>
 
       <n-form-item-grid-item path="libraries_to_process">
         <template #label>
@@ -58,7 +66,8 @@ const {
   configError, // 获取错误状态
   loadingConfig: globalLoadingConfig
 } = useConfig();
-
+// ✨✨✨ 处理集开关 ✨✨✨
+const processEpisodes = ref(false);
 const availableLibraries = ref([]);
 const loadingLibraries = ref(false);
 const libraryError = ref(null);
@@ -127,10 +136,10 @@ onUnmounted(() => {
   if (unwatchGlobalConfig) unwatchGlobalConfig();
   if (unwatchEmbyConfig) unwatchEmbyConfig();
 });
-
 // 新建一个函数来处理保存和消息提示
 const savePageConfig = async () => {
   const success = await handleSaveConfig();
+
   if (success) {
     message.success('Emby 配置已成功保存！');
     // 成功保存后，可能需要重新获取媒体库，因为URL或Key可能已更改

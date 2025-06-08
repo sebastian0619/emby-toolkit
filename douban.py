@@ -437,10 +437,10 @@ class DoubanApi:
     def close(self):
         with DoubanApi._session_lock: # 关闭时也加锁
             if DoubanApi._session:
-                try: DoubanApi._session.close(); logger.info("DoubanApi requests.Session 已关闭。")
+                try: DoubanApi._session.close(); logger.debug("DoubanApi requests.Session 已关闭。")
                 except Exception as e: logger.error(f"关闭 DoubanApi session 时出错: {e}")
                 finally: DoubanApi._session = None
-            logger.info("DoubanApi close 方法执行完毕。")
+            logger.debug("DoubanApi close 方法执行完毕。")
 
       
     @classmethod

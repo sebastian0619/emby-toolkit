@@ -170,7 +170,7 @@ class MediaProcessor:
             
             # 4. 更新日志消息以包含分数
             score_info = f"(评分为: {score:.1f})" if score is not None else "(评分未记录/不适用)"
-            logger.info(f"Item ID '{item_id}' ('{item_name}') 已作为失败/待手动处理项记录到数据库。原因: {error_msg} {score_info}")
+            logger.info(f"('{item_name}') 已作为失败/待手动处理项记录到数据库。原因: {error_msg} {score_info}")
         except Exception as e:
             logger.error(f"保存失败记录到数据库失败 (Item ID: {item_id}): {e}", exc_info=True)
 
@@ -747,16 +747,17 @@ class MediaProcessor:
                 try: conn.close()
                 except Exception as close_err: logger.error(f"数据库连接关闭失败: {close_err}")
     
-    def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False) -> bool:
+    def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False, process_episodes: bool = True) -> bool:
         """
-        处理单个 Emby 媒体项目。
-        - 如果是电影，直接处理。
-        - 如果是剧集，递归处理所有分集。
-        - 如果是单集，则找到其所属剧集并处理整部剧。
+        最终版：处理单个媒体项目，逻辑清晰，性能最优。
         """
         if self.is_stop_requested():
-            logger.info(f"任务已请求停止，跳过处理 Item ID: {emby_item_id}")
             return False
+
+        # ✨ 核心优化：在所有操作之前，先检查顶层ID是否需要跳过 ✨
+        if not force_reprocess_this_item and emby_item_id in self.processed_items_cache:
+            logger.info(f"顶层项目 (ID: {emby_item_id}) 已处理过，跳过整个处理流程。")
+            return True
 
         try:
             item_details = emby_handler.get_emby_item_details(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
@@ -772,50 +773,36 @@ class MediaProcessor:
         item_type = item_details.get("Type")
         item_name_for_log = item_details.get("Name", f"ID:{emby_item_id}")
 
-        # --- 保持你原有的、正确的 if/elif 结构 ---
         if item_type == "Series":
-            logger.info(f"检测到项目 '{item_name_for_log}' (ID: {emby_item_id}) 是一个剧集，将开始递归处理...")
+            logger.info(f"检测到项目 '{item_name_for_log}' (ID: {emby_item_id}) 是一个剧集...")
             
-            logger.info(f"--- 正在处理剧集 '{item_name_for_log}' 本身的演员信息 ---")
             self._process_item_core_logic(item_details, force_reprocess_this_item)
             
-            episodes = emby_handler.get_episodes_for_series(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
-            if episodes:
-                total_episodes = len(episodes)
-                logger.info(f"共找到 {total_episodes} 集，开始逐一处理...")
-                for i, episode in enumerate(episodes):
-                    if self.is_stop_requested():
-                        logger.info("剧集递归处理被中断。")
-                        return False
-                    
-                    episode_id = episode.get("Id")
-                    episode_name = episode.get("Name", f"ID:{episode_id}")
-                    logger.info(f"--- 正在处理第 {i+1}/{total_episodes} 集: '{episode_name}' (ID: {episode_id}) ---")
-                    self._process_item_core_logic(episode, force_reprocess_this_item)
-                    
-                    delay = float(self.config.get("delay_between_items_sec", 0.5))
-                    if delay > 0 and i < total_episodes - 1:
-                        time.sleep(delay)
+            if process_episodes:
+                logger.info("“深度模式”已启用，将递归处理其所有分集...")
+                episodes = emby_handler.get_episodes_for_series(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+                if episodes:
+                    for i, episode in enumerate(episodes):
+                        if self.is_stop_requested(): return False
+                        logger.info(f"--- 正在处理第 {i+1}/{len(episodes)} 集: {episode.get('Name')} ---")
+                        self._process_item_core_logic(episode, force_reprocess_this_item)
+                        delay = float(self.config.get("delay_between_items_sec", 0.5))
+                        if delay > 0 and i < len(episodes) - 1: time.sleep(delay)
+            else:
+                logger.info("“快速模式”已启用，跳过处理分集。")
             
-            logger.info(f"剧集 '{item_name_for_log}' 的所有剧集处理完毕。")
             return True
 
         elif item_type == "Movie":
-            logger.info(f"检测到项目 '{item_name_for_log}' (ID: {emby_item_id}) 是一部电影，将进行标准处理...")
             return self._process_item_core_logic(item_details, force_reprocess_this_item)
             
-        # ✨✨✨ 只在这里增加对 Episode 的处理 ✨✨✨
         elif item_type == "Episode":
-            logger.info(f"检测到项目 '{item_name_for_log}' (ID: {emby_item_id}) 是一个单集。")
             series_id = item_details.get("SeriesId")
             if series_id:
-                series_name = item_details.get("SeriesName", f"ID: {series_id}")
-                logger.info(f"该单集属于剧集 '{series_name}' (ID: {series_id})。将重定向任务以处理整部剧集。")
-                # ✨ 关键：重新调用自己，但传入的是剧集的ID ✨
-                return self.process_single_item(series_id, force_reprocess_this_item)
+                logger.info(f"单集 '{item_name_for_log}' 属于剧集 (ID: {series_id})。将重定向任务以处理整部剧集。")
+                return self.process_single_item(series_id, force_reprocess_this_item, process_episodes=process_episodes)
             else:
-                logger.warning(f"单集 '{item_name_for_log}' 缺少所属的 SeriesId，无法处理。将仅处理该单集本身。")
-                # 如果找不到SeriesId，就只处理这一集本身，作为后备方案
+                logger.warning(f"单集 '{item_name_for_log}' 缺少所属的 SeriesId，将仅处理该单集本身。")
                 return self._process_item_core_logic(item_details, force_reprocess_this_item)
         
         else:
@@ -824,21 +811,20 @@ class MediaProcessor:
 
     def _process_item_core_logic(self, item_details: Dict[str, Any], force_reprocess_this_item: bool = False) -> bool:
         """
-        处理单个媒体项（电影或单集）的核心逻辑。
-        修正了参数传递错误。
+        最终版：只负责处理，不再关心是否跳过。
         """
         item_id = item_details.get("Id")
         if not item_id:
-            logger.error("核心处理逻辑失败：传入的 item_details 缺少 ID。")
             return False
+        
+        # ✨ 这里的跳过检查是针对分集的，保留它是对的，但可以简化日志 ✨
+        if not force_reprocess_this_item and item_id in self.processed_items_cache:
+            logger.debug(f"核心逻辑：项目ID '{item_id}' 已在缓存中，跳过。")
+            return True
 
         item_type_for_log = item_details.get("Type", "未知类型")
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
-
-        if item_type_for_log == "Episode" and not force_reprocess_this_item and item_id in self.processed_items_cache:
-            logger.info(f"单集 '{item_name_for_log}' (ID: {item_id}) 已处理过，跳过。")
-            return True
-
+        
         current_emby_cast_raw = item_details.get("People", [])
         original_emby_cast_count = len(current_emby_cast_raw)
         logger.info(f"媒体 '{item_name_for_log}' 原始Emby People数量: {original_emby_cast_count}")
@@ -870,7 +856,6 @@ class MediaProcessor:
                 {"name": actor.get("Name"), "character": actor.get("Role"), "emby_person_id": actor.get("EmbyPersonId"), "provider_ids": actor.get("ProviderIds")}
                 for actor in final_cast_for_item
             ]
-            # ✨✨✨ 关键修复：把所有参数都传进去 ✨✨✨
             update_success = emby_handler.update_emby_item_cast(
                 item_id=item_id,
                 new_cast_list_for_handler=cast_for_emby_handler,
@@ -893,7 +878,6 @@ class MediaProcessor:
                 self.save_to_processed_log(item_id, item_name_for_log, score=processing_score)
             
             elif item_type_for_log == "Episode":
-                logger.info(f"单集 '{item_name_for_log}' 处理完成，将其ID加入内存缓存以防重复处理。")
                 self.processed_items_cache.add(item_id)
 
             return True
@@ -1023,15 +1007,14 @@ class MediaProcessor:
 
         return actor_entry
 
-    def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False):
-        self.clear_stop_signal() # 清除任何可能残留的停止信号
-        logger.debug(f"process_full_library: 方法开始执行。")
-        logger.debug(f"  Initial self.libraries_to_process (来自实例属性): {self.libraries_to_process}")
-        logger.debug(f"  force_reprocess_all: {force_reprocess_all}")
+    def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False, process_episodes: bool = True):
+        self.clear_stop_signal()
+        logger.debug("process_full_library: 方法开始执行。")
+        logger.debug(f"  force_reprocess_all: {force_reprocess_all}, process_episodes: {process_episodes}")
 
         if force_reprocess_all:
             logger.info("用户请求强制重处理所有媒体项，将清除数据库中的已处理记录。")
-            self.clear_processed_log() # 这个方法应该清除数据库和内存缓存
+            self.clear_processed_log()
 
         if not all([self.emby_url, self.emby_api_key, self.emby_user_id]):
             logger.error("Emby配置不完整，无法处理整个媒体库。")
@@ -1039,124 +1022,60 @@ class MediaProcessor:
                 update_status_callback(-1, "Emby配置不完整")
             return
 
-        # --- 关键检查点：从实例属性获取要处理的库列表 ---
         current_libs_to_process = self.libraries_to_process
-        logger.info(f"process_full_library: 即将用于获取项目的媒体库ID列表为: {current_libs_to_process}")
-
-        if not current_libs_to_process: # 检查列表是否为空
-            logger.warning("process_full_library: 配置中要处理的媒体库ID列表 (current_libs_to_process) 为空。将不会从Emby获取任何项目。")
+        if not current_libs_to_process:
+            logger.warning("配置中要处理的媒体库ID列表为空，无需处理。")
             if update_status_callback:
-                update_status_callback(100, "未在配置中指定要处理的媒体库，或列表为空。")
-            # 注意：emby_handler.get_emby_library_items 如果接收到空的 library_ids 列表，它自己也会返回空列表。
-            # 所以这里的行为是正确的，后续 movies 和 series_list 会是空。
-            # 如果你希望在这种情况下完全不执行后续步骤，可以在这里直接 return。
-            # return
-        # --- 关键检查点结束 ---
-
-        logger.info(f"开始全量处理选定的Emby媒体库 (ID(s): {current_libs_to_process if current_libs_to_process else '无特定库'})...")
-        if update_status_callback:
-            update_status_callback(0, "正在获取电影列表...")
-
-        movies: Optional[List[Dict[str, Any]]] = None
-        series_list: Optional[List[Dict[str, Any]]] = None
-
-        try:
-            movies = emby_handler.get_emby_library_items(
-                self.emby_url, self.emby_api_key, "Movie", self.emby_user_id,
-                library_ids=current_libs_to_process # 使用局部变量传递
-            )
-        except Exception as e_movie_get:
-            logger.error(f"获取电影列表时发生严重错误: {e_movie_get}", exc_info=True)
-            movies = [] # 出错则视为空列表
-
-        if self.is_stop_requested():
-            logger.info("获取电影列表后检测到停止信号，处理中止。")
-            if update_status_callback: update_status_callback(background_task_status.get("progress", 5), "任务已中断") # type: ignore
+                update_status_callback(100, "未在配置中指定要处理的媒体库。")
             return
 
-        if update_status_callback:
-            update_status_callback(5, "正在获取剧集列表...") # 假设电影占5%进度
+        logger.info(f"开始全量处理选定的Emby媒体库 (ID(s): {current_libs_to_process})...")
+        
+        movies = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Movie", self.emby_user_id, library_ids=current_libs_to_process) or []
+        if self.is_stop_requested(): return
 
-        try:
-            series_list = emby_handler.get_emby_library_items(
-                self.emby_url, self.emby_api_key, "Series", self.emby_user_id,
-                library_ids=current_libs_to_process # 使用局部变量传递
-            )
-        except Exception as e_series_get:
-            logger.error(f"获取剧集列表时发生严重错误: {e_series_get}", exc_info=True)
-            series_list = [] # 出错则视为空列表
+        series_list = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Series", self.emby_user_id, library_ids=current_libs_to_process) or []
+        if self.is_stop_requested(): return
 
-
-        if self.is_stop_requested():
-            logger.info("获取剧集列表后检测到停止信号，处理中止。")
-            if update_status_callback: update_status_callback(background_task_status.get("progress", 10), "任务已中断") # type: ignore
-            return
-
-        # 合并电影和剧集列表，并确保它们是列表类型
-        all_items = (movies if isinstance(movies, list) else []) + \
-                    (series_list if isinstance(series_list, list) else [])
+        all_items = movies + series_list
         total_items = len(all_items)
 
         if total_items == 0:
-            logger.info("从选定的媒体库中未获取到任何电影或剧集项目，或者获取失败，无需进一步处理。")
+            logger.info("从选定的媒体库中未获取到任何电影或剧集项目，处理结束。")
             if update_status_callback:
-                update_status_callback(100, "未在选定库中找到项目或获取失败。")
+                update_status_callback(100, "未在选定库中找到项目。")
             return
 
-        logger.info(f"总共从选定的库中获取到 {len(movies) if movies else 0} 部电影和 {len(series_list) if series_list else 0} 部剧集，共 {total_items} 个项目进行处理。")
+        logger.info(f"总共获取到 {len(movies)} 部电影和 {len(series_list)} 部剧集，共 {total_items} 个项目待处理。")
 
         for i, item in enumerate(all_items):
             if self.is_stop_requested():
                 logger.info("全量媒体库处理在项目迭代中被用户中断。")
-                if update_status_callback:
-                    current_progress_on_stop = int(((i) / total_items) * 100) if total_items > 0 else 0
-                    update_status_callback(current_progress_on_stop, "任务已中断")
-                break # 跳出循环
+                break
 
             item_id = item.get('Id')
-            item_name = item.get('Name', f"未知项目(ID:{item_id})")
-            item_type_str = "电影" if item.get("Type") == "Movie" else ("剧集" if item.get("Type") == "Series" else "未知类型")
+            if not item_id:
+                logger.warning(f"条目缺少ID，跳过: {item.get('Name')}")
+                continue
 
-            # 更新进度 (0-99% 用于处理过程，100% 用于完成)
-            # 这里的进度是基于总项目数的，而不是获取列表的进度
-            progress_percent = int(((i + 1) / total_items) * 90) + 10 # 假设获取列表占了前10%
-            if progress_percent > 99: progress_percent = 99
-
-
-            message = f"正在处理 {item_type_str} ({i+1}/{total_items}): {item_name}"
-            logger.info(message)
+            progress_percent = int(((i + 1) / total_items) * 100)
+            message = f"正在处理 ({i+1}/{total_items}): {item.get('Name')}"
+            logger.info(f"--- {message} ---")
             if update_status_callback:
                 update_status_callback(progress_percent, message)
 
-            if not item_id:
-                logger.warning(f"条目缺少ID，跳过: {item_name}")
-                continue
+            # ✨ 只保留这一个干净的调用 ✨
+            self.process_single_item(
+                item_id, 
+                force_reprocess_this_item=force_reprocess_all,
+                process_episodes=process_episodes
+            )
 
-            # 调用 process_single_item 处理单个项目
-            # force_reprocess_this_item 参数现在由 force_reprocess_all 控制
-            process_success = self.process_single_item(item_id, force_reprocess_this_item=force_reprocess_all)
-
-            if not process_success and self.is_stop_requested():
-                # 如果处理单个项目失败是因为收到了停止信号
-                logger.info(f"处理 Item ID {item_id} ('{item_name}') 时被中断，停止全量扫描。")
-                if update_status_callback:
-                    update_status_callback(progress_percent, f"处理 '{item_name}' 时中断")
-                break # 跳出循环
-
-            # 项目间延迟
             delay = float(self.config.get("delay_between_items_sec", 0.5))
-            if delay > 0 and i < total_items - 1: # 最后一个项目之后不延迟
-                if self.is_stop_requested():
-                    logger.info("项目间延迟等待前检测到停止信号，中断全量扫描。")
-                    if update_status_callback: update_status_callback(progress_percent, "任务已中断")
-                    break
+            if delay > 0 and i < total_items - 1:
                 time.sleep(delay)
 
-        # 循环结束后的最终状态报告
-        if self.is_stop_requested():
-            logger.info("全量处理任务已结束（因用户请求停止）。")
-            # 状态已在循环内或 _execute_task_with_lock 的 finally 中更新
-        else:
+        if not self.is_stop_requested():
             logger.info("全量处理Emby媒体库结束。")
             if update_status_callback:
                 update_status_callback(100, "全量处理完成。")
@@ -1165,10 +1084,10 @@ class MediaProcessor:
     def close(self):
         """关闭 MediaProcessor 实例，例如关闭数据库连接池或释放其他资源。"""
         if self.douban_api and hasattr(self.douban_api, 'close'):
-            logger.info("正在关闭 MediaProcessor 中的 DoubanApi session...")
+            logger.debug("正在关闭 MediaProcessor 中的 DoubanApi session...")
             self.douban_api.close()
         # 如果有其他需要关闭的资源，例如数据库连接池（如果使用的话），在这里关闭
-        logger.info("MediaProcessor close 方法执行完毕。")
+        logger.debug("MediaProcessor close 方法执行完毕。")
 
     def enrich_cast_list(self, current_cast: List[Dict[str, Any]], new_cast_from_web: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """

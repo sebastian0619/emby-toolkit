@@ -165,18 +165,18 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
         response_get.raise_for_status()
         item_to_update = response_get.json()
         item_name_for_log = item_to_update.get("Name", f"ID:{item_id}")
-        logger.info(f"成功获取项目 {item_id} (UserID: {user_id}) 的当前信息用于更新。")
+        logger.info(f"成功获取项目 {item_name_for_log} (UserID: {user_id}) 的当前信息用于更新。")
     except requests.exceptions.RequestException as e:
         logger.error(
-            f"update_emby_item_cast: 获取Emby项目 {item_id} (UserID: {user_id}) 失败: {e}", exc_info=True)
+            f"update_emby_item_cast: 获取Emby项目 {item_name_for_log} (UserID: {user_id}) 失败: {e}", exc_info=True)
         return False
     except json.JSONDecodeError as e:
         logger.error(
-            f"update_emby_item_cast: 解析Emby项目 {item_id} (UserID: {user_id}) 响应失败: {e}", exc_info=True)
+            f"update_emby_item_cast: 解析Emby项目 {item_name_for_log} (UserID: {user_id}) 响应失败: {e}", exc_info=True)
         return False
 
     if not item_to_update:  # 如果获取失败
-        logger.error(f"update_emby_item_cast: 未能获取到项目 {item_id} 的当前信息，更新中止。")
+        logger.error(f"update_emby_item_cast: 未能获取到项目 {item_name_for_log} 的当前信息，更新中止。")
         return False
 
     # 步骤2: 构建新的 People 列表以发送给 Emby
@@ -225,20 +225,20 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
     if "LockedFields" in item_to_update and isinstance(item_to_update["LockedFields"], list):
         if "Cast" in item_to_update["LockedFields"]:
             logger.info(
-                f"update_emby_item_cast: 项目 {item_id} 的 Cast 字段之前是锁定的，将尝试在本次更新中临时移除锁定（如果Emby API允许）。")
+                f"update_emby_item_cast: 项目 {item_name_for_log} 的 Cast 字段之前是锁定的，将尝试在本次更新中临时移除锁定（如果Emby API允许）。")
         current_locked_fields = set(item_to_update.get("LockedFields", []))
         if "Cast" in current_locked_fields:
             current_locked_fields.remove("Cast")
             item_to_update["LockedFields"] = list(current_locked_fields)
             logger.debug(
-                f"项目 {item_id} 的 LockedFields 更新为 (移除了Cast): {item_to_update['LockedFields']}")
+                f"项目 {item_name_for_log} 的 LockedFields 更新为 (移除了Cast): {item_to_update['LockedFields']}")
     # 步骤3: POST 更新项目信息
     # 更新通常用不带 UserID 的端点
     update_url = f"{emby_server_url.rstrip('/')}/Items/{item_id}"
     headers = {'Content-Type': 'application/json'}
     params_post = {"api_key": emby_api_key}
 
-    logger.debug(f"准备POST更新Emby项目 {item_id} 的演员信息。URL: {update_url}")
+    logger.debug(f"准备POST更新Emby项目 {item_name_for_log} 的演员信息。URL: {update_url}")
     if formatted_people_for_emby:
         logger.debug(
             f"  更新数据 (People部分的前2条，共{len(formatted_people_for_emby)}条): {formatted_people_for_emby[:2]}")
@@ -251,23 +251,23 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
         response_post.raise_for_status()
 
         if response_post.status_code == 204:  # No Content，表示成功
-            logger.info(f"成功更新Emby项目 {item_id} 的演员信息。")
+            logger.info(f"成功更新Emby项目 {item_name_for_log} 的演员信息。")
             return True
         else:
             logger.warning(
-                f"更新Emby项目 {item_id} 演员信息请求已发送，但状态码为: {response_post.status_code}。响应 (前200字符): {response_post.text[:200]}")
+                f"更新Emby项目 {item_name_for_log} 演员信息请求已发送，但状态码为: {response_post.status_code}。响应 (前200字符): {response_post.text[:200]}")
             # 即使不是204，只要没抛异常，也可能意味着Emby接受了请求并在后台处理
             return True
     except requests.exceptions.HTTPError as e:
         response_text = e.response.text[:500] if e.response else "无响应体"
         logger.error(
-            f"更新Emby项目 {item_id} 演员信息时发生HTTP错误: {e.response.status_code if e.response else 'N/A'} - {response_text}", exc_info=True)
+            f"更新Emby项目 {item_name_for_log} 演员信息时发生HTTP错误: {e.response.status_code if e.response else 'N/A'} - {response_text}", exc_info=True)
         return False
     except requests.exceptions.RequestException as e:
-        logger.error(f"更新Emby项目 {item_id} 演员信息时发生请求错误: {e}", exc_info=True)
+        logger.error(f"更新Emby项目 {item_name_for_log} 演员信息时发生请求错误: {e}", exc_info=True)
         return False
     except Exception as e:  # 捕获其他所有未知异常
-        logger.error(f"更新Emby项目 {item_id} 演员信息时发生未知错误: {e}", exc_info=True)
+        logger.error(f"更新Emby项目 {item_name_for_log} 演员信息时发生未知错误: {e}", exc_info=True)
         return False
 
 

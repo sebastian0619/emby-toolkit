@@ -303,6 +303,7 @@ def load_config() -> Dict[str, Any]:
     # --- General Section ---
     app_cfg["delay_between_items_sec"] = config_parser.getfloat("General", "delay_between_items_sec")
     app_cfg["min_score_for_review"] = config_parser.getfloat("General", "min_score_for_review")
+    app_cfg["process_episodes"] = config_parser.getboolean("General", "process_episodes")
     # ✨✨✨ 新增：加载网络配置 ✨✨✨
     app_cfg["user_agent"] = config_parser.get("Network", "user_agent")
     app_cfg["accept_language"] = config_parser.get("Network", "accept_language")
@@ -344,7 +345,7 @@ def save_config(new_config: Dict[str, Any]):
             config.add_section(section_name)
     # ✨ 修复结束 ✨
 
-    # 现在可以安全地设置每个配置项了
+    # EMBY节
     config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_SERVER_URL, str(new_config.get("emby_server_url", "")))
     config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_API_KEY, str(new_config.get("emby_api_key", "")))
     config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_USER_ID, str(new_config.get("emby_user_id", "")))
@@ -365,14 +366,15 @@ def save_config(new_config: Dict[str, Any]):
 
     config.set(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, str(new_config.get("data_source_mode", "local_then_online")))
     config.set(constants.CONFIG_SECTION_LOCAL_DATA, constants.CONFIG_OPTION_LOCAL_DATA_PATH, str(new_config.get("local_data_path", "")))
-
+    # General节
     config.set("General", "delay_between_items_sec", str(new_config.get("delay_between_items_sec", "0.5")))
     config.set("General", "min_score_for_review", str(new_config.get("min_score_for_review", "6.0")))
+    config.set("General", "process_episodes", str(new_config.get("process_episodes", True)).lower())
     
-    # 新增的网络配置
+    # 网络配置节
     config.set("Network", "user_agent", str(new_config.get("user_agent", "")))
     config.set("Network", "accept_language", str(new_config.get("accept_language", "")))
-
+    # 定时任务节
     config.set("Scheduler", "schedule_enabled", str(new_config.get("schedule_enabled", False)).lower())
     config.set("Scheduler", "schedule_cron", str(new_config.get("schedule_cron", "0 3 * * *")))
     config.set("Scheduler", "schedule_force_reprocess", str(new_config.get("schedule_force_reprocess", False)).lower())
@@ -400,17 +402,17 @@ def initialize_media_processor():
 
     # ... (关闭旧实例的逻辑不变) ...
     if media_processor_instance and hasattr(media_processor_instance, 'close'):
-        logger.info("准备关闭旧的 MediaProcessor 实例...")
+        logger.debug("准备关闭旧的 MediaProcessor 实例...")
         try:
             media_processor_instance.close()
-            logger.info("旧的 MediaProcessor 实例已关闭。")
+            logger.debug("旧的 MediaProcessor 实例已关闭。")
         except Exception as e_close_old:
             logger.error(f"关闭旧 MediaProcessor 实例时出错: {e_close_old}", exc_info=True)
 
     logger.info("准备创建新的 MediaProcessor 实例...")
     try:
         media_processor_instance = MediaProcessor(config=current_config) # current_config 已包含所需信息
-        logger.info("新的 MediaProcessor 实例已创建/更新。")
+        logger.debug("新的 MediaProcessor 实例已创建/更新。")
     except Exception as e_init_mp:
         logger.error(f"创建 MediaProcessor 实例失败: {e_init_mp}", exc_info=True)
         media_processor_instance = None
@@ -434,24 +436,35 @@ def webhook_worker_function():
 
             # 使用通用的后台任务执行器来处理这个单一任务
             # 这样可以复用状态更新和锁的逻辑
-            def single_webhook_task_internal(id_to_process):
+            try:
+                current_config = load_config()
+                # 从配置中获取 process_episodes 的值，如果找不到，默认为 True (深度处理)
+                process_episodes_from_config = current_config.get('process_episodes', True)
+                logger.info(f"Webhook任务 (ID: {item_id})：根据配置，处理分集开关为: {process_episodes_from_config}")
+            except Exception as e:
+                logger.error(f"Webhook任务 (ID: {item_id})：读取配置失败: {e}。将默认使用深度处理模式。")
+                process_episodes_from_config = True
+
+            def single_webhook_task_internal(id_to_process, process_episodes_flag):
                 if media_processor_instance:
-                    media_processor_instance.process_single_item(id_to_process)
+                    # ✨ 把开关传递给核心函数 ✨
+                    media_processor_instance.process_single_item(
+                        id_to_process,
+                        process_episodes=process_episodes_flag
+                    )
                 else:
                     logger.error(f"Webhook处理 Item ID {id_to_process} 失败：MediaProcessor 未初始化。")
             
+            # ✨ 把开关作为参数传递给后台任务 ✨
             _execute_task_with_lock(
                 single_webhook_task_internal, 
                 f"Webhook处理 Item ID: {item_id}", 
-                item_id
+                item_id,
+                process_episodes_from_config # 这个会作为 *args 传给 single_webhook_task_internal
             )
-
-            # 标记任务完成
             webhook_task_queue.task_done()
-
         except Exception as e:
             logger.error(f"Webhook工人线程发生未知错误: {e}", exc_info=True)
-            # 即使出错，也要继续循环，不能让整个工人线程死掉
             time.sleep(5)
 
 # ✨✨✨ 安全地启动工人线程的辅助函数 ✨✨✨
@@ -530,7 +543,7 @@ def _execute_task_with_lock(task_function, task_name: str, *args, **kwargs):
                 logger.info(f"任务 '{task_name}' 结束 (finally块)，准备调用 media_processor_instance.close() ...")
                 try:
                     media_processor_instance.close()
-                    logger.info(f"media_processor_instance.close() 调用完毕 (任务 '{task_name}' finally块)。")
+                    logger.debug(f"media_processor_instance.close() 调用完毕 (任务 '{task_name}' finally块)。")
                 except Exception as e_close_proc:
                     logger.error(f"调用 media_processor_instance.close() 时发生错误: {e_close_proc}", exc_info=True)
 
@@ -849,13 +862,13 @@ def application_exit_handler():
         logger.info("正在关闭 MediaProcessor 实例 (atexit)...")
         try: media_processor_instance.close()
         except Exception as e: logger.error(f"atexit 关闭 MediaProcessor 时出错: {e}", exc_info=True)
-        else: logger.info("MediaProcessor 实例已关闭 (atexit)。")
+        else: logger.debug("MediaProcessor 实例已关闭 (atexit)。")
 
     if scheduler and scheduler.running:
         logger.info("正在关闭 APScheduler (atexit)...")
         try: scheduler.shutdown(wait=False) # wait=False 避免阻塞退出
         except Exception as e: logger.error(f"关闭 APScheduler 时发生错误 (atexit): {e}", exc_info=True)
-        else: logger.info("APScheduler 已关闭 (atexit)。")
+        else: logger.debug("APScheduler 已关闭 (atexit)。")
     logger.info("atexit 清理操作执行完毕。")
 
     # ✨✨✨ 停止 Webhook 工人线程 ✨✨✨
@@ -1111,37 +1124,42 @@ def api_mark_item_processed(item_id):
         return jsonify({"error": "服务器内部错误"}), 500
     
 @app.route('/api/trigger_full_scan', methods=['POST'])
+@app.route('/api/trigger_full_scan', methods=['POST'])
 def api_handle_trigger_full_scan():
     logger.info("API Endpoint: Received request to trigger full scan.")
     try:
-        # --- 修改这里 ---
-        # 从 request.form 获取 'force_reprocess_all' 参数
-        # 如果前端发送了 'force_reprocess_all=on'，则 request.form.get('force_reprocess_all') 会是字符串 'on'
-        # 如果前端没有发送这个参数（复选框未勾选），则 request.form.get 返回 None
-        force_reprocess_str = request.form.get('force_reprocess_all') # 获取原始字符串
+        # 只从前端获取“是否强制”这一个临时选项
+        force_reprocess = request.form.get('force_reprocess_all') == 'on'
         
-        # 将获取到的值转换为布尔值
-        # 如果是 'on' (前端勾选时发送的值)，则为 True，否则为 False
-        force_reprocess = True if force_reprocess_str == 'on' else False
+        # “处理深度”将由后台任务自己去读取配置，不再从这里传递
         
-        logger.info(f"API /api/trigger_full_scan: Received force_reprocess_all from form: '{force_reprocess_str}', Parsed as boolean: {force_reprocess}")
-        # --- 修改结束 ---
+        logger.info(f"API /api/trigger_full_scan: 强制重处理={force_reprocess}")
         
         action_message = "全量媒体库扫描"
-        if force_reprocess:
-            action_message += " (强制重处理所有)"
+        if force_reprocess: action_message += " (强制)"
+        # 任务名称里不再体现深度，因为它是由配置决定的
 
-        def task_to_run(force_flag_param):
+        def task_to_run():
+            """这个嵌套函数会在后台执行"""
             if media_processor_instance:
+                # ✨ 在任务执行时，才去读取配置 ✨
+                config = load_config()
+                process_episodes = config.get('process_episodes', True) # 默认为True
+                logger.info(f"全量扫描任务：根据配置，处理分集开关为: {process_episodes}")
+
                 media_processor_instance.process_full_library(
                     update_status_callback=update_status_from_thread,
-                    force_reprocess_all=force_flag_param # <--- 现在这里会使用从前端解析来的 force_reprocess
+                    force_reprocess_all=force_reprocess,
+                    process_episodes=process_episodes
                 )
             else:
                 logger.error("API: 全量扫描无法执行：MediaProcessor 未初始化。")
                 update_status_from_thread(-1, "错误：核心处理器未就绪")
 
-        thread = threading.Thread(target=_execute_task_with_lock, args=(lambda: task_to_run(force_reprocess), action_message))
+        thread = threading.Thread(
+            target=_execute_task_with_lock,
+            args=(task_to_run, action_message)
+        )
         thread.start()
         
         return jsonify({"message": f"{action_message} 任务已提交启动。"}), 202
