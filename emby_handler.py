@@ -164,6 +164,7 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
             current_item_url, params=params_get, timeout=15)
         response_get.raise_for_status()
         item_to_update = response_get.json()
+        item_name_for_log = item_to_update.get("Name", f"ID:{item_id}")
         logger.info(f"成功获取项目 {item_id} (UserID: {user_id}) 的当前信息用于更新。")
     except requests.exceptions.RequestException as e:
         logger.error(
@@ -516,6 +517,35 @@ def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str
     logger.info(f"成功从 Emby 获取到 {len(all_persons)} 个 Person 条目。")
     return all_persons
 
+# ✨✨✨ 新增：获取剧集下所有剧集的函数 ✨✨✨
+def get_episodes_for_series(series_id: str, base_url: str, api_key: str, user_id: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    获取指定剧集 (Series) ID 下的所有剧集 (Episode) 项目。
+    """
+    if not all([series_id, base_url, api_key, user_id]):
+        logger.error("get_episodes_for_series: 参数不足。")
+        return None
+
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    params = {
+        "api_key": api_key,
+        "ParentId": series_id,
+        "IncludeItemTypes": "Episode",
+        "Recursive": "true",
+        "Fields": "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines",
+    }
+    
+    logger.debug(f"准备获取剧集 {series_id} 的所有剧集...")
+    try:
+        response = requests.get(api_url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        episodes = data.get("Items", [])
+        logger.info(f"成功为剧集 {series_id} 获取到 {len(episodes)} 集。")
+        return episodes
+    except requests.exceptions.RequestException as e:
+        logger.error(f"获取剧集 {series_id} 的剧集列表时发生错误: {e}", exc_info=True)
+        return None
 # if __name__ == '__main__':
 #     TEST_EMBY_SERVER_URL = "http://192.168.31.163:8096"
 #     TEST_EMBY_API_KEY = "eaa73b828ac04b1bb6d3687a0117572c"
