@@ -825,27 +825,24 @@ class MediaProcessor:
     def _process_item_core_logic(self, item_details: Dict[str, Any], force_reprocess_this_item: bool = False) -> bool:
         """
         处理单个媒体项（电影或单集）的核心逻辑。
-        这是从 process_single_item 中剥离出来的可复用部分。
+        修正了参数传递错误。
         """
         item_id = item_details.get("Id")
         if not item_id:
             logger.error("核心处理逻辑失败：传入的 item_details 缺少 ID。")
             return False
 
-        if not force_reprocess_this_item and item_id in self.processed_items_cache:
-            logger.info(f"Item ID '{item_id}' ('{item_details.get('Name')}') 已处理过且未强制重处理，跳过。")
+        item_type_for_log = item_details.get("Type", "未知类型")
+        item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
+
+        if item_type_for_log == "Episode" and not force_reprocess_this_item and item_id in self.processed_items_cache:
+            logger.info(f"单集 '{item_name_for_log}' (ID: {item_id}) 已处理过，跳过。")
             return True
 
-        # --- 后续的逻辑就是你原来 process_single_item 的核心部分 ---
-        item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
-        item_type_for_log = item_details.get("Type", "未知类型")
         current_emby_cast_raw = item_details.get("People", [])
         original_emby_cast_count = len(current_emby_cast_raw)
         logger.info(f"媒体 '{item_name_for_log}' 原始Emby People数量: {original_emby_cast_count}")
 
-        # ... (调用 _process_cast_list, _evaluate_cast_processing_quality, update_emby_item_cast, save_to_log 等所有逻辑) ...
-        # ... (这部分代码完全复用你已有的，从 "final_cast_for_item = self._process_cast_list(...)" 开始) ...
-        
         final_cast_for_item = self._process_cast_list(current_emby_cast_raw, item_details)
         
         logger.info("开始前置步骤：检查并更新被翻译的演员名字...")
@@ -865,8 +862,6 @@ class MediaProcessor:
                 )
         logger.info("演员名字前置更新检查完成。")
 
-        processing_score = self._evaluate_cast_processing_quality(final_cast_for_item, original_emby_cast_count)
-        
         update_success = False
         if not final_cast_for_item and original_emby_cast_count > 0:
             logger.warning(f"媒体 '{item_name_for_log}' 处理后演员列表为空，将不执行Emby更新。")
@@ -875,6 +870,7 @@ class MediaProcessor:
                 {"name": actor.get("Name"), "character": actor.get("Role"), "emby_person_id": actor.get("EmbyPersonId"), "provider_ids": actor.get("ProviderIds")}
                 for actor in final_cast_for_item
             ]
+            # ✨✨✨ 关键修复：把所有参数都传进去 ✨✨✨
             update_success = emby_handler.update_emby_item_cast(
                 item_id=item_id,
                 new_cast_list_for_handler=cast_for_emby_handler,
@@ -884,15 +880,26 @@ class MediaProcessor:
             )
 
         if update_success:
-            MIN_SCORE_FOR_REVIEW = float(self.config.get("min_score_for_review", 6.0))
-            if processing_score < MIN_SCORE_FOR_REVIEW:
-                self.save_to_failed_log(item_id, item_name_for_log, f"处理评分过低({processing_score:.1f})", item_type_for_log, score=processing_score)
-            else:
-                self._remove_from_failed_log_if_exists(item_id)
-            self.save_to_processed_log(item_id, item_name_for_log, score=processing_score)
+            if item_type_for_log in ["Movie", "Series"]:
+                logger.info(f"正在为 {item_type_for_log} '{item_name_for_log}' 进行质量评估...")
+                processing_score = self._evaluate_cast_processing_quality(final_cast_for_item, original_emby_cast_count)
+                
+                MIN_SCORE_FOR_REVIEW = float(self.config.get("min_score_for_review", 6.0))
+                if processing_score < MIN_SCORE_FOR_REVIEW:
+                    self.save_to_failed_log(item_id, item_name_for_log, f"处理评分过低({processing_score:.1f})", item_type_for_log, score=processing_score)
+                else:
+                    self._remove_from_failed_log_if_exists(item_id)
+                
+                self.save_to_processed_log(item_id, item_name_for_log, score=processing_score)
+            
+            elif item_type_for_log == "Episode":
+                logger.info(f"单集 '{item_name_for_log}' 处理完成，将其ID加入内存缓存以防重复处理。")
+                self.processed_items_cache.add(item_id)
+
             return True
         else:
-            self.save_to_failed_log(item_id, item_name_for_log, "更新Emby演员信息失败", item_type_for_log, score=processing_score)
+            if item_type_for_log in ["Movie", "Series"]:
+                self.save_to_failed_log(item_id, item_name_for_log, "更新Emby演员信息失败", item_type_for_log, score=None)
             return False
         
     def process_item_with_manual_cast(self, item_id: str, manual_cast_list: List[Dict[str, Any]]) -> bool:
