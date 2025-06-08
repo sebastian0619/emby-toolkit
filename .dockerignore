@@ -1,39 +1,52 @@
 # .dockerignore
 
-# Git files
+# ----------------------------------------------------------------
+# Git & Version Control
+# ----------------------------------------------------------------
 .git
 .gitignore
 .gitattributes
 
-# Node.js modules (前端构建阶段会处理，不需要复制到后端镜像的源码中)
-emby-actor-ui/node_modules 
-node_modules
-
-# Python virtual environment (如果使用)
+# ----------------------------------------------------------------
+# Python Specific
+# ----------------------------------------------------------------
+# 虚拟环境
 .venv
 venv
 ENV
 env
-*/__pycache__
+
+# 编译和缓存文件
+__pycache__/
 *.pyc
 *.pyo
+*.pyd
 
-# IDE and OS specific files
-.vscode
-.idea
+# ----------------------------------------------------------------
+# Node.js / Frontend Specific
+# ----------------------------------------------------------------
+# 依赖目录 (在构建阶段处理)
+emby-actor-ui/node_modules
+node_modules
+
+# 构建产物 (从构建阶段拷贝，不直接复制)
+emby-actor-ui/dist
+
+# ----------------------------------------------------------------
+# IDE & OS Specific
+# ----------------------------------------------------------------
+.vscode/
+.idea/
 *.DS_Store
 Thumbs.db
 
-# Local development data and sensitive files
-local_data/  # <--- 关键！忽略整个 local_data 目录
-*.sqlite # 也可以更具体地忽略所有 sqlite 文件，以防万一
-*.sqlite-journal # SQLite 临时文件
-config.ini # 如果你有一个模板或默认的 config.ini 想复制，则不要忽略它，但要忽略 local_data/config.ini
-
-# Frontend build artifacts if they are outside the main copy source for the build stage
-# (通常 npm run build 的输出在 dist，我们是从构建阶段复制 dist，所以不需要在这里忽略 emby-actor-ui/dist)
-# emby-actor-ui/dist/ 
-
-# Other sensitive or large files not needed in the image
-secrets.env # 如果有
-*.log # 通常日志文件不应包含在镜像中
+# ----------------------------------------------------------------
+# Sensitive Data & Local Development Files
+# (这些文件应该通过卷挂载到容器中，而不是构建进镜像里)
+# ----------------------------------------------------------------
+local_data/
+*.sqlite
+*.sqlite-journal
+config.ini
+secrets.env
+*.log

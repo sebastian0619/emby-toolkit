@@ -6,8 +6,8 @@ gunicorn
 
 # --- 核心功能 ---
 requests         # 用于发送所有HTTP请求
-beautifulsoup4   # 用于解析网页HTML (web_parser.py 强依赖)
-lxml             # ✨✨✨ [关键补充] beautifulsoup4 的高性能解析器 ✨✨✨
+beautifulsoup4   # 用于解析网页HTML
+lxml             # [必须] beautifulsoup4 的高性能解析器
 translators      # 用于翻译演员名和角色名
 
 # --- 定时任务 ---
