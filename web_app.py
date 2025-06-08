@@ -6,6 +6,7 @@ import utils
 import configparser
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory,Response
 from werkzeug.utils import safe_join
+from queue import Queue
 import threading
 import time
 from douban import DoubanApi
@@ -89,6 +90,12 @@ background_task_status = {
     "message": "等待任务"
 }
 task_lock = threading.Lock() # 用于确保后台任务串行执行
+
+# ✨✨✨ Webhook任务队列和工人线程 ✨✨✨
+webhook_task_queue = Queue()
+webhook_worker_thread: Optional[threading.Thread] = None
+webhook_worker_lock = threading.Lock() # 用于安全地启动工人线程
+
 
 scheduler = BackgroundScheduler(timezone=str(pytz.timezone(constants.TIMEZONE)))
 JOB_ID_FULL_SCAN = "scheduled_full_scan"
@@ -435,7 +442,58 @@ def initialize_media_processor():
         media_processor_instance = None
         print(f"CRITICAL ERROR: MediaProcessor 核心处理器初始化失败: {e_init_mp}. 应用可能无法正常工作。")
 # --- MediaProcessor 初始化结束 ---
+# ✨✨✨ 工人线程的核心逻辑 ✨✨✨
+def webhook_worker_function():
+    """
+    这个函数在后台线程中运行，持续从队列中获取并处理任务。
+    """
+    logger.info("Webhook工人线程已启动，等待任务...")
+    while True:
+        try:
+            # 从队列中获取任务，如果队列为空，它会在这里阻塞等待
+            item_id = webhook_task_queue.get()
 
+            # "None" 是我们用来优雅地停止线程的“毒丸”信号
+            if item_id is None:
+                logger.info("Webhook工人线程收到停止信号，即将退出。")
+                break
+
+            # 使用通用的后台任务执行器来处理这个单一任务
+            # 这样可以复用状态更新和锁的逻辑
+            def single_webhook_task_internal(id_to_process):
+                if media_processor_instance:
+                    media_processor_instance.process_single_item(id_to_process)
+                else:
+                    logger.error(f"Webhook处理 Item ID {id_to_process} 失败：MediaProcessor 未初始化。")
+            
+            _execute_task_with_lock(
+                single_webhook_task_internal, 
+                f"Webhook处理 Item ID: {item_id}", 
+                item_id
+            )
+
+            # 标记任务完成
+            webhook_task_queue.task_done()
+
+        except Exception as e:
+            logger.error(f"Webhook工人线程发生未知错误: {e}", exc_info=True)
+            # 即使出错，也要继续循环，不能让整个工人线程死掉
+            time.sleep(5)
+
+# ✨✨✨ 安全地启动工人线程的辅助函数 ✨✨✨
+def start_webhook_worker_if_not_running():
+    """
+    检查工人线程是否在运行，如果不在，则启动它。
+    使用锁来确保线程安全。
+    """
+    global webhook_worker_thread
+    with webhook_worker_lock:
+        if webhook_worker_thread is None or not webhook_worker_thread.is_alive():
+            logger.info("Webhook工人线程未运行，正在启动...")
+            webhook_worker_thread = threading.Thread(target=webhook_worker_function, daemon=True)
+            webhook_worker_thread.start()
+        else:
+            logger.debug("Webhook工人线程已在运行。")
 # --- 后台任务回调 ---
 def update_status_from_thread(progress: int, message: str):
     global background_task_status
@@ -661,27 +719,34 @@ def api_specific_sync_map_task(api_task_name: str): # <--- API 专属的，接�
         logger.error(f"'{api_task_name}' (API) 无法执行：MediaProcessor 未初始化或 Emby 配置不完整。")
         update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
 
-# --- Flask 路由 ---
+# --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
 def emby_webhook():
     data = request.json
-    logger.info(f"收到Emby Webhook: {data.get('Event') if data else '未知数据'}")
-    item_id = data.get("Item", {}).get("Id") if data else None
-    event_type = data.get("Event") if data else None
-    trigger_events = ["item.add", "library.new"] # 你想触发处理的事件
+    event_type = data.get("Event") if data else "未知事件"
+    logger.info(f"收到Emby Webhook: {event_type}")
+    
+    item = data.get("Item", {}) if data else {}
+    item_id = item.get("Id")
+    item_name = item.get("Name", "未知项目")
+    
+    # 我们只关心新增的电影和剧集
+    trigger_events = ["item.add", "library.new"] 
+    trigger_types = ["Movie", "Series"]
 
-    if item_id and event_type in trigger_events:
-        logger.info(f"Webhook事件 '{event_type}'，准备处理 Item ID: {item_id}")
-        def webhook_task_internal(item_id_to_process):
-            if media_processor_instance:
-                media_processor_instance.process_single_item(item_id_to_process)
-            else:
-                logger.error(f"Webhook处理 Item ID {item_id_to_process} 失败：MediaProcessor 未初始化。")
-        # 使用通用任务执行器
-        thread = threading.Thread(target=_execute_task_with_lock, args=(webhook_task_internal, f"Webhook处理 Item ID: {item_id}", item_id))
-        thread.start()
-        return jsonify({"status": "processing_triggered", "item_id": item_id}), 202
-    return jsonify({"status": "event_not_handled"}), 200
+    if item_id and event_type in trigger_events and item.get("Type") in trigger_types:
+        logger.info(f"Webhook事件 '{event_type}' 触发，项目 '{item_name}' (ID: {item_id}) 已加入处理队列。")
+        
+        # 将任务放入队列
+        webhook_task_queue.put(item_id)
+        
+        # 确保工人线程在运行
+        start_webhook_worker_if_not_running()
+        
+        return jsonify({"status": "task_queued", "item_id": item_id}), 202
+        
+    logger.debug(f"Webhook事件 '{event_type}' (项目: {item_name}) 被忽略（不符合触发条件）。")
+    return jsonify({"status": "event_ignored"}), 200
 
 
 @app.route('/trigger_full_scan', methods=['POST'])
@@ -811,6 +876,18 @@ def application_exit_handler():
         try: scheduler.shutdown(wait=False) # wait=False 避免阻塞退出
         except Exception as e: logger.error(f"关闭 APScheduler 时发生错误 (atexit): {e}", exc_info=True)
         else: logger.info("APScheduler 已关闭 (atexit)。")
+    logger.info("atexit 清理操作执行完毕。")
+
+    # ✨✨✨ 停止 Webhook 工人线程 ✨✨✨
+    if webhook_worker_thread and webhook_worker_thread.is_alive():
+        logger.info("正在发送停止信号给 Webhook 工人线程...")
+        webhook_task_queue.put(None) # 发送“毒丸”
+        webhook_worker_thread.join(timeout=5) # 等待线程退出，最多等5秒
+        if webhook_worker_thread.is_alive():
+            logger.warning("Webhook 工人线程在5秒内未能正常退出。")
+        else:
+            logger.info("Webhook 工人线程已成功停止。")
+
     logger.info("atexit 清理操作执行完毕。")
 
 atexit.register(application_exit_handler)
@@ -1641,6 +1718,8 @@ if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
     init_db()
     initialize_media_processor()
+    # ✨✨✨ 新增：应用启动时就启动工人线程 ✨✨✨
+    start_webhook_worker_if_not_running()
     if not scheduler.running:
         try:
             scheduler.start()
