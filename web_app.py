@@ -321,101 +321,75 @@ def load_config() -> Dict[str, Any]:
 
 def save_config(new_config: Dict[str, Any]):
     config = configparser.ConfigParser()
-    # 如果配置文件已存在，先读取它，这样可以保留文件中不由UI管理的注释或部分
+    # 如果配置文件已存在，先读取它，保留不由UI管理的注释或部分
     if os.path.exists(CONFIG_FILE_PATH):
         config.read(CONFIG_FILE_PATH, encoding='utf-8')
 
-    # --- 修改开始 ---
-    # 1. 定义所有此函数会管理的配置节（分组名）
-    #    确保这些名称与 constants.py 中的定义以及 load_config 函数的期望一致
+    # ✨ 关键修复：在设置任何值之前，确保所有节都存在 ✨
     all_sections_to_manage = [
         constants.CONFIG_SECTION_EMBY,
         constants.CONFIG_SECTION_TMDB,
-        constants.CONFIG_SECTION_API_DOUBAN,    # 用于豆瓣API特定设置，如冷却时间
+        constants.CONFIG_SECTION_API_DOUBAN,
         constants.CONFIG_SECTION_TRANSLATION,
-        constants.CONFIG_SECTION_DOMESTIC_SOURCE, # 用于 domestic_source_mode (之前出错的地方)
-        constants.CONFIG_SECTION_LOCAL_DATA,    # 用于 local_data_path
-        "General",                              # 通用设置
-        "Scheduler"                             # 定时任务设置
-        "Network" # ✨✨✨ 新增：网络设置节 ✨✨✨
+        constants.CONFIG_SECTION_DOMESTIC_SOURCE,
+        constants.CONFIG_SECTION_LOCAL_DATA,
+        "General",
+        "Scheduler",
+        "Network"  # 我们为 User-Agent 新增的节
     ]
 
-    # 2. 确保所有这些节都存在于 config 对象中，如果不存在则添加
     for section_name in all_sections_to_manage:
         if not config.has_section(section_name):
+            logger.info(f"配置文件中缺少节 '[{section_name}]'，将自动创建。")
             config.add_section(section_name)
-    # --- 修改结束 ---
+    # ✨ 修复结束 ✨
 
-    # 3. 现在可以安全地设置每个配置项了，因为我们知道它们所属的节已经存在
-
-    # --- Emby Section ---
+    # 现在可以安全地设置每个配置项了
     config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_SERVER_URL, str(new_config.get("emby_server_url", "")))
     config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_API_KEY, str(new_config.get("emby_api_key", "")))
     config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_USER_ID, str(new_config.get("emby_user_id", "")))
     config.set(constants.CONFIG_SECTION_EMBY, "refresh_emby_after_update", str(new_config.get("refresh_emby_after_update", True)).lower())
     
-    # --- 修正：正确保存媒体库列表到 Emby 节下 ---
     libraries_list = new_config.get("libraries_to_process", [])
-    if not isinstance(libraries_list, list): # 做个类型检查和转换
-        if isinstance(libraries_list, str) and libraries_list:
-            libraries_list = [lib_id.strip() for lib_id in libraries_list.split(',') if lib_id.strip()]
-        else:
-            libraries_list = []
-    # 使用 constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS 作为键名
+    if not isinstance(libraries_list, list):
+        libraries_list = [lib_id.strip() for lib_id in str(libraries_list).split(',') if lib_id.strip()]
     config.set(constants.CONFIG_SECTION_EMBY, constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, ",".join(map(str, libraries_list)))
-    # --- 修正结束 ---
 
-    # --- TMDB Section ---
-    config.set(constants.CONFIG_SECTION_TMDB, constants.CONFIG_OPTION_TMDB_API_KEY, str(new_config.get("tmdb_api_key", constants.FALLBACK_TMDB_API_KEY)))
+    config.set(constants.CONFIG_SECTION_TMDB, constants.CONFIG_OPTION_TMDB_API_KEY, str(new_config.get("tmdb_api_key", "")))
+    config.set(constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN, str(new_config.get("api_douban_default_cooldown_seconds", 1.0)))
 
-    # --- Douban API Section (对应常量 constants.CONFIG_SECTION_API_DOUBAN) ---
-    config.set(constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN, str(new_config.get("api_douban_default_cooldown_seconds", constants.DEFAULT_API_COOLDOWN_SECONDS_FALLBACK)))
-
-    # --- Translation Section ---
-    engines_list = new_config.get("translator_engines_order", constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
-    if not isinstance(engines_list, list) or not engines_list: # 确保是列表且非空
+    engines_list = new_config.get("translator_engines_order", [])
+    if not isinstance(engines_list, list) or not engines_list:
         engines_list = constants.DEFAULT_TRANSLATOR_ENGINES_ORDER
     config.set(constants.CONFIG_SECTION_TRANSLATION, constants.CONFIG_OPTION_TRANSLATOR_ENGINES, ",".join(engines_list))
 
-    # --- Domestic Source Section (对应常量 constants.CONFIG_SECTION_DOMESTIC_SOURCE) ---
-    config.set(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, str(new_config.get("data_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE)))
-
-    # --- Local Data Section (对应常量 constants.CONFIG_SECTION_LOCAL_DATA) ---
+    config.set(constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_OPTION_DOMESTIC_SOURCE_MODE, str(new_config.get("data_source_mode", "local_then_online")))
     config.set(constants.CONFIG_SECTION_LOCAL_DATA, constants.CONFIG_OPTION_LOCAL_DATA_PATH, str(new_config.get("local_data_path", "")))
 
-    # --- General Section ---
     config.set("General", "delay_between_items_sec", str(new_config.get("delay_between_items_sec", "0.5")))
     config.set("General", "min_score_for_review", str(new_config.get("min_score_for_review", "6.0")))
-    # ✨✨✨ 新增：保存网络配置 ✨✨✨
+    
+    # 新增的网络配置
     config.set("Network", "user_agent", str(new_config.get("user_agent", "")))
     config.set("Network", "accept_language", str(new_config.get("accept_language", "")))
-    # --- Scheduler Section ---
+
     config.set("Scheduler", "schedule_enabled", str(new_config.get("schedule_enabled", False)).lower())
     config.set("Scheduler", "schedule_cron", str(new_config.get("schedule_cron", "0 3 * * *")))
     config.set("Scheduler", "schedule_force_reprocess", str(new_config.get("schedule_force_reprocess", False)).lower())
-
-    # --- 打印即将写入的配置 (用于调试，这部分可以保留) ---
-    logger.debug("save_config: 即将写入文件的 ConfigParser 内容:")
-    for section_name_debug in config.sections():
-        logger.debug(f"  [{section_name_debug}]")
-        for key_debug, value_debug in config.items(section_name_debug):
-            logger.debug(f"    {key_debug} = {value_debug}")
-    # --- 调试日志结束 ---
+    config.set("Scheduler", "schedule_sync_map_enabled", str(new_config.get("schedule_sync_map_enabled", False)).lower())
+    config.set("Scheduler", "schedule_sync_map_cron", str(new_config.get("schedule_sync_map_cron", "0 1 * * *")))
 
     try:
         if not os.path.exists(PERSISTENT_DATA_PATH):
-            logger.info(f"save_config: 持久化目录 {PERSISTENT_DATA_PATH} 不存在，尝试创建...")
             os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
-        logger.info(f"save_config: 准备将配置写入到文件: {CONFIG_FILE_PATH}")
         with open(CONFIG_FILE_PATH, 'w', encoding='utf-8') as configfile:
             config.write(configfile)
         logger.info(f"配置已成功写入到 {CONFIG_FILE_PATH}。")
     except Exception as e:
         logger.error(f"保存配置文件 {CONFIG_FILE_PATH} 失败: {e}", exc_info=True)
-        # flash(f"保存配置文件失败: {e}", "error") # 在非请求上下文中 flash 会报错
     finally:
-        initialize_media_processor() # 重新加载配置并初始化处理器
-        setup_scheduled_tasks()    # 根据新配置更新定时任务
+        initialize_media_processor()
+        setup_scheduled_tasks()
 # --- 配置加载与保存结束 --- (确保这个注释和你的文件结构匹配)
 
 # --- MediaProcessor 初始化 ---
