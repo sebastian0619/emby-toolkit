@@ -13,61 +13,22 @@ class ParserError(Exception):
     pass
 
 def _get_soup_from_url(url: str, custom_headers: Optional[Dict[str, str]] = None) -> BeautifulSoup:
-    """
-    辅助函数：根据 URL 获取 BeautifulSoup 对象，并允许传入自定义请求头。
-    """
-    # 定义一个基础的、通用的 User-Agent 作为后备
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'
     }
-    
-    # 如果传入了自定义请求头，就用它来更新（或覆盖）默认值
     if custom_headers:
         headers.update(custom_headers)
         logger.info(f"正在使用自定义请求头: {headers}")
     else:
         logger.info(f"正在使用默认请求头: {headers}")
-
     try:
         response = requests.get(url, headers=headers, timeout=20)
         response.raise_for_status()
-        # 假设服务器会根据 Accept-Language 返回正确的编码，我们用 utf-8 作为通用解码
         response.encoding = 'utf-8' 
-        
-        # 直接使用原始响应文本创建BeautifulSoup对象
         return BeautifulSoup(response.text, 'html.parser')
-        
     except requests.exceptions.RequestException as e:
         logger.error(f"抓取网页失败: {url}, 错误: {e}")
         raise ParserError(f"无法访问URL: {e}")
-
-def _parse_imdb_fullcredits(soup: BeautifulSoup) -> List[Dict[str, str]]:
-    """解析 IMDb /fullcredits 页面的演员表"""
-    cast_list = []
-    table = soup.find('table', class_='cast_list')
-    if not table:
-        logger.warning("在IMDb页面未找到 class='cast_list' 的表格。")
-        return []
-
-    rows = table.find_all('tr')
-    for row in rows:
-        actor_cell = row.find('td', class_='primary_photo')
-        if not actor_cell: continue
-        
-        actor_link = actor_cell.find_next_sibling('td')
-        if not actor_link: continue
-        actor_name = actor_link.get_text(strip=True)
-
-        character_cell = row.find('td', class_='character')
-        if not character_cell: continue
-        character_name_raw = character_cell.get_text(strip=True)
-        character_name = clean_character_name_static(character_name_raw)
-
-        if actor_name and character_name:
-            cast_list.append({'actor': actor_name, 'character': character_name})
-            
-    logger.info(f"从 IMDb 页面成功解析到 {len(cast_list)} 位演员。")
-    return cast_list
 
 def _parse_wikipedia(soup: BeautifulSoup) -> List[Dict[str, str]]:
     """
@@ -110,7 +71,6 @@ def _parse_wikipedia(soup: BeautifulSoup) -> List[Dict[str, str]]:
     return []
 
 def _parse_wikitable_format(table: BeautifulSoup) -> List[Dict[str, str]]:
-    """辅助函数：解析表格格式的演员表。"""
     cast_list = []
     header_row = table.find('tr')
     headers = [th.get_text(strip=True) for th in header_row.find_all('th')] if header_row else []
@@ -137,7 +97,6 @@ def _parse_wikitable_format(table: BeautifulSoup) -> List[Dict[str, str]]:
     return cast_list
 
 def _parse_ul_list_format(ul_element: BeautifulSoup) -> List[Dict[str, str]]:
-    """辅助函数：解析列表(ul)格式的演员表。"""
     cast_list = []
     list_items = ul_element.find_all('li')
     
@@ -173,13 +132,11 @@ def parse_cast_from_url(url: str, custom_headers: Optional[Dict[str, str]] = Non
 
     logger.info(f"准备从 URL ({hostname}) 解析演员表...")
     
-    # 将自定义请求头传递给 _get_soup_from_url
     soup = _get_soup_from_url(url, custom_headers=custom_headers)
 
-    if 'imdb.com' in hostname:
-        return _parse_imdb_fullcredits(soup)
-    elif 'wikipedia.org' in hostname:
+    # ✨✨✨ 只保留对维基百科的支持 ✨✨✨
+    if 'wikipedia.org' in hostname:
         return _parse_wikipedia(soup)
     else:
         logger.error(f"不支持的网站域名: {hostname}")
-        raise ParserError(f"当前不支持从 '{hostname}' 解析。")
+        raise ParserError(f"当前不支持从 '{hostname}' 解析。请使用维基百科链接。")

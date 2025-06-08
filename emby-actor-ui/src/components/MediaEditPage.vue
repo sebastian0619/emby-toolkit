@@ -1,4 +1,3 @@
-<!-- src/components/MediaEditPage.vue -->
 <template>
   <div class="media-edit-page" style="padding: 24px;">
     <n-page-header @back="goBack">
@@ -9,12 +8,17 @@
 
     <n-divider />
 
-    <div v-if="isLoading">
+    <!-- 状态一：正在加载 -->
+    <div v-if="isLoading" class="loading-container">
       <n-spin size="large" />
       <p style="text-align: center; margin-top: 10px;">正在加载媒体详情...</p>
     </div>
-    <div v-else-if="itemDetails">
-      <n-card :title="itemDetails.item_name || '加载中...'">
+
+    <!-- 状态二：加载完成且数据有效 -->
+    <div v-else-if="itemDetails && itemDetails.item_name">
+      <n-card :title="itemDetails.item_name">
+        
+        <!-- 描述列表 -->
         <n-descriptions label-placement="left" bordered :column="1">
           <n-descriptions-item label="Emby ItemID">
             {{ itemDetails.item_id }} (不可编辑)
@@ -30,30 +34,36 @@
           </n-descriptions-item>
         </n-descriptions>
 
+        <!-- 辅助工具 -->
         <n-divider title-placement="left" style="margin-top: 20px;">辅助工具</n-divider>
         <n-space vertical>
-          <!-- 外部搜索按钮 -->
-          <n-form-item label="外部搜索" label-placement="left">
+          <n-form-item label="数据操作" label-placement="left">
             <n-space>
+              <!-- ✨✨✨ [统一] 1. 按钮绑定到新的键名，并更新文本 ✨✨✨ -->
               <n-button 
                 tag="a" 
-                :href="searchLinks.google_url" 
+                :href="searchLinks.google_search_wiki"
                 target="_blank" 
-                :disabled="!searchLinks.google_url"
-                :loading="isFetchingSearchLinks"
+                :disabled="!searchLinks.google_search_wiki"
+                :loading="isLoading"
               >
-                Google 搜索
+                Google搜索(维基百科)
               </n-button>
-              <!-- ✨✨✨ 百度搜索按钮已移除 ✨✨✨ -->
+              <n-button
+                type="default"
+                @click="refreshCastFromDouban"
+                :loading="isRefreshingFromDouban"
+                :disabled="isLoading" 
+              >
+                从豆瓣刷新
+              </n-button>
             </n-space>
           </n-form-item>
-          
-          <!-- 从URL提取 -->
           <n-form-item label="从URL提取" label-placement="left">
             <n-input-group>
               <n-input 
                 v-model:value="urlToParse" 
-                placeholder="在此粘贴包含演员表的网页URL (如 IMDb, 维基百科)"
+                placeholder="在此粘贴维基百科(Wikipedia)的演员表网页URL"
                 clearable
               />
               <n-button 
@@ -62,12 +72,18 @@
                 :loading="isParsingFromUrl"
                 :disabled="!urlToParse"
               >
-                提取
+                提取并丰富
               </n-button>
             </n-input-group>
+            <template #feedback>
+              <n-text depth="3" style="font-size: 0.85em;">
+                提取后将自动与下方列表进行匹配更新，不会新增或替换演员。
+              </n-text>
+            </template>
           </n-form-item>
         </n-space>
 
+        <!-- 演员列表 (这部分代码无需修改) -->
         <n-divider title-placement="left" style="margin-top: 20px;">演员列表</n-divider>
         <n-form label-placement="left" label-width="auto" style="margin-top: 10px;">
           <n-grid :cols="'1 640:2 1024:3 1280:4'" :x-gap="16" :y-gap="16">
@@ -106,19 +122,6 @@
           </n-grid>
         </n-form>
         
-        <div style="margin-top:20px; margin-bottom: 20px;"> 
-          <n-button
-            type="default"
-            @click="refreshCastFromDouban"
-            :loading="isRefreshingFromDouban"
-            style="margin-right: 10px;"
-            :disabled="isLoading || !itemDetails || !itemDetails.item_id" 
-          >
-            从豆瓣刷新演员表
-          </n-button>
-          <n-text depth="3" style="font-size: 0.85em;">(此操作将尝试用豆瓣信息更新下方列表中的现有演员)</n-text>
-        </div>
-
         <template #action>
           <n-space justify="end">
             <n-button @click="goBack">返回列表</n-button>
@@ -129,9 +132,11 @@
         </template>
       </n-card>
     </div>
-    <div v-else>
+
+    <!-- 状态三：加载完成但数据无效 -->
+    <div v-else class="error-container">
       <n-alert title="错误" type="error">
-        无法加载媒体详情，或指定的媒体项不存在。
+        无法加载媒体详情，或指定的媒体项不存在。请检查后端日志或确认该媒体项有效。
         <n-button text @click="goBack" style="margin-left: 10px;">返回列表</n-button>
       </n-alert>
     </div>
@@ -143,7 +148,7 @@ import { NIcon, NInput, NInputGroup, NGrid, NGridItem, NFormItem, NFormItemGi } 
 import { ref, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import axios from 'axios';
-import { NTag, NPageHeader, NDivider, NSpin, NCard, NDescriptions, NDescriptionsItem, NButton, NSpace, NAlert, useMessage, useDialog } from 'naive-ui';
+import { NPageHeader, NDivider, NSpin, NCard, NDescriptions, NDescriptionsItem, NButton, NSpace, NAlert, useMessage } from 'naive-ui';
 import {
   ArrowUpOutline as ArrowUpIcon,
   ArrowDownOutline as ArrowDownIcon,
@@ -153,7 +158,6 @@ import {
 const route = useRoute();
 const router = useRouter();
 const message = useMessage();
-const dialog = useDialog();
 
 const itemId = ref(null);
 const isLoading = ref(true);
@@ -161,11 +165,13 @@ const itemDetails = ref(null);
 const editableCast = ref([]);
 const isSaving = ref(false);
 
-const isFetchingSearchLinks = ref(false);
-const searchLinks = ref({ google_url: '' }); // 只保留 google_url
+// ✨✨✨ [统一] 2. 更新 searchLinks 的数据结构以匹配后端 ✨✨✨
+const searchLinks = ref({ google_search_wiki: '' });
 const isParsingFromUrl = ref(false);
 const urlToParse = ref('');
+const isRefreshingFromDouban = ref(false);
 
+// watch 和其他方法 (removeActor, moveActor, etc.) 保持不变
 watch(() => itemDetails.value, (newItemDetails) => {
   if (newItemDetails && newItemDetails.current_emby_cast) {
     editableCast.value = JSON.parse(JSON.stringify(newItemDetails.current_emby_cast)).map((actor, index) => ({
@@ -192,7 +198,6 @@ const moveActorUp = (index) => {
   if (index > 0) {
     const actorToMove = editableCast.value.splice(index, 1)[0];
     editableCast.value.splice(index - 1, 0, actorToMove);
-    message.info("演员顺序已调整（上移）。");
   }
 };
 
@@ -200,11 +205,8 @@ const moveActorDown = (index) => {
   if (index < editableCast.value.length - 1) {
     const actorToMove = editableCast.value.splice(index, 1)[0];
     editableCast.value.splice(index + 1, 0, actorToMove);
-    message.info("演员顺序已调整（下移）。");
   }
 };
-
-const isRefreshingFromDouban = ref(false);
 
 const refreshCastFromDouban = async () => {
   if (!itemDetails.value?.item_id) return;
@@ -241,20 +243,6 @@ const refreshCastFromDouban = async () => {
   }
 };
 
-const fetchSearchLinks = async () => {
-  if (!itemId.value) return;
-  isFetchingSearchLinks.value = true;
-  try {
-    const response = await axios.get(`/api/generate_search_links/${itemId.value}`);
-    searchLinks.value = response.data;
-  } catch (error) {
-    console.error("获取搜索链接失败:", error);
-    message.error("获取外部搜索链接失败。");
-  } finally {
-    isFetchingSearchLinks.value = false;
-  }
-};
-
 const parseCastFromUrl = async () => {
   if (!urlToParse.value.trim()) {
     message.warning("请输入要解析的URL。");
@@ -267,7 +255,6 @@ const parseCastFromUrl = async () => {
 
     if (newCastFromWeb && Array.isArray(newCastFromWeb) && newCastFromWeb.length > 0) {
       message.success(`成功提取 ${newCastFromWeb.length} 位演员信息，正在与当前列表进行匹配更新...`);
-      // 直接调用“仅丰富”逻辑
       handleEnrich(newCastFromWeb);
     } else {
       message.info(response.data.message || "未从该URL中找到有效的演员信息。");
@@ -286,11 +273,9 @@ const handleEnrich = async (newCastFromWeb) => {
       current_cast: editableCast.value,
       new_cast_from_web: newCastFromWeb
     };
-    // 调用新的、安全的后端API
     const response = await axios.post('/api/actions/enrich_cast_list', payload);
     const enrichedList = response.data;
 
-    // 用后端返回的、已丰富的列表更新UI
     editableCast.value = enrichedList.map((actor, index) => ({
       ...actor,
       _temp_id: `enriched-actor-${Date.now()}-${index}`
@@ -313,13 +298,16 @@ const fetchMediaDetails = async () => {
   isLoading.value = true;
   try {
     const response = await axios.get(`/api/media_with_cast_for_editing/${itemId.value}`);
+    // ✨✨✨ [统一] 3. 确保前端能正确处理完整的后端响应 ✨✨✨
     itemDetails.value = response.data;
-    fetchSearchLinks();
-  } catch (error)
-  {
+    
+    if (response.data && response.data.search_links) {
+      searchLinks.value = response.data.search_links;
+    }
+  } catch (error) {
     console.error("获取媒体详情失败:", error);
     message.error(error.response?.data?.error || "获取媒体详情失败。");
-    itemDetails.value = null;
+    itemDetails.value = null; // 确保失败时 itemDetails 为 null
   } finally {
     isLoading.value = false;
   }
@@ -374,6 +362,13 @@ const handleSaveChanges = async () => {
 .media-edit-page {
   max-width: 1280px;
   margin: 0 auto;
+}
+.loading-container, .error-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
 }
 </style>
 <style>

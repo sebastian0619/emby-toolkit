@@ -1150,60 +1150,75 @@ class MediaProcessor:
     def enrich_cast_list(self, current_cast: List[Dict[str, Any]], new_cast_from_web: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         使用从网页提取的新列表来丰富（Enrich）当前演员列表。
-        只更新匹配到的演员，所有未匹配的演员（无论新旧）都将被忽略或保留原样。
+        采用反向翻译匹配：将当前演员的中文名翻译成英文，再去匹配网页提取的英文列表。
         """
-        logger.info(f"开始“仅丰富”模式：使用 {len(new_cast_from_web)} 位新演员信息来更新 {len(current_cast)} 位当前演员。")
+        logger.info(f"开始“仅丰富”模式（反向翻译匹配）：使用 {len(new_cast_from_web)} 位新演员信息来更新 {len(current_cast)} 位当前演员。")
         
-        # 创建一个最终列表的副本，我们将在这个副本上进行修改
         enriched_cast = [dict(actor) for actor in current_cast]
-        
-        # 用于记录哪些新演员已经被使用，避免重复匹配
         used_new_actor_indices = set()
+        
+        # 我们需要一个数据库连接来调用翻译缓存和在线翻译
+        conn = self._get_db_connection()
+        cursor = conn.cursor()
 
-        # 遍历当前列表中的每一个演员
-        for i, current_actor in enumerate(enriched_cast):
-            current_name = current_actor.get('name', '').strip()
-            if not current_name:
-                continue
-
-            # 在新列表中寻找能与当前演员匹配的项
-            for j, new_actor in enumerate(new_cast_from_web):
-                if j in used_new_actor_indices:
-                    continue # 这个新演员已经被用过了
-
-                new_name = new_actor.get('name', '').strip()
-                if not new_name:
+        try:
+            for i, current_actor in enumerate(enriched_cast):
+                current_name_zh = current_actor.get('name', '').strip()
+                if not current_name_zh or not utils.contains_chinese(current_name_zh):
+                    # 如果当前演员名不是中文，就直接进行常规匹配
+                    logger.debug(f"当前演员 '{current_name_zh}' 非中文，使用直接匹配。")
+                    # (这里可以保留之前的直接匹配逻辑，为简化，我们先专注解决中文名问题)
+                    pass
+                
+                # --- 核心：反向翻译匹配 ---
+                # 将当前演员的中文名翻译成英文
+                # 注意：_translate_actor_field 内部会自动处理缓存
+                translated_name_en = self._translate_actor_field(
+                    text=current_name_zh,
+                    field_name="演员名(用于匹配)",
+                    actor_name_for_log=current_name_zh,
+                    db_cursor_for_cache=cursor
+                )
+                
+                # 如果翻译结果和原文一样（说明翻译失败或已经是英文），则跳过这个演员
+                if translated_name_en == current_name_zh:
+                    logger.debug(f"演员 '{current_name_zh}' 翻译失败或无需翻译，跳过反向匹配。")
                     continue
 
-                # --- 匹配逻辑 (与之前相同) ---
-                is_match = False
-                if current_name.lower() == new_name.lower():
-                    is_match = True
-                else:
-                    # 利用翻译缓存进行交叉匹配
-                    # 注意：这里假设 DoubanApi._get_translation_from_db 是一个可用的静态或类方法
-                    cached_translation_fwd = DoubanApi._get_translation_from_db(current_name)
-                    if cached_translation_fwd and cached_translation_fwd.get('translated_text', '').lower() == new_name.lower():
-                        is_match = True
-                    else:
-                        cached_translation_bwd = DoubanApi._get_translation_from_db(new_name)
-                        if cached_translation_bwd and cached_translation_bwd.get('translated_text', '').lower() == current_name.lower():
-                            is_match = True
-                
-                if is_match:
-                    logger.info(f"匹配成功: 当前演员 '{current_name}' <=> 新信息 '{new_name}'")
-                    
-                    # ✨ 只更新需要的字段，主要是角色名 ✨
-                    new_role = new_actor.get('role')
-                    if new_role:
-                        logger.info(f"  -> 角色名更新: '{current_actor.get('role')}' -> '{new_role}'")
-                        enriched_cast[i]['role'] = new_role
-                    
-                    # ✨ 更新状态，方便前端显示 ✨
-                    enriched_cast[i]['matchStatus'] = '已更新'
-                    
-                    used_new_actor_indices.add(j)
-                    break # 为 current_actor 找到匹配，跳出内层循环
+                logger.info(f"尝试为 '{current_name_zh}' (翻译为: '{translated_name_en}') 寻找匹配...")
+
+                # 在新列表中寻找能与翻译后的英文名匹配的项
+                for j, new_actor in enumerate(new_cast_from_web):
+                    if j in used_new_actor_indices:
+                        continue
+
+                    new_name_en = new_actor.get('name', '').strip()
+                    if not new_name_en:
+                        continue
+
+                    # 进行不区分大小写的匹配
+                    if translated_name_en.lower() == new_name_en.lower():
+                        logger.info(f"匹配成功: '{current_name_zh}' <=> '{new_name_en}' (通过翻译)")
+                        
+                        new_role = new_actor.get('role')
+                        if new_role:
+                            logger.info(f"  -> 角色名更新: '{current_actor.get('role')}' -> '{new_role}'")
+                            enriched_cast[i]['role'] = new_role
+                        
+                        enriched_cast[i]['matchStatus'] = '已更新(翻译匹配)'
+                        used_new_actor_indices.add(j)
+                        break # 找到匹配，处理下一个当前演员
+
+            # 提交可能在翻译过程中产生的数据库缓存更新
+            conn.commit()
+
+        except Exception as e:
+            logger.error(f"在 enrich_cast_list 中发生错误: {e}", exc_info=True)
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+                conn.close()
 
         unmatched_count = len(new_cast_from_web) - len(used_new_actor_indices)
         if unmatched_count > 0:

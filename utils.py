@@ -167,24 +167,18 @@ def format_character_display_name(char_cn: Optional[str], char_en: Optional[str]
 def generate_search_url(site: str, title: str, year: Optional[int] = None) -> str:
     """
     为指定网站生成搜索链接。
-    
-    :param site: 'google' 或 'baidu'
-    :param title: 影视标题
-    :param year: 影视年份 (可选)
-    :return: 完整的搜索 URL
     """
-    query = f"{title} {year}" if year else title
-    # 添加 " 演员表" 或 " cast" 可以获得更精确的结果
-    query += " 演员表 cast"
+    query = f'"{title}"'
+    if year:
+        query += f' {year}'
     
-    encoded_query = quote_plus(query)
-    
-    if site == 'google':
-        return f"https://www.google.com/search?q={encoded_query}"
-    elif site == 'baidu':
-        return f"https://www.baidu.com/s?wd={encoded_query}"
+    if site == 'wikipedia':
+        final_query = f'site:zh.wikipedia.org {query} 演员表' # 加上“演员表”关键词，更精确
     else:
-        raise ValueError(f"不支持的网站: {site}")
+        final_query = query + " 演员表 cast"
+
+    encoded_query = quote_plus(final_query)
+    return f"https://www.google.com/search?q={encoded_query}"
 
 if __name__ == '__main__':
     # 测试 contains_chinese
