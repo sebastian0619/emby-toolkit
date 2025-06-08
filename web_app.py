@@ -1098,7 +1098,6 @@ def api_mark_item_processed(item_id):
         return jsonify({"error": "服务器内部错误"}), 500
     
 @app.route('/api/trigger_full_scan', methods=['POST'])
-@app.route('/api/trigger_full_scan', methods=['POST'])
 def api_handle_trigger_full_scan():
     logger.info("API Endpoint: Received request to trigger full scan.")
     try:
@@ -1181,97 +1180,6 @@ def api_handle_trigger_stop_task():
         logger.error(f"API /api/trigger_stop_task error: {e}", exc_info=True)
         return jsonify({"error": "发送停止任务请求时发生服务器内部错误"}), 500
     
-# @app.route('/api/media_with_cast_for_editing/<item_id>', methods=['GET'])
-# def api_get_media_for_editing(item_id):
-#     logger.info(f"API: Received request to get media details for editing, ItemID: {item_id}")
-
-#     if not media_processor_instance:
-#         logger.error("API: MediaProcessor 未初始化，无法获取媒体详情。")
-#         return jsonify({"error": "核心处理器未就绪"}), 503
-
-#     # 1. 从 Emby 获取详情
-#     emby_details = None
-#     try: # <--- Python 的 try:
-#         emby_details = emby_handler.get_emby_item_details(
-#             item_id,
-#             media_processor_instance.emby_url,
-#             media_processor_instance.emby_api_key,
-#             media_processor_instance.emby_user_id
-#         )
-#     except Exception as e: # <--- Python 的 except Exception as e:
-#         logger.error(f"API: 调用 emby_handler.get_emby_item_details 失败 for ItemID {item_id}: {e}", exc_info=True)
-#         # 即使这里失败，我们仍然尝试从 failed_log 获取信息，或者至少返回一个部分错误
-    
-#     # ... 后续从 failed_log 获取信息、组合数据等逻辑保持不变 ...
-#     # (确保那部分代码的 try...except...finally 也是 Python 语法)
-
-#     if not emby_details:
-#         logger.warning(f"API: 无法从 Emby 获取项目 {item_id} 的详情。可能项目不存在或Emby API问题。")
-
-#     # 2. 从 failed_log 获取信息 (这部分你之前的代码是正确的 Python try-except-finally)
-#     conn = None
-#     failed_log_info = {}
-#     try:
-#         conn = get_db_connection()
-#         cursor = conn.cursor()
-#         cursor.execute("SELECT item_name, item_type, error_message, score FROM failed_log WHERE item_id = ?", (item_id,))
-#         row = cursor.fetchone()
-#         if row:
-#             failed_log_info = dict(row)
-#             logger.debug(f"API: 从 failed_log 找到项目 {item_id} 的信息: {failed_log_info}")
-#         else:
-#             logger.warning(f"API: 项目 {item_id} 在 failed_log 中未找到。")
-#             if not emby_details:
-#                  return jsonify({"error": f"项目 {item_id} 在 Emby 和待复核日志中均未找到"}), 404
-#     except Exception as e:
-#         logger.error(f"API: 查询 failed_log 获取项目 {item_id} 信息失败: {e}", exc_info=True)
-#         if not emby_details:
-#             return jsonify({"error": f"获取项目 {item_id} 信息时发生数据库错误，且无法从Emby获取详情"}), 500
-#     finally:
-#         if conn:
-#             conn.close()
-
-#     # 3. 提取并格式化 Emby 演员列表 (这部分你之前的代码是正确的 Python 逻辑)
-#     current_cast_for_frontend = []
-#     # ... (这部分代码不变) ...
-#     if emby_details and emby_details.get("People"):
-#         for person in emby_details.get("People", []):
-#             if person.get("Id") and person.get("Name"): # 必须有 Emby Person ID 和名字
-#                 provider_ids = person.get("ProviderIds", {})
-#                 current_cast_for_frontend.append({
-#                     "embyPersonId": str(person["Id"]),
-#                     "name": person["Name"],
-#                     "role": person.get("Role", ""),
-#                     "imdbId": provider_ids.get("Imdb"),
-#                     "doubanId": provider_ids.get("Douban"),
-#                     "tmdbId": provider_ids.get("Tmdb")
-#                 })
-#     elif emby_details: 
-#         logger.info(f"API: Emby 项目 {item_id} 详情中没有 People (演员) 信息。")
-
-
-#     # 4. 组合最终的响应数据 (这部分你之前的代码是正确的 Python 逻辑)
-#     # ... (这部分代码不变) ...
-#     final_item_name = failed_log_info.get('item_name')
-#     if not final_item_name and emby_details:
-#         final_item_name = emby_details.get('Name')
-    
-#     final_item_type = failed_log_info.get('item_type')
-#     if not final_item_type and emby_details:
-#         final_item_type = emby_details.get('Type')
-
-#     response_data = {
-#         "item_id": item_id,
-#         "item_name": final_item_name or f"未知名称 (ID: {item_id})",
-#         "item_type": final_item_type or "未知类型",
-#         "original_score": failed_log_info.get('score'),
-#         "review_reason": failed_log_info.get('error_message'),
-#         "current_emby_cast": current_cast_for_frontend
-#     }
-    
-#     logger.info(f"API: 成功为项目 {item_id} 构建编辑详情，准备返回。演员数: {len(current_cast_for_frontend)}")
-#     return jsonify(response_data)
-#--- 从豆瓣刷新演员表 ---
 @app.route('/api/preview_processed_cast/<item_id>', methods=['POST'])
 def api_preview_processed_cast(item_id):
     """
@@ -1675,6 +1583,27 @@ def api_enrich_cast_list():
     except Exception as e:
         logger.error(f"丰富演员列表时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在丰富演员列表时发生内部错误。"}), 500
+    
+# ✨✨✨ 一键翻译API端点 ✨✨✨
+@app.route('/api/actions/translate_roles', methods=['POST'])
+def api_translate_roles():
+    if not media_processor_instance:
+        return jsonify({"error": "核心处理器未就绪"}), 503
+        
+    data = request.json
+    current_cast = data.get('cast')
+
+    if not isinstance(current_cast, list):
+        return jsonify({"error": "请求体必须包含 'cast' 列表。"}), 400
+
+    try:
+        # 调用新的纯翻译方法
+        translated_list = media_processor_instance.translate_cast_roles_only(current_cast)
+        return jsonify(translated_list)
+        
+    except Exception as e:
+        logger.error(f"一键翻译角色名时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在翻译角色名时发生内部错误。"}), 500
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')

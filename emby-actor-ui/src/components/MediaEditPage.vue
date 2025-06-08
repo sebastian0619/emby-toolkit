@@ -8,17 +8,14 @@
 
     <n-divider />
 
-    <!-- 状态一：正在加载 -->
     <div v-if="isLoading" class="loading-container">
       <n-spin size="large" />
       <p style="text-align: center; margin-top: 10px;">正在加载媒体详情...</p>
     </div>
 
-    <!-- 状态二：加载完成且数据有效 -->
     <div v-else-if="itemDetails && itemDetails.item_name">
       <n-card :title="itemDetails.item_name">
         
-        <!-- 描述列表 -->
         <n-descriptions label-placement="left" bordered :column="1">
           <n-descriptions-item label="Emby ItemID">
             {{ itemDetails.item_id }} (不可编辑)
@@ -34,12 +31,10 @@
           </n-descriptions-item>
         </n-descriptions>
 
-        <!-- 辅助工具 -->
         <n-divider title-placement="left" style="margin-top: 20px;">辅助工具</n-divider>
         <n-space vertical>
           <n-form-item label="数据操作" label-placement="left">
             <n-space>
-              <!-- ✨✨✨ [统一] 1. 按钮绑定到新的键名，并更新文本 ✨✨✨ -->
               <n-button 
                 tag="a" 
                 :href="searchLinks.google_search_wiki"
@@ -56,6 +51,15 @@
                 :disabled="isLoading" 
               >
                 从豆瓣刷新
+              </n-button>
+              <!-- ✨✨✨ 1. 添加新按钮 ✨✨✨ -->
+              <n-button
+                type="info"
+                @click="translateAllRoles"
+                :loading="isTranslatingRoles"
+                :disabled="isLoading"
+              >
+                一键翻译角色名
               </n-button>
             </n-space>
           </n-form-item>
@@ -83,8 +87,8 @@
           </n-form-item>
         </n-space>
 
-        <!-- 演员列表 (这部分代码无需修改) -->
         <n-divider title-placement="left" style="margin-top: 20px;">演员列表</n-divider>
+        <!-- ... 演员列表的模板代码保持不变 ... -->
         <n-form label-placement="left" label-width="auto" style="margin-top: 10px;">
           <n-grid :cols="'1 640:2 1024:3 1280:4'" :x-gap="16" :y-gap="16">
             <n-grid-item v-for="(actor, index) in editableCast" :key="actor._temp_id">
@@ -133,7 +137,6 @@
       </n-card>
     </div>
 
-    <!-- 状态三：加载完成但数据无效 -->
     <div v-else class="error-container">
       <n-alert title="错误" type="error">
         无法加载媒体详情，或指定的媒体项不存在。请检查后端日志或确认该媒体项有效。
@@ -165,11 +168,13 @@ const itemDetails = ref(null);
 const editableCast = ref([]);
 const isSaving = ref(false);
 
-// ✨✨✨ [统一] 2. 更新 searchLinks 的数据结构以匹配后端 ✨✨✨
 const searchLinks = ref({ google_search_wiki: '' });
 const isParsingFromUrl = ref(false);
 const urlToParse = ref('');
 const isRefreshingFromDouban = ref(false);
+// ✨✨✨ 2. 添加新按钮的状态变量 ✨✨✨
+const isTranslatingRoles = ref(false);
+
 
 // watch 和其他方法 (removeActor, moveActor, etc.) 保持不变
 watch(() => itemDetails.value, (newItemDetails) => {
@@ -290,6 +295,34 @@ const handleEnrich = async (newCastFromWeb) => {
   }
 };
 
+// ✨✨✨ 3. 添加新按钮的点击处理函数 ✨✨✨
+const translateAllRoles = async () => {
+  if (!editableCast.value || editableCast.value.length === 0) {
+    message.warning("演员列表为空，无需翻译。");
+    return;
+  }
+  isTranslatingRoles.value = true;
+  message.info("正在请求后端翻译所有非中文角色名...");
+  try {
+    const response = await axios.post('/api/actions/translate_roles', { cast: editableCast.value });
+    const translatedList = response.data;
+
+    // 用后端返回的翻译后列表，直接更新UI
+    editableCast.value = translatedList.map((actor, index) => ({
+      ...actor,
+      _temp_id: `translated-actor-${Date.now()}-${index}`
+    }));
+    
+    message.success("角色名翻译完成！");
+
+  } catch (error) {
+    console.error("一键翻译角色名失败:", error);
+    message.error(error.response?.data?.error || "翻译失败，请检查后端日志。");
+  } finally {
+    isTranslatingRoles.value = false;
+  }
+};
+
 const fetchMediaDetails = async () => {
   if (!itemId.value) {
     isLoading.value = false;
@@ -298,7 +331,6 @@ const fetchMediaDetails = async () => {
   isLoading.value = true;
   try {
     const response = await axios.get(`/api/media_with_cast_for_editing/${itemId.value}`);
-    // ✨✨✨ [统一] 3. 确保前端能正确处理完整的后端响应 ✨✨✨
     itemDetails.value = response.data;
     
     if (response.data && response.data.search_links) {
@@ -307,7 +339,7 @@ const fetchMediaDetails = async () => {
   } catch (error) {
     console.error("获取媒体详情失败:", error);
     message.error(error.response?.data?.error || "获取媒体详情失败。");
-    itemDetails.value = null; // 确保失败时 itemDetails 为 null
+    itemDetails.value = null;
   } finally {
     isLoading.value = false;
   }
