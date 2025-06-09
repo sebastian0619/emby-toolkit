@@ -90,8 +90,12 @@ ACTOR_STATUS_TEXT_MAP = {
     "unknown": "未知状态"
 }
 
-
-# ... (其他你可能已经定义的常量) ...
+# ✨✨✨ 本地导出/覆盖缓存功能的常量 ✨✨✨
+CONFIG_SECTION_LOCAL_EXPORT = "LocalExport"
+CONFIG_OPTION_EXPORT_ENABLED = "export_enabled"
+CONFIG_OPTION_EXPORT_PATH = "export_path"
+CONFIG_OPTION_EXPORT_SAVE_IMAGES = "export_save_images"
+# ✨✨✨ 新增结束 ✨✨✨
 
 # API Source Map (如果未来增加其他API来源)
 SOURCE_API_MAP = {

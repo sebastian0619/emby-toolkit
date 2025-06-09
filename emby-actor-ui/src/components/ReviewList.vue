@@ -1,61 +1,62 @@
-<!-- ReviewList.vue -->
 <template>
-  <n-card title="媒体库浏览器" :bordered="false" size="large">
+  <!-- ★★★ 1. 将 beautified-card 应用到最外层的 n-card ★★★ -->
+  <n-card title="媒体库浏览器" class="beautified-card" :bordered="false" size="small">
     <n-alert 
       v-if="taskStatus.is_running" 
       title="后台任务运行中" 
       type="warning" 
-      style="margin-bottom: 15px;"
+      style="margin-bottom: 20px;"
+      closable
     >
       后台任务正在运行，此时“手动处理”等操作可能会失败。
     </n-alert>
-    <n-spin :show="loading">
-      <div v-if="error" class="error-message">
-        <n-alert title="加载错误" type="error">{{ error }}</n-alert>
-      </div>
-      <div v-else>
-        <!-- 搜索框 -->
-        <n-input
-          v-model:value="searchQuery"
-          placeholder="输入媒体名称搜索整个 Emby 库..."
-          clearable
-          @keyup.enter="handleSearch"
-          @clear="handleSearch"
-          style="margin-bottom: 15px; max-width: 400px;"
-        >
-          <template #suffix>
-            <n-icon :component="SearchIcon" @click="handleSearch" style="cursor: pointer;" />
-          </template>
-        </n-input>
+    
+    <!-- ★★★ 2. 将搜索框和表格内容包裹在一个 div 中，方便控制 ★★★ -->
+    <div>
+      <n-input
+        v-model:value="searchQuery"
+        placeholder="输入媒体名称搜索整个 Emby 库..."
+        clearable
+        @keyup.enter="handleSearch"
+        @clear="handleSearch"
+        style="margin-bottom: 20px; max-width: 400px;"
+      >
+        <template #suffix>
+          <n-icon :component="SearchIcon" @click="handleSearch" style="cursor: pointer;" />
+        </template>
+      </n-input>
 
-        <!-- 表格 -->
-        <!-- ✨✨✨ 确保这里使用 tableData ✨✨✨ -->
-        <n-data-table
-          v-if="tableData.length > 0"
-          :columns="columns"
-          :data="tableData"
-          :pagination="paginationProps"
-          :bordered="false"
-          striped
-          size="small"
-          :row-key="row => row.item_id"
-          :loading="loadingAction[currentRowId]"
-          remote 
-        />
-        <!-- ✨✨✨ 确保这里也使用 tableData ✨✨✨ -->
-        <n-empty 
-          v-else-if="!loading && tableData.length === 0" 
-          :description="isShowingSearchResults ? '在 Emby 库中未找到匹配项。' : '没有需要手动处理的媒体项。'" 
-          style="margin-top: 20px;" 
-        />
-        <!-- ✨✨✨ 确保这里也使用 tableData ✨✨✨ -->
-        <p v-if="loading && tableData.length === 0">正在加载...</p>
-      </div>
-    </n-spin>
+      <n-spin :show="loading">
+        <div v-if="error" class="error-message">
+          <n-alert title="加载错误" type="error">{{ error }}</n-alert>
+        </div>
+        <div v-else>
+          <n-data-table
+            v-if="tableData.length > 0"
+            :columns="columns"
+            :data="tableData"
+            :pagination="paginationProps"
+            :bordered="false"
+            :single-line="false" 
+            striped
+            size="small"
+            :row-key="row => row.item_id"
+            :loading="loadingAction[currentRowId]"
+            remote 
+          />
+          <n-empty 
+            v-else-if="!loading && tableData.length === 0" 
+            :description="isShowingSearchResults ? '在 Emby 库中未找到匹配项。' : '太棒了！没有需要手动处理的媒体项。'" 
+            style="margin-top: 50px; margin-bottom: 30px;" 
+          />
+        </div>
+      </n-spin>
+    </div>
   </n-card>
 </template>
 
 <script setup>
+// ... 你的 <script setup> 部分完全不需要任何修改 ...
 import { useRouter } from 'vue-router';
 import { ref, onMounted, computed, h } from 'vue';
 import axios from 'axios';
@@ -65,11 +66,9 @@ import {
 } from 'naive-ui';
 import { SearchOutline as SearchIcon, PlayForwardOutline as ReprocessIcon, CheckmarkCircleOutline as MarkDoneIcon } from '@vicons/ionicons5';
 
-// --- 基础设置 ---
 const router = useRouter();
 const message = useMessage();
 
-// --- 状态变量 ---
 const tableData = ref([]);
 const loading = ref(true);
 const error = ref(null);
@@ -81,7 +80,6 @@ const loadingAction = ref({});
 const currentRowId = ref(null);
 const isShowingSearchResults = ref(false);
 
-// --- 表格列定义 ---
 const formatDate = (timestamp) => {
   if (!timestamp) return 'N/A';
   try {
@@ -111,7 +109,6 @@ const handleMarkAsProcessed = async (row) => {
   try {
     await axios.post(`/api/actions/mark_item_processed/${row.item_id}`);
     message.success(`项目 "${row.item_name}" 已标记为已处理。`);
-    // 刷新列表
     fetchReviewItems();
   } catch (err) {
     console.error("标记为已处理失败:", err);
@@ -129,7 +126,7 @@ const columns = computed(() => [
     resizable: true,
     render(row) {
       return h('div', null, [
-        h(NText, { strong: true }, { default: () => row.item_name || '未知名称' }),
+        h(NText, { strong: true, style: 'cursor: pointer;', onClick: () => goToEditPage(row) }, { default: () => row.item_name || '未知名称' }),
         h(NText, { depth: 3, style: 'font-size: 0.8em; display: block; margin-top: 2px;' }, { default: () => `(ID: ${row.item_id || 'N/A'})` })
       ]);
     }
@@ -169,7 +166,6 @@ const columns = computed(() => [
             },
             { default: () => '手动编辑' }
           ),
-          // 只有在非搜索结果时，才显示“标记已处理”按钮
           !isShowingSearchResults.value ? h(NPopconfirm,
             {
               onPositiveClick: () => handleMarkAsProcessed(row),
@@ -197,7 +193,6 @@ const columns = computed(() => [
   }
 ]);
 
-// --- 分页逻辑 ---
 const paginationProps = computed(() => ({
     disabled: isShowingSearchResults.value,
     page: currentPage.value,
@@ -220,7 +215,6 @@ const paginationProps = computed(() => ({
     }
 }));
 
-// --- 数据获取逻辑 ---
 const fetchReviewItems = async () => {
   loading.value = true;
   error.value = null;
@@ -264,7 +258,6 @@ const handleFetchError = (err, defaultMessage) => {
     message.error(error.value);
 };
 
-// --- 搜索处理 ---
 const handleSearch = () => {
   if (searchQuery.value.trim()) {
     currentPage.value = 1;
@@ -275,7 +268,6 @@ const handleSearch = () => {
   }
 };
 
-// --- 生命周期钩子 ---
 defineProps({
   taskStatus: {
     type: Object,
@@ -288,6 +280,11 @@ onMounted(() => {
 });
 </script>
 
+<!-- ★★★ 4. 移除所有 scoped 样式 ★★★ -->
+<!-- 
+  我们不再需要这里的局部样式了。
+  .beautified-card 的样式由 global.css 提供。
+  .error-message 的间距由 n-alert 的 style 属性控制。
+-->
 <style scoped>
-.error-message { margin-bottom: 15px; }
 </style>

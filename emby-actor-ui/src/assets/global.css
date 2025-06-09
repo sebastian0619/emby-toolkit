@@ -1,0 +1,48 @@
+/* src/assets/global.css */
+
+/*
+ * ===============================================
+ * 全局美化卡片样式 (Global Beautified Card Style)
+ * ===============================================
+ *
+ * 使用方法:
+ * 在任何需要美化的 Naive UI 卡片组件上添加 `class="beautified-card"` 即可。
+ * 例如: <n-card class="beautified-card">...</n-card>
+ *
+ */
+
+/* 
+  我们使用 .n-card.beautified-card 来提高选择器权重，
+  确保能覆盖 Naive UI 的默认样式，同时避免使用 !important。
+*/
+
+/* 卡片的默认状态 */
+.n-card.beautified-card {
+  /* 
+    使用 Naive UI 的主题变量来定义阴影和圆角，
+    这样可以完美自适应深色/浅色模式。
+  */
+  box-shadow: var(--n-box-shadow);
+  border-radius: var(--n-border-radius);
+  
+  /* 为动效添加平滑过渡 */
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+/* 鼠标悬停在卡片上时的效果 */
+.n-card.beautified-card:hover {
+  /* 
+    transform 属性实现轻微上浮效果。
+    可以根据喜好调整 -4px 这个值。
+  */
+  transform: translateY(-4px);
+  
+  /* 
+    使用 Naive UI 定义的悬停状态下的阴影变量，
+    它通常比默认阴影更深、更弥散。
+  */
+  box-shadow: var(--n-box-shadow-hover);
+  
+  /* 鼠标悬停时，光标变成小手形状，提示用户可以点击 */
+  cursor: pointer;
+}

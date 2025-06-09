@@ -9,6 +9,7 @@ from werkzeug.utils import safe_join
 from queue import Queue
 import threading
 import time
+import requests
 from douban import DoubanApi
 from typing import Optional, Dict, Any, List # 确保 List 被导入
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -251,8 +252,12 @@ def load_config() -> Dict[str, Any]:
     # TMDB, Douban, Translation, etc.
     app_cfg["tmdb_api_key"] = config_parser.get(constants.CONFIG_SECTION_TMDB, "tmdb_api_key", fallback="")
     app_cfg["api_douban_default_cooldown_seconds"] = config_parser.getfloat(constants.CONFIG_SECTION_API_DOUBAN, "api_douban_default_cooldown_seconds", fallback=1.0)
-    engines_str = config_parser.get(constants.CONFIG_SECTION_TRANSLATION, "translator_engines_order", fallback="bing,google")
-    app_cfg["translator_engines_order"] = [eng.strip() for eng in engines_str.split(',') if eng.strip()]
+    engines_str = config_parser.get(
+        constants.CONFIG_SECTION_TRANSLATION, 
+        constants.CONFIG_OPTION_TRANSLATOR_ENGINES, # 使用常量，不再是硬编码字符串
+        fallback=",".join(constants.DEFAULT_TRANSLATOR_ENGINES_ORDER) # 使用默认值
+    )
+    app_cfg[constants.CONFIG_OPTION_TRANSLATOR_ENGINES] = [eng.strip() for eng in engines_str.split(',') if eng.strip()]
     app_cfg["data_source_mode"] = config_parser.get(constants.CONFIG_SECTION_DOMESTIC_SOURCE, "data_source_mode", fallback="local_then_online")
     app_cfg["local_data_path"] = config_parser.get(constants.CONFIG_SECTION_LOCAL_DATA, "local_data_path", fallback="").strip()
 
@@ -280,6 +285,7 @@ def load_config() -> Dict[str, Any]:
     app_cfg["schedule_force_reprocess"] = config_parser.getboolean("Scheduler", "schedule_force_reprocess", fallback=False)
     app_cfg["schedule_sync_map_enabled"] = config_parser.getboolean("Scheduler", "schedule_sync_map_enabled", fallback=False)
     app_cfg["schedule_sync_map_cron"] = config_parser.get("Scheduler", "schedule_sync_map_cron", fallback="0 1 * * *")
+
 
     return app_cfg
 
@@ -324,10 +330,15 @@ def save_config(new_config: Dict[str, Any]):
     # TMDB, Douban, Translation, etc.
     config.set(constants.CONFIG_SECTION_TMDB, "tmdb_api_key", str(new_config.get("tmdb_api_key", "")))
     config.set(constants.CONFIG_SECTION_API_DOUBAN, "api_douban_default_cooldown_seconds", str(new_config.get("api_douban_default_cooldown_seconds", 1.0)))
-    engines_list = new_config.get("translator_engines_order", [])
-    if not isinstance(engines_list, list) or not engines_list:
+    engines_list = new_config.get(constants.CONFIG_OPTION_TRANSLATOR_ENGINES, constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
+    if not isinstance(engines_list, list): # 健壮性检查
         engines_list = constants.DEFAULT_TRANSLATOR_ENGINES_ORDER
-    config.set(constants.CONFIG_SECTION_TRANSLATION, "translator_engines_order", ",".join(engines_list))
+    config.set(
+        constants.CONFIG_SECTION_TRANSLATION, 
+        constants.CONFIG_OPTION_TRANSLATOR_ENGINES, # 使用常量，不再是硬编码字符串
+        ",".join(engines_list)
+    )
+    config.set(constants.CONFIG_SECTION_TRANSLATION, "translator_engines_order_str", ",".join(engines_list))
     config.set(constants.CONFIG_SECTION_DOMESTIC_SOURCE, "data_source_mode", str(new_config.get("data_source_mode", "local_then_online")))
     config.set(constants.CONFIG_SECTION_LOCAL_DATA, "local_data_path", str(new_config.get("local_data_path", "")))
 
@@ -825,8 +836,6 @@ def api_get_emby_libraries():
     else: # get_emby_libraries 返回了 None，表示获取失败
         logger.error("/api/emby_libraries: 无法获取Emby媒体库列表 (emby_handler返回None)。")
         return jsonify({"error": "无法获取Emby媒体库列表，请检查Emby连接和日志"}), 500
-# --- API 端点结束 ---
-
 
 # --- 应用退出处理 ---
 def application_exit_handler():
@@ -1441,7 +1450,6 @@ def api_get_media_for_editing(item_id):
     if not media_processor_instance:
         return jsonify({"error": "核心处理器未就绪"}), 503
 
-    # ... (前面的代码，如获取 Emby 详情、数据库信息、演员列表等，保持不变) ...
     # 1. 从 Emby 获取详情 (保持不变)
     try:
         emby_details = emby_handler.get_emby_item_details(
@@ -1470,22 +1478,41 @@ def api_get_media_for_editing(item_id):
         if conn:
             conn.close()
 
-    # 3. 格式化演员列表 (保持不变)
-    current_cast_for_frontend = []
+    # ★★★ START: 3. 格式化并丰富演员列表 (关键修改) ★★★
+    enriched_cast_for_frontend = []
     if emby_details.get("People"):
         for person in emby_details.get("People", []):
-            if person.get("Id") and person.get("Name"):
+            person_id = person.get("Id")
+            if person_id and person.get("Name"):
                 provider_ids = person.get("ProviderIds", {})
-                current_cast_for_frontend.append({
-                    "embyPersonId": str(person["Id"]),
+                
+                # 为每个演员单独获取其详细信息以获得 image_tag
+                actor_image_tag = None
+                try:
+                    # 调用您现有的 emby_handler 方法来获取演员详情
+                    person_details = emby_handler.get_emby_item_details(
+                        person_id,
+                        media_processor_instance.emby_url,
+                        media_processor_instance.emby_api_key,
+                        media_processor_instance.emby_user_id
+                    )
+                    if person_details:
+                        actor_image_tag = person_details.get('ImageTags', {}).get('Primary')
+                except Exception as actor_e:
+                    logger.error(f"获取演员 {person_id} 的详情失败: {actor_e}")
+                
+                enriched_cast_for_frontend.append({
+                    "embyPersonId": str(person_id),
                     "name": person["Name"],
                     "role": person.get("Role", ""),
                     "imdbId": provider_ids.get("Imdb"),
                     "doubanId": provider_ids.get("Douban"),
-                    "tmdbId": provider_ids.get("Tmdb")
+                    "tmdbId": provider_ids.get("Tmdb"),
+                    "image_tag": actor_image_tag  # 加入演员的 image_tag
                 })
+    # ★★★ END: 3. ★★★
 
-    # ✨✨✨ [关键修改] 4. 增强生成搜索链接的日志 ✨✨✨
+    # 4. 生成搜索链接 (保持不变)
     google_search_for_wiki_url = None
     title = emby_details.get("Name")
     year = emby_details.get("ProductionYear")
@@ -1493,9 +1520,7 @@ def api_get_media_for_editing(item_id):
     if title:
         logger.info(f"准备为标题 '{title}' (年份: {year}) 生成搜索链接。")
         try:
-            # ✨✨✨ [关键修复] 使用 utils. 前缀来调用函数 ✨✨✨
             google_search_for_wiki_url = utils.generate_search_url('wikipedia', title, year)
-            
             if google_search_for_wiki_url:
                 logger.info(f"成功生成搜索链接: {google_search_for_wiki_url}")
             else:
@@ -1505,18 +1530,26 @@ def api_get_media_for_editing(item_id):
     else:
         logger.warning("无法生成搜索链接，因为 Emby 详情中缺少标题 (Name)。")
 
-    # 5. 组合最终的响应数据 (保持不变)
+    # ★★★ START: 5. 组合最终的响应数据 (关键修改) ★★★
     response_data = {
         "item_id": item_id,
         "item_name": emby_details.get("Name"),
         "item_type": emby_details.get("Type"),
+        
+        # 加入媒体海报的 image_tag
+        "image_tag": emby_details.get('ImageTags', {}).get('Primary'),
+        
         "original_score": failed_log_info.get("score"),
         "review_reason": failed_log_info.get("error_message"),
-        "current_emby_cast": current_cast_for_frontend,
+        
+        # 使用我们新生成的、包含 image_tag 的演员列表
+        "current_emby_cast": enriched_cast_for_frontend,
+        
         "search_links": {
             "google_search_wiki": google_search_for_wiki_url
         }
     }
+    # ★★★ END: 5. ★★★
     
     logger.info(f"API: 成功为项目 {item_id} 构建编辑详情，准备返回。")
     return jsonify(response_data)
@@ -1581,6 +1614,58 @@ def api_translate_cast():
     except Exception as e:
         logger.error(f"一键翻译演员列表时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在翻译时发生内部错误。"}), 500
+    
+# ★★★ START: Emby 图片代理路由 ★★★
+@app.route('/image_proxy/<path:image_path>')
+def proxy_emby_image(image_path):
+    """
+    一个安全的、动态的 Emby 图片代理。
+    """
+    # ★★★ START: 关键修复 - 直接检查属性，而不是调用不存在的方法 ★★★
+    if not media_processor_instance or not media_processor_instance.emby_url or not media_processor_instance.emby_api_key:
+        logger.warning("图片代理请求失败：核心处理器未配置 Emby URL 或 API Key。")
+        # 返回一个 1x1 的透明像素作为占位符
+        return Response(
+            b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82',
+            mimetype='image/png'
+        )
+    # ★★★ END: 关键修复 ★★★
+
+    try:
+        # 从已加载的配置中获取 Emby URL 和 API Key
+        emby_url = media_processor_instance.emby_url.rstrip('/')
+        emby_api_key = media_processor_instance.emby_api_key
+
+        query_string = request.query_string.decode('utf-8')
+        target_url = f"{emby_url}/{image_path}"
+        if query_string:
+            target_url += f"?{query_string}"
+        
+        headers = {
+            'X-Emby-Token': emby_api_key,
+            'User-Agent': request.headers.get('User-Agent', 'EmbyActorProcessorProxy/1.0')
+        }
+        
+        logger.debug(f"代理图片请求: {target_url}")
+
+        emby_response = requests.get(target_url, headers=headers, stream=True, timeout=20)
+        emby_response.raise_for_status()
+
+        return Response(
+            stream_with_context(emby_response.iter_content(chunk_size=8192)),
+            content_type=emby_response.headers.get('Content-Type'),
+            status=emby_response.status_code
+        )
+    except Exception as e:
+        logger.error(f"代理 Emby 图片时发生严重错误: {e}", exc_info=True)
+        # 返回一个占位符图片
+        return Response(
+            b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82',
+            mimetype='image/png'
+        )
+    
+    
+# ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')

@@ -1,5 +1,11 @@
 <template>
-  <n-config-provider :theme="isDarkTheme ? darkTheme : undefined" :theme-overrides="themeOverridesComputed" :locale="zhCN" :date-locale="dateZhCN">
+  <!-- 
+    ★★★ 1. 在 n-config-provider 外层包裹一个 div ★★★
+    这个 div 将作为我们应用主题 class 的根节点，确保 Naive UI 能正确应用主题。
+  -->
+  <div :class="isDarkTheme ? 'dark-mode' : 'light-mode'">
+    <n-config-provider :theme="isDarkTheme ? darkTheme : undefined" :theme-overrides="themeOverridesComputed" :locale="zhCN" :date-locale="dateZhCN">
+      <n-message-provider> <!-- ★★★ (可选但推荐) 包裹 n-message-provider ★★★ -->
         <n-layout style="height: 100vh;">
           <n-layout-header :bordered="false" class="app-header">
             <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
@@ -12,7 +18,6 @@
                 </n-switch>
               </div>
             </div>
-
           </n-layout-header>
           <n-layout has-sider>
             <n-layout-sider
@@ -70,27 +75,28 @@
             </n-layout-content>
           </n-layout>
         </n-layout>
-  </n-config-provider>
+      </n-message-provider>
+    </n-config-provider>
+  </div>
 </template>
 
 <script setup>
-import { ref, computed, h, onMounted, onBeforeUnmount } from 'vue';
+// ★★★ 2. 确保导入了 watch ★★★
+import { ref, computed, h, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import {
   NConfigProvider,
   NLayout, NLayoutHeader, NLayoutSider, NLayoutContent,
   NMenu, NSwitch, NIcon, NCard, NText, NProgress,
-  darkTheme, zhCN, dateZhCN, useMessage
+  darkTheme, zhCN, dateZhCN, useMessage, NMessageProvider // ★★★ 确保导入了 NMessageProvider ★★★
 } from 'naive-ui';
 import axios from 'axios';
 import { useConfig } from './composables/useConfig.js';
 
-// 导入新的独立设置页面组件
 import EmbySettingsPage from './components/settings/EmbySettingsPage.vue';
 import ApiDataSourceSettingsPage from './components/settings/ApiDataSourceSettingsPage.vue';
 import SchedulerSettingsPage from './components/settings/SchedulerSettingsPage.vue';
 import GeneralSettingsPage from './components/settings/GeneralSettingsPage.vue';
-// 其他页面组件
 import ActionsPage from './components/ActionsPage.vue';
 import ReviewList from './components/ReviewList.vue';
 
@@ -102,16 +108,27 @@ import {
   TimerOutline as SchedulerIcon,
   OptionsOutline as GeneralIcon
 } from '@vicons/ionicons5';
+
 const router = useRouter(); 
 const route = useRoute(); 
-const isDarkTheme = ref(true);
-const collapsed = ref(false);
-const currentComponentKey = ref('settings-emby');
 
+// ★★★ 3. 从 localStorage 初始化 isDarkTheme ★★★
+const isDarkTheme = ref(localStorage.getItem('theme') !== 'light');
+
+const collapsed = ref(false);
 const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲', message: '等待任务', progress: 0 });
 const showStatusArea = ref(true);
 const activeMenuKey = computed(() => route.name);
 const appVersion = ref(__APP_VERSION__);
+
+// ★★★ 4. 使用 watch 监听并保存主题变化 ★★★
+watch(isDarkTheme, (newValue) => {
+  if (newValue) {
+    localStorage.setItem('theme', 'dark');
+  } else {
+    localStorage.setItem('theme', 'light');
+  }
+});
 
 const renderIcon = (iconComponent) => {
   return () => h(NIcon, null, { default: () => h(iconComponent) });
@@ -127,18 +144,16 @@ const menuOptions = ref([
   { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
 ]);
 
-function handleMenuUpdate(key, item) { // item 是被点击的菜单项对象
-  // 假设菜单的 key 就是路由的 name
-  // 或者如果 key 是路径，可以直接 router.push(key)
-  if (item.path) { // 如果你的菜单项里直接存了 path
+function handleMenuUpdate(key, item) {
+  if (item.path) {
       router.push(item.path);
-  } else { // 否则假设 key 是路由的 name
+  } else {
       router.push({ name: key });
   }
 }
 
 const statusTypeComputed = computed(() => { return 'info';});
-const appMessage = useMessage(); // App.vue 自身的 message 实例
+const appMessage = useMessage();
 const { fetchConfigData: initialFetchGlobalConfig, configError: globalConfigError } = useConfig();
 
 const fetchStatus = async () => {
@@ -149,17 +164,49 @@ const fetchStatus = async () => {
     console.error('获取状态失败:', error);
   }
 };
+
+// ★★★ 5. 增强版的主题变量配置 ★★★
 const themeOverridesComputed = computed(() => {
-  if (isDarkTheme.value) {
-    return { common: { bodyColor: '#18181c' }};
+  if (!isDarkTheme.value) {
+    return {
+      common: { bodyColor: '#f0f2f5' }
+    };
   }
-  return { common: { bodyColor: '#f0f2f5' }};
+  return {
+    common: {
+      bodyColor: '#101014', 
+      cardColor: '#1a1a1e', 
+      inputColor: '#1a1a1e',
+      actionColor: '#242428',
+      borderColor: 'rgba(255, 255, 255, 0.12)',
+    },
+    Card: {
+      color: '#1a1a1e',
+      titleTextColor: 'rgba(255, 255, 255, 0.92)',
+    },
+    DataTable: {
+      tdColor: '#1a1a1e',
+      thColor: '#1a1a1e',
+      tdColorStriped: '#202024',
+    },
+    Input: {
+      color: '#1a1a1e',
+    },
+    Select: { // 顺便把 Select 的颜色也统一了
+      peers: {
+        InternalSelection: {
+          color: '#1a1a1e'
+        }
+      }
+    }
+  };
 });
+
 let statusIntervalId = null;
 
 onMounted(async () => {
   await initialFetchGlobalConfig();
-  if (globalConfigError.value && appMessage) { // 检查 useConfig 返回的错误状态
+  if (globalConfigError.value && appMessage) {
     appMessage.error(`初始化应用配置失败: ${globalConfigError.value}`);
   }
   await fetchStatus();
@@ -175,6 +222,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style>
+/* ... 你的全局样式保持不变 ... */
 html, body {
   height: 100vh;
   margin: 0;

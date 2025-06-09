@@ -1,11 +1,10 @@
 <template>
-  <div>
-    <n-h2>手动操作</n-h2>
+  <!-- ★★★ 1. 使用 n-space 作为根容器 ★★★ -->
+  <n-space vertical :size="24" style="margin-top: 15px;">
     <n-alert 
       v-if="taskStatus.is_running" 
       title="后台任务运行中" 
       type="warning" 
-      style="margin-bottom: 20px;"
       closable
     >
       当前有后台任务正在执行 ({{ taskStatus.current_action }})。
@@ -13,8 +12,8 @@
       建议等待当前任务完成后再进行其他操作。
     </n-alert>
 
-    <!-- 全量扫描区域 -->
-    <n-card title="全量媒体库扫描">
+    <!-- ★★★ 2. 第一个卡片，包裹全量扫描区域 ★★★ -->
+    <n-card title="全量媒体库扫描" class="beautified-card" :bordered="false">
       <template #header-extra>
         <n-button
           type="error"
@@ -39,15 +38,14 @@
         >
           启动全量扫描
         </n-button>
-        <p style="font-size: 0.85em; color: #888; margin-top: 5px;">友情提示：全量扫描耗时较长，大约3-5分钟才能处理一部影片，建议定时夜里悄悄的干活。</p>
+        <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">友情提示：全量扫描耗时较长，大约3-5分钟才能处理一部影片，建议定时夜里悄悄的干活。</p>
       </n-space>
     </n-card>
 
-    <!-- 同步映射表区域 -->
-    <n-card title="同步Emby演员映射表">
+    <!-- ★★★ 3. 第二个卡片，包裹同步映射表区域 ★★★ -->
+    <n-card title="同步Emby演员映射表" class="beautified-card" :bordered="false">
       <n-space vertical>
         <n-space align="center">
-          <!-- 原有的同步按钮 -->
           <n-button
             type="primary"
             @click="triggerSyncMap"
@@ -57,13 +55,11 @@
             同步映射表
           </n-button>
 
-          <!-- 新增的导出按钮 -->
           <n-button @click="exportMap" :loading="isExporting">
             <template #icon><n-icon :component="ExportIcon" /></template>
-            导出映射表
+            导出
           </n-button>
           
-          <!-- 新增的导入按钮 -->
           <n-upload
             action="/api/import_person_map"
             :show-file-list="false"
@@ -74,21 +70,20 @@
           >
             <n-button :loading="isImporting">
               <template #icon><n-icon :component="ImportIcon" /></template>
-              导入映射表
+              导入
             </n-button>
           </n-upload>
         </n-space>
         
-        <!-- 说明文字 -->
-        <p style="font-size: 0.85em; color: #888; margin: 0;">
+        <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">
           <b>同步：</b>从Emby读取所有人物信息为后续创建各数据源ID映射表。<br>
-          <b>导出/导入：</b>用于备份或迁移人物映射数据，以及分享给别人使用。导入会覆盖现有相同 Emby Person ID 的记录。
+          <b>导出/导入：</b>用于备份或迁移人物映射数据。导入会覆盖现有相同 Emby Person ID 的记录。
         </p>
       </n-space>
     </n-card>
 
-    <!-- 实时日志显示区域 -->
-    <n-card title="实时日志" content-style="padding: 0;" style="margin-top: 20px;">
+    <!-- ★★★ 4. 第三个卡片，包裹实时日志显示区域 ★★★ -->
+    <n-card title="实时日志" class="beautified-card" :bordered="false" content-style="padding: 0;">
        <template #header-extra>
         <n-button text @click="clearLogs" style="font-size: 14px;">
           <template #icon><n-icon :component="TrashIcon" /></template>
@@ -102,15 +97,16 @@
         style="font-size: 13px; line-height: 1.6;"
       />
     </n-card>
-
-  </div>
+  </n-space>
 </template>
 
 <script setup>
+// ... 你的 <script setup> 部分完全不需要任何修改 ...
+// ★★★ 只需要确保从 naive-ui 导入了 NCard 和 NSpace ★★★
 import { ref, computed } from 'vue';
 import axios from 'axios';
 import { 
-  NCard, NButton, NCheckbox, NSpace, NH2, NLog, NIcon, useMessage, 
+  NCard, NButton, NCheckbox, NSpace, NAlert, NLog, NIcon, useMessage, 
   NUpload 
 } from 'naive-ui';
 
@@ -122,8 +118,6 @@ import {
 
 const message = useMessage();
 
-// --- Props ---
-// 接收来自 App.vue 的实时任务状态
 const props = defineProps({
   taskStatus: {
     type: Object,
@@ -133,22 +127,20 @@ const props = defineProps({
       current_action: '空闲',
       progress: 0,
       message: '无任务',
-      logs: [] // 确保默认值包含 logs 数组
+      logs: []
     })
   }
 });
 
-// --- 本地状态 ---
 const forceReprocessAll = ref(false);
+const isExporting = ref(false);
+const isImporting = ref(false);
 
-// --- 计算属性 ---
-// ✨ logContent 现在直接从 prop 计算，不再需要本地 logs 数组和 watch 监听器 ✨
 const logContent = computed(() => {
-  // 如果 taskStatus.logs 存在且是一个数组，则用换行符连接
   if (props.taskStatus && Array.isArray(props.taskStatus.logs)) {
     return props.taskStatus.logs.slice().reverse().join('\n');
   }
-  return '等待日志...'; // 默认或错误情况下的文本
+  return '等待日志...';
 });
 
 const currentActionIncludesScan = computed(() => 
@@ -158,11 +150,6 @@ const currentActionIncludesSyncMap = computed(() =>
   props.taskStatus.current_action && props.taskStatus.current_action.toLowerCase().includes('sync')
 );
 
-// ---导出/导入映射表
-const isExporting = ref(false);
-const isImporting = ref(false);
-
-// --- 方法 ---
 const triggerFullScan = async () => {
   try {
     const formData = new FormData();
@@ -198,35 +185,26 @@ const triggerStopTask = async () => {
 };
 
 const clearLogs = () => {
-  // 这个按钮现在只是一个视觉效果，因为日志由后端控制
   message.info('日志将在下次任务开始时自动清空。');
 };
 
-// --- Watcher (不再需要了！) ---
-// 由于 logContent 直接从 prop 计算，我们不再需要复杂的 watch 逻辑来手动拼接日志。
-// 每次 App.vue 的轮询更新了 taskStatus prop，logContent 就会自动重新计算。
-// 这大大简化了组件的逻辑！
-// 3. 添加新的方法
 const exportMap = async () => {
   isExporting.value = true;
   try {
-    // 使用 axios 下载文件
     const response = await axios({
       url: '/api/export_person_map',
       method: 'GET',
-      responseType: 'blob', // 关键：告诉 axios 我们要下载二进制数据
+      responseType: 'blob',
     });
 
-    // 从响应头中获取文件名
     const contentDisposition = response.headers['content-disposition'];
-    let filename = 'person_map_backup.csv'; // 默认文件名
+    let filename = 'person_map_backup.csv';
     if (contentDisposition) {
       const filenameMatch = contentDisposition.match(/filename="?(.+)"?/);
       if (filenameMatch.length === 2)
         filename = filenameMatch[1];
     }
 
-    // 创建一个临时的 a 标签来触发下载
     const url = window.URL.createObjectURL(new Blob([response.data]));
     const link = document.createElement('a');
     link.href = url;
@@ -248,12 +226,12 @@ const exportMap = async () => {
 const beforeImport = () => {
   isImporting.value = true;
   message.loading('正在上传并导入文件，请稍候...', { duration: 0 });
-  return true; // 返回 true 以继续上传
+  return true;
 };
 
 const afterImport = ({ event }) => {
   isImporting.value = false;
-  message.destroyAll(); // 清除 loading 消息
+  message.destroyAll();
   try {
     const response = JSON.parse(event.target.response);
     message.success(response.message || '导入成功！');
@@ -275,11 +253,5 @@ const errorImport = ({ event }) => {
 
 </script>
 
-<style scoped>
-.n-card {
-  margin-bottom: 20px;
-}
-p {
-  margin-top: 8px;
-}
-</style>
+<!-- ★★★ 5. 移除旧的 scoped 样式 ★★★ -->
+<!-- 原来的 <style scoped> 已被删除，因为卡片间距由 n-space 控制 -->

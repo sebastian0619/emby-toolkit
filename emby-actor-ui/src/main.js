@@ -6,6 +6,9 @@ import router from './router'; // 你配置的 Vue Router 实例
 
 // 1. 导入整个 Naive UI 库，用于 app.use() 全局注册组件
 import naive from 'naive-ui';
+import Sortable from 'sortablejs'
+// 全局样式
+import './assets/global.css'
 
 // 2. 单独导入需要在应用最顶层包裹的 Provider 组件
 //    NConfigProvider 通常在 App.vue 或一个专门的布局组件中处理主题等，
@@ -19,7 +22,7 @@ import {
   // 如果需要，也可以在这里导入 NConfigProvider, darkTheme, zhCN, dateZhCN
   // 但通常 NConfigProvider 放在 App.vue 或 AppShell.vue 中更方便管理主题切换
 } from 'naive-ui';
-
+window.Sortable = Sortable
 // 创建 Vue 应用实例
 // 我们使用渲染函数 h() 来在顶层包裹 Provider 组件
 const app = createApp({
