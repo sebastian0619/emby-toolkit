@@ -1314,21 +1314,20 @@ class SyncHandler:
                         existing_map_id = found_entry_for_update["map_id"]
                         logger.debug(f"  找到映射表记录 (map_id: {existing_map_id}) for EmbyPID '{emby_pid}' (或其关联ID)。准备更新。")
                         
-                        # 构建更新的字段和值 (确保顺序一致)
-                        update_data_map = {} # 使用字典来确保键的唯一性，并稍后按固定顺序提取
+                        update_data_map = {}
 
                         # 总是更新这些
                         update_data_map["emby_person_id"] = emby_pid
                         update_data_map["emby_person_name"] = emby_name
                         
                         # 条件性更新其他ID，如果新ID存在，则使用新ID；否则，保留旧ID
-                        update_data_map["imdb_id"] = imdb_pid if imdb_pid is not None else found_entry_for_update.get("imdb_id")
-                        update_data_map["tmdb_person_id"] = tmdb_pid if tmdb_pid is not None else found_entry_for_update.get("tmdb_person_id")
-                        update_data_map["douban_celebrity_id"] = douban_pid if douban_pid is not None else found_entry_for_update.get("douban_celebrity_id")
+                        update_data_map["imdb_id"] = imdb_pid if imdb_pid is not None else found_entry_for_update["imdb_id"]
+                        update_data_map["tmdb_person_id"] = tmdb_pid if tmdb_pid is not None else found_entry_for_update["tmdb_person_id"]
+                        update_data_map["douban_celebrity_id"] = douban_pid if douban_pid is not None else found_entry_for_update["douban_celebrity_id"]
                         
                         # 更新对应的名字 (如果对应的ID存在，则用emby_name，否则保留旧名字)
-                        update_data_map["tmdb_name"] = current_tmdb_name if tmdb_pid is not None else found_entry_for_update.get("tmdb_name")
-                        update_data_map["douban_name"] = current_douban_name if douban_pid is not None else found_entry_for_update.get("douban_name")
+                        update_data_map["tmdb_name"] = current_tmdb_name if tmdb_pid is not None else found_entry_for_update["tmdb_name"]
+                        update_data_map["douban_name"] = current_douban_name if douban_pid is not None else found_entry_for_update["douban_name"]
 
                         # 定义更新列的固定顺序 (不包括时间戳，它们由SQL处理)
                         update_columns_ordered = [
@@ -1338,7 +1337,8 @@ class SyncHandler:
                         ]
                         
                         set_clauses = [f"{col} = ?" for col in update_columns_ordered]
-                        update_values = [update_data_map.get(col) for col in update_columns_ordered] # 按固定顺序提取值
+                        # 注意：这里的 .get(col) 是正确的，因为 update_data_map 是一个标准的 Python 字典！
+                        update_values = [update_data_map.get(col) for col in update_columns_ordered] 
 
                         # 添加时间戳更新
                         set_clauses.extend(["last_synced_at = CURRENT_TIMESTAMP", "last_updated_at = CURRENT_TIMESTAMP"])
