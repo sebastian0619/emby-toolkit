@@ -116,19 +116,26 @@ class MediaProcessor:
     def is_stop_requested(self) -> bool:
         return self._stop_event.is_set()
     # ✨✨✨从数据库加载所有已处理过的项目ID到内存缓存中，以提高启动速度和避免重复处理✨✨✨
-    def _load_processed_log_from_db(self) -> set:
-        log_set = set()
+    def _load_processed_log_from_db(self) -> Dict[str, str]:
+        # 这一块的所有内容都需要缩进！
+        log_dict = {}
         try:
+            # self 前面有4个空格的缩进
             conn = self._get_db_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT item_id FROM processed_log")
+            # 同时查询 item_id 和 item_name
+            cursor.execute("SELECT item_id, item_name FROM processed_log")
             rows = cursor.fetchall()
             for row in rows:
-                log_set.add(row['item_id'])
+                # 将 ID 和 名称 存入字典
+                if row['item_id'] and row['item_name']:
+                    log_dict[row['item_id']] = row['item_name']
             conn.close()
         except Exception as e:
             logger.error(f"从数据库读取已处理记录失败: {e}", exc_info=True)
-        return log_set
+        
+        # return 前面也有4个空格的缩进
+        return log_dict
     # ✨✨✨将成功处理的媒体项ID、名称和评分保存到数据库和内存缓存中✨✨✨
     def save_to_processed_log(self, item_id: str, item_name: Optional[str] = None, score: Optional[float] = None):
         """将成功处理的媒体项ID、名称和评分保存到SQLite数据库和内存缓存中。"""
@@ -146,12 +153,20 @@ class MediaProcessor:
             # 先准备好评分的显示字符串
             score_display = f"{score:.1f}" if score is not None else "N/A" # <--- 计算好显示字符串
 
-            if item_id not in self.processed_items_cache:
-                self.processed_items_cache.add(item_id)
-                logger.info(f"Item ID '{item_id}' ('{item_name}') 已添加到已处理记录 (数据库[评分:{score_display}]和内存)。") # <--- 使用 score_display
+            # 准备好要存入缓存的名称，避免存入None
+            name_for_cache = item_name if item_name else f"未知项目(ID:{item_id})"
+            
+            # 检查是否是新条目，用于决定日志级别
+            is_new_in_cache = item_id not in self.processed_items_cache
+            
+            # 更新内存缓存（无论新旧，都用最新的名字覆盖）
+            self.processed_items_cache[item_id] = name_for_cache
+
+            # 根据是否是新条目打印不同级别的日志
+            if is_new_in_cache:
+                logger.info(f"Item '{item_name}' (ID: {item_id}) 已添加到已处理记录 (数据库[评分:{score_display}]和内存)。")
             else:
-                # 如果 logger.debug 这行也需要显示 score，同样处理
-                logger.debug(f"Item ID '{item_id}' ('{item_name}') 已更新/确认在已处理记录 (数据库[评分:{score_display}])。") # <--- 使用 score_display
+                logger.debug(f"Item '{item_name}' (ID: {item_id}) 已更新/确认在已处理记录 (数据库[评分:{score_display}])。")
         except Exception as e:
             logger.error(f"保存已处理记录到数据库失败 (Item ID: {item_id}): {e}", exc_info=True)
     # ✨✨✨清除数据库中的所有已处理记录以及内存中的缓存✨✨✨
@@ -744,7 +759,9 @@ class MediaProcessor:
 
         # ✨ 核心优化：在所有操作之前，先检查顶层ID是否需要跳过 ✨
         if not force_reprocess_this_item and emby_item_id in self.processed_items_cache:
-            logger.info(f"顶层项目 (ID: {emby_item_id}) 已处理过，跳过整个处理流程。")
+            # 从缓存字典中获取片名，如果找不到则提供一个默认值
+            item_name_from_cache = self.processed_items_cache.get(emby_item_id, f"ID:{emby_item_id}")
+            logger.info(f"媒体 '{item_name_from_cache}' 已处理过，跳过整个处理流程。")
             return True
 
         try:
