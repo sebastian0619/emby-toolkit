@@ -14,13 +14,6 @@
     </div>
 
     <div v-else-if="itemDetails && itemDetails.item_name">
-      <!-- 
-        ★★★ 调整参数 [1]: 页面主布局 - 海报与演员列表的宽度比例 ★★★
-        - `cols`: 定义了总列数。`1` 表示默认1列，`l:3` 表示在 large 屏幕及以上是3列。
-        - `span`: 定义了子项占据的列数。
-        - 当前设置 (l:3, l:1, l:2) 表示在大屏幕上，左侧海报占 1/3，右侧演员列表占 2/3。
-        - 示例: 想让海报更宽，可以改为 `cols="1 l:5"`，左侧 `span="1 l:2"`，右侧 `span="1 l:3"`。
-      -->
       <n-grid cols="1 l:4" :x-gap="24" responsive="screen">
         <!-- 左侧信息栏 (海报) -->
         <n-grid-item span="1 l:1">
@@ -59,7 +52,6 @@
             </n-card>
 
             <n-card title="辅助工具" :bordered="false">
-              <!-- ... 辅助工具部分 ... -->
               <n-space vertical>
                 <n-form-item label="数据操作" label-placement="top">
                   <n-space>
@@ -108,7 +100,7 @@
                   </n-input-group>
                   <template #feedback>
                     <n-text depth="3" style="font-size: 0.85em;">
-                      提取后将自动与下方列表进行匹配更新。
+                      提取后将自动与右方列表进行匹配更新。
                     </n-text>
                   </template>
                 </n-form-item>
@@ -119,77 +111,75 @@
 
         <!-- 右侧演员列表 -->
         <n-grid-item span="1 l:3">
-          <n-card title="演员列表" :bordered="false">
+          <n-card title="演员列表 (可拖动排序)" :bordered="false">
             
             <n-form label-placement="left" label-width="auto">
-              <!-- 
-                ★★★ 调整参数 [2]: 演员列表的响应式列数 ★★★
-                - `cols`: 定义了在不同屏幕尺寸下显示的列数。
-                - `s:2`: small 屏幕及以上显示2列。
-                - `l:3`: large 屏幕及以上显示3列。
-                - `xl:4`: extra large 屏幕及以上显示4列。
-                - 您可以根据需要自由增删或修改这些值，例如改为 `l:2 xl:3 2xl:4`。
-              -->
-              <n-grid cols="1 s:2 m:2 l:3 xl:4 2xl:5" :x-gap="16" :y-gap="16" responsive="screen">
-                <n-grid-item v-for="(actor, index) in editableCast" :key="actor._temp_id">
-                  <n-card size="small" class="actor-edit-card" content-style="padding: 12px;">
-                    <template #header>
-                      <div class="actor-card-header">
-                        <n-avatar
-                          round
-                          size="small"
-                          :style="{ backgroundColor: getAvatarColor(actor.name) }"
-                        >
-                          {{ index + 1 }}
-                        </n-avatar>
-                        <span class="actor-name-title" :title="actor.name">{{ actor.name || '新演员' }}</span>
-                      </div>
-                    </template>
-                    <template #header-extra>
-                      <n-space>
-                        <n-button text @click="moveActorUp(index)" :disabled="index === 0">
-                          <n-icon :component="ArrowUpIcon" />
-                        </n-button>
-                        <n-button text @click="moveActorDown(index)" :disabled="index === editableCast.length - 1">
-                          <n-icon :component="ArrowDownIcon" />
-                        </n-button>
-                        <n-popconfirm @positive-click="removeActor(index)">
-                          <template #trigger>
-                            <n-button text type="error">
-                              <n-icon :component="TrashIcon" />
-                            </n-button>
-                          </template>
-                          确定要删除演员 “{{ actor.name || '新演员' }}” 吗？
-                        </n-popconfirm>
-                      </n-space>
-                    </template>
-                    
-                    <div class="actor-card-content">
-                      <n-image
-                        :src="getActorImageUrl(actor)"
-                        lazy
-                        object-fit="cover"
-                        class="actor-avatar-image"
-                      >
-                        <template #placeholder>
-                          <div class="avatar-placeholder">
-                            <n-icon :component="PersonIcon" size="24" :depth="3" />
-                          </div>
-                        </template>
-                      </n-image>
+              <draggable
+                v-model="editableCast"
+                tag="div"
+                item-key="_temp_id"
+                class="actor-grid-container"
+                handle=".drag-handle"
+                animation="300"
+              >
+                <template #item="{ element: actor, index }">
+                  <div class="actor-grid-item">
+                    <n-card size="small" class="actor-edit-card" content-style="padding: 12px;">
+                      <template #header>
+                        <div class="actor-card-header">
+                          <n-avatar
+                            round
+                            size="small"
+                            :style="{ backgroundColor: getAvatarColor(actor.name) }"
+                          >
+                            {{ index + 1 }}
+                          </n-avatar>
+                          <span class="actor-name-title" :title="actor.name">{{ actor.name || '新演员' }}</span>
+                        </div>
+                      </template>
+                      <template #header-extra>
+                        <n-space>
+                          <n-button text class="drag-handle">
+                            <n-icon :component="DragHandleIcon" />
+                          </n-button>
+                          <n-popconfirm @positive-click="removeActor(index)">
+                            <template #trigger>
+                              <n-button text type="error">
+                                <n-icon :component="TrashIcon" />
+                              </n-button>
+                            </template>
+                            确定要删除演员 “{{ actor.name || '新演员' }}” 吗？
+                          </n-popconfirm>
+                        </n-space>
+                      </template>
                       
-                      <div class="actor-inputs">
-                        <n-form-item label="演员" label-placement="left" label-width="40" class="compact-form-item">
-                          <n-input v-model:value="actor.name" placeholder="演员名" size="small" />
-                        </n-form-item>
-                        <n-form-item label="角色" label-placement="left" label-width="40" class="compact-form-item">
-                          <n-input v-model:value="actor.role" placeholder="角色名" size="small" />
-                        </n-form-item>
+                      <div class="actor-card-content">
+                        <n-image
+                          :src="getActorImageUrl(actor)"
+                          lazy
+                          object-fit="cover"
+                          class="actor-avatar-image"
+                        >
+                          <template #placeholder>
+                            <div class="avatar-placeholder">
+                              <n-icon :component="PersonIcon" size="24" :depth="3" />
+                            </div>
+                          </template>
+                        </n-image>
+                        
+                        <div class="actor-inputs">
+                          <n-form-item label="演员" label-placement="left" label-width="40" class="compact-form-item">
+                            <n-input v-model:value="actor.name" placeholder="演员名" size="small" />
+                          </n-form-item>
+                          <n-form-item label="角色" label-placement="left" label-width="40" class="compact-form-item">
+                            <n-input v-model:value="actor.role" placeholder="角色名" size="small" />
+                          </n-form-item>
+                        </div>
                       </div>
-                    </div>
-                  </n-card>
-                </n-grid-item>
-              </n-grid>
+                    </n-card>
+                  </div>
+                </template>
+              </draggable>
             </n-form>
             
             <div class="sticky-actions">
@@ -215,22 +205,19 @@
 </template>
 
 <script setup>
-// ... 你的 import 保持不变，但需要新增 NFormItem
+import draggable from 'vuedraggable';
 import { NIcon, NInput, NInputGroup, NGrid, NGridItem, NFormItem, NTag, NAvatar, NPopconfirm, NImage } from 'naive-ui';
 import { ref, onMounted, watch, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import axios from 'axios';
 import { NPageHeader, NDivider, NSpin, NCard, NDescriptions, NDescriptionsItem, NButton, NSpace, NAlert, useMessage } from 'naive-ui';
 import {
-  ArrowUpOutline as ArrowUpIcon,
-  ArrowDownOutline as ArrowDownIcon,
+  MoveOutline as DragHandleIcon,
   TrashOutline as TrashIcon,
   ImageOutline as ImageIcon,
   PersonOutline as PersonIcon
 } from '@vicons/ionicons5';
 
-// ... 你的 setup 函数中的所有逻辑保持完全不变 ...
-// 我们不再需要 AddIcon，所以可以从 import 中移除
 const route = useRoute();
 const router = useRouter();
 const message = useMessage();
@@ -261,21 +248,17 @@ const getActorImageUrl = (actor) => {
   return '';
 };
 
-// ★★★ START: 1. 新增计算属性，用于转换媒体类型为中文 ★★★
 const itemTypeInChinese = computed(() => {
   if (!itemDetails.value || !itemDetails.value.item_type) {
-    return ''; // 如果数据还没加载好，返回空
+    return '';
   }
-  
-  // 根据后端返回的 item_type 值进行判断
   switch (itemDetails.value.item_type) {
     case 'Movie':
       return '电影';
     case 'Series':
       return '电视剧';
-    // 你可以根据需要添加更多类型，比如 'Episode' -> '单集'
     default:
-      return itemDetails.value.item_type; // 如果是未知类型，直接显示原文
+      return itemDetails.value.item_type;
   }
 });
 
@@ -308,20 +291,6 @@ watch(() => itemDetails.value, (newItemDetails) => {
 const removeActor = (index) => {
   editableCast.value.splice(index, 1);
   message.info("已从编辑列表移除一个演员（尚未保存）。");
-};
-
-const moveActorUp = (index) => {
-  if (index > 0) {
-    const actorToMove = editableCast.value.splice(index, 1)[0];
-    editableCast.value.splice(index - 1, 0, actorToMove);
-  }
-};
-
-const moveActorDown = (index) => {
-  if (index < editableCast.value.length - 1) {
-    const actorToMove = editableCast.value.splice(index, 1)[0];
-    editableCast.value.splice(index + 1, 0, actorToMove);
-  }
 };
 
 const refreshCastFromDouban = async () => {
@@ -516,13 +485,6 @@ const handleSaveChanges = async () => {
   width: 100%;
   height: auto;
   background-color: var(--n-card-color);
-
-  /* 
-    ★★★ 调整参数 [3]: 海报的形状 (宽高比) ★★★
-    - `2 / 3`: 标准电影海报比例。
-    - `3 / 4`: 稍方正一些的比例。
-    - `1 / 1`: 正方形。
-  */
   aspect-ratio: 2 / 3;
 }
 
@@ -534,6 +496,27 @@ const handleSaveChanges = async () => {
   justify-content: center;
   background-color: var(--n-action-color);
 }
+
+.actor-grid-container {
+  display: grid;
+  grid-template-columns: repeat(1, 1fr);
+  gap: 16px;
+}
+/* ★★★ START: 核心修改 - 移除 2xl 的 5 列规则 ★★★ */
+@media (min-width: 640px) { /* s */
+  .actor-grid-container { grid-template-columns: repeat(2, 1fr); }
+}
+@media (min-width: 768px) { /* m */
+  .actor-grid-container { grid-template-columns: repeat(2, 1fr); }
+}
+@media (min-width: 1024px) { /* l */
+  .actor-grid-container { grid-template-columns: repeat(3, 1fr); }
+}
+@media (min-width: 1280px) { /* xl */
+  .actor-grid-container { grid-template-columns: repeat(4, 1fr); }
+}
+/* 移除了针对 1536px 以上屏幕的 5 列规则 */
+/* ★★★ END: 核心修改 ★★★ */
 
 .actor-edit-card:hover {
   transform: translateY(-4px);
@@ -561,14 +544,8 @@ const handleSaveChanges = async () => {
 }
 
 .actor-avatar-image {
-  /* 
-    ★★★ 调整参数 [4]: 演员头像的大小 ★★★
-    - 直接修改下面的 width 和 height 值即可。
-    - 建议保持两者相等以维持正方形。
-  */
   width: 100px;
   height: 100px;
-  
   border-radius: var(--n-border-radius);
   flex-shrink: 0;
 }
@@ -598,5 +575,24 @@ const handleSaveChanges = async () => {
   justify-content: flex-end;
   z-index: 10;
   margin: 24px -24px 0;
+}
+
+.drag-handle {
+  cursor: grab;
+}
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.sortable-ghost {
+  opacity: 0.4;
+  background: var(--n-action-color);
+  border: 1px dashed var(--n-border-color);
+}
+.sortable-drag {
+  opacity: 1 !important;
+  transform: rotate(2deg);
+  box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+  z-index: 99;
 }
 </style>

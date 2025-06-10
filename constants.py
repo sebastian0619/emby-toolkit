@@ -14,7 +14,7 @@ DEFAULT_AI_TRANSLATION_PROMPT = """
 """
 
 # --- Web Application Settings ---
-APP_VERSION = "1.0.7"  # 或者你的实际版本号
+APP_VERSION = "1.0.8"  # 或者你的实际版本号
 DEBUG_MODE = False      # 开发时设为 True，部署到生产环境时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 
@@ -89,14 +89,6 @@ ACTOR_STATUS_TEXT_MAP = {
     "parent_failed": "媒体项处理失败",
     "unknown": "未知状态"
 }
-
-# ✨✨✨ 本地导出/覆盖缓存功能的常量 ✨✨✨
-CONFIG_SECTION_LOCAL_EXPORT = "LocalExport"
-CONFIG_OPTION_EXPORT_ENABLED = "export_enabled"
-CONFIG_OPTION_EXPORT_PATH = "export_path"
-CONFIG_OPTION_EXPORT_SAVE_IMAGES = "export_save_images"
-# ✨✨✨ 新增结束 ✨✨✨
-
 # API Source Map (如果未来增加其他API来源)
 SOURCE_API_MAP = {
     "Douban": {

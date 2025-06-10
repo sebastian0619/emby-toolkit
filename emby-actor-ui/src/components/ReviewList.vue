@@ -56,7 +56,6 @@
 </template>
 
 <script setup>
-// ... 你的 <script setup> 部分完全不需要任何修改 ...
 import { useRouter } from 'vue-router';
 import { ref, onMounted, computed, h } from 'vue';
 import axios from 'axios';
@@ -124,14 +123,34 @@ const columns = computed(() => [
     title: '媒体名称 (ID)',
     key: 'item_name',
     resizable: true,
+    // ★★★ START: 核心修改 ★★★
     render(row) {
-      return h('div', null, [
-        h(NText, { strong: true, style: 'cursor: pointer;', onClick: () => goToEditPage(row) }, { default: () => row.item_name || '未知名称' }),
+      // 将 onClick 和 style 移到外层的 div 上
+      return h('div', { 
+        style: 'cursor: pointer; padding: 5px 0;', // 给整个div添加手型光标和一点垂直内边距，增加点击区域
+        onClick: () => goToEditPage(row) 
+      }, [
+        // 内部的 NText 不再需要 onClick 和 style
+        h(NText, { strong: true }, { default: () => row.item_name || '未知名称' }),
         h(NText, { depth: 3, style: 'font-size: 0.8em; display: block; margin-top: 2px;' }, { default: () => `(ID: ${row.item_id || 'N/A'})` })
       ]);
     }
+    // ★★★ END: 核心修改 ★★★
   },
-  { title: '类型', key: 'item_type', width: 80, resizable: true },
+  { 
+    title: '类型', 
+    key: 'item_type', 
+    width: 80, 
+    resizable: true,
+    render(row) {
+      const typeMap = {
+        'Movie': '电影',
+        'Series': '电视剧',
+        'Episode': '剧集'
+      };
+      return typeMap[row.item_type] || row.item_type;
+    }
+  },
   {
     title: '记录时间',
     key: 'failed_at',
@@ -280,11 +299,5 @@ onMounted(() => {
 });
 </script>
 
-<!-- ★★★ 4. 移除所有 scoped 样式 ★★★ -->
-<!-- 
-  我们不再需要这里的局部样式了。
-  .beautified-card 的样式由 global.css 提供。
-  .error-message 的间距由 n-alert 的 style 属性控制。
--->
 <style scoped>
 </style>

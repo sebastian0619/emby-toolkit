@@ -1,6 +1,6 @@
 <template>
   <n-space vertical :size="24" style="margin-top: 15px;">
-    <!-- ... 第一个卡片保持不变 ... -->
+    <!-- ... 其他卡片保持不变 ... -->
     <n-card title="TMDB API 设置" class="beautified-card" :bordered="false">
       <n-form :model="configModel" label-placement="top">
         <n-grid :cols="1">
@@ -11,37 +11,56 @@
       </n-form>
     </n-card>
 
-    <!-- ★★★ START: 核心修改 - 升级翻译配置为可拖拽、可选择的标签选择器 ★★★ -->
     <n-card title="翻译配置" class="beautified-card" :bordered="false">
       <n-form :model="configModel" label-placement="top">
         <n-grid :cols="1">
           <n-form-item-grid-item label="翻译引擎顺序 (可拖动调整)" path="translator_engines_order">
+            
+            <draggable
+              v-model="configModel.translator_engines_order"
+              item-key="value"
+              tag="div"
+              class="engine-list"
+              handle=".drag-handle"
+              animation="300"
+            >
+              <template #item="{ element: engineValue, index }">
+                <n-tag
+                  :key="engineValue"
+                  type="primary"
+                  closable
+                  class="engine-tag"
+                  @close="removeEngine(index)"
+                >
+                  <n-icon :component="DragHandleIcon" class="drag-handle" />
+                  <!-- 这里会自动显示中文名，因为 getEngineLabel 会读取新的 label -->
+                  {{ getEngineLabel(engineValue) }}
+                </n-tag>
+              </template>
+            </draggable>
+
             <n-select
-              v-model:value="configModel.translator_engines_order"
-              multiple
-              tag
-              filterable
-              placeholder="从列表选择或直接输入引擎名"
-              :options="availableTranslatorEngines"
+              v-if="unselectedEngines.length > 0"
+              placeholder="点击添加新的翻译引擎..."
+              :options="unselectedEngines"
+              @update:value="addEngine"
+              style="margin-top: 10px;"
             />
-            <template #feedback>
-              <n-text depth="3" style="font-size:0.8em;">
-                第一个引擎为首选。支持的引擎: bing, google, baidu, alibaba, youdao, tencent.
-              </n-text>
-            </template>
+            <n-text v-else depth="3" style="font-size:0.8em; margin-top: 10px; display: block;">
+              所有可用引擎都已添加。
+            </n-text>
+
           </n-form-item-grid-item>
         </n-grid>
       </n-form>
     </n-card>
-    <!-- ★★★ END: 核心修改 ★★★ -->
 
-    <!-- ... 第三个卡片保持不变 ... -->
     <n-card class="beautified-card" :bordered="false">
       <template #header>
         <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
           <span>数据源配置</span>
           <n-button size="small" type="primary" @click="savePageConfig" :loading="savingConfig">
-            保存数据源配置
+            保存所有设置
           </n-button>
         </div>
       </template>
@@ -61,14 +80,14 @@
 </template>
 
 <script setup>
-// ... 你的 <script setup> 部分完全不需要任何修改 ...
-// ★★★ 只需要确保从 naive-ui 导入了 NCard 和 NSpace ★★★
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
+import draggable from 'vuedraggable';
 import {
   NForm, NFormItemGridItem, NInput, NSelect, NGrid, NText,
-  NButton, NCard, NSpace,
+  NButton, NCard, NSpace, NTag, NIcon,
   useMessage
 } from 'naive-ui';
+import { MoveOutline as DragHandleIcon } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 
 const message = useMessage();
@@ -80,14 +99,16 @@ const {
     configError
 } = useConfig();
 
+// ★★★ START: 核心修改 - 将 label 改为中文 ★★★
 const availableTranslatorEngines = ref([
-  { label: 'Bing', value: 'bing' },
-  { label: 'Google', value: 'google' },
-  { label: 'Baidu', value: 'baidu' },
-  { label: 'Alibaba', value: 'alibaba' },
-  { label: 'Youdao', value: 'youdao' },
-  { label: 'Tencent', value: 'tencent' },
+  { label: '必应 (Bing)', value: 'bing' },
+  { label: '谷歌 (Google)', value: 'google' },
+  { label: '百度 (Baidu)', value: 'baidu' },
+  { label: '阿里 (Alibaba)', value: 'alibaba' },
+  { label: '有道 (Youdao)', value: 'youdao' },
+  { label: '腾讯 (Tencent)', value: 'tencent' },
 ]);
+// ★★★ END: 核心修改 ★★★
 
 const domesticSourceOptions = ref([
   { label: '豆瓣本地优先，在线备选 (推荐)', value: 'local_then_online' },
@@ -96,12 +117,74 @@ const domesticSourceOptions = ref([
   { label: '禁用豆瓣数据源', value: 'disabled_douban' }
 ]);
 
+const getEngineLabel = (value) => {
+  const engine = availableTranslatorEngines.value.find(e => e.value === value);
+  return engine ? engine.label : value;
+};
+
+const unselectedEngines = computed(() => {
+  const selectedValues = new Set(configModel.value.translator_engines_order || []);
+  return availableTranslatorEngines.value.filter(engine => !selectedValues.has(engine.value));
+});
+
+const addEngine = (value) => {
+  if (!configModel.value.translator_engines_order) {
+    configModel.value.translator_engines_order = [];
+  }
+  if (value && !configModel.value.translator_engines_order.includes(value)) {
+    configModel.value.translator_engines_order.push(value);
+  }
+};
+
+const removeEngine = (index) => {
+  configModel.value.translator_engines_order.splice(index, 1);
+};
+
 const savePageConfig = async () => {
   const success = await handleSaveConfig();
   if (success) {
-    message.success('API 与数据源配置已成功保存！');
+    message.success('所有配置已成功保存！');
   } else {
-    message.error(configError.value || 'API 与数据源配置保存失败。');
+    message.error(configError.value || '配置保存失败。');
   }
 };
 </script>
+
+<style scoped>
+.engine-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--n-border-color);
+  border-radius: var(--n-border-radius);
+  background-color: var(--n-action-color);
+}
+
+.engine-tag {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  height: 34px;
+  background-color: var(--n-color);
+  border: 1px solid var(--n-border-color);
+}
+
+.drag-handle {
+  cursor: grab;
+  margin-right: 8px;
+  color: var(--n-text-color-3);
+}
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.sortable-ghost {
+  opacity: 0.4;
+  background: var(--n-color-target);
+}
+.sortable-drag {
+  opacity: 1 !important;
+  box-shadow: var(--n-box-shadow-2);
+}
+</style>

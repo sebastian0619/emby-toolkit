@@ -35,8 +35,9 @@ except ImportError:
         @staticmethod
         def _save_translation_to_db(*args, **kwargs): pass
 
-
+ 
 class MediaProcessor:
+    # ✨✨✨初始化✨✨✨
     def __init__(self, config: Dict[str, Any]):
         # config 这个参数，是已经从 load_config() 加载好的、一个标准的 Python 字典
         self.config = config
@@ -98,24 +99,23 @@ class MediaProcessor:
         if self.douban_api:
             logger.debug(f"  INIT - self.douban_api type: {type(self.douban_api)}")
 
-
+    # ✨✨✨获取数据库连接的辅助方法✨✨✨
     def _get_db_connection(self) -> sqlite3.Connection:
-        """获取数据库连接的辅助方法"""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row # 方便按列名访问
         return conn
-
+    # ✨✨✨设置停止信号，用于在多线程环境中优雅地中止长时间运行的任务✨✨✨
     def signal_stop(self):
         logger.info("MediaProcessor 收到停止信号。")
         self._stop_event.set()
-
+    # ✨✨✨清除停止信号，以便开始新的任务✨✨✨
     def clear_stop_signal(self):
         self._stop_event.clear()
         logger.debug("MediaProcessor 停止信号已清除。")
-
+    # ✨✨✨检查是否已请求停止当前任务✨✨✨
     def is_stop_requested(self) -> bool:
         return self._stop_event.is_set()
-
+    # ✨✨✨从数据库加载所有已处理过的项目ID到内存缓存中，以提高启动速度和避免重复处理✨✨✨
     def _load_processed_log_from_db(self) -> set:
         log_set = set()
         try:
@@ -129,7 +129,7 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"从数据库读取已处理记录失败: {e}", exc_info=True)
         return log_set
-
+    # ✨✨✨将成功处理的媒体项ID、名称和评分保存到数据库和内存缓存中✨✨✨
     def save_to_processed_log(self, item_id: str, item_name: Optional[str] = None, score: Optional[float] = None):
         """将成功处理的媒体项ID、名称和评分保存到SQLite数据库和内存缓存中。"""
         try:
@@ -154,7 +154,7 @@ class MediaProcessor:
                 logger.debug(f"Item ID '{item_id}' ('{item_name}') 已更新/确认在已处理记录 (数据库[评分:{score_display}])。") # <--- 使用 score_display
         except Exception as e:
             logger.error(f"保存已处理记录到数据库失败 (Item ID: {item_id}): {e}", exc_info=True)
-
+    # ✨✨✨清除数据库中的所有已处理记录以及内存中的缓存✨✨✨
     def clear_processed_log(self):
         """清除数据库中的已处理记录和内存缓存。"""
         try:
@@ -167,8 +167,8 @@ class MediaProcessor:
             logger.info("数据库和内存中的已处理记录已清除。")
         except Exception as e:
             logger.error(f"清除数据库已处理记录失败: {e}", exc_info=True)
-
-    def save_to_failed_log(self, item_id: str, item_name: Optional[str], error_msg: str, item_type: Optional[str] = None, score: Optional[float] = None): # <--- 1. 添加 score 参数
+    # ✨✨✨将处理失败或评分过低的媒体项信息保存到数据库，以便后续审查或手动处理✨✨✨
+    def save_to_failed_log(self, item_id: str, item_name: Optional[str], error_msg: str, item_type: Optional[str] = None, score: Optional[float] = None): 
         """将处理失败的媒体项信息和评分保存到SQLite数据库。"""
         try:
             conn = self._get_db_connection()
@@ -188,7 +188,7 @@ class MediaProcessor:
             logger.info(f"('{item_name}') 已作为失败/待手动处理项记录到数据库。原因: {error_msg} {score_info}")
         except Exception as e:
             logger.error(f"保存失败记录到数据库失败 (Item ID: {item_id}): {e}", exc_info=True)
-
+    # ✨✨✨翻译演员的特定字段（如姓名、角色），并智能处理缓存和翻译引擎的选择✨✨✨
     def _translate_actor_field(self, text: Optional[str], field_name: str, 
                                actor_name_for_log: str, 
                                db_cursor_for_cache: sqlite3.Cursor) -> Optional[str]:
@@ -247,7 +247,7 @@ class MediaProcessor:
             logger.warning(f"所有翻译引擎都未能翻译 '{text_stripped}' 或返回了原文。")
             DoubanApi._save_translation_to_db(text_stripped, None, f"failed_or_same_via_{final_engine}", cursor=db_cursor_for_cache)
             return text
-
+    # ✨✨✨评估处理后的演员列表质量，并返回一个0到10的分数✨✨✨
     def _evaluate_cast_processing_quality(self, final_cast: List[Dict[str, Any]], original_emby_cast_count: int) -> float:
         """
         评估处理后的演员列表质量，并返回一个分数 (0.0 - 10.0)。
@@ -337,7 +337,7 @@ class MediaProcessor:
         final_score_rounded = round(average_media_score, 1)
         logger.info(f"  媒体项演员处理质量评估完成，最终评分: {final_score_rounded:.1f} (基于 {total_actors_in_final_list} 位演员的平均分)")
         return final_score_rounded
-    
+    # ✨✨✨内部辅助函数✨✨✨
     def _update_person_map_entry_in_processor(self, cursor: sqlite3.Cursor, 
                                               emby_pid: str, 
                                               emby_name: str, 
@@ -393,7 +393,7 @@ class MediaProcessor:
         except sqlite3.Error as e_upsert:
             logger.error(f"    MediaProcessor: UPSERT for EmbyPID '{emby_pid}' in person_identity_map 失败: {e_upsert}", exc_info=True)
             return False
-        
+    # ✨✨✨优先级：有意义的候选角色 > 现有角色 > "演员" > 空✨✨✨    
     def _select_best_role(self, current_role: str, candidate_role: str) -> str:
         """
         根据优先级选择最佳角色名。
@@ -407,7 +407,7 @@ class MediaProcessor:
         if not candidate_role and current_role:
             return current_role
         return current_role
-    
+    # ✨✨✨从豆瓣API获取指定媒体的演员原始数据列表✨✨✨
     def _fetch_douban_cast(self, media_info: Dict[str, Any]) -> List[Dict[str, Any]]:
         """从豆瓣API获取演员原始数据。"""
         # 假设 constants 和 self.douban_api 已经存在
@@ -426,7 +426,7 @@ class MediaProcessor:
         if douban_data and not douban_data.get("error") and isinstance(douban_data.get("cast"), list):
             return douban_data["cast"]
         return []
-    
+    # ✨✨✨格式化从豆瓣获取的原始演员数据，进行初步清理和去重，使其符合内部处理格式✨✨✨
     def _format_douban_cast(self, douban_api_actors_raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """格式化豆瓣原始演员数据并进行初步去重。"""
         formatted_candidates = []
@@ -454,9 +454,8 @@ class MediaProcessor:
                 "ProviderIds": {"Douban": douban_id} if douban_id else {},
             })
         return formatted_candidates
-    
+    # ✨✨✨为给定的候选人（通常来自豆瓣）查询并返回其在TMDb和IMDb上的ID✨✨✨
     def _fetch_external_ids_for_person(self, person_candidate: Dict[str, Any], media_info: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-        """为给定的候选人查询TMDb和IMDb ID。"""
         # 假设 utils 和 tmdb_handler 已经导入
         name_zh = person_candidate.get("Name")
         name_orig = person_candidate.get("OriginalName")
@@ -495,7 +494,7 @@ class MediaProcessor:
         
         logger.debug(f"    TMDb未能为 '{search_query}' 找到匹配。")
         return None, None, None
-
+    # ✨✨✨处理单个媒体项目演员列表的核心方法✨✨✨
     def _process_cast_list(self, current_emby_cast_people: List[Dict[str, Any]], media_info: Dict[str, Any]) -> List[Dict[str, Any]]:
         media_name_for_log = media_info.get("Name", "未知媒体")
         media_id_for_log = media_info.get("Id", "未知ID")
@@ -735,7 +734,7 @@ class MediaProcessor:
             if conn:
                 try: conn.close()
                 except Exception as close_err: logger.error(f"数据库连接关闭失败: {close_err}")
-    
+    # ✨✨✨处理单个媒体项目（电影或剧集）的入口方法✨✨✨
     def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False, process_episodes: bool = True) -> bool:
         """
         最终版：处理单个媒体项目，逻辑清晰，性能最优。
@@ -797,7 +796,7 @@ class MediaProcessor:
         else:
             logger.warning(f"项目 '{item_name_for_log}' (ID: {emby_item_id}) 的类型为 '{item_type}'，已跳过。")
             return True
-
+    # ✨✨✨处理单个媒体项（电影、剧集或单集）的核心业务逻辑✨✨✨
     def _process_item_core_logic(self, item_details: Dict[str, Any], force_reprocess_this_item: bool = False) -> bool:
         """
         最终版：只负责处理，不再关心是否跳过。
@@ -874,7 +873,7 @@ class MediaProcessor:
             if item_type_for_log in ["Movie", "Series"]:
                 self.save_to_failed_log(item_id, item_name_for_log, "更新Emby演员信息失败", item_type_for_log, score=None)
             return False
-        
+    # ✨✨✨使用手动编辑的演员列表来处理单个媒体项目✨✨✨    
     def process_item_with_manual_cast(self, item_id: str, manual_cast_list: List[Dict[str, Any]]) -> bool:
         """
         使用手动编辑的演员列表来处理单个媒体项目。
@@ -935,7 +934,7 @@ class MediaProcessor:
         
         logger.info(f"手动处理 Item ID: {item_id} ('{item_name_for_log}') 完成。")
         return True
-        
+    # ✨✨✨如果一个项目本次处理成功且评分达标，则从失败日志中移除它✨✨✨    
     def _remove_from_failed_log_if_exists(self, item_id: str):
         """如果 item_id 存在于 failed_log 中，则删除它。"""
         try:
@@ -948,7 +947,7 @@ class MediaProcessor:
             conn.close()
         except Exception as e:
             logger.error(f"从 failed_log 删除 Item ID '{item_id}' 时失败: {e}", exc_info=True)
-
+    # ✨✨✨将从 TMDb API 获取的演员数据格式化为 Emby Handler 或内部处理所需的标准字典格式✨✨✨
     def _format_tmdb_person_for_emby_handler(self, tmdb_person_data: Dict[str, Any],
                                              role_from_source: Optional[str] = None
                                              ) -> Dict[str, Any]:
@@ -995,7 +994,7 @@ class MediaProcessor:
         #         break # 通常取第一个中文翻译即可
 
         return actor_entry
-
+    # ✨✨✨处理配置文件中指定的所有媒体库的入口方法✨✨✨
     def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False, process_episodes: bool = True):
         self.clear_stop_signal()
         logger.debug("process_full_library: 方法开始执行。")
@@ -1068,8 +1067,7 @@ class MediaProcessor:
             logger.info("全量处理Emby媒体库结束。")
             if update_status_callback:
                 update_status_callback(100, "全量处理完成。")
-
-
+    # ✨✨✨关闭 MediaProcessor 实例，释放其占用的所有资源（如数据库连接、API会话等）✨✨✨
     def close(self):
         """关闭 MediaProcessor 实例，例如关闭数据库连接池或释放其他资源。"""
         if self.douban_api and hasattr(self.douban_api, 'close'):
@@ -1077,7 +1075,7 @@ class MediaProcessor:
             self.douban_api.close()
         # 如果有其他需要关闭的资源，例如数据库连接池（如果使用的话），在这里关闭
         logger.debug("MediaProcessor close 方法执行完毕。")
-
+    # ✨✨✨使用从网页提取的新演员列表来“丰富”当前演员列表✨✨✨
     def enrich_cast_list(self, current_cast: List[Dict[str, Any]], new_cast_from_web: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         使用从网页提取的新列表来丰富（Enrich）当前演员列表。
@@ -1157,8 +1155,7 @@ class MediaProcessor:
 
         logger.info(f"“仅丰富”模式完成，返回 {len(enriched_cast)} 位演员。")
         return enriched_cast
-    
-    # ✨✨✨一键翻译演员列表的核心方法 ✨✨✨
+    # ✨✨✨一键翻译演员列表✨✨✨
     def translate_cast_list(self, cast_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         翻译演员列表中的演员名和角色名，不执行任何其他操作。
