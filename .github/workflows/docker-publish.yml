@@ -4,7 +4,11 @@ on:
   push:
     branches:
       - main      # 监听 main 分支
+<<<<<<< HEAD
       - sa   # 监听 神医 分支
+=======
+      - develop   # 监听 develop 分支
+>>>>>>> bbb6ac40b032f92187120a529dff1c657cc701c3
     tags:
       - 'v*.*.*'
   workflow_dispatch:
