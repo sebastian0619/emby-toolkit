@@ -1,20 +1,22 @@
 # --- 阶段 1: 构建前端 ---
 FROM node:20-alpine AS frontend-build
 WORKDIR /app
-# --- 阶段 2: 构建最终的生产镜像 ---
-FROM python:3.11-slim
-# ✨ 1. 接收从 Unraid (或 docker-compose) 传来的环境变量，并设置默认值 ✨
-ARG PUID=1000
-ARG PGID=100
-WORKDIR /app
-# 安装构建前端依赖所需的包
-RUN apk add --no-cache python3 make g++
 COPY emby-actor-ui/package.json emby-actor-ui/package-lock.json* ./emby-actor-ui/
 WORKDIR /app/emby-actor-ui
 # 使用 --no-fund 避免不必要的提示
 RUN npm install --no-fund
 COPY emby-actor-ui/ ./
 RUN npm run build
+
+# --- 阶段 2: 构建最终的生产镜像 ---
+FROM python:3.11-slim
+
+# ✨ 1. 接收从 Unraid (或 docker-compose) 传来的环境变量，并设置默认值 ✨
+ARG PUID=1000
+ARG PGID=100
+
+WORKDIR /app
+
 # 安装必要的系统依赖和 Node.js
 RUN apt-get update && \
     # ... (安装 nodejs 的部分) ...
