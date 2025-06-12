@@ -19,14 +19,26 @@ WORKDIR /app
 
 # 安装必要的系统依赖和 Node.js
 RUN apt-get update && \
-    apt-get install -y curl gnupg && \
-    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
-    apt-get update && \
+    # ... (安装 nodejs 的部分) ...
     apt-get install -y nodejs && \
-    # ✨ 2. 在这里创建用户和组 ✨
+    # ✨✨✨ START: 决定性的修复 ✨✨✨
+    # 1. 检查目标 PUID 是否已被占用，如果被占用，就删除那个用户
+    #    我们用 `getent passwd ${PUID}` 来查找，如果找到了，第一列就是用户名
+    if getent passwd ${PUID} > /dev/null; then \
+        echo "User with PUID ${PUID} already exists, deleting it."; \
+        EXISTING_USER=$(getent passwd ${PUID} | cut -d: -f1); \
+        deluser $EXISTING_USER; \
+    fi && \
+    # 2. 检查目标 PGID 是否已被占用，如果被占用，就删除那个组
+    if getent group ${PGID} > /dev/null; then \
+        echo "Group with PGID ${PGID} already exists, deleting it."; \
+        EXISTING_GROUP=$(getent group ${PGID} | cut -d: -f1); \
+        delgroup $EXISTING_GROUP; \
+    fi && \
+    # 3. 现在可以安全地创建我们自己的用户和组了
     groupadd -g ${PGID} myuser && \
     useradd -u ${PUID} -g myuser -s /bin/sh -m myuser && \
+    # ✨✨✨ END: 决定性的修复 ✨✨✨
     # 清理 apt 缓存
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
