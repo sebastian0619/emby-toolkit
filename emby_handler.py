@@ -562,10 +562,13 @@ def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str
     return all_persons
 
 # ✨✨✨ 新增：获取剧集下所有剧集的函数 ✨✨✨
-def get_series_children(series_id: str, base_url: str, api_key: str, user_id: str) -> Optional[List[Dict[str, Any]]]:
+def get_series_children(series_id: str, base_url: str, api_key: str, user_id: str, series_name_for_log: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
     """
     【修改】获取指定剧集 (Series) ID 下的所有子项目 (季和集)。
     """
+    # ✨ 1. 定义一个日志标识符，优先用片名 ✨
+    log_identifier = f"'{series_name_for_log}' (ID: {series_id})" if series_name_for_log else f"ID {series_id}"
+
     if not all([series_id, base_url, api_key, user_id]):
         logger.error("get_series_children: 参数不足。")
         return None
@@ -585,10 +588,10 @@ def get_series_children(series_id: str, base_url: str, api_key: str, user_id: st
         response.raise_for_status()
         data = response.json()
         children = data.get("Items", [])
-        logger.info(f"成功为剧集 {series_id} 获取到 {len(children)} 个子项目。")
+        logger.info(f"成功为剧集 {log_identifier} 获取到 {len(children)} 个子项目。")
         return children
     except requests.exceptions.RequestException as e:
-        logger.error(f"获取剧集 {series_id} 的子项目列表时发生错误: {e}", exc_info=True)
+        logger.error(f"获取剧集 {log_identifier} 的子项目列表时发生错误: {e}", exc_info=True)
         return None
     
 def download_emby_image(

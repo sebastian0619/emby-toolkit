@@ -464,7 +464,7 @@ class MediaProcessor:
 
     def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool = False) -> bool:
         """
-        【修复 database is locked 版】优化数据库事务，避免长时间锁定。
+        【最终毕业版】优化数据库事务，并补全缺失的功能代码。
         """
         item_id = item_details_from_emby.get("Id")
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
@@ -482,16 +482,12 @@ class MediaProcessor:
             logger.warning(f"跳过处理 '{item_name_for_log}'，原因: {error_msg}。")
             self.save_to_failed_log(item_id, item_name_for_log, f"预处理失败: {error_msg}", item_type)
             return False
-
-        # ✨ 我们不再在函数开头就打开一个长连接 ✨
-        # conn = self._get_db_connection() 
         
         try:
             # --- 阶段1: 演员处理和翻译 (使用独立的短事务) ---
             final_cast_perfect = []
             initial_actor_count = 0
             
-            # 路径和数据准备
             cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
             base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
             base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
@@ -502,27 +498,18 @@ class MediaProcessor:
             if not base_json_data_original:
                 raise ValueError(f"无法读取基础JSON文件: {os.path.join(base_cache_dir, base_json_filename)}")
             
-            # ✨ 使用 with 语句管理数据库连接，确保自动提交和关闭 ✨
             with self._get_db_connection() as conn_translate:
                 cursor_translate = conn_translate.cursor()
-                
                 if self.is_stop_requested(): raise InterruptedError("任务被中止")
-
                 original_cast_from_local = base_json_data_original.get("credits", {}).get("cast") or base_json_data_original.get("casts", {}).get("cast", [])
                 initial_actor_count = len(original_cast_from_local)
-                
                 intermediate_cast = self._process_cast_list_from_local(original_cast_from_local, item_details_from_emby, cursor_translate)
-                
                 genres = item_details_from_emby.get("Genres", [])
                 is_animation = "Animation" in genres or "动画" in genres
                 if is_animation:
                     logger.info(f"检测到媒体 '{item_name_for_log}' 为动画片，将处理配音角色。")
-
                 if self.is_stop_requested(): raise InterruptedError("任务被中止")
-
                 final_cast_perfect = self._format_and_complete_cast_list(intermediate_cast, is_animation)
-                
-                # with 块结束时，conn_translate 会被自动 commit 和 close
             
             # --- 阶段2: 文件写入 (不涉及数据库) ---
             base_json_data_for_override = copy.deepcopy(base_json_data_original)
@@ -543,13 +530,43 @@ class MediaProcessor:
                 if os.path.exists(temp_json_path): os.remove(temp_json_path)
                 raise e_write
 
+            # ✨✨✨ START: 补全缺失的功能代码 ✨✨✨
             if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
-                # ... (处理分集的逻辑不变) ...
-                pass # 省略以保持简洁，你的原始代码是正确的
+                logger.info(f"深度处理已启用，开始为 '{item_name_for_log}' 的所有子项目注入演员表...")
+                for filename in os.listdir(base_cache_dir):
+                    if filename.startswith("season-") and filename.endswith(".json"):
+                        child_json_original = _read_local_json(os.path.join(base_cache_dir, filename))
+                        if child_json_original:
+                            child_json_for_override = copy.deepcopy(child_json_original)
+                            child_json_for_override.setdefault("credits", {})["cast"] = final_cast_perfect
+                            override_child_path = os.path.join(base_override_dir, filename)
+                            try:
+                                with open(override_child_path, 'w', encoding='utf-8') as f:
+                                    json.dump(child_json_for_override, f, ensure_ascii=False, indent=4)
+                            except Exception as e:
+                                logger.error(f"写入子项目JSON失败: {override_child_path}, {e}")
 
             if self.sync_images_enabled:
-                # ... (图片同步的逻辑不变) ...
-                pass # 省略以保持简洁，你的原始代码是正确的
+                if self.is_stop_requested(): raise InterruptedError("任务被中止")
+                logger.info(f"图片同步已启用，开始为 '{item_name_for_log}' 下载图片...")
+                image_map = {"Primary": "poster.jpg", "Backdrop": "fanart.jpg", "Logo": "clearlogo.png"}
+                if item_type == "Movie": image_map["Thumb"] = "landscape.jpg"
+                for image_type, filename in image_map.items():
+                    emby_handler.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
+                
+                if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
+                    children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name_for_log) or []
+                    for child in children:
+                        child_type, child_id = child.get("Type"), child.get("Id")
+                        if child_type == "Season":
+                            season_number = child.get("IndexNumber")
+                            if season_number is not None:
+                                emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}.jpg"), self.emby_url, self.emby_api_key)
+                        elif child_type == "Episode":
+                            season_number, episode_number = child.get("ParentIndexNumber"), child.get("IndexNumber")
+                            if season_number is not None and episode_number is not None:
+                                emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
+            # ✨✨✨ END: 补全缺失的功能代码 ✨✨✨
 
             # --- 阶段3: 统计、评分和最终日志记录 (使用独立的短事务) ---
             final_actor_count = len(final_cast_perfect)
@@ -576,27 +593,22 @@ class MediaProcessor:
             if not refresh_success:
                 raise RuntimeError("触发Emby刷新失败")
             
-            # ✨ 这些方法会自己管理连接，实现短事务 ✨
             if processing_score < min_score_for_review:
                 self.save_to_failed_log(item_id, item_name_for_log, f"处理评分过低 ({processing_score:.1f} / {min_score_for_review:.1f})", item_type, score=processing_score)
             else:
                 self.save_to_processed_log(item_id, item_name_for_log, score=processing_score)
                 self._remove_from_failed_log_if_exists(item_id)
             
-            # ✨ 这里不再需要 conn.commit() 和 conn.close() ✨
             logger.info(f"--- 核心处理结束: '{item_name_for_log}' ---")
             return True
 
         except InterruptedError:
             logger.info(f"处理 '{item_name_for_log}' 的过程中被用户中止。")
-            # ✨ 这里也不再需要 conn.rollback() ✨
             return False
         except Exception as e:
             logger.error(f"处理 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
-            # ✨ 这里也不再需要 conn.rollback() ✨
             self.save_to_failed_log(item_id, item_name_for_log, f"核心处理异常: {str(e)}", item_type)
             return False
-        # ✨ finally 块也不再需要了 ✨
 
     def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False, process_episodes: bool = True) -> bool:
         if self.is_stop_requested(): return False
@@ -679,11 +691,10 @@ class MediaProcessor:
 
     def process_item_with_manual_cast(self, item_id: str, manual_cast_list: List[Dict[str, Any]], item_name: str) -> bool:
         """
-        【神医模式重构版 V2】使用手动编辑的演员列表，生成 override 文件并触发刷新。引入深拷贝确保 cache 安全。
+        【最终毕业版】手动处理流程，遵循所有配置和安全实践。
         """
         logger.info(f"手动处理流程启动 (神医模式)：ItemID: {item_id} ('{item_name}')")
 
-        # 1. 获取媒体的 TMDb ID 和类型，用于定位文件
         try:
             item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
             if not item_details:
@@ -700,52 +711,34 @@ class MediaProcessor:
             logger.error(f"手动处理失败：获取项目 {item_id} 详情时异常: {e}")
             return False
 
-        # 2. 构造 override 文件的完整路径
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
         base_json_filename = "all.json" if item_type == "Movie" else "series.json"
+        base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
         base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
         image_override_dir = os.path.join(base_override_dir, "images")
-        os.makedirs(image_override_dir, exist_ok=True)
-        os.makedirs(base_override_dir, exist_ok=True)
+        os.makedirs(image_override_dir, exist_ok=True) # 这一行已经隐式创建了 base_override_dir
         override_json_path = os.path.join(base_override_dir, base_json_filename)
 
-        # 3. 读取原始的 cache 文件作为基础
-        base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
         base_json_data_original = _read_local_json(os.path.join(base_cache_dir, base_json_filename))
         if not base_json_data_original:
             logger.warning(f"手动处理：未找到原始 cache 文件，将创建一个新的元数据结构。")
             base_json_data_original = {}
-
-        # ✨ 4. 立刻创建深拷贝副本，后续所有操作都针对副本 ✨
         base_json_data_for_override = copy.deepcopy(base_json_data_original)
 
-        # 5. 将手动编辑的演员列表，转换为符合 all.json 格式的列表
         final_cast_for_json = []
         for idx, actor in enumerate(manual_cast_list):
             final_cast_for_json.append({
-                "id": actor.get("tmdbId"),
-                "name": actor.get("name"),
-                "original_name": actor.get("original_name"),
-                "character": actor.get("role"),
-                "order": idx,
-                "adult": False,
-                "gender": 0,
-                "known_for_department": "Acting",
-                "popularity": 0.0,
-                "profile_path": None,
-                "cast_id": None,
-                "credit_id": None,
-                "douban_id": actor.get("doubanId"),
-                "imdb_id": actor.get("imdbId"),
+                "id": actor.get("tmdbId"), "name": actor.get("name"), "original_name": actor.get("original_name"),
+                "character": actor.get("role"), "order": idx, "adult": False, "gender": 0, "known_for_department": "Acting",
+                "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None,
+                "douban_id": actor.get("doubanId"), "imdb_id": actor.get("imdbId"),
             })
 
-        # 6. 将新的演员列表更新到副本中
         if item_type == "Movie":
             base_json_data_for_override.setdefault("casts", {})["cast"] = final_cast_for_json
-        else: # Series
+        else:
             base_json_data_for_override.setdefault("credits", {})["cast"] = final_cast_for_json
 
-        # 7. 将更新后的完整元数据写入 override 文件 (使用临时文件保证安全)
         temp_json_path = f"{override_json_path}.{random.randint(1000, 9999)}.tmp"
         try:
             with open(temp_json_path, 'w', encoding='utf-8') as f:
@@ -757,7 +750,6 @@ class MediaProcessor:
             if os.path.exists(temp_json_path): os.remove(temp_json_path)
             return False
 
-         # 8. 根据配置，处理分集 (注入演员表)
         if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
             logger.info(f"手动处理：深度处理已启用，将为所有子项目注入手动编辑后的演员表...")
             for filename in os.listdir(base_cache_dir):
@@ -768,12 +760,13 @@ class MediaProcessor:
                         child_json_for_override.setdefault("credits", {})["cast"] = final_cast_for_json
                         override_child_path = os.path.join(base_override_dir, filename)
                         try:
-                            with open(override_child_path, 'w', encoding='utf-8') as f:
+                            temp_child_path = f"{override_child_path}.{random.randint(1000, 9999)}.tmp"
+                            with open(temp_child_path, 'w', encoding='utf-8') as f:
                                 json.dump(child_json_for_override, f, ensure_ascii=False, indent=4)
+                            os.replace(temp_child_path, override_child_path)
                         except Exception as e:
                             logger.error(f"手动处理：写入子项目JSON失败: {override_child_path}, {e}")
 
-        # 9. 根据配置，同步图片
         if self.sync_images_enabled:
             logger.info(f"手动处理：图片同步已启用，开始下载图片...")
             image_map = {"Primary": "poster.jpg", "Backdrop": "fanart.jpg", "Logo": "clearlogo.png"}
@@ -782,7 +775,7 @@ class MediaProcessor:
                 emby_handler.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
             
             if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
-                children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id) or []
+                children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name) or []
                 for child in children:
                     child_type, child_id = child.get("Type"), child.get("Id")
                     if child_type == "Season":
@@ -794,7 +787,6 @@ class MediaProcessor:
                         if season_number is not None and episode_number is not None:
                             emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
 
-        # 10. 触发 Emby 刷新
         logger.info(f"手动处理：准备刷新 Emby 项目 {item_name}...")
         emby_handler.refresh_emby_item_metadata(
             item_id, self.emby_url, self.emby_api_key, 
@@ -802,11 +794,10 @@ class MediaProcessor:
             item_name_for_log=item_name
         )
         
-        # 11. 更新处理日志
-        self.save_to_processed_log(item_id, item_name, score=10.0) # 手动处理给满分
+        self.save_to_processed_log(item_id, item_name, score=10.0)
         self._remove_from_failed_log_if_exists(item_id)
         
-        logger.info(f"手动处理 Item ID: {item_id} ('{item_name}') 流程完成。")
+        logger.info(f"✅ 手动处理 '{item_name}' 流程完成。")
         return True
 
     def get_cast_for_editing(self, item_id: str) -> Optional[Dict[str, Any]]:

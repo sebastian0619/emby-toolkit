@@ -545,7 +545,7 @@ def _execute_task_with_lock(task_function, task_name: str, *args, **kwargs):
             logger.info(f"后台任务 '{task_name}' 结束，最终状态: {final_message_for_status}")
 
             if media_processor_instance and hasattr(media_processor_instance, 'close'):
-                logger.info(f"任务 '{task_name}' 结束 (finally块)，准备调用 media_processor_instance.close() ...")
+                logger.debug(f"任务 '{task_name}' 结束 (finally块)，准备调用 media_processor_instance.close() ...")
                 try:
                     media_processor_instance.close()
                     logger.debug(f"media_processor_instance.close() 调用完毕 (任务 '{task_name}' finally块)。")
