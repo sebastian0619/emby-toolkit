@@ -109,7 +109,7 @@ def get_db_connection() -> sqlite3.Connection:
     # 这个函数本身不应该处理目录创建，那是 init_db 的责任
     if not os.path.exists(os.path.dirname(DB_PATH)): # 检查数据库文件所在的目录是否存在
         logger.warning(f"数据库目录 {os.path.dirname(DB_PATH)} 不存在，get_db_connection 可能失败。")
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -124,6 +124,17 @@ def init_db():
 
         conn = get_db_connection()
         cursor = conn.cursor()
+        # ✨✨✨ 在创建表之前，启用 WAL 模式 ✨✨✨
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            result = cursor.fetchone()
+            if result and result[0].lower() == 'wal':
+                logger.info("数据库已成功启用 WAL (Write-Ahead Logging) 模式，提高并发性能。")
+            else:
+                logger.warning(f"尝试启用 WAL 模式，但当前模式为: {result[0] if result else '未知'}。")
+        except Exception as e_wal:
+            logger.error(f"启用 WAL 模式失败: {e_wal}")
+        # ✨✨✨ WAL 模式启用结束 ✨✨✨
 
         # --- processed_log 表 ---
         # 只在表不存在时创建，如果已存在则不操作

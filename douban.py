@@ -85,7 +85,7 @@ class DoubanApi:
 
         try:
             if not cursor:
-                internal_conn = sqlite3.connect(cls._db_path)
+                internal_conn = sqlite3.connect(cls._db_path, timeout=10.0)
                 internal_conn.row_factory = sqlite3.Row
                 cursor = internal_conn.cursor()
 
@@ -126,7 +126,7 @@ class DoubanApi:
                 if not cls._db_path: 
                     logger.warning("DoubanApi._save_translation_to_db: DB path not set, cannot save cache.")
                     return
-                internal_conn = sqlite3.connect(cls._db_path)
+                internal_conn = sqlite3.connect(cls._db_path, timeout=10.0)
                 cursor = internal_conn.cursor()
             
             # cursor 现在肯定不是 None

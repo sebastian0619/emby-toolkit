@@ -123,7 +123,9 @@ class MediaProcessor:
     # ✨ --- END: 评分功能 --- ✨
 
     def _get_db_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        # ✨✨✨ 增加 timeout 参数，单位是秒 ✨✨✨
+        # 5-10秒是一个比较合理的等待时间
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         return conn
 
