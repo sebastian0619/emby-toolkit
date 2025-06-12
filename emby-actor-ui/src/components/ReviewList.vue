@@ -25,6 +25,18 @@
           <n-icon :component="SearchIcon" @click="handleSearch" style="cursor: pointer;" />
         </template>
       </n-input>
+      <n-popconfirm
+          @positive-click="clearAllReviewItems"
+          :positive-button-props="{ type: 'error' }"
+        >
+          <template #trigger>
+            <n-button type="error" ghost :disabled="tableData.length === 0 || loading">
+              <template #icon><n-icon :component="TrashIcon" /></template>
+              清空所有待复核项
+            </n-button>
+          </template>
+          确定要清空所有 {{ totalItems }} 条待复核记录吗？此操作不可恢复。
+        </n-popconfirm>
 
       <n-spin :show="loading">
         <div v-if="error" class="error-message">
@@ -63,8 +75,7 @@ import {
     NCard, NSpin, NAlert, NText, NDataTable, NButton, NSpace, NPopconfirm, NEmpty, NInput, NIcon,
     useMessage
 } from 'naive-ui';
-import { SearchOutline as SearchIcon, PlayForwardOutline as ReprocessIcon, CheckmarkCircleOutline as MarkDoneIcon } from '@vicons/ionicons5';
-
+import { SearchOutline as SearchIcon, PlayForwardOutline as ReprocessIcon, CheckmarkCircleOutline as MarkDoneIcon, TrashOutline as TrashIcon } from '@vicons/ionicons5';
 const router = useRouter();
 const message = useMessage();
 
@@ -93,7 +104,20 @@ const formatDate = (timestamp) => {
     return '日期格式化错误';
   }
 };
-
+const clearAllReviewItems = async () => {
+  loading.value = true; // 开始时显示加载状态
+  try {
+    const response = await axios.post('/api/actions/clear_review_items');
+    message.success(response.data.message);
+    // 清空成功后，重新获取列表（此时列表应该为空）
+    fetchReviewItems(); 
+  } catch (err) {
+    console.error("清空待复核列表失败:", err);
+    message.error(`操作失败: ${err.response?.data?.error || err.message}`);
+    loading.value = false; // 失败时也要取消加载状态
+  }
+  // fetchReviewItems 内部会设置 loading.value = false，所以这里不用重复设置
+};
 const goToEditPage = (row) => {
   if (row && row.item_id) {
     router.push({ name: 'MediaEditPage', params: { itemId: row.item_id } });

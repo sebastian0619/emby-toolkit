@@ -1536,7 +1536,29 @@ def proxy_emby_image(image_path):
             b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82',
             mimetype='image/png'
         )
+# ✨✨✨ 清空待复核列表的 API ✨✨✨
+@app.route('/api/actions/clear_review_items', methods=['POST'])
+def api_clear_review_items():
+    logger.info("API: 收到清空所有待复核项目的请求。")
+    if task_lock.locked():
+        return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
     
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM failed_log")
+        deleted_count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        
+        message = f"操作成功！已从待复核列表中清空 {deleted_count} 条记录。"
+        logger.info(message)
+        return jsonify({"message": message}), 200
+        
+    except Exception as e:
+        logger.error(f"清空待复核列表时失败: {e}", exc_info=True)
+        return jsonify({"error": "服务器在清空数据库时发生内部错误"}), 500
+# ✨✨✨ END: 新增 API ✨✨✨
     
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
