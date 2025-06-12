@@ -955,6 +955,9 @@ class SyncHandler:
                     continue
 
                 # ✨✨✨ 1. 打印最原始的 ProviderIds ✨✨✨
+                if self.stop_event.is_set():
+                    logger.info(f"同步任务在获取演员 {emby_pid} 详情前被用户中止。")
+                    break
                 provider_ids_raw = person_details.get("ProviderIds", {})
                 # 1. 提取当前 Emby Person 的所有 ID
                 current_ids = {
