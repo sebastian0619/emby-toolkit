@@ -889,7 +889,6 @@ class SyncHandler:
 
                 # ✨✨✨ 1. 打印最原始的 ProviderIds ✨✨✨
                 provider_ids_raw = person_details.get("ProviderIds", {})
-                logger.info(f"DEBUG_SYNC: Actor '{person_details.get('Name')}', Raw ProviderIds from Emby: {provider_ids_raw}")
                 # 1. 提取当前 Emby Person 的所有 ID
                 current_ids = {
                     "emby_person_id": emby_pid,
@@ -914,8 +913,6 @@ class SyncHandler:
 
                 sql_find = f"SELECT * FROM person_identity_map WHERE {' OR '.join(search_conditions)}"
                 cursor.execute(sql_find, tuple(search_values))
-                # ✨✨✨ 2. 打印提取后的 current_ids ✨✨✨
-                logger.info(f"DEBUG_SYNC: Extracted current_ids: {current_ids}")
                 related_db_rows = cursor.fetchall()
 
                 # 3. 决策与执行
@@ -931,8 +928,6 @@ class SyncHandler:
                 else:
                     # --- 情况 B/C: 更新或合并 ---
                     # a. 将当前 Emby Person 的信息和所有找到的 DB 记录信息合并
-                    # ✨✨✨ 3. 打印合并后的 merged_record ✨✨✨
-                    logger.info(f"DEBUG_SYNC: Merged record before update: {merged_record}")
                     merged_record = current_ids.copy()
                     all_map_ids_to_process = []
                     for row in related_db_rows:
