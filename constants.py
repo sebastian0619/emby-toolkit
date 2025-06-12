@@ -15,7 +15,7 @@ DEFAULT_AI_TRANSLATION_PROMPT = """
 
 # --- Web Application Settings ---
 APP_VERSION = "1.0.8"  # 或者你的实际版本号
-DEBUG_MODE = False      # 开发时设为 True，部署到生产环境时应设为 False
+DEBUG_MODE = True      # 开发时设为 True，部署到生产环境时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 
 # --- 数据库设置 ---
@@ -68,6 +68,11 @@ CONFIG_OPTION_EMBY_SERVER_URL = "emby_server_url"
 CONFIG_OPTION_EMBY_API_KEY = "emby_api_key"
 CONFIG_OPTION_EMBY_USER_ID = "emby_user_id"
 CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS = "libraries_to_process"
+# ✨ 新增处理选项的节和选项常量 ✨
+CONFIG_SECTION_PROCESSING = "Processing"
+CONFIG_OPTION_REFRESH_AFTER_UPDATE = "refresh_emby_after_update"
+CONFIG_OPTION_PROCESS_EPISODES = "process_episodes"
+CONFIG_OPTION_SYNC_IMAGES = "sync_images" # <--- 在这里定义新选项的常量
 # ... 其他配置常量 ...
 CONFIG_SECTION_TMDB = "TMDB"
 CONFIG_OPTION_TMDB_API_KEY = "tmdb_api_key"
