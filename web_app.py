@@ -1236,60 +1236,27 @@ def api_handle_trigger_stop_task():
     
 @app.route('/api/preview_processed_cast/<item_id>', methods=['POST'])
 def api_preview_processed_cast(item_id):
-    """
-    一个轻量级的API，用于预览单个媒体项经过核心处理器处理后的演员列表。
-    它只返回处理结果，不执行任何数据库更新或Emby更新。
-    """
     if not media_processor_instance:
         return jsonify({"error": "核心处理器未就绪"}), 503
 
-    logger.info(f"API: 收到为 ItemID {item_id} 预览处理后演员的请求。")
-
-    # 步骤 1: 获取当前媒体的 Emby 详情
-    try:
-        item_details = emby_handler.get_emby_item_details(
-            item_id,
-            media_processor_instance.emby_url,
-            media_processor_instance.emby_api_key,
-            media_processor_instance.emby_user_id
-        )
-        if not item_details:
-            return jsonify({"error": "无法获取当前媒体的Emby详情"}), 404
-    except Exception as e:
-        logger.error(f"API /preview_processed_cast: 获取Emby详情失败 for ID {item_id}: {e}", exc_info=True)
-        return jsonify({"error": f"获取Emby详情时发生错误: {e}"}), 500
-
-    # 步骤 2: 调用核心处理方法
-    try:
-        current_emby_cast_raw = item_details.get("People", [])
-        
-        # 直接调用 MediaProcessor 的核心方法
-        processed_cast_result = media_processor_instance._process_cast_list(
-            current_emby_cast_people=current_emby_cast_raw,
-            media_info=item_details
-        )
-        
-        # 步骤 3: 将处理结果转换为前端友好的格式
-        # processed_cast_result 的格式是内部格式，我们需要转换为前端期望的格式
-        # (embyPersonId, name, role, imdbId, doubanId, tmdbId)
-        
+    # 直接调用 core_processor 的新方法
+    preview_cast_list = media_processor_instance.get_preview_of_processed_cast(item_id)
+    
+    if preview_cast_list is not None:
+        # 成功获取到预览列表，将其转换为前端期望的格式
         cast_for_frontend = []
-        for actor_data in processed_cast_result:
+        for actor_data in preview_cast_list:
             cast_for_frontend.append({
-                "embyPersonId": actor_data.get("EmbyPersonId"),
-                "name": actor_data.get("Name"),
-                "role": actor_data.get("Role"),
-                "imdbId": actor_data.get("ImdbId"),
-                "doubanId": actor_data.get("DoubanCelebrityId"),
-                "tmdbId": actor_data.get("TmdbPersonId"),
-                "matchStatus": "已刷新" # 可以根据 actor_data['_source_comment'] 提供更详细的状态
+                "embyPersonId": None,
+                "name": actor_data.get("name"),
+                "role": actor_data.get("character"),
+                "imdbId": actor_data.get("imdb_id"),
+                "doubanId": actor_data.get("douban_id"),
+                "tmdbId": actor_data.get("id"),
             })
-
-        logger.info(f"API: 成功为 ItemID {item_id} 预览了处理后的演员列表，返回 {len(cast_for_frontend)} 位演员。")
         return jsonify(cast_for_frontend)
-
-    except Exception as e:
-        logger.error(f"API /preview_processed_cast: 调用 _process_cast_list 时发生错误 for ID {item_id}: {e}", exc_info=True)
+    else:
+        return jsonify({"error": "无法生成预览，请检查后端日志获取详细错误信息。"}), 500
         return jsonify({"error": "在服务器端处理演员列表时发生内部错误"}), 500
     
 # ✨✨✨ 保存手动编辑结果的 API ✨✨✨
