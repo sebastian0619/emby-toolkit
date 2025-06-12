@@ -3,7 +3,8 @@ name: Docker Image CI & CD for Emby Actor Processor
 on:
   push:
     branches:
-      - main
+      - main      # 监听 main 分支
+      - sa   # 监听 神医 分支
     tags:
       - 'v*.*.*'
   workflow_dispatch:
@@ -11,7 +12,6 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
       packages: write
@@ -24,51 +24,43 @@ jobs:
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        id: buildx # 给这个步骤一个id
+        id: buildx
         uses: docker/setup-buildx-action@v3
         
-      # 步骤 1: 登录到 Docker Hub (恢复)
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 步骤 2: 提取 Docker 元数据 (恢复)
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/emby-actor-processor 
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/emby-actor-processor
           tags: |
-            # 当推送vX.Y.Z标签时，生成 X.Y.Z, X.Y, X 标签
+            # 为 develop 分支打上 'develop' 标签
+            type=raw,value=develop,enable=${{ github.ref == 'refs/heads/sa' }}
+
+            # 为 main 分支打上 'latest' 标签
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+            # 为版本标签 vX.Y.Z 打上 X.Y.Z, X.Y, X 标签
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            # 当推送到默认分支 (通常是main) 时，生成 latest 标签
-            type=raw,value=latest,enable={{is_default_branch}}
-            # (可选) 为main分支生成 edge 标签
-            type=edge,branch=main 
-            # (可选) 为每个commit生成sha前缀的标签
-            type=sha,prefix=,suffix=,format=short 
+            
+            # (可选) 为每个 commit 生成 sha 标签
+            type=sha,prefix=,suffix=,format=short
 
-      # (可选的调试步骤，如果你还想看 Dockerfile 内容)
-      # - name: Display Dockerfile content and hex dump
-      #   run: |
-      #     echo "--- Dockerfile Content (cat ./Dockerfile) ---"
-      #     cat ./Dockerfile
-      #     # ... (其他调试命令) ...
-
-      # 步骤 3: 构建并推送 Docker 镜像 (恢复并确保 file 指向正确的 Dockerfile)
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: . 
-          file: ./Dockerfile # <--- 确保这是你最终的、完整的 Dockerfile
-          push: true 
-          tags: ${{ steps.meta.outputs.tags }} 
-          labels: ${{ steps.meta.outputs.labels }} 
-          # platforms: linux/amd64,linux/arm64 # (可选)
-          cache-from: type=gha 
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64 # 推荐保留多平台构建
+          cache-from: type=gha
           cache-to: type=gha,mode=max
