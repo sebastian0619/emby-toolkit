@@ -776,11 +776,12 @@ class MediaProcessor:
 
     def get_cast_for_editing(self, item_id: str) -> Optional[Dict[str, Any]]:
         """
-        【新】获取单个媒体项的详细信息和格式化后的演员列表，专为编辑页面设计。
+        【恢复循环请求版】获取单个媒体项的详细信息和格式化后的演员列表，确保能获取到头像。
         """
         logger.info(f"为编辑页面获取数据：ItemID {item_id}")
-        # 1. 从 Emby 获取详情
+        # 1. 从 Emby 获取媒体详情
         try:
+            # ✨ 注意：这里调用 get_emby_item_details 时，不需要它返回 People 的详情了
             emby_details = emby_handler.get_emby_item_details(
                 item_id, self.emby_url, self.emby_api_key, self.emby_user_id
             )
@@ -804,26 +805,28 @@ class MediaProcessor:
 
         # 3. 格式化演员列表，并为每个演员获取头像
         cast_for_frontend = []
-        if emby_details.get("People"):
-            for person in emby_details.get("People", []):
-                person_id = person.get("Id")
-                if not (person_id and person.get("Name")): continue
-                
-                provider_ids = person.get("ProviderIds", {})
-                
-                # ✨✨✨ 直接从 person 对象里获取 ImageTags ✨✨✨
-                # 因为 get_emby_item_details 已经帮我们一次性获取了
-                actor_image_tag = person.get('ImageTags', {}).get('Primary')
-                
-                cast_for_frontend.append({
-                    "embyPersonId": str(person_id),
-                    "name": person["Name"],
-                    "role": person.get("Role", ""),
-                    "imdbId": provider_ids.get("Imdb"),
-                    "doubanId": provider_ids.get("Douban"),
-                    "tmdbId": provider_ids.get("Tmdb"),
-                    "image_tag": actor_image_tag
-                })
+        people_list = emby_details.get("People", [])
+        logger.info(f"开始为 {len(people_list)} 位演员获取头像信息...")
+        for person in people_list:
+            person_id = person.get("Id")
+            if not (person_id and person.get("Name")): continue
+            
+            provider_ids = person.get("ProviderIds", {})
+            
+            # 调用专门的函数获取 image_tag，这个函数只请求最少的数据
+            actor_image_tag = emby_handler.get_person_image_tag(
+                person_id, self.emby_url, self.emby_api_key, self.emby_user_id
+            )
+            
+            cast_for_frontend.append({
+                "embyPersonId": str(person_id),
+                "name": person["Name"],
+                "role": person.get("Role", ""),
+                "imdbId": provider_ids.get("Imdb"),
+                "doubanId": provider_ids.get("Douban"),
+                "tmdbId": provider_ids.get("Tmdb"),
+                "image_tag": actor_image_tag # 使用获取到的 tag
+            })
 
         # 4. 组合最终响应数据
         response_data = {
