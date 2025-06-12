@@ -2,6 +2,7 @@
 
 import requests
 import os
+import shutil
 import json
 import time
 from typing import Optional, List, Dict, Any
@@ -31,18 +32,49 @@ _emby_id_cache = {}
 _emby_season_cache = {}
 _emby_episode_cache = {}
 
+def get_person_image_tag(person_id: str, base_url: str, api_key: str, user_id: Optional[str]) -> Optional[str]:
+    """
+    【新】专门用于高效获取单个 Person 的主图片 Tag。
+    只请求最少的数据量，避免在循环中请求完整的 item details。
+    """
+    if not all([person_id, base_url, api_key]):
+        return None
 
-def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
+    # 使用 Fields=ImageTags 参数，告诉 Emby 我们只需要图片信息
+    person_details = get_emby_item_details(
+        item_id=person_id,  # <--- 把 item_emby_id 改成 item_id
+        emby_server_url=base_url,
+        emby_api_key=api_key,
+        user_id=user_id,
+        fields="ImageTags"
+    )
+
+    if person_details and "ImageTags" in person_details:
+        return person_details.get("ImageTags", {}).get("Primary")
+    
+    return None
+
+def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str, fields: Optional[str] = None) -> Optional[Dict[str, Any]]:
     if not all([item_id, emby_server_url, emby_api_key, user_id]):
         logger.error("获取Emby项目详情参数不足：缺少ItemID、服务器URL、API Key或UserID。")
         return None
 
     url = f"{emby_server_url.rstrip('/')}/Users/{user_id}/Items/{item_id}"
 
+    # 2. 动态决定 Fields 参数的值
+    if fields:
+        # 如果调用者提供了 fields，就用它
+        fields_to_request = fields
+    else:
+        # 否则，使用默认的一长串
+        fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines"
+
     params = {
         "api_key": emby_api_key,
-        "Fields": "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines"
+        "Fields": fields_to_request  # <--- 使用我们动态决定的值
     }
+    
+    # --- 函数的其余部分保持不变 ---
     logger.debug(
         f"准备获取Emby项目详情 (UserSpecific)：ItemID='{item_id}', UserID='{user_id}', BaseURL='{url}', Params='{params}'")
 
@@ -432,15 +464,21 @@ def refresh_emby_item_metadata(item_emby_id: str,
                                emby_server_url: str,
                                emby_api_key: str,
                                recursive: bool = False,
-                               # --- 修改默认参数，尝试“仅刷新缺失” ---
-                               metadata_refresh_mode: str = "Default", # 或者 "MissingMetadata" 如果Emby支持
-                               image_refresh_mode: str = "Default",   # 或者 "MissingImages"
-                               replace_all_metadata_param: bool = False, # <--- 关键：设为 False
-                               replace_all_images_param: bool = False    # 通常图片也不替换所有
+                               metadata_refresh_mode: str = "Default",
+                               image_refresh_mode: str = "Default",
+                               replace_all_metadata_param: bool = True,
+                               replace_all_images_param: bool = False,
+                               item_name_for_log: Optional[str] = None
                                ) -> bool:
     if not all([item_emby_id, emby_server_url, emby_api_key]):
         logger.error("刷新Emby元数据参数不足：缺少ItemID、服务器URL或API Key。")
         return False
+    
+    # 1. 定义一个清晰的日志标识符，优先用片名
+    log_identifier = f"'{item_name_for_log}'" if item_name_for_log else f"ItemID: {item_emby_id}"
+    
+    # 2. 打印一条总的开始日志
+    logger.info(f"开始为 {log_identifier} 触发Emby刷新...")
 
     refresh_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}/Refresh"
     params = {
@@ -451,30 +489,34 @@ def refresh_emby_item_metadata(item_emby_id: str,
         "ReplaceAllMetadata": str(replace_all_metadata_param).lower(),
         "ReplaceAllImages": str(replace_all_images_param).lower()
     }
-    log_message_prefix = f"EMBY_REFRESH_HANDLER (ItemID: {item_emby_id}):"
-    logger.debug(f"{log_message_prefix} Preparing to send refresh request. URL: {refresh_url}, Params: {params}")
-    logger.info(f"{log_message_prefix} 发送刷新请求 (ReplaceAllMetadata: {replace_all_metadata_param}, ImageRefreshMode: {image_refresh_mode})...")
+    
+    # 3. 使用缩进打印详细参数 (用 DEBUG 级别，因为这属于调试信息)
+    logger.debug(f"  - 刷新URL: {refresh_url}")
+    logger.debug(f"  - 刷新参数: {params}")
 
     try:
-        response = requests.post(refresh_url, params=params, timeout=30) # 增加超时
+        response = requests.post(refresh_url, params=params, timeout=30)
         if response.status_code == 204:
-            logger.info(f"{log_message_prefix} 刷新请求成功发送。Emby将在后台处理。")
+            # 4. 打印成功的消息，也用缩进
+            logger.info(f"  - 刷新请求已成功发送，Emby将在后台处理。")
             return True
         else:
-            logger.error(f"{log_message_prefix} 刷新请求失败: HTTP状态码 {response.status_code}")
-            try: logger.error(f"  响应内容: {response.text[:500]}")
-            except Exception: pass
+            # 5. 打印失败的消息，用 ERROR 级别并缩进
+            logger.error(f"  - 刷新请求失败: HTTP状态码 {response.status_code}")
+            try:
+                logger.error(f"    - 响应内容: {response.text[:500]}")
+            except Exception:
+                pass
             return False
     except requests.exceptions.Timeout:
-        logger.error(f"{log_message_prefix} 刷新请求超时。")
+        logger.error(f"  - 刷新请求超时。")
         return False
     except requests.exceptions.RequestException as e:
-        logger.error(f"{log_message_prefix} 刷新请求时发生网络错误: {e}")
+        logger.error(f"  - 刷新请求时发生网络错误: {e}")
         return False
     except Exception as e:
         import traceback
-        logger.error(
-            f"{log_message_prefix} 刷新请求时发生未知错误: {e}\n{traceback.format_exc()}")
+        logger.error(f"  - 刷新请求时发生未知错误: {e}\n{traceback.format_exc()}")
         return False
 
 def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
@@ -518,34 +560,75 @@ def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str
     return all_persons
 
 # ✨✨✨ 新增：获取剧集下所有剧集的函数 ✨✨✨
-def get_episodes_for_series(series_id: str, base_url: str, api_key: str, user_id: str) -> Optional[List[Dict[str, Any]]]:
+def get_series_children(series_id: str, base_url: str, api_key: str, user_id: str) -> Optional[List[Dict[str, Any]]]:
     """
-    获取指定剧集 (Series) ID 下的所有剧集 (Episode) 项目。
+    【修改】获取指定剧集 (Series) ID 下的所有子项目 (季和集)。
     """
     if not all([series_id, base_url, api_key, user_id]):
-        logger.error("get_episodes_for_series: 参数不足。")
+        logger.error("get_series_children: 参数不足。")
         return None
 
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
     params = {
         "api_key": api_key,
         "ParentId": series_id,
-        "IncludeItemTypes": "Episode",
+        "IncludeItemTypes": "Season,Episode", # ✨ 同时获取季和集 ✨
         "Recursive": "true",
-        "Fields": "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines",
+        "Fields": "ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,ParentIndexNumber,IndexNumber", # 确保有季号和集号
     }
     
-    logger.debug(f"准备获取剧集 {series_id} 的所有剧集...")
+    logger.debug(f"准备获取剧集 {series_id} 的所有子项目 (季和集)...")
     try:
         response = requests.get(api_url, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
-        episodes = data.get("Items", [])
-        logger.info(f"成功为剧集 {series_id} 获取到 {len(episodes)} 集。")
-        return episodes
+        children = data.get("Items", [])
+        logger.info(f"成功为剧集 {series_id} 获取到 {len(children)} 个子项目。")
+        return children
     except requests.exceptions.RequestException as e:
-        logger.error(f"获取剧集 {series_id} 的剧集列表时发生错误: {e}", exc_info=True)
+        logger.error(f"获取剧集 {series_id} 的子项目列表时发生错误: {e}", exc_info=True)
         return None
+    
+def download_emby_image(
+    item_id: str,
+    image_type: str,
+    save_path: str,
+    emby_server_url: str,
+    emby_api_key: str,
+    max_width: Optional[int] = None,
+    max_height: Optional[int] = None
+) -> bool:
+    """
+    从 Emby 下载指定类型的图片并保存到本地。
+    """
+    if not all([item_id, image_type, save_path, emby_server_url, emby_api_key]):
+        logger.error("download_emby_image: 参数不足。")
+        return False
+
+    image_url = f"{emby_server_url.rstrip('/')}/Items/{item_id}/Images/{image_type}"
+    params = {"api_key": emby_api_key}
+    if max_width: params["maxWidth"] = max_width
+    if max_height: params["maxHeight"] = max_height
+
+    logger.debug(f"准备下载图片: 类型='{image_type}', 从 URL: {image_url}")
+    
+    try:
+        with requests.get(image_url, params=params, stream=True, timeout=30) as r:
+            r.raise_for_status()
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            with open(save_path, 'wb') as f:
+                shutil.copyfileobj(r.raw, f)
+        logger.info(f"成功下载图片并保存到: {save_path}")
+        return True
+    except requests.exceptions.RequestException as e:
+        if hasattr(e, 'response') and e.response is not None and e.response.status_code == 404:
+            logger.debug(f"图片类型 '{image_type}' 在 Emby 项目 '{item_id}' 中不存在。")
+        else:
+            logger.error(f"下载图片时发生网络错误: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"保存图片到 '{save_path}' 时发生未知错误: {e}")
+        return False
 # if __name__ == '__main__':
 #     TEST_EMBY_SERVER_URL = "http://192.168.31.163:8096"
 #     TEST_EMBY_API_KEY = "eaa73b828ac04b1bb6d3687a0117572c"

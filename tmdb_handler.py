@@ -139,8 +139,37 @@ def get_movie_details_tmdb(movie_id: int, api_key: str, append_to_response: Opti
 
     return details
 
+def get_tv_details_tmdb(tv_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,content_ratings") -> Optional[Dict[str, Any]]:
+    """
+    【新增】获取电视剧的详细信息。
+    """
+    endpoint = f"/tv/{tv_id}"
+    params = {
+        "language": DEFAULT_LANGUAGE,
+        "append_to_response": append_to_response
+    }
+    logger.info(f"TMDb: 获取电视剧详情 (ID: {tv_id})")
+    details = _tmdb_request(endpoint, api_key, params)
+    
+    # 同样可以为剧集补充英文标题
+    if details and details.get("original_language") != "en" and DEFAULT_LANGUAGE.startswith("zh"):
+        if "translations" in (append_to_response or "") and details.get("translations", {}).get("translations"):
+            for trans in details["translations"]["translations"]:
+                if trans.get("iso_639_1") == "en" and trans.get("data", {}).get("name"):
+                    details["english_name"] = trans["data"]["name"]
+                    logger.debug(f"  从translations补充剧集英文名: {details['english_name']}")
+                    break
+        if not details.get("english_name"):
+            logger.debug(f"  尝试获取剧集 {tv_id} 的英文名...")
+            en_params = {"language": "en-US"}
+            en_details = _tmdb_request(f"/tv/{tv_id}", api_key, en_params)
+            if en_details and en_details.get("name"):
+                details["english_name"] = en_details.get("name")
+                logger.debug(f"  通过请求英文版补充剧集英文名: {details['english_name']}")
+    elif details and details.get("original_language") == "en":
+        details["english_name"] = details.get("original_name")
 
-# --- 人物相关 ---
+    return details
 
 def search_person_tmdb(query: str, api_key: str, page: int = 1) -> Optional[Dict[str, Any]]:
     endpoint = "/search/person"
@@ -317,6 +346,51 @@ def search_movie_and_get_imdb_id(
         logger.warning(f"  未能为电影 '{movie_title}' 找到合适的 TMDb 匹配。")
     return None
 
+def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    【新增】获取电视剧某一季的详细信息。
+    """
+    endpoint = f"/tv/{tv_id}/season/{season_number}"
+    params = {"language": DEFAULT_LANGUAGE}
+    logger.info(f"TMDb: 获取电视剧 {tv_id} 第 {season_number} 季的详情...")
+    return _tmdb_request(endpoint, api_key, params)
+
+def get_episode_details_tmdb(tv_id: int, season_number: int, episode_number: int, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    【新增】获取电视剧某一集的详细信息。
+    """
+    endpoint = f"/tv/{tv_id}/season/{season_number}/episode/{episode_number}"
+    params = {"language": DEFAULT_LANGUAGE}
+    logger.info(f"TMDb: 获取电视剧 {tv_id} S{season_number:02d}E{episode_number:02d} 的详情...")
+    return _tmdb_request(endpoint, api_key, params)
+
+def get_person_details_for_cast(person_id: int, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    【新增】获取单个演员的详细信息，并初步格式化以用于 cast 列表。
+    这个函数只负责获取数据，不处理中文名和角色。
+    """
+    # 我们复用已有的 get_person_details_tmdb 函数，但只请求最基础的信息以提高效率
+    details = get_person_details_tmdb(person_id, api_key, append_to_response=None)
+    
+    if not details:
+        return None
+    
+    # 返回一个符合 cast 列表基本结构的字典
+    # 这个结构是基于您提供的 JSON 示例
+    return {
+        "adult": details.get("adult", False),
+        "gender": details.get("gender"),
+        "id": details.get("id"),
+        "known_for_department": details.get("known_for_department"),
+        "name": details.get("name"), # 这是 TMDB 的名字，后面会被我们的中文名覆盖
+        "original_name": details.get("original_name"), # 这是真正的原始名
+        "popularity": details.get("popularity"),
+        "profile_path": details.get("profile_path"),
+        "cast_id": None, # 这些字段通常由电影/剧集详情提供，这里先设为None或默认值
+        "character": "", # 后面会被我们的角色名覆盖
+        "credit_id": None,
+        "order": 0
+    }
 
 
 # --- 示例用法 (测试时可以取消注释) ---

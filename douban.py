@@ -44,6 +44,7 @@ class DoubanApi:
         "search": "/search/weixin", "imdbid": "/movie/imdb/%s",
         "movie_detail": "/movie/", "tv_detail": "/tv/",
         "movie_celebrities": "/movie/%s/celebrities", "tv_celebrities": "/tv/%s/celebrities",
+        "celebrity_detail": "/celebrity/%s/",
     }
     _user_agents = [
         "api-client/1 com.douban.frodo/7.22.0.beta9(231) Android/23 product/Mate 40 vendor/HUAWEI model/Mate 40 brand/HUAWEI  rom/android  network/wifi  platform/AndroidPad",
@@ -441,6 +442,17 @@ class DoubanApi:
                 except Exception as e: logger.error(f"关闭 DoubanApi session 时出错: {e}")
                 finally: DoubanApi._session = None
             logger.debug("DoubanApi close 方法执行完毕。")
+
+    # ✨✨✨ 获取演员详细信息方法 ✨✨✨
+    def celebrity_details(self, celebrity_id: str) -> Dict[str, Any]:
+        """获取单个名人（演员/导演）的详细信息。"""
+        if not celebrity_id or not str(celebrity_id).isdigit():
+            return self._make_error_dict("invalid_param", f"无效的名人 celebrity_id: {celebrity_id}")
+        
+        detail_url = DoubanApi._urls["celebrity_detail"] % celebrity_id
+        logger.debug(f"获取名人详情: {detail_url}")
+        details = self.__invoke(detail_url)
+        return details
 
       
     @classmethod

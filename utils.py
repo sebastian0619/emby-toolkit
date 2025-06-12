@@ -180,6 +180,26 @@ def generate_search_url(site: str, title: str, year: Optional[int] = None) -> st
     encoded_query = quote_plus(final_query)
     return f"https://www.google.com/search?q={encoded_query}"
 
+def are_names_match(name1: Optional[str], original_name1: Optional[str], name2: Optional[str], original_name2: Optional[str]) -> bool:
+    """
+    【新增】一个更健壮的函数，用于比较两组演员名字是否匹配。
+    它会处理各种组合，例如 name1 匹配 original_name2。
+    """
+    # 清理和准备所有可能的名字，并转换为小写
+    names_set1 = {
+        str(name).lower().strip() for name in [name1, original_name1] if name and str(name).strip()
+    }
+    names_set2 = {
+        str(name).lower().strip() for name in [name2, original_name2] if name and str(name).strip()
+    }
+
+    # 如果任何一个集合为空，则无法匹配
+    if not names_set1 or not names_set2:
+        return False
+
+    # 检查两个集合是否有任何共同的元素
+    return not names_set1.isdisjoint(names_set2)
+
 if __name__ == '__main__':
     # 测试 contains_chinese
     print(f"'Hello': {contains_chinese('Hello')}")  # False

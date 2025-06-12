@@ -265,6 +265,11 @@ def load_config() -> Dict[str, Any]:
     app_cfg["delay_between_items_sec"] = config_parser.getfloat("General", "delay_between_items_sec", fallback=0.5)
     app_cfg["min_score_for_review"] = config_parser.getfloat("General", "min_score_for_review", fallback=6.0)
     app_cfg["process_episodes"] = config_parser.getboolean("General", "process_episodes", fallback=True)
+    app_cfg[constants.CONFIG_OPTION_SYNC_IMAGES] = config_parser.getboolean(
+        "General", # 将其归入 [General] 节
+        constants.CONFIG_OPTION_SYNC_IMAGES,
+        fallback=False # 默认不开启
+    )
 
     # Network Section
     app_cfg["user_agent"] = config_parser.get("Network", "user_agent", fallback='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36')
@@ -346,6 +351,12 @@ def save_config(new_config: Dict[str, Any]):
     config.set("General", "delay_between_items_sec", str(new_config.get("delay_between_items_sec", "0.5")))
     config.set("General", "min_score_for_review", str(new_config.get("min_score_for_review", "6.0")))
     config.set("General", "process_episodes", str(new_config.get("process_episodes", True)).lower())
+    sync_images_val = new_config.get(constants.CONFIG_OPTION_SYNC_IMAGES, False)
+    config.set(
+        "General", # 将其归入 [General] 节
+        constants.CONFIG_OPTION_SYNC_IMAGES,
+        str(sync_images_val).lower() # 保存为 'true' 或 'false'
+    )
 
     # Network Section
     config.set("Network", "user_agent", str(new_config.get("user_agent", "")))
@@ -674,7 +685,8 @@ def api_specific_sync_map_task(api_task_name: str): # <--- API 专属的，接�
                 db_path=DB_PATH,
                 emby_url=media_processor_instance.emby_url,
                 emby_api_key=media_processor_instance.emby_api_key,
-                emby_user_id=media_processor_instance.emby_user_id
+                emby_user_id=media_processor_instance.emby_user_id,
+                stop_event=media_processor_instance._stop_event
             )
             logger.info(f"'{api_task_name}': SyncHandler 实例已创建 (API)。")
             sync_handler_instance.sync_emby_person_map_to_db(
@@ -765,7 +777,8 @@ def trigger_sync_person_map(): # WebUI 用的
                     db_path=DB_PATH,
                     emby_url=media_processor_instance.emby_url,
                     emby_api_key=media_processor_instance.emby_api_key,
-                    emby_user_id=media_processor_instance.emby_user_id
+                    emby_user_id=media_processor_instance.emby_user_id,
+                    stop_event=media_processor_instance._stop_event
                 )
                 logger.info(f"'{task_name}': SyncHandler 实例已创建 (WebUI)。")
                 sync_handler_instance.sync_emby_person_map_to_db(
@@ -1153,15 +1166,47 @@ def api_handle_trigger_full_scan():
 def api_handle_trigger_sync_map():
     logger.info("API Endpoint: Received request to trigger sync person map.")
     try:
+        # 1. 从前端请求中获取 full_sync 标志
+        # 前端可以用 form-data 发送，或者包含在 JSON body 里
+        # 我们假设前端会发送一个 'full_sync': true/false 的 JSON
+        data = request.json or {}
+        full_sync_flag = data.get('full_sync', False)
+
         if task_lock.locked():
-            logger.warning("API /api/trigger_sync_person_map: Task lock is active.")
             return jsonify({"error": "已有其他后台任务正在运行，请稍后再试。"}), 409
 
-        task_name_for_api = "同步Emby人物映射表 (API)" # API 调用的任务名
+        task_name_for_api = "同步Emby人物映射表 (API)"
+        if full_sync_flag:
+            task_name_for_api += " [全量模式]"
 
-        # API 路由调用它专属的后台任务函数
-        # 假设 _execute_task_with_lock 的第二个参数是任务描述，第三个是传递给目标函数的第一个参数
-        thread = threading.Thread(target=_execute_task_with_lock, args=(api_specific_sync_map_task, task_name_for_api, task_name_for_api))
+        # 2. 修改后台任务函数，让它能接收 full_sync_flag
+        def sync_task_with_option(is_full_sync):
+            # 这个函数现在是我们的目标任务
+            if media_processor_instance:
+                try:
+                    sync_handler = SyncHandler(
+                        db_path=DB_PATH,
+                        emby_url=media_processor_instance.emby_url,
+                        emby_api_key=media_processor_instance.emby_api_key,
+                        emby_user_id=media_processor_instance.emby_user_id,
+                        stop_event=media_processor_instance._stop_event
+                    )
+                    # 3. 把标志传递给核心方法
+                    sync_handler.sync_emby_person_map_to_db(
+                        full_sync=is_full_sync,
+                        update_status_callback=update_status_from_thread
+                    )
+                except Exception as e:
+                    logger.error(f"'{task_name_for_api}' 执行过程中发生严重错误: {e}", exc_info=True)
+                    update_status_from_thread(-1, f"错误：同步失败 ({str(e)[:50]}...)")
+            else:
+                update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
+
+        # 4. 启动线程，把 full_sync_flag 作为参数传进去
+        thread = threading.Thread(
+            target=_execute_task_with_lock, 
+            args=(sync_task_with_option, task_name_for_api, full_sync_flag)
+        )
         thread.start()
 
         return jsonify({"message": f"'{task_name_for_api}' 任务已提交启动。"}), 202
@@ -1247,59 +1292,35 @@ def api_preview_processed_cast(item_id):
         logger.error(f"API /preview_processed_cast: 调用 _process_cast_list 时发生错误 for ID {item_id}: {e}", exc_info=True)
         return jsonify({"error": "在服务器端处理演员列表时发生内部错误"}), 500
     
+# ✨✨✨ 保存手动编辑结果的 API ✨✨✨
 @app.route('/api/update_media_cast/<item_id>', methods=['POST'])
 def api_update_edited_cast(item_id):
     if not media_processor_instance:
         return jsonify({"error": "核心处理器未就绪"}), 503
     
-    try:
-        data = request.json
-        if not data or "cast" not in data or not isinstance(data["cast"], list):
-            return jsonify({"error": "请求体中缺少有效的 'cast' 列表"}), 400
+    data = request.json
+    if not data or "cast" not in data or not isinstance(data["cast"], list):
+        return jsonify({"error": "请求体中缺少有效的 'cast' 列表"}), 400
+    
+    edited_cast = data["cast"]
+    item_name = data.get("item_name", f"未知项目(ID:{item_id})")
 
-        edited_cast_from_frontend = data["cast"]
-        logger.info(f"API: 收到为 ItemID {item_id} 更新演员的请求，共 {len(edited_cast_from_frontend)} 位演员。")
-
-        # ======================================================================
-        # ✨✨✨ 逻辑变更：不再自己处理，而是交给 core_processor ✨✨✨
-        # ======================================================================
-
-        # 1. 更新翻译缓存 (这部分逻辑可以保留在 API 层)
-        # (您现有的更新翻译缓存的代码可以放在这里，我暂时省略以保持清晰)
-        # ... 您更新翻译缓存的代码 ...
-        
-        # 2. 准备传递给核心处理器的数据 (emby_handler 期望的格式)
-        cast_for_processor = []
-        for actor_frontend in edited_cast_from_frontend:
-            entry = {
-                "emby_person_id": str(actor_frontend.get("embyPersonId", "")).strip(),
-                "name": str(actor_frontend.get("name", "")).strip(),
-                "character": str(actor_frontend.get("role", "")).strip(),
-                "provider_ids": {} # 您可以根据需要填充这个
-            }
-            cast_for_processor.append(entry)
-
-        # 3. 调用新的核心处理函数
-        process_success = media_processor_instance.process_item_with_manual_cast(
+    # 使用后台任务执行器来处理，避免API超时
+    def manual_update_task():
+        media_processor_instance.process_item_with_manual_cast(
             item_id=item_id,
-            manual_cast_list=cast_for_processor
+            manual_cast_list=edited_cast,
+            item_name=item_name
         )
 
-        # 4. 根据处理结果返回响应
-        if process_success:
-            logger.info(f"API: ItemID {item_id} 的手动更新流程已成功执行。")
-            # 更新成功后，也应该更新处理日志
-            item_name_for_log = data.get("item_name", f"未知项目(ID:{item_id})")
-            media_processor_instance._remove_from_failed_log_if_exists(item_id)
-            media_processor_instance.save_to_processed_log(item_id, item_name_for_log, score=10.0) # 手动处理给满分
-            return jsonify({"message": "演员信息已成功更新，并执行了完整的处理流程。"}), 200
-        else:
-            logger.error(f"API: 核心处理器未能成功处理 ItemID {item_id} 的手动更新。")
-            return jsonify({"error": "核心处理器执行手动更新失败，请检查后端日志。"}), 500
-
-    except Exception as e:
-        logger.error(f"API /api/update_media_cast CRITICAL Error for {item_id}: {e}", exc_info=True)
-        return jsonify({"error": "保存演员信息时发生服务器内部错误"}), 500
+    # 使用你现有的 _execute_task_with_lock 来运行
+    thread = threading.Thread(
+        target=_execute_task_with_lock,
+        args=(manual_update_task, f"手动更新: {item_name}")
+    )
+    thread.start()
+    
+    return jsonify({"message": "手动更新任务已在后台启动。"}), 202
     
 @app.route('/api/export_person_map', methods=['GET'])
 def api_export_person_map():
@@ -1445,156 +1466,45 @@ def api_import_person_map():
 # ✨✨✨ 加载编辑页面的API接口 ✨✨✨
 @app.route('/api/media_with_cast_for_editing/<item_id>', methods=['GET'])
 def api_get_media_for_editing(item_id):
-    logger.info(f"API: 收到为 ItemID {item_id} 获取编辑详情的请求。")
-
     if not media_processor_instance:
         return jsonify({"error": "核心处理器未就绪"}), 503
 
-    # 1. 从 Emby 获取详情 (保持不变)
-    try:
-        emby_details = emby_handler.get_emby_item_details(
-            item_id,
-            media_processor_instance.emby_url,
-            media_processor_instance.emby_api_key,
-            media_processor_instance.emby_user_id
-        )
-        if not emby_details:
-            return jsonify({"error": f"在Emby中未找到项目 {item_id}"}), 404
-    except Exception as e:
-        logger.error(f"API: 获取Emby详情失败 for ItemID {item_id}: {e}", exc_info=True)
-        return jsonify({"error": "获取Emby详情时发生服务器错误"}), 500
-
-    # 2. 从 failed_log 获取额外信息 (保持不变)
-    conn = None
-    failed_log_info = {}
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT item_name, item_type, error_message, score FROM failed_log WHERE item_id = ?", (item_id,))
-        row = cursor.fetchone()
-        if row:
-            failed_log_info = dict(row)
-    finally:
-        if conn:
-            conn.close()
-
-    # ★★★ START: 3. 格式化并丰富演员列表 (关键修改) ★★★
-    enriched_cast_for_frontend = []
-    if emby_details.get("People"):
-        for person in emby_details.get("People", []):
-            person_id = person.get("Id")
-            if person_id and person.get("Name"):
-                provider_ids = person.get("ProviderIds", {})
-                
-                # 为每个演员单独获取其详细信息以获得 image_tag
-                actor_image_tag = None
-                try:
-                    # 调用您现有的 emby_handler 方法来获取演员详情
-                    person_details = emby_handler.get_emby_item_details(
-                        person_id,
-                        media_processor_instance.emby_url,
-                        media_processor_instance.emby_api_key,
-                        media_processor_instance.emby_user_id
-                    )
-                    if person_details:
-                        actor_image_tag = person_details.get('ImageTags', {}).get('Primary')
-                except Exception as actor_e:
-                    logger.error(f"获取演员 {person_id} 的详情失败: {actor_e}")
-                
-                enriched_cast_for_frontend.append({
-                    "embyPersonId": str(person_id),
-                    "name": person["Name"],
-                    "role": person.get("Role", ""),
-                    "imdbId": provider_ids.get("Imdb"),
-                    "doubanId": provider_ids.get("Douban"),
-                    "tmdbId": provider_ids.get("Tmdb"),
-                    "image_tag": actor_image_tag  # 加入演员的 image_tag
-                })
-    # ★★★ END: 3. ★★★
-
-    # 4. 生成搜索链接 (保持不变)
-    google_search_for_wiki_url = None
-    title = emby_details.get("Name")
-    year = emby_details.get("ProductionYear")
+    # 直接调用 core_processor 的新方法
+    data_for_editing = media_processor_instance.get_cast_for_editing(item_id)
     
-    if title:
-        logger.info(f"准备为标题 '{title}' (年份: {year}) 生成搜索链接。")
-        try:
-            google_search_for_wiki_url = utils.generate_search_url('wikipedia', title, year)
-            if google_search_for_wiki_url:
-                logger.info(f"成功生成搜索链接: {google_search_for_wiki_url}")
-            else:
-                logger.warning(f"generate_search_url 函数为标题 '{title}' 返回了一个空值或 None。")
-        except Exception as e:
-            logger.error(f"为 '{title}' 生成维基百科搜索链接时发生异常: {e}", exc_info=True)
+    if data_for_editing:
+        return jsonify(data_for_editing)
     else:
-        logger.warning("无法生成搜索链接，因为 Emby 详情中缺少标题 (Name)。")
-
-    # ★★★ START: 5. 组合最终的响应数据 (关键修改) ★★★
-    response_data = {
-        "item_id": item_id,
-        "item_name": emby_details.get("Name"),
-        "item_type": emby_details.get("Type"),
-        
-        # 加入媒体海报的 image_tag
-        "image_tag": emby_details.get('ImageTags', {}).get('Primary'),
-        
-        "original_score": failed_log_info.get("score"),
-        "review_reason": failed_log_info.get("error_message"),
-        
-        # 使用我们新生成的、包含 image_tag 的演员列表
-        "current_emby_cast": enriched_cast_for_frontend,
-        
-        "search_links": {
-            "google_search_wiki": google_search_for_wiki_url
-        }
-    }
-    # ★★★ END: 5. ★★★
-    
-    logger.info(f"API: 成功为项目 {item_id} 构建编辑详情，准备返回。")
-    return jsonify(response_data)
+        return jsonify({"error": f"无法获取项目 {item_id} 的编辑数据，请检查日志。"}), 404
 
 # ✨✨✨   生成外部搜索链接 ✨✨✨
 @app.route('/api/parse_cast_from_url', methods=['POST'])
 def api_parse_cast_from_url():
-    if not WEB_PARSER_AVAILABLE:
+    # 检查 web_parser 是否可用
+    try:
+        from web_parser import parse_cast_from_url, ParserError
+    except ImportError:
         return jsonify({"error": "网页解析功能在服务器端不可用。"}), 501
 
     data = request.json
     url_to_parse = data.get('url')
-
     if not url_to_parse:
         return jsonify({"error": "请求中未提供 'url' 参数"}), 400
 
-    logger.info(f"API: 收到从 URL 解析演员表的请求: {url_to_parse}")
-
     try:
-        # 加载配置并准备请求头
         current_config = load_config()
-        user_agent = current_config.get('user_agent')
-        accept_language = current_config.get('accept_language')
+        headers = {'User-Agent': current_config.get('user_agent', '')}
+        parsed_cast = parse_cast_from_url(url_to_parse, custom_headers=headers)
         
-        custom_headers = {}
-        if user_agent:
-            custom_headers['User-Agent'] = user_agent
-        if accept_language:
-            custom_headers['Accept-Language'] = accept_language
-        
-        # 将请求头传递给解析器
-        parsed_cast = parse_cast_from_url(url_to_parse, custom_headers=custom_headers)
-        
-        if parsed_cast:
-            frontend_cast = [{"name": item['actor'], "role": item['character']} for item in parsed_cast]
-            return jsonify(frontend_cast)
-        else:
-            return jsonify({"message": "未找到有效的演员信息，请检查URL或网页内容。"}), 200
+        frontend_cast = [{"name": item['actor'], "role": item['character']} for item in parsed_cast]
+        return jsonify(frontend_cast)
 
     except ParserError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error(f"解析 URL '{url_to_parse}' 时发生未知错误: {e}", exc_info=True)
         return jsonify({"error": "解析时发生未知的服务器错误"}), 500
-# ✨✨✨ 更新演员表 ✨✨✨
+# ✨✨✨ 一键翻译 ✨✨✨
 @app.route('/api/actions/translate_cast', methods=['POST'])
 def api_translate_cast():
     if not media_processor_instance:
@@ -1602,15 +1512,13 @@ def api_translate_cast():
         
     data = request.json
     current_cast = data.get('cast')
-
     if not isinstance(current_cast, list):
         return jsonify({"error": "请求体必须包含 'cast' 列表。"}), 400
 
     try:
-        # 调用新的、功能更全的翻译方法
-        translated_list = media_processor_instance.translate_cast_list(current_cast)
+        # 调用 core_processor 的新方法
+        translated_list = media_processor_instance.translate_cast_list_for_editing(current_cast)
         return jsonify(translated_list)
-        
     except Exception as e:
         logger.error(f"一键翻译演员列表时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在翻译时发生内部错误。"}), 500

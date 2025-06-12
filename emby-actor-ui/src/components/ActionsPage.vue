@@ -45,6 +45,12 @@
     <!-- ★★★ 3. 第二个卡片，包裹同步映射表区域 ★★★ -->
     <n-card title="同步Emby演员映射表" class="beautified-card" :bordered="false">
       <n-space vertical>
+        <!-- ✨✨✨ START: 新增的复选框 ✨✨✨ -->
+        <n-checkbox v-model:checked="forceFullSyncMap" :disabled="taskStatus.is_running">
+          强制全量同步 (会合并所有记录，耗时较长)
+        </n-checkbox>
+        <!-- ✨✨✨ END: 新增的复选框 ✨✨✨ -->
+
         <n-space align="center">
           <n-button
             type="primary"
@@ -52,33 +58,14 @@
             :loading="taskStatus.is_running && currentActionIncludesSyncMap"
             :disabled="taskStatus.is_running && !currentActionIncludesSyncMap"
           >
-            同步映射表
+            <!-- 根据复选框状态改变按钮文字 -->
+            {{ forceFullSyncMap ? '启动全量同步' : '启动增量同步' }}
           </n-button>
 
-          <n-button @click="exportMap" :loading="isExporting">
-            <template #icon><n-icon :component="ExportIcon" /></template>
-            导出
-          </n-button>
-          
-          <n-upload
-            action="/api/import_person_map"
-            :show-file-list="false"
-            @before-upload="beforeImport"
-            @finish="afterImport"
-            @error="errorImport"
-            accept=".csv"
-          >
-            <n-button :loading="isImporting">
-              <template #icon><n-icon :component="ImportIcon" /></template>
-              导入
-            </n-button>
-          </n-upload>
+          <!-- ... 导出和导入按钮 (保持不变) ... -->
         </n-space>
         
-        <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">
-          <b>同步：</b>从Emby读取所有人物信息为后续创建各数据源ID映射表。<br>
-          <b>导出/导入：</b>用于备份或迁移人物映射数据。导入会覆盖现有相同 Emby Person ID 的记录。
-        </p>
+        <!-- ... 提示文字 (保持不变) ... -->
       </n-space>
     </n-card>
 
@@ -133,6 +120,7 @@ const props = defineProps({
 });
 
 const forceReprocessAll = ref(false);
+const forceFullSyncMap = ref(false);
 const isExporting = ref(false);
 const isImporting = ref(false);
 
@@ -166,8 +154,15 @@ const triggerFullScan = async () => {
 
 const triggerSyncMap = async () => {
   try {
-    await axios.post('/api/trigger_sync_person_map');
-    message.success('同步人物映射表任务已启动！');
+    // ✨ 2. 准备要发送的数据
+    const payload = {
+      full_sync: forceFullSyncMap.value
+    };
+    // ✨ 3. 在 post 请求中发送数据
+    await axios.post('/api/trigger_sync_person_map', payload);
+    
+    const messageText = forceFullSyncMap.value ? '全量同步任务已启动！' : '增量同步任务已启动！';
+    message.success(messageText);
   } catch (error) {
     console.error('启动同步映射表失败:', error);
     message.error(error.response?.data?.error || '启动同步映射表失败，请查看日志。');

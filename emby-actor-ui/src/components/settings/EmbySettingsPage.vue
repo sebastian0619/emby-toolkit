@@ -1,7 +1,6 @@
 <template>
-  <!-- ★★★ START: 1. 使用 n-space 来创建卡片间距 ★★★ -->
   <n-space vertical :size="24" style="margin-top: 15px;">
-    <!-- ★★★ START: 2. 第一个卡片，包裹核心连接信息 ★★★ -->
+    <!-- Emby 连接设置卡片 (保持不变) -->
     <n-card title="Emby 连接设置" class="beautified-card" :bordered="false">
       <n-form :model="configModel" label-placement="left" label-width="auto" require-mark-placement="right-hanging">
         <n-grid :cols="1" :x-gap="24">
@@ -17,9 +16,8 @@
         </n-grid>
       </n-form>
     </n-card>
-    <!-- ★★★ END: 2. ★★★ -->
 
-    <!-- ★★★ START: 3. 第二个卡片，包裹处理选项 ★★★ -->
+    <!-- 处理选项卡片 (★ 添加新选项 ★) -->
     <n-card title="处理选项" class="beautified-card" :bordered="false">
        <n-form :model="configModel" label-placement="left" label-width="auto" require-mark-placement="right-hanging">
         <n-grid :cols="1" :x-gap="24">
@@ -34,12 +32,23 @@
               </n-text>
             </n-space>
           </n-form-item-grid-item>
+
+          <!-- ★★★ START: 新增的同步图片选项 ★★★ -->
+          <n-form-item-grid-item label="同步图片" path="sync_images">
+            <n-space align="center">
+              <n-switch v-model:value="configModel.sync_images" />
+              <n-text :depth="3" type="info" style="font-size: 0.85em;">
+                启用后，在全量处理时会下载封面、海报等图片到本地。
+              </n-text>
+            </n-space>
+          </n-form-item-grid-item>
+          <!-- ★★★ END: 新增的同步图片选项 ★★★ -->
+
         </n-grid>
       </n-form>
     </n-card>
-    <!-- ★★★ END: 3. ★★★ -->
 
-    <!-- ★★★ START: 4. 第三个卡片，包裹媒体库选择 ★★★ -->
+    <!-- 媒体库选择卡片 (保持不变) -->
     <n-card class="beautified-card" :bordered="false">
       <template #header>
         <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
@@ -61,9 +70,7 @@
         <div v-if="libraryError" style="color: red; margin-top: 5px;">{{ libraryError }}</div>
       </n-spin>
     </n-card>
-    <!-- ★★★ END: 4. ★★★ -->
   </n-space>
-  <!-- ★★★ END: 1. ★★★ -->
 </template>
 
 <script setup>
