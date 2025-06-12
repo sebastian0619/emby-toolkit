@@ -258,7 +258,6 @@ def load_config() -> Dict[str, Any]:
         fallback=",".join(constants.DEFAULT_TRANSLATOR_ENGINES_ORDER) # 使用默认值
     )
     app_cfg[constants.CONFIG_OPTION_TRANSLATOR_ENGINES] = [eng.strip() for eng in engines_str.split(',') if eng.strip()]
-    app_cfg["data_source_mode"] = config_parser.get(constants.CONFIG_SECTION_DOMESTIC_SOURCE, "data_source_mode", fallback="local_then_online")
     app_cfg["local_data_path"] = config_parser.get(constants.CONFIG_SECTION_LOCAL_DATA, "local_data_path", fallback="").strip()
 
     # General Section
@@ -344,7 +343,6 @@ def save_config(new_config: Dict[str, Any]):
         ",".join(engines_list)
     )
     config.set(constants.CONFIG_SECTION_TRANSLATION, "translator_engines_order_str", ",".join(engines_list))
-    config.set(constants.CONFIG_SECTION_DOMESTIC_SOURCE, "data_source_mode", str(new_config.get("data_source_mode", "local_then_online")))
     config.set(constants.CONFIG_SECTION_LOCAL_DATA, "local_data_path", str(new_config.get("local_data_path", "")))
 
     # General Section

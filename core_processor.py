@@ -267,13 +267,29 @@ class MediaProcessor:
         return current_role or candidate_role
 
     def _fetch_douban_cast(self, media_info: Dict[str, Any]) -> List[Dict[str, Any]]:
-        if not (DOUBAN_API_AVAILABLE and self.douban_api): return []
+        # 1. 检查 Douban API 是否可用
+        if not (DOUBAN_API_AVAILABLE and self.douban_api):
+            logger.warning("在线豆瓣功能不可用 (DoubanApi 未导入或初始化失败)，无法获取豆瓣演员。")
+            return []
+
+        # 2. 直接执行在线请求逻辑
+        logger.debug("神医专用版：开始在线请求豆瓣 API 获取演员...")
         douban_data = self.douban_api.get_acting(
-            name=media_info.get("Name"), imdbid=media_info.get("ProviderIds", {}).get("Imdb"),
-            mtype="movie" if media_info.get("Type") == "Movie" else "tv", year=str(media_info.get("ProductionYear", "")),
+            name=media_info.get("Name"),
+            imdbid=media_info.get("ProviderIds", {}).get("Imdb"),
+            mtype="movie" if media_info.get("Type") == "Movie" else "tv",
+            year=str(media_info.get("ProductionYear", "")),
             douban_id_override=media_info.get("ProviderIds", {}).get("Douban")
         )
-        return douban_data.get("cast", []) if douban_data and not douban_data.get("error") else []
+        
+        if douban_data and not douban_data.get("error"):
+            return douban_data.get("cast", [])
+        
+        # 如果请求失败或返回错误，打印警告并返回空列表
+        if douban_data and douban_data.get("error"):
+            logger.warning(f"请求豆瓣 API 失败: {douban_data.get('message')}")
+            
+        return []
 
     def _format_douban_cast(self, douban_api_actors_raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         formatted, seen_ids, seen_names = [], set(), set()

@@ -66,12 +66,8 @@
       </template>
       <n-form :model="configModel" label-placement="top">
         <n-grid :cols="1" :y-gap="18">
-          <n-form-item-grid-item label="本地数据源路径 (神医本地豆瓣缓存目录)" path="local_data_path">
-              <n-input v-model:value="configModel.local_data_path" placeholder="例如: /path/to/your/actor_data" />
-          </n-form-item-grid-item>
-
-          <n-form-item-grid-item label="豆瓣数据源处理策略" path="data_source_mode">
-            <n-select v-model:value="configModel.data_source_mode" :options="domesticSourceOptions" />
+          <n-form-item-grid-item label="本地数据源路径 (神医TMDB缓存目录)" path="local_data_path">
+              <n-input v-model:value="configModel.local_data_path" placeholder="cache和override的上层目录" />
           </n-form-item-grid-item>
         </n-grid>
       </n-form>
@@ -110,12 +106,6 @@ const availableTranslatorEngines = ref([
 ]);
 // ★★★ END: 核心修改 ★★★
 
-const domesticSourceOptions = ref([
-  { label: '豆瓣本地优先，在线备选 (推荐)', value: 'local_then_online' },
-  { label: '仅在线豆瓣API', value: 'online_only' },
-  { label: '仅豆瓣本地数据 (神医刮削)', value: 'local_only' },
-  { label: '禁用豆瓣数据源', value: 'disabled_douban' }
-]);
 
 const getEngineLabel = (value) => {
   const engine = availableTranslatorEngines.value.find(e => e.value === value);
