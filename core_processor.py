@@ -513,7 +513,7 @@ class MediaProcessor:
             override_json_path = os.path.join(base_override_dir, base_json_filename)
             with open(override_json_path, 'w', encoding='utf-8') as f:
                 json.dump(base_json_data, f, ensure_ascii=False, indent=4)
-            logger.info(f"成功生成覆盖元数据文件: {override_json_path}")
+            logger.info(f"✅成功生成覆盖元数据文件: {override_json_path}")
 
             if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
                 logger.info(f"深度处理已启用，开始为 '{item_name_for_log}' 的所有子项目注入演员表...")

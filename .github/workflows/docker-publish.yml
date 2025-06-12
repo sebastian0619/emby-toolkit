@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main      # 监听 main 分支
-      - sa   # 监听 神医 分支
+      - sa        # 监听 sa 分支
     tags:
       - 'v*.*.*'
   workflow_dispatch:
@@ -39,19 +39,12 @@ jobs:
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/emby-actor-processor
           tags: |
-            # 为 develop 分支打上 'develop' 标签
-            type=raw,value=develop,enable=${{ github.ref == 'refs/heads/sa' }}
+            # 规则1: 如果事件是推送到一个分支，就用分支名作为 Docker 标签。
+            # 这会自动为默认分支(main)打上 'latest' 标签。
+            type=ref,event=branch
 
-            # 为 main 分支打上 'latest' 标签
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-
-            # 为版本标签 vX.Y.Z 打上 X.Y.Z, X.Y, X 标签
+            # 规则2: 如果事件是推送一个 Git 标签，就用语义化版本作为 Docker 标签。
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            
-            # (可选) 为每个 commit 生成 sha 标签
-            type=sha,prefix=,suffix=,format=short
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -61,6 +54,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64 # 推荐保留多平台构建
+          platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
