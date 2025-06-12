@@ -55,7 +55,7 @@
           - APP_DATA_DIR=/config # 告诉应用数据存储在 /config 目录
           - TZ=Asia/Shanghai     # (可选) 设置容器时区，例如亚洲/上海
           # - PUID=1000            # (可选) 如果需要指定运行用户ID
-          # - PGID=1000            # (可选) 如果需要指定运行组ID
+          # - PGID=100            # (可选) 如果需要指定运行组ID
         restart: unless-stopped
     ```
     然后在 `docker-compose.yml` 文件所在的目录下运行：
