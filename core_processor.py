@@ -771,7 +771,7 @@ class MediaProcessor:
             base_json_data_for_override.setdefault("casts", {})["cast"] = final_cast_for_json
         else: # Series
             base_json_data_for_override.setdefault("credits", {})["cast"] = final_cast_for_json
-        
+
         # 7. 将更新后的完整元数据写入 override 文件 (使用临时文件保证安全)
         temp_json_path = f"{override_json_path}.{random.randint(1000, 9999)}.tmp"
         try:
@@ -784,7 +784,44 @@ class MediaProcessor:
             if os.path.exists(temp_json_path): os.remove(temp_json_path)
             return False
 
-        # 8. 触发 Emby 刷新
+         # 8. 根据配置，处理分集 (注入演员表)
+        if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
+            logger.info(f"手动处理：深度处理已启用，将为所有子项目注入手动编辑后的演员表...")
+            for filename in os.listdir(base_cache_dir):
+                if filename.startswith("season-") and filename.endswith(".json"):
+                    child_json_original = _read_local_json(os.path.join(base_cache_dir, filename))
+                    if child_json_original:
+                        child_json_for_override = copy.deepcopy(child_json_original)
+                        child_json_for_override.setdefault("credits", {})["cast"] = final_cast_for_json
+                        override_child_path = os.path.join(base_override_dir, filename)
+                        try:
+                            with open(override_child_path, 'w', encoding='utf-8') as f:
+                                json.dump(child_json_for_override, f, ensure_ascii=False, indent=4)
+                        except Exception as e:
+                            logger.error(f"手动处理：写入子项目JSON失败: {override_child_path}, {e}")
+
+        # 9. 根据配置，同步图片
+        if self.sync_images_enabled:
+            logger.info(f"手动处理：图片同步已启用，开始下载图片...")
+            image_map = {"Primary": "poster.jpg", "Backdrop": "fanart.jpg", "Logo": "clearlogo.png"}
+            if item_type == "Movie": image_map["Thumb"] = "landscape.jpg"
+            for image_type, filename in image_map.items():
+                emby_handler.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
+            
+            if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
+                children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id) or []
+                for child in children:
+                    child_type, child_id = child.get("Type"), child.get("Id")
+                    if child_type == "Season":
+                        season_number = child.get("IndexNumber")
+                        if season_number is not None:
+                            emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}.jpg"), self.emby_url, self.emby_api_key)
+                    elif child_type == "Episode":
+                        season_number, episode_number = child.get("ParentIndexNumber"), child.get("IndexNumber")
+                        if season_number is not None and episode_number is not None:
+                            emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
+
+        # 10. 触发 Emby 刷新
         logger.info(f"手动处理：准备刷新 Emby 项目 {item_name}...")
         emby_handler.refresh_emby_item_metadata(
             item_id, self.emby_url, self.emby_api_key, 
@@ -792,7 +829,7 @@ class MediaProcessor:
             item_name_for_log=item_name
         )
         
-        # 9. 更新处理日志
+        # 11. 更新处理日志
         self.save_to_processed_log(item_id, item_name, score=10.0) # 手动处理给满分
         self._remove_from_failed_log_if_exists(item_id)
         
