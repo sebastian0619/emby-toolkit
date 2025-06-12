@@ -733,6 +733,8 @@ class MediaProcessor:
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
         base_json_filename = "all.json" if item_type == "Movie" else "series.json"
         base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+        image_override_dir = os.path.join(base_override_dir, "images")
+        os.makedirs(image_override_dir, exist_ok=True)
         os.makedirs(base_override_dir, exist_ok=True)
         override_json_path = os.path.join(base_override_dir, base_json_filename)
 
