@@ -685,7 +685,8 @@ def api_specific_sync_map_task(api_task_name: str): # <--- API 专属的，接�
                 db_path=DB_PATH,
                 emby_url=media_processor_instance.emby_url,
                 emby_api_key=media_processor_instance.emby_api_key,
-                emby_user_id=media_processor_instance.emby_user_id
+                emby_user_id=media_processor_instance.emby_user_id,
+                stop_event=media_processor_instance._stop_event
             )
             logger.info(f"'{api_task_name}': SyncHandler 实例已创建 (API)。")
             sync_handler_instance.sync_emby_person_map_to_db(
@@ -776,7 +777,8 @@ def trigger_sync_person_map(): # WebUI 用的
                     db_path=DB_PATH,
                     emby_url=media_processor_instance.emby_url,
                     emby_api_key=media_processor_instance.emby_api_key,
-                    emby_user_id=media_processor_instance.emby_user_id
+                    emby_user_id=media_processor_instance.emby_user_id,
+                    stop_event=media_processor_instance._stop_event
                 )
                 logger.info(f"'{task_name}': SyncHandler 实例已创建 (WebUI)。")
                 sync_handler_instance.sync_emby_person_map_to_db(
@@ -1164,15 +1166,47 @@ def api_handle_trigger_full_scan():
 def api_handle_trigger_sync_map():
     logger.info("API Endpoint: Received request to trigger sync person map.")
     try:
+        # 1. 从前端请求中获取 full_sync 标志
+        # 前端可以用 form-data 发送，或者包含在 JSON body 里
+        # 我们假设前端会发送一个 'full_sync': true/false 的 JSON
+        data = request.json or {}
+        full_sync_flag = data.get('full_sync', False)
+
         if task_lock.locked():
-            logger.warning("API /api/trigger_sync_person_map: Task lock is active.")
             return jsonify({"error": "已有其他后台任务正在运行，请稍后再试。"}), 409
 
-        task_name_for_api = "同步Emby人物映射表 (API)" # API 调用的任务名
+        task_name_for_api = "同步Emby人物映射表 (API)"
+        if full_sync_flag:
+            task_name_for_api += " [全量模式]"
 
-        # API 路由调用它专属的后台任务函数
-        # 假设 _execute_task_with_lock 的第二个参数是任务描述，第三个是传递给目标函数的第一个参数
-        thread = threading.Thread(target=_execute_task_with_lock, args=(api_specific_sync_map_task, task_name_for_api, task_name_for_api))
+        # 2. 修改后台任务函数，让它能接收 full_sync_flag
+        def sync_task_with_option(is_full_sync):
+            # 这个函数现在是我们的目标任务
+            if media_processor_instance:
+                try:
+                    sync_handler = SyncHandler(
+                        db_path=DB_PATH,
+                        emby_url=media_processor_instance.emby_url,
+                        emby_api_key=media_processor_instance.emby_api_key,
+                        emby_user_id=media_processor_instance.emby_user_id,
+                        stop_event=media_processor_instance._stop_event
+                    )
+                    # 3. 把标志传递给核心方法
+                    sync_handler.sync_emby_person_map_to_db(
+                        full_sync=is_full_sync,
+                        update_status_callback=update_status_from_thread
+                    )
+                except Exception as e:
+                    logger.error(f"'{task_name_for_api}' 执行过程中发生严重错误: {e}", exc_info=True)
+                    update_status_from_thread(-1, f"错误：同步失败 ({str(e)[:50]}...)")
+            else:
+                update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
+
+        # 4. 启动线程，把 full_sync_flag 作为参数传进去
+        thread = threading.Thread(
+            target=_execute_task_with_lock, 
+            args=(sync_task_with_option, task_name_for_api, full_sync_flag)
+        )
         thread.start()
 
         return jsonify({"message": f"'{task_name_for_api}' 任务已提交启动。"}), 202
