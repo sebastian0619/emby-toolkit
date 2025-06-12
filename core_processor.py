@@ -808,7 +808,10 @@ class MediaProcessor:
                 if not (person_id and person.get("Name")): continue
                 
                 provider_ids = person.get("ProviderIds", {})
-                actor_image_tag = emby_handler.get_person_image_tag(person_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+                
+                # ✨✨✨ 直接从 person 对象里获取 ImageTags ✨✨✨
+                # 因为 get_emby_item_details 已经帮我们一次性获取了
+                actor_image_tag = person.get('ImageTags', {}).get('Primary')
                 
                 cast_for_frontend.append({
                     "embyPersonId": str(person_id),

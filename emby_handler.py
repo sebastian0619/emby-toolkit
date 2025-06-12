@@ -63,16 +63,18 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
 
     # 2. 动态决定 Fields 参数的值
     if fields:
-        # 如果调用者提供了 fields，就用它
         fields_to_request = fields
     else:
-        # 否则，使用默认的一长串
         fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines"
 
     params = {
         "api_key": emby_api_key,
-        "Fields": fields_to_request  # <--- 使用我们动态决定的值
+        "Fields": fields_to_request
     }
+    
+    # ✨✨✨ 新增：告诉 Emby 返回的 People 对象里要包含哪些字段 ✨✨✨
+    # 这是一个更可靠的方法
+    params["PersonFields"] = "ImageTags"
     
     # --- 函数的其余部分保持不变 ---
     logger.debug(
