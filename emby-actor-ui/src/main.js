@@ -2,7 +2,7 @@
 
 import { createApp, h } from 'vue';
 import { createPinia } from 'pinia'
-import App from './MainApp.vue'; // 你的根组件
+import App from './App.vue'; // 你的根组件
 import router from './router'; // 你配置的 Vue Router 实例
 
 // 1. 导入整个 Naive UI 库，用于 app.use() 全局注册组件
