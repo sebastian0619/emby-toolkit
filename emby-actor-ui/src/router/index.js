@@ -2,86 +2,85 @@
 
 import { createRouter, createWebHistory } from 'vue-router';
 
-// --- 1. 导入你的页面组件 ---
-// 确保这些路径与你项目中文件的实际位置一致！
-
-// 核心功能页面
+// --- 1. 导入你的页面组件 (这部分保持不变) ---
 import ReviewList from '../components/ReviewList.vue';
 import ActionsPage from '../components/ActionsPage.vue';
-
-// 设置相关的页面
 import EmbySettingsPage from '../components/settings/EmbySettingsPage.vue';
 import ApiDataSourceSettingsPage from '../components/settings/ApiDataSourceSettingsPage.vue';
 import SchedulerSettingsPage from '../components/settings/SchedulerSettingsPage.vue';
 import GeneralSettingsPage from '../components/settings/GeneralSettingsPage.vue';
 
-// 我们为手动编辑媒体信息预留的页面组件 (假设你之后会创建它)
-// 为了让路由能跑起来，我们可以先用一个简单的占位组件，或者直接用 ReviewList 暂时替代
-// import MediaEditPage from '../components/MediaEditPage.vue'; // 假设的编辑页面
+// ★★★ 导入我们新创建的登录组件 ★★★
+import Login from '../components/Login.vue'; 
 
-// --- 2. 定义路由规则 (你的“导航地图”) ---
+// --- 2. 定义路由规则 (修改版) ---
 const routes = [
-  // 默认根路径重定向到待复核列表
+  // ★★★ 添加登录页面的路由 ★★★
   {
+    path: '/login',
+    name: 'Login',
+    component: Login,
+    meta: {
+      // 这个页面不需要认证
+      requiresAuth: false,
+    },
+  },
+
+  // ★★★ 为你现有的所有路由添加 meta.requiresAuth ★★★
+  {
+    // 默认根路径重定向到全量处理页面，路由守卫会在此之前进行拦截
     path: '/',
-    redirect: '/review'
+    redirect: '/actions' 
   },
   {
     path: '/review',
-    name: 'ReviewList', // 这个 name 需要和 App.vue 中菜单的 key 对应
-    component: ReviewList
+    name: 'ReviewList',
+    component: ReviewList,
+    meta: { requiresAuth: true }, // 需要登录
   },
   {
     path: '/actions',
-    name: 'actions-status', // 对应菜单的 key
-    component: ActionsPage
+    name: 'actions-status',
+    component: ActionsPage,
+    meta: { requiresAuth: true }, // 需要登录
   },
-  // 设置相关的页面可以组织在一个父路由下，也可以分开定义
-  // 这里我们分开定义，与你 App.vue 菜单结构可能更匹配
   {
     path: '/settings/emby',
-    name: 'settings-emby', // 对应菜单的 key
-    component: EmbySettingsPage
+    name: 'settings-emby',
+    component: EmbySettingsPage,
+    meta: { requiresAuth: true }, // 需要登录
   },
   {
     path: '/settings/api',
-    name: 'settings-api', // 对应菜单的 key
-    component: ApiDataSourceSettingsPage
+    name: 'settings-api',
+    component: ApiDataSourceSettingsPage,
+    meta: { requiresAuth: true }, // 需要登录
   },
   {
     path: '/settings/scheduler',
-    name: 'settings-scheduler', // 对应菜单的 key
-    component: SchedulerSettingsPage
+    name: 'settings-scheduler',
+    component: SchedulerSettingsPage,
+    meta: { requiresAuth: true }, // 需要登录
   },
   {
     path: '/settings/general',
-    name: 'settings-general', // 对应菜单的 key
-    component: GeneralSettingsPage
+    name: 'settings-general',
+    component: GeneralSettingsPage,
+    meta: { requiresAuth: true }, // 需要登录
   },
-  // --- 为“手动编辑媒体”功能预留的路由 ---
-  // 它会接收一个 itemId 作为参数
   {
-    path: '/edit-media/:itemId', // :itemId 表示这是一个动态参数
-    name: 'MediaEditPage',      // 给这个路由起个名字
-    component: () => import('../components/MediaEditPage.vue'), // 示例：使用路由懒加载导入组件
-    // component: ReviewList, // 或者在 MediaEditPage.vue 创建好之前，先用一个已有的组件占位
-    props: true // 这会将路由参数 (如 itemId) 作为 props 传递给 MediaEditPage 组件
+    path: '/edit-media/:itemId',
+    name: 'MediaEditPage',
+    component: () => import('../components/MediaEditPage.vue'),
+    props: true,
+    meta: { requiresAuth: true }, // 需要登录
   },
-  // --- （可选）添加一个404页面 ---
-  // {
-  //   path: '/:catchAll(.*)*', // 匹配所有未匹配到的路径
-  //   name: 'NotFound',
-  //   component: () => import('../views/NotFound.vue') // 假设你有一个 NotFound.vue 页面
-  // }
 ];
 
-// --- 3. 创建路由实例 ---
+// --- 3. 创建路由实例 (这部分保持不变) ---
 const router = createRouter({
-  // 使用 HTML5 History 模式 (URL中没有 #)
-  // import.meta.env.BASE_URL 是 Vite 提供的环境变量，通常是 '/'
   history: createWebHistory(import.meta.env.BASE_URL),
-  routes, // 将我们定义的路由规则列表传递给路由实例
-  // (可选) 当路由切换时，页面滚动到顶部
+  routes,
   scrollBehavior(to, from, savedPosition) {
     if (savedPosition) {
       return savedPosition;
@@ -91,6 +90,41 @@ const router = createRouter({
   }
 });
 
-// --- 4. 导出路由实例 ---
-// 这样我们就可以在 main.js 中导入并使用它了
+// ★★★ 4. 创建全局路由守卫 (这是新增的核心部分) ★★★
+import { useAuthStore } from '../stores/auth';
+
+router.beforeEach(async (to, from, next) => {
+  // 在守卫函数内部获取 authStore 实例
+  const authStore = useAuthStore();
+
+  // 确保在进行任何判断前，我们已经从后端获取了最新的认证状态
+  // 这个检查只在 store 状态未初始化时执行一次，避免重复请求
+  if (authStore.username === null && authStore.initializationError === null) {
+    try {
+      await authStore.checkAuthStatus();
+    } catch (error) {
+      // 即使检查失败（比如后端服务没开），也要继续执行下去
+      // 后续的逻辑会根据 initializationError 状态来处理
+    }
+  }
+  
+  const requiresAuth = to.meta.requiresAuth;
+  const isAuthEnabled = authStore.isAuthEnabled;
+  const isLoggedIn = authStore.isLoggedIn;
+
+  if (requiresAuth && isAuthEnabled && !isLoggedIn) {
+    // 条件：页面需要认证 && 认证功能已开启 && 用户未登录
+    // 结果：重定向到登录页面
+    next({ name: 'Login' });
+  } else {
+    // 其他所有情况都放行:
+    // 1. 目标页面是登录页 (requiresAuth: false)
+    // 2. 认证功能未开启 (isAuthEnabled: false)
+    // 3. 用户已登录 (isLoggedIn: true)
+    next();
+  }
+});
+
+
+// --- 5. 导出路由实例 (这部分保持不变) ---
 export default router;

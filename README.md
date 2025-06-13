@@ -54,6 +54,7 @@
         environment:
           - APP_DATA_DIR=/config # 告诉应用数据存储在 /config 目录
           - TZ=Asia/Shanghai     # (可选) 设置容器时区，例如亚洲/上海
+          - AUTH_USERNAME=admin  #用户名
           # - PUID=1000            # (可选) 如果需要指定运行用户ID
           # - PGID=100            # (可选) 如果需要指定运行组ID
         restart: unless-stopped

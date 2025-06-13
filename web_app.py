@@ -7,11 +7,12 @@ import configparser
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory,Response
 from werkzeug.utils import safe_join
 from queue import Queue
+from functools import wraps
 import threading
 import time
 import requests
 from douban import DoubanApi
-from typing import Optional, Dict, Any, List # 确保 List 被导入
+from typing import Optional, Dict, Any, List, Tuple # 确保 List 被导入
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz # 用于处理时区
@@ -19,6 +20,9 @@ import atexit # 用于应用退出处理
 from core_processor import MediaProcessor, SyncHandler
 import csv
 from io import StringIO
+from werkzeug.security import generate_password_hash, check_password_hash
+import secrets
+from flask import session
 # --- 核心模块导入 ---
 import constants # 你的常量定义
 from core_processor import MediaProcessor # 核心处理逻辑
@@ -44,6 +48,7 @@ except ImportError:
 # --- 路径和配置定义 ---
 APP_DATA_DIR_ENV = os.environ.get("APP_DATA_DIR")
 app = Flask(__name__, static_folder='static')
+app.secret_key = os.urandom(24)
 
 if APP_DATA_DIR_ENV:
     # 如果在 Docker 中，并且设置了 APP_DATA_DIR 环境变量 (例如设置为 "/config")
@@ -200,6 +205,16 @@ def init_db():
         # ... (其他 person_identity_map 的索引) ...
         logger.info("Table 'person_identity_map' and indexes schema confirmed/created if not exists.")
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        logger.info("Table 'users' schema confirmed/created if not exists.")
+
         conn.commit()
         logger.info(f"数据库表结构已在 '{DB_PATH}' 检查/创建完毕 (如果不存在)。")
 
@@ -224,29 +239,116 @@ def init_db():
             except Exception as e_conn_close: logger.debug(f"关闭 conn 时出错: {e_conn_close}")
             else: logger.debug("数据库连接已在 init_db 的 finally 块中关闭。")# --- 数据库辅助函数结束 ---
 
-# --- 配置加载与保存 ---
-def load_config() -> Dict[str, Any]:
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # ★★★ 核心修复：正确地解包 load_config 返回的元组 ★★★
+        config, _ = load_config() 
+
+        # 现在 config 就是一个纯粹的字典了，下面的逻辑可以正常工作
+        if not config.get(constants.CONFIG_OPTION_AUTH_ENABLED, False) or 'user_id' in session:
+            return f(*args, **kwargs)
+        
+        return jsonify({"error": "未授权，请先登录"}), 401
+    return decorated_function
+def init_auth():
     """
-    从 config.ini 文件加载配置。
-    如果文件不存在或缺少任何节或选项，都能安全地使用默认值。
+    【全自动版】初始化认证系统。
+    """
+    # ★★★ 1. 调用新版的 load_config，接收两个返回值 ★★★
+    config, is_first_run = load_config()
+
+    # ★★★ 2. 如果是首次运行，创建默认配置文件并强制开启认证 ★★★
+    if is_first_run:
+        logger.info("首次运行：将创建默认配置文件，并强制启用认证。")
+        # 创建一个包含默认值的配置字典
+        default_config = {
+            constants.CONFIG_OPTION_AUTH_ENABLED: True, # 强制开启
+            constants.CONFIG_OPTION_AUTH_USERNAME: constants.DEFAULT_USERNAME
+            # 你可以在这里为其他配置项也设置一个安全的默认值
+        }
+        # 调用 save_config 创建文件，但不触发重载
+        save_config(default_config, trigger_reload=False)
+        # 更新当前的配置变量，以防万一
+        config = default_config
+
+    auth_enabled = config.get(constants.CONFIG_OPTION_AUTH_ENABLED, False)
+    env_username = os.environ.get("AUTH_USERNAME")
+    
+    if env_username:
+        username = env_username.strip()
+        logger.info(f"检测到 AUTH_USERNAME 环境变量，将使用用户名: '{username}'")
+    else:
+        # 2. 如果没有环境变量，则从配置文件读取
+        username = config.get(constants.CONFIG_OPTION_AUTH_USERNAME, constants.DEFAULT_USERNAME).strip()
+        logger.info(f"未检测到 AUTH_USERNAME 环境变量，将使用配置文件中的用户名: '{username}'")
+
+    if not auth_enabled:
+        logger.info("用户认证功能未启用。")
+        return
+
+    # ... 函数的其余部分保持不变 ...
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
+        user = cursor.fetchone()
+        
+        if user is None:
+            logger.warning(f"[AUTH DIAGNOSTIC] User '{username}' not found in DB. Proceeding to create password.")
+            # ... (生成密码的逻辑不变) ...
+            random_password = secrets.token_urlsafe(12)
+            password_hash = generate_password_hash(random_password)
+            cursor.execute(
+                "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                (username, password_hash)
+            )
+            conn.commit()
+            logger.critical("=" * 60)
+            logger.critical(" " * 20 + "!!! 重要提示 !!!")
+            logger.critical(f"首次运行，已为用户 '{username}' 自动生成初始密码。")
+            logger.critical(f"用户名: {username}")
+            logger.critical(f"初始密码: {random_password}")
+            logger.critical("请立即使用此密码登录，并在设置页面修改为您自己的密码。")
+            logger.critical("=" * 60)
+        else:
+            logger.info(f"[AUTH DIAGNOSTIC] User '{username}' found in DB. No action needed.")
+
+    except Exception as e:
+        logger.error(f"初始化认证系统时发生错误: {e}", exc_info=True)
+    finally:
+        if conn:
+            conn.close()
+        logger.info("="*21 + " [AUTH DIAGNOSTIC END] " + "="*21)
+# --- 配置加载与保存 ---
+def load_config() -> Tuple[Dict[str, Any], bool]:
+    """
+    【全自动版】从 config.ini 文件加载配置。
+    返回一个元组: (配置字典, 是否是首次创建配置的标记)
     """
     config_parser = configparser.ConfigParser()
-    
-    if os.path.exists(CONFIG_FILE_PATH):
+    is_first_run_creating_config = False # 初始化标记
+
+    if not os.path.exists(CONFIG_FILE_PATH):
+        logger.warning(f"配置文件 '{CONFIG_FILE_PATH}' 未找到。将标记为首次运行并使用默认值。")
+        is_first_run_creating_config = True
+        # 注意：这里我们不再立即创建文件，将创建文件的责任交给 init_auth
+    else:
         try:
             config_parser.read(CONFIG_FILE_PATH, encoding='utf-8')
             logger.info(f"配置已从 '{CONFIG_FILE_PATH}' 加载。")
-        except configparser.Error as e:
-            logger.error(f"读取配置文件 '{CONFIG_FILE_PATH}' 失败: {e}。")
-    else:
-        logger.warning(f"配置文件 '{CONFIG_FILE_PATH}' 未找到。")
+        except Exception as e:
+            logger.error(f"解析配置文件 '{CONFIG_FILE_PATH}' 时发生错误: {e}", exc_info=True)
 
-    # 定义所有期望的节，如果不存在就创建
+    # 定义所有期望的节
     expected_sections = [
         constants.CONFIG_SECTION_EMBY, constants.CONFIG_SECTION_TMDB,
         constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_SECTION_TRANSLATION,
         constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_SECTION_LOCAL_DATA,
-        "General", "Scheduler", "Network", "AITranslation" # 确保AI的节在这里
+        "General", "Scheduler", "Network", "AITranslation",
+        constants.CONFIG_SECTION_AUTH
     ]
     for section_name in expected_sections:
         if not config_parser.has_section(section_name):
@@ -254,8 +356,6 @@ def load_config() -> Dict[str, Any]:
 
     app_cfg: Dict[str, Any] = {}
 
-    # --- 使用 fallback 参数来提供默认值，确保万无一失 ---
-    
     # Emby Section
     app_cfg["emby_server_url"] = config_parser.get(constants.CONFIG_SECTION_EMBY, "emby_server_url", fallback="")
     app_cfg["emby_api_key"] = config_parser.get(constants.CONFIG_SECTION_EMBY, "emby_api_key", fallback="")
@@ -269,8 +369,8 @@ def load_config() -> Dict[str, Any]:
     app_cfg["api_douban_default_cooldown_seconds"] = config_parser.getfloat(constants.CONFIG_SECTION_API_DOUBAN, "api_douban_default_cooldown_seconds", fallback=1.0)
     engines_str = config_parser.get(
         constants.CONFIG_SECTION_TRANSLATION, 
-        constants.CONFIG_OPTION_TRANSLATOR_ENGINES, # 使用常量，不再是硬编码字符串
-        fallback=",".join(constants.DEFAULT_TRANSLATOR_ENGINES_ORDER) # 使用默认值
+        constants.CONFIG_OPTION_TRANSLATOR_ENGINES,
+        fallback=",".join(constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
     )
     app_cfg[constants.CONFIG_OPTION_TRANSLATOR_ENGINES] = [eng.strip() for eng in engines_str.split(',') if eng.strip()]
     app_cfg["local_data_path"] = config_parser.get(constants.CONFIG_SECTION_LOCAL_DATA, "local_data_path", fallback="").strip()
@@ -280,23 +380,22 @@ def load_config() -> Dict[str, Any]:
     app_cfg["min_score_for_review"] = config_parser.getfloat("General", "min_score_for_review", fallback=6.0)
     app_cfg["process_episodes"] = config_parser.getboolean("General", "process_episodes", fallback=True)
     app_cfg[constants.CONFIG_OPTION_SYNC_IMAGES] = config_parser.getboolean(
-        "General", # 将其归入 [General] 节
+        "General",
         constants.CONFIG_OPTION_SYNC_IMAGES,
-        fallback=False # 默认不开启
+        fallback=False
     )
 
     # Network Section
     app_cfg["user_agent"] = config_parser.get("Network", "user_agent", fallback='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36')
     app_cfg["accept_language"] = config_parser.get("Network", "accept_language", fallback='zh-CN,zh;q=0.9,en;q=0.8')
 
-    # ✨✨✨ 关键修复：把AI配置的 fallback 也加上 ✨✨✨
+    # AITranslation Section
     app_cfg["ai_translation_enabled"] = config_parser.getboolean("AITranslation", "ai_translation_enabled", fallback=False)
     app_cfg["ai_provider"] = config_parser.get("AITranslation", "ai_provider", fallback="openai")
     app_cfg["ai_api_key"] = config_parser.get("AITranslation", "ai_api_key", fallback="")
     app_cfg["ai_model_name"] = config_parser.get("AITranslation", "ai_model_name", fallback="gpt-3.5-turbo")
     app_cfg["ai_base_url"] = config_parser.get("AITranslation", "ai_base_url", fallback="")
     app_cfg["ai_translation_prompt"] = config_parser.get("AITranslation", "ai_translation_prompt", fallback=constants.DEFAULT_AI_TRANSLATION_PROMPT)
-    # ✨✨✨ 修复结束 ✨✨✨
 
     # Scheduler Section
     app_cfg["schedule_enabled"] = config_parser.getboolean("Scheduler", "schedule_enabled", fallback=False)
@@ -305,10 +404,26 @@ def load_config() -> Dict[str, Any]:
     app_cfg["schedule_sync_map_enabled"] = config_parser.getboolean("Scheduler", "schedule_sync_map_enabled", fallback=False)
     app_cfg["schedule_sync_map_cron"] = config_parser.get("Scheduler", "schedule_sync_map_cron", fallback="0 1 * * *")
 
+    # Authentication Section
+    if is_first_run_creating_config:
+        app_cfg[constants.CONFIG_OPTION_AUTH_ENABLED] = True
+    else:
+        app_cfg[constants.CONFIG_OPTION_AUTH_ENABLED] = config_parser.getboolean(
+            constants.CONFIG_SECTION_AUTH, 
+            constants.CONFIG_OPTION_AUTH_ENABLED, 
+            fallback=False
+        )
+    
+    app_cfg[constants.CONFIG_OPTION_AUTH_USERNAME] = config_parser.get(
+        constants.CONFIG_SECTION_AUTH,
+        constants.CONFIG_OPTION_AUTH_USERNAME,
+        fallback=constants.DEFAULT_USERNAME
+    )
+    # ...
 
-    return app_cfg
+    return app_cfg, is_first_run_creating_config # 返回两个值
 
-def save_config(new_config: Dict[str, Any]):
+def save_config(new_config: Dict[str, Any], trigger_reload: bool = True):
     config = configparser.ConfigParser()
     
     if os.path.exists(CONFIG_FILE_PATH):
@@ -327,6 +442,7 @@ def save_config(new_config: Dict[str, Any]):
         "Network",
         "AITranslation" # 确保AI的节在这里
     ]
+    all_sections_to_manage.append(constants.CONFIG_SECTION_AUTH)
 
     for section_name in all_sections_to_manage:
         if not config.has_section(section_name):
@@ -390,6 +506,18 @@ def save_config(new_config: Dict[str, Any]):
     config.set("Scheduler", "schedule_sync_map_enabled", str(new_config.get("schedule_sync_map_enabled", False)).lower())
     config.set("Scheduler", "schedule_sync_map_cron", str(new_config.get("schedule_sync_map_cron", "0 1 * * *")))
 
+    #user
+    config.set(
+        constants.CONFIG_SECTION_AUTH,
+        constants.CONFIG_OPTION_AUTH_ENABLED,
+        str(new_config.get(constants.CONFIG_OPTION_AUTH_ENABLED, False)).lower()
+    )
+    config.set(
+        constants.CONFIG_SECTION_AUTH,
+        constants.CONFIG_OPTION_AUTH_USERNAME,
+        str(new_config.get(constants.CONFIG_OPTION_AUTH_USERNAME, constants.DEFAULT_USERNAME))
+    )
+
     try:
         if not os.path.exists(PERSISTENT_DATA_PATH):
             os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
@@ -399,6 +527,13 @@ def save_config(new_config: Dict[str, Any]):
     except Exception as e:
         logger.error(f"保存配置文件 {CONFIG_FILE_PATH} 失败: {e}", exc_info=True)
     finally:
+        if trigger_reload:
+            logger.info("save_config: trigger_reload is True, re-initializing components...")
+            init_auth()
+            initialize_media_processor()
+            setup_scheduled_tasks()
+        else:
+            logger.info("save_config: trigger_reload is False, skipping component re-initialization.")
         initialize_media_processor()
         setup_scheduled_tasks()
 # --- 配置加载与保存结束 --- (确保这个注释和你的文件结构匹配)
@@ -406,7 +541,7 @@ def save_config(new_config: Dict[str, Any]):
 # --- MediaProcessor 初始化 ---
 def initialize_media_processor():
     global media_processor_instance
-    current_config = load_config() # load_config 现在会包含 libraries_to_process
+    current_config, _ = load_config() # load_config 现在会包含 libraries_to_process
     current_config['db_path'] = DB_PATH
 
     # ... (关闭旧实例的逻辑不变) ...
@@ -574,7 +709,7 @@ def submit_task_to_queue(task_function, task_name: str, *args, **kwargs):
     start_task_worker_if_not_running() # (需要把 start_webhook_worker... 重命名)
 
 def setup_scheduled_tasks():
-    config = load_config()
+    config, _ = load_config()
 
     # --- 处理全量扫描的定时任务 ---
     schedule_scan_enabled = config.get("schedule_enabled", False) # <--- 从 config 获取
@@ -947,12 +1082,91 @@ def api_search_emby_library():
     except Exception as e:
         logger.error(f"API /api/search_emby_library Error: {e}", exc_info=True)
         return jsonify({"error": "搜索时发生未知服务器错误"}), 500
+# --- 认证 API 端点 ---
+@app.route('/api/auth/status', methods=['GET'])
+def auth_status():
+    """检查当前认证状态"""
+    config, _ = load_config()
+    auth_enabled = config.get(constants.CONFIG_OPTION_AUTH_ENABLED, False)
+    
+    response = {
+        "auth_enabled": auth_enabled,
+        "logged_in": 'user_id' in session,
+        "username": session.get('username')
+    }
+    return jsonify(response)
 
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    data = request.json
+    username_from_req = data.get('username')
+    password_from_req = data.get('password')
+
+    if not username_from_req or not password_from_req:
+        return jsonify({"error": "缺少用户名或密码"}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE username = ?", (username_from_req,))
+    user = cursor.fetchone()
+    conn.close()
+
+    if user and check_password_hash(user['password_hash'], password_from_req):
+        session['user_id'] = user['id']
+        session['username'] = user['username']
+        logger.info(f"用户 '{user['username']}' 登录成功。")
+        return jsonify({"message": "登录成功", "username": user['username']})
+    
+    logger.warning(f"用户 '{username_from_req}' 登录失败：用户名或密码错误。")
+    return jsonify({"error": "用户名或密码错误"}), 401
+
+@app.route('/api/auth/logout', methods=['POST'])
+def logout():
+    username = session.get('username', '未知用户')
+    session.clear()
+    logger.info(f"用户 '{username}' 已注销。")
+    return jsonify({"message": "注销成功"})
+
+# --- 认证 API 端点结束 ---
+@app.route('/api/auth/change_password', methods=['POST'])
+@login_required
+def change_password():
+    data = request.json
+    current_password = data.get('current_password')
+    new_password = data.get('new_password')
+
+    if not current_password or not new_password:
+        return jsonify({"error": "缺少当前密码或新密码"}), 400
+    
+    if len(new_password) < 8:
+        return jsonify({"error": "新密码长度不能少于8位"}), 400
+
+    user_id = session.get('user_id')
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    user = cursor.fetchone()
+
+    if not user or not check_password_hash(user['password_hash'], current_password):
+        conn.close()
+        logger.warning(f"用户 '{session.get('username')}' 修改密码失败：当前密码不正确。")
+        return jsonify({"error": "当前密码不正确"}), 403
+
+    # 更新密码
+    new_password_hash = generate_password_hash(new_password)
+    cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_password_hash, user_id))
+    conn.commit()
+    conn.close()
+
+    logger.info(f"用户 '{user['username']}' 成功修改密码。")
+    return jsonify({"message": "密码修改成功"})
 # --- API 端点：获取当前配置 ---
 @app.route('/api/config', methods=['GET'])
 def api_get_config():
     try:
-        current_config = load_config() # 调用你实际的加载配置函数
+        # ★★★ 确保这里正确解包了元组 ★★★
+        current_config, _ = load_config() 
+        
         if current_config:
             logger.info(f"API /api/config (GET): 成功加载并返回配置。")
             return jsonify(current_config)
@@ -960,6 +1174,8 @@ def api_get_config():
             logger.error(f"API /api/config (GET): load_config() 返回为空或None。")
             return jsonify({"error": "无法加载配置数据"}), 500
     except Exception as e:
+        logger.error(f"API /api/config (GET) 获取配置时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "获取配置信息时发生服务器内部错误"}), 500
         logger.error(f"API /api/config (GET) 获取配置时发生错误: {e}", exc_info=True)
         return jsonify({"error": "获取配置信息时发生服务器内部错误"}), 500
 
@@ -1163,7 +1379,7 @@ def api_handle_trigger_full_scan():
             """这个嵌套函数会在后台执行"""
             if media_processor_instance:
                 # ✨ 在任务执行时，才去读取配置 ✨
-                config = load_config()
+                config, _ = load_config()
                 process_episodes = config.get('process_episodes', True) # 默认为True
                 logger.info(f"全量扫描任务：根据配置，处理分集开关为: {process_episodes}")
 
@@ -1467,7 +1683,7 @@ def api_parse_cast_from_url():
         return jsonify({"error": "请求中未提供 'url' 参数"}), 400
 
     try:
-        current_config = load_config()
+        current_config, _ = load_config()
         headers = {'User-Agent': current_config.get('user_agent', '')}
         parsed_cast = parse_cast_from_url(url_to_parse, custom_headers=headers)
         
@@ -1585,6 +1801,7 @@ def serve(path):
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
     init_db()
+    init_auth()
     initialize_media_processor()
     start_task_worker_if_not_running()
     if not scheduler.running:
@@ -1594,7 +1811,7 @@ if __name__ == '__main__':
         except Exception as e_scheduler_start:
             logger.error(f"APScheduler 启动失败: {e_scheduler_start}", exc_info=True)
     setup_scheduled_tasks()
-    app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=constants.DEBUG_MODE)
+    app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=False)
 
 # if __name__ == '__main__':
 #     RUN_MANUAL_TESTS = False  # <--- 在这里控制是否运行测试代码

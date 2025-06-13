@@ -25,6 +25,12 @@ DB_NAME = "emby_actor_processor.sqlite" # 数据库文件名 (也可以在这里
 CONFIG_FILE_NAME = "config.ini"
 DOUBAN_API_AVAILABLE = True
 
+# --- 用户认证常量 ---
+CONFIG_SECTION_AUTH = "Authentication"
+CONFIG_OPTION_AUTH_ENABLED = "auth_enabled"
+CONFIG_OPTION_AUTH_USERNAME = "username"
+DEFAULT_USERNAME = "admin"
+
 # --- 翻译引擎 ---
 # 你可以定义所有可用的翻译引擎列表，供设置页面选择
 AVAILABLE_TRANSLATOR_ENGINES = ['bing', 'google', 'baidu', 'alibaba', 'youdao', 'tencent']

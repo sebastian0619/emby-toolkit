@@ -1,7 +1,8 @@
 // src/main.js
 
 import { createApp, h } from 'vue';
-import App from './App.vue'; // 你的根组件
+import { createPinia } from 'pinia'
+import App from './MainApp.vue'; // 你的根组件
 import router from './router'; // 你配置的 Vue Router 实例
 
 // 1. 导入整个 Naive UI 库，用于 app.use() 全局注册组件
@@ -23,6 +24,7 @@ import {
   // 但通常 NConfigProvider 放在 App.vue 或 AppShell.vue 中更方便管理主题切换
 } from 'naive-ui';
 window.Sortable = Sortable
+const pinia = createPinia();
 // 创建 Vue 应用实例
 // 我们使用渲染函数 h() 来在顶层包裹 Provider 组件
 const app = createApp({
@@ -47,6 +49,7 @@ app.use(naive);
 
 // 4. 使用 Vue Router 插件
 app.use(router);
+app.use(pinia);
 
 // 5. 挂载应用
 app.mount('#app');
