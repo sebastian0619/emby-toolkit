@@ -824,7 +824,8 @@ def api_specific_sync_map_task(api_task_name: str): # <--- API 专属的，接�
                 emby_url=media_processor_instance.emby_url,
                 emby_api_key=media_processor_instance.emby_api_key,
                 emby_user_id=media_processor_instance.emby_user_id,
-                stop_event=media_processor_instance._stop_event
+                stop_event=media_processor_instance._stop_event,
+                tmdb_api_key=media_processor_instance.tmdb_api_key
             )
             logger.info(f"'{api_task_name}': SyncHandler 实例已创建 (API)。")
             sync_handler_instance.sync_emby_person_map_to_db(
@@ -926,7 +927,8 @@ def trigger_sync_person_map(): # WebUI 用的
                     emby_url=media_processor_instance.emby_url,
                     emby_api_key=media_processor_instance.emby_api_key,
                     emby_user_id=media_processor_instance.emby_user_id,
-                    stop_event=media_processor_instance._stop_event
+                    stop_event=media_processor_instance._stop_event,
+                    tmdb_api_key=media_processor_instance.tmdb_api_key
                 )
                 logger.info(f"'{task_name}': SyncHandler 实例已创建 (WebUI)。")
                 sync_handler_instance.sync_emby_person_map_to_db(
@@ -1427,7 +1429,8 @@ def api_handle_trigger_sync_map():
                         emby_url=media_processor_instance.emby_url,
                         emby_api_key=media_processor_instance.emby_api_key,
                         emby_user_id=media_processor_instance.emby_user_id,
-                        stop_event=media_processor_instance._stop_event
+                        stop_event=media_processor_instance._stop_event,
+                        tmdb_api_key=media_processor_instance.tmdb_api_key
                     )
                     # 3. 把标志传递给核心方法
                     sync_handler.sync_emby_person_map_to_db(
