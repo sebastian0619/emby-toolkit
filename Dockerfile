@@ -13,7 +13,7 @@ RUN npm cache clean --force
 RUN npm install --no-fund --verbose
 
 COPY emby-actor-ui/ ./
-RUN npm run build
+RUN npm run build || (cat /root/.npm/_logs/*-debug.log && exit 1)
 
 # --- 阶段 2: 构建最终的生产镜像 ---
 FROM python:3.11-slim
