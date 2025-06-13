@@ -3,6 +3,8 @@ FROM node:20-alpine AS frontend-build
 WORKDIR /app
 COPY emby-actor-ui/package.json emby-actor-ui/package-lock.json* ./emby-actor-ui/
 WORKDIR /app/emby-actor-ui
+RUN npm install --no-fund
+COPY emby-actor-ui/ ./
 
 # ✨✨✨ 在 install 之前增加清理缓存的步骤 ✨✨✨
 RUN npm cache clean --force
