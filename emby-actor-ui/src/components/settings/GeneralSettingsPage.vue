@@ -1,72 +1,201 @@
 <template>
-  <div>
-    <!-- ★★★ 1. 使用 n-spin 来包裹所有内容，根据加载状态显示 ★★★ -->
-    <n-spin :show="loadingConfig">
-      <n-grid :x-gap="24" :y-gap="24" :cols="1">
-        <!-- 修改密码组件 -->
-        <n-gi v-if="authStore.isAuthEnabled">
-          <ChangePassword />
-        </n-gi>
+  <!-- ★★★ 1. 移除 n-spin 和最外层的 div，直接开始布局 ★★★ -->
+  <n-form
+    v-if="configModel"
+    @submit.prevent="save"
+    label-placement="left"
+    label-width="auto"
+    label-align="right"
+    :model="configModel"
+  >
+    <n-grid cols="1 m:2" :x-gap="24" :y-gap="24" responsive="screen">
+      <!-- ########## 左侧列 ########## -->
+      <n-gi>
+        <n-space vertical :size="24">
+          <!-- 卡片: 基础设置 -->
+          <n-card title="基础设置" size="small">
+            <n-form-item-grid-item label="处理项目间的延迟 (秒)" path="delay_between_items_sec">
+            <n-input-number v-model:value="configModel.delay_between_items_sec" :min="0" :step="0.1" placeholder="例如: 0.5" style="width: 100%;" />
+          </n-form-item-grid-item>
+          
+          <n-form-item-grid-item label="豆瓣API默认冷却时间 (秒)" path="api_douban_default_cooldown_seconds">
+            <n-input-number v-model:value="configModel.api_douban_default_cooldown_seconds" :min="0.1" :step="0.1" placeholder="例如: 1.0" style="width: 100%;" />
+          </n-form-item-grid-item>
 
-        <!-- 通用设置卡片 -->
-        <n-gi>
-          <n-card title="通用设置" size="medium">
-            <!-- ★★★ 2. 只有在 config 加载成功后才显示表单 ★★★ -->
-            <n-form v-if="configModel" @submit.prevent="save" label-placement="left" label-width="auto">
-              <n-form-item label="任务间延时 (秒)">
-                <n-input-number v-model:value="configModel.delay_between_items_sec" :min="0" :step="0.1" style="width: 100%;" />
-                <template #feedback>处理每个媒体项目之间的等待时间，避免请求过快。</template>
-              </n-form-item>
-              <n-form-item label="待复核最低分">
-                <n-input-number v-model:value="configModel.min_score_for_review" :min="0" :max="10" :step="0.1" style="width: 100%;" />
-                <template #feedback>处理质量评分低于此分数的项目将被加入待复核列表。</template>
-              </n-form-item>
-              <n-form-item label="处理分集">
-                <n-switch v-model:value="configModel.process_episodes" />
-                <template #feedback>开启后，处理电视剧时会为每一季/每一集生成单独的元数据文件。</template>
-              </n-form-item>
-              <n-form-item label="同步图片">
-                <n-switch v-model:value="configModel.sync_images" />
-                <template #feedback>开启后，处理媒体时会下载海报、横幅图等图片文件。</template>
-              </n-form-item>
-              <n-button type="primary" attr-type="submit" :loading="savingConfig">
-                保存通用设置
-              </n-button>
-            </n-form>
-            <!-- 如果加载失败，显示错误信息 -->
-            <n-alert v-else-if="configError" title="加载配置失败" type="error">
-              {{ configError }}
-            </n-alert>
+          <n-form-item-grid-item label="需手动处理的最低评分阈值" path="min_score_for_review">
+            <n-input-number v-model:value="configModel.min_score_for_review" :min="0" :max="10" :step="0.1" placeholder="例如: 6.0" style="width: 100%;" />
+            <template #feedback>
+              <n-text depth="3" style="font-size:0.8em;">处理质量评分低于此值的项目将进入待复核列表。</n-text>
+            </template>
+          </n-form-item-grid-item>
+            <n-form-item label="处理分集" path="process_episodes">
+              <n-switch v-model:value="configModel.process_episodes" />
+              <template #feedback>开启后，处理电视剧时会为每一季/每一集生成单独的元数据文件。</template>
+            </n-form-item>
+            <n-form-item label="同步图片" path="sync_images">
+              <n-switch v-model:value="configModel.sync_images" />
+              <template #feedback>开启后，处理媒体时会下载海报、横幅图等图片文件。</template>
+            </n-form-item>
           </n-card>
-        </n-gi>
-      </n-grid>
-      <template #description>正在加载配置...</template>
-    </n-spin>
+
+          <!-- 卡片: 数据源与 API -->
+          <n-card title="数据源与 API" size="small">
+            <n-form-item label="本地数据源路径" path="local_data_path">
+              <n-input v-model:value="configModel.local_data_path" placeholder="神医TMDB缓存目录 (cache和override的上层)" />
+            </n-form-item>
+            <n-form-item label="TMDB API Key (v3)" path="tmdb_api_key">
+              <n-input type="password" show-password-on="mousedown" v-model:value="configModel.tmdb_api_key" placeholder="输入你的 TMDB API Key" />
+            </n-form-item>
+          </n-card>
+
+          <!-- 卡片: 安全设置 -->
+          <n-card v-if="authStore.isAuthEnabled" title="安全设置" size="small">
+            <ChangePassword />
+          </n-card>
+        </n-space>
+      </n-gi>
+
+      <!-- ########## 右侧列 ########## -->
+      <n-gi>
+        <n-space vertical :size="24">
+          <!-- 卡片: 传统翻译引擎 -->
+          <n-card title="传统翻译引擎" size="small">
+            <n-form-item label="翻译引擎顺序" path="translator_engines_order">
+              <template #feedback>可拖动调整顺序，点击添加新的翻译引擎。</template>
+              <draggable
+                v-model="configModel.translator_engines_order"
+                item-key="value"
+                tag="div"
+                class="engine-list"
+                handle=".drag-handle"
+                animation="300"
+              >
+                <template #item="{ element: engineValue, index }">
+                  <n-tag :key="engineValue" type="primary" closable class="engine-tag" @close="removeEngine(index)">
+                    <n-icon :component="DragHandleIcon" class="drag-handle" />
+                    {{ getEngineLabel(engineValue) }}
+                  </n-tag>
+                </template>
+              </draggable>
+              <n-select
+                v-if="unselectedEngines.length > 0"
+                placeholder="点击添加新的翻译引擎..."
+                :options="unselectedEngines"
+                @update:value="addEngine"
+                style="margin-top: 12px;"
+              />
+            </n-form-item>
+          </n-card>
+
+          <!-- 卡片: AI 翻译设置 -->
+          <n-card title="AI 翻译设置" size="small">
+            <template #header-extra>
+              <n-switch v-model:value="configModel.ai_translation_enabled" />
+            </template>
+            <div class="ai-settings-wrapper" :class="{ 'content-disabled': !configModel.ai_translation_enabled }">
+              <n-form-item label="AI 服务商" path="ai_provider">
+                <n-select v-model:value="configModel.ai_provider" :options="aiProviderOptions" />
+              </n-form-item>
+              <n-form-item label="API Key" path="ai_api_key">
+                <n-input type="password" show-password-on="mousedown" v-model:value="configModel.ai_api_key" placeholder="输入 AI 服务的 API Key" />
+              </n-form-item>
+              <n-form-item label="模型名称" path="ai_model_name">
+                <n-input v-model:value="configModel.ai_model_name" placeholder="例如: gpt-3.5-turbo, glm-4" />
+              </n-form-item>
+              <n-form-item label="API Base URL (可选)" path="ai_base_url">
+                <n-input v-model:value="configModel.ai_base_url" placeholder="用于代理或第三方兼容服务" />
+              </n-form-item>
+              <n-form-item label="翻译提示词 (Prompt)" path="ai_translation_prompt">
+                <n-input type="textarea" v-model:value="configModel.ai_translation_prompt" :autosize="{ minRows: 5, maxRows: 10 }" />
+              </n-form-item>
+            </div>
+          </n-card>
+        </n-space>
+      </n-gi>
+    </n-grid>
+
+    <!-- 页面底部的统一保存按钮 -->
+    <n-button type="primary" attr-type="submit" :loading="savingConfig" block size="large" style="margin-top: 24px;">
+      保存所有设置
+    </n-button>
+  </n-form>
+  
+  <!-- ★★★ 2. 如果加载失败，显示 Alert 提示 ★★★ -->
+  <n-alert v-else-if="configError" title="加载配置失败" type="error">
+    {{ configError }}
+  </n-alert>
+
+  <!-- ★★★ 3. 如果正在加载，可以显示一个简单的文本提示，或者一个全页的加载动画组件 ★★★ -->
+  <div v-else>
+    正在加载配置...
   </div>
 </template>
 
 <script setup>
-import { onMounted } from 'vue';
-import { NCard, NForm, NFormItem, NInputNumber, NSwitch, NButton, NGrid, NGi, NSpin, NAlert, useMessage } from 'naive-ui';
+import { ref, computed } from 'vue';
+import draggable from 'vuedraggable';
+import { 
+  NCard, NForm, NFormItem, NInputNumber, NSwitch, NButton, NGrid, NGi, 
+  NSpin, NAlert, NInput, NSelect, NSpace, NTag, NIcon, useMessage 
+} from 'naive-ui';
+import { MoveOutline as DragHandleIcon } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import ChangePassword from './ChangePassword.vue';
 import { useAuthStore } from '../../stores/auth';
 
-// ★★★ 3. 正确地从 useConfig 获取变量 ★★★
-const { configModel, loadingConfig, savingConfig, configError, fetchConfigData, handleSaveConfig } = useConfig();
+const { configModel, loadingConfig, savingConfig, configError, handleSaveConfig } = useConfig();
 const authStore = useAuthStore();
 const message = useMessage();
 
-// ★★★ 4. 定义 save 函数来调用 handleSaveConfig ★★★
+// --- 保存逻辑 ---
 async function save() {
   const success = await handleSaveConfig();
   if (success) {
-    message.success('通用设置已保存！');
+    message.success('所有设置已成功保存！');
+  } else {
+    message.error(configError.value || '配置保存失败，请检查后端日志。');
   }
 }
+loadingConfig.value = false;
+// --- 翻译引擎逻辑 ---
+const availableTranslatorEngines = ref([
+  { label: '必应 (Bing)', value: 'bing' },
+  { label: '谷歌 (Google)', value: 'google' },
+  { label: '百度 (Baidu)', value: 'baidu' },
+  { label: '阿里 (Alibaba)', value: 'alibaba' },
+  { label: '有道 (Youdao)', value: 'youdao' },
+  { label: '腾讯 (Tencent)', value: 'tencent' },
+]);
 
-// ★★★ 5. 在组件挂载时才去获取配置数据 ★★★
-onMounted(() => {
-  fetchConfigData();
+const getEngineLabel = (value) => {
+  const engine = availableTranslatorEngines.value.find(e => e.value === value);
+  return engine ? engine.label : value;
+};
+
+const unselectedEngines = computed(() => {
+  if (!configModel.value?.translator_engines_order) return availableTranslatorEngines.value;
+  const selectedValues = new Set(configModel.value.translator_engines_order);
+  return availableTranslatorEngines.value.filter(engine => !selectedValues.has(engine.value));
 });
+
+const addEngine = (value) => {
+  if (!configModel.value.translator_engines_order) {
+    configModel.value.translator_engines_order = [];
+  }
+  if (value && !configModel.value.translator_engines_order.includes(value)) {
+    configModel.value.translator_engines_order.push(value);
+  }
+};
+
+const removeEngine = (index) => {
+  configModel.value.translator_engines_order.splice(index, 1);
+};
+
+// --- AI 服务商逻辑 ---
+const aiProviderOptions = ref([
+  { label: 'OpenAI (及兼容服务)', value: 'openai' },
+  { label: '智谱AI (ZhipuAI)', value: 'zhipuai' },
+]);
+
 </script>
+

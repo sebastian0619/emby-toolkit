@@ -912,7 +912,7 @@ def trigger_full_scan():
 def trigger_sync_person_map(): # WebUI 用的
     # ... (你的 if not media_processor_instance 和 if task_lock.locked() 检查逻辑不变) ...
 
-    task_name = "同步Emby人物映射表 (WebUI)"
+    task_name = "同步Emby演员映射表 (WebUI)"
     logger.info(f"收到手动触发 '{task_name}' 的请求。")
 
     def sync_map_task_internal_for_webui(): # <--- 这是 WebUI 专属的内部任务函数

@@ -6,7 +6,6 @@ import { createRouter, createWebHistory } from 'vue-router';
 import ReviewList from '../components/ReviewList.vue';
 import ActionsPage from '../components/ActionsPage.vue';
 import EmbySettingsPage from '../components/settings/EmbySettingsPage.vue';
-import ApiDataSourceSettingsPage from '../components/settings/ApiDataSourceSettingsPage.vue';
 import SchedulerSettingsPage from '../components/settings/SchedulerSettingsPage.vue';
 import GeneralSettingsPage from '../components/settings/GeneralSettingsPage.vue';
 
@@ -48,12 +47,6 @@ const routes = [
     path: '/settings/emby',
     name: 'settings-emby',
     component: EmbySettingsPage,
-    meta: { requiresAuth: true }, // 需要登录
-  },
-  {
-    path: '/settings/api',
-    name: 'settings-api',
-    component: ApiDataSourceSettingsPage,
     meta: { requiresAuth: true }, // 需要登录
   },
   {

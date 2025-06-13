@@ -1042,7 +1042,7 @@ class SyncHandler:
         self.emby_user_id = emby_user_id
         self.stop_event = stop_event
         self.tmdb_api_key = tmdb_api_key # 保存 TMDb Key 用于可能的反查
-        logger.info(f"SyncHandler initialized with stop event.")
+        logger.debug(f"SyncHandler initialized with stop event.")
 
     def _get_db_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=10.0)
@@ -1055,7 +1055,7 @@ class SyncHandler:
         """
         mode_text = "全量同步" if full_sync else "增量同步"
         logger.info(f"开始同步 Emby Person 映射表，模式: {mode_text}")
-        if update_status_callback: update_status_callback(0, f"正在从Emby获取所有人物信息... ({mode_text})")
+        if update_status_callback: update_status_callback(0, f"正在从Emby获取所有演员信息... ({mode_text})")
 
         if self.stop_event.is_set():
             logger.info("同步任务在开始前被用户中止。")
@@ -1069,7 +1069,7 @@ class SyncHandler:
             stop_event=self.stop_event 
         )
         if persons_from_emby is None:
-            if update_status_callback: update_status_callback(-1, "从Emby获取人物信息失败")
+            if update_status_callback: update_status_callback(-1, "从Emby获取演员信息失败")
             return
         
         total_emby_persons = len(persons_from_emby)

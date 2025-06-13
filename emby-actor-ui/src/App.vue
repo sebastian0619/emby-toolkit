@@ -125,7 +125,6 @@ const renderIcon = (iconComponent) => {
 
 const menuOptions = computed(() => [
   { label: 'Emby 配置', key: 'settings-emby', icon: renderIcon(EmbyIcon) },
-  { label: '数据源', key: 'settings-api', icon: renderIcon(ApiIcon) },
   { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
   { type: 'divider', key: 'd1' },
   { label: '全量处理', key: 'actions-status', icon: renderIcon(ActionsIcon) },
@@ -162,14 +161,53 @@ const fetchStatus = async () => {
   }
 };
 
+// ★★★ 这里是修改的核心 ★★★
 const themeOverridesComputed = computed(() => {
-  if (!isDarkTheme.value) return { common: { bodyColor: '#f0f2f5' } };
+  // 为亮色模式和暗色模式都定义一个好看的阴影
+  const lightCardShadow = '0 1px 2px -2px rgba(0, 0, 0, 0.08), 0 3px 6px 0 rgba(0, 0, 0, 0.06), 0 5px 12px 4px rgba(0, 0, 0, 0.04)';
+  const darkCardShadow = '0 1px 2px -2px rgba(0, 0, 0, 0.24), 0 3px 6px 0 rgba(0, 0, 0, 0.18), 0 5px 12px 4px rgba(0, 0, 0, 0.12)';
+
+  if (!isDarkTheme.value) {
+    // 亮色模式
+    return {
+      common: { 
+        bodyColor: '#f0f2f5' 
+      },
+      Card: {
+        // 在这里为亮色模式的卡片加上阴影
+        boxShadow: lightCardShadow,
+      }
+    };
+  }
+  
+  // 暗色模式
   return {
-    common: { bodyColor: '#101014', cardColor: '#1a1a1e', inputColor: '#1a1a1e', actionColor: '#242428', borderColor: 'rgba(255, 255, 255, 0.12)' },
-    Card: { color: '#1a1a1e', titleTextColor: 'rgba(255, 255, 255, 0.92)' },
-    DataTable: { tdColor: '#1a1a1e', thColor: '#1a1a1e', tdColorStriped: '#202024' },
-    Input: { color: '#1a1a1e' },
-    Select: { peers: { InternalSelection: { color: '#1a1a1e' } } }
+    common: { 
+      bodyColor: '#101014', 
+      cardColor: '#1a1a1e', 
+      inputColor: '#1a1a1e', 
+      actionColor: '#242428', 
+      borderColor: 'rgba(255, 255, 255, 0.12)' 
+    },
+    Card: { 
+      color: '#1a1a1e', 
+      titleTextColor: 'rgba(255, 255, 255, 0.92)',
+      // 在这里为暗色模式的卡片加上阴影
+      boxShadow: darkCardShadow,
+    },
+    DataTable: { 
+      tdColor: '#1a1a1e', 
+      thColor: '#1a1a1e', 
+      tdColorStriped: '#202024' 
+    },
+    Input: { 
+      color: '#1a1a1e' 
+    },
+    Select: { 
+      peers: { 
+        InternalSelection: { color: '#1a1a1e' } 
+      } 
+    }
   };
 });
 

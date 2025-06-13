@@ -93,7 +93,7 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
         response.raise_for_status()
         item_data = response.json()
         logger.info(
-            f"成功获取Emby项目 '{item_data.get('Name', item_id)}' (ID: {item_id}, User: {user_id}) 的详情。")
+            f"成功获取Emby演员 '{item_data.get('Name', item_id)}' (ID: {item_id}, User: {user_id}) 的详情。")
 
         if not item_data.get('Name') or not item_data.get('Type'):
             logger.warning(f"Emby项目 {item_id} 返回的数据缺少Name或Type字段。")
