@@ -92,11 +92,10 @@ background_task_status = {
 }
 task_lock = threading.Lock() # 用于确保后台任务串行执行
 
-# ✨✨✨ Webhook任务队列和工人线程 ✨✨✨
-webhook_task_queue = Queue()
-webhook_worker_thread: Optional[threading.Thread] = None
-webhook_worker_lock = threading.Lock() # 用于安全地启动工人线程
-
+# ✨✨✨ 任务队列 ✨✨✨
+task_queue = Queue()
+task_worker_thread: Optional[threading.Thread] = None
+task_worker_lock = threading.Lock()
 
 scheduler = BackgroundScheduler(timezone=str(pytz.timezone(constants.TIMEZONE)))
 JOB_ID_FULL_SCAN = "scheduled_full_scan"
@@ -181,17 +180,22 @@ def init_db():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS person_identity_map (
                 map_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                emby_person_id TEXT UNIQUE NOT NULL,
+                emby_person_id TEXT UNIQUE,          -- ✨ 允许为 NULL，但如果存在则必须唯一
                 emby_person_name TEXT,
-                tmdb_person_id TEXT, 
+                tmdb_person_id TEXT UNIQUE NOT NULL, -- ✨✨✨ 设为 UNIQUE NOT NULL，成为新的核心 ✨✨✨
                 tmdb_name TEXT,
-                imdb_id TEXT,
-                douban_celebrity_id TEXT,
+                imdb_id TEXT UNIQUE,                 -- ✨ IMDb ID 也应该是唯一的，允许为 NULL
+                douban_celebrity_id TEXT UNIQUE,     -- ✨ 豆瓣 ID 也应该是唯一的，允许为 NULL
                 douban_name TEXT,
                 last_synced_at TIMESTAMP,
                 last_updated_at TIMESTAMP
             )
         """)
+        # 创建索引以加速查询
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_person_id ON person_identity_map (emby_person_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_tmdb_person_id ON person_identity_map (tmdb_person_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_imdb_id ON person_identity_map (imdb_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_celebrity_id ON person_identity_map (douban_celebrity_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_person_id ON person_identity_map (emby_person_id)")
         # ... (其他 person_identity_map 的索引) ...
         logger.info("Table 'person_identity_map' and indexes schema confirmed/created if not exists.")
@@ -422,70 +426,6 @@ def initialize_media_processor():
         logger.error(f"创建 MediaProcessor 实例失败: {e_init_mp}", exc_info=True)
         media_processor_instance = None
         print(f"CRITICAL ERROR: MediaProcessor 核心处理器初始化失败: {e_init_mp}. 应用可能无法正常工作。")
-# --- MediaProcessor 初始化结束 ---
-# ✨✨✨ 工人线程的核心逻辑 ✨✨✨
-def webhook_worker_function():
-    """
-    这个函数在后台线程中运行，持续从队列中获取并处理任务。
-    """
-    logger.info("Webhook工人线程已启动，等待任务...")
-    while True:
-        try:
-            # 从队列中获取任务，如果队列为空，它会在这里阻塞等待
-            item_id = webhook_task_queue.get()
-
-            # "None" 是我们用来优雅地停止线程的“毒丸”信号
-            if item_id is None:
-                logger.info("Webhook工人线程收到停止信号，即将退出。")
-                break
-
-            # 使用通用的后台任务执行器来处理这个单一任务
-            # 这样可以复用状态更新和锁的逻辑
-            try:
-                current_config = load_config()
-                # 从配置中获取 process_episodes 的值，如果找不到，默认为 True (深度处理)
-                process_episodes_from_config = current_config.get('process_episodes', True)
-                logger.info(f"Webhook任务 (ID: {item_id})：根据配置，处理分集开关为: {process_episodes_from_config}")
-            except Exception as e:
-                logger.error(f"Webhook任务 (ID: {item_id})：读取配置失败: {e}。将默认使用深度处理模式。")
-                process_episodes_from_config = True
-
-            def single_webhook_task_internal(id_to_process, process_episodes_flag):
-                if media_processor_instance:
-                    # ✨ 把开关传递给核心函数 ✨
-                    media_processor_instance.process_single_item(
-                        id_to_process,
-                        process_episodes=process_episodes_flag
-                    )
-                else:
-                    logger.error(f"Webhook处理 Item ID {id_to_process} 失败：MediaProcessor 未初始化。")
-            
-            # ✨ 把开关作为参数传递给后台任务 ✨
-            _execute_task_with_lock(
-                single_webhook_task_internal, 
-                f"Webhook处理 Item ID: {item_id}", 
-                item_id,
-                process_episodes_from_config # 这个会作为 *args 传给 single_webhook_task_internal
-            )
-            webhook_task_queue.task_done()
-        except Exception as e:
-            logger.error(f"Webhook工人线程发生未知错误: {e}", exc_info=True)
-            time.sleep(5)
-
-# ✨✨✨ 安全地启动工人线程的辅助函数 ✨✨✨
-def start_webhook_worker_if_not_running():
-    """
-    检查工人线程是否在运行，如果不在，则启动它。
-    使用锁来确保线程安全。
-    """
-    global webhook_worker_thread
-    with webhook_worker_lock:
-        if webhook_worker_thread is None or not webhook_worker_thread.is_alive():
-            logger.info("Webhook工人线程未运行，正在启动...")
-            webhook_worker_thread = threading.Thread(target=webhook_worker_function, daemon=True)
-            webhook_worker_thread.start()
-        else:
-            logger.debug("Webhook工人线程已在运行。")
 # --- 后台任务回调 ---
 def update_status_from_thread(progress: int, message: str):
     global background_task_status
@@ -493,8 +433,6 @@ def update_status_from_thread(progress: int, message: str):
         background_task_status["progress"] = progress
     background_task_status["message"] = message
     # logger.debug(f"状态更新回调: Progress={progress}%, Message='{message}'") # 这条日志太频繁，可以注释掉
-# --- 后台任务回调结束 ---
-
 # --- 后台任务封装 ---
 def _execute_task_with_lock(task_function, task_name: str, *args, **kwargs):
     """通用后台任务执行器，包含锁和状态管理"""
@@ -506,7 +444,8 @@ def _execute_task_with_lock(task_function, task_name: str, *args, **kwargs):
         return
 
     with task_lock:
-        frontend_log_queue.clear()
+        if media_processor_instance:
+            frontend_log_queue.clear()
         if media_processor_instance:
             media_processor_instance.clear_stop_signal()
         else: # 如果 media_processor_instance 未初始化成功
@@ -524,9 +463,16 @@ def _execute_task_with_lock(task_function, task_name: str, *args, **kwargs):
 
         task_completed_normally = False
         try:
-            task_function(*args, **kwargs) # 执行实际的任务函数
-            if not (media_processor_instance and media_processor_instance.is_stop_requested()):
+            if media_processor_instance.is_stop_requested():
+                logger.info(f"任务 '{task_name}' 在启动前被已存在的停止信号取消。")
+                raise InterruptedError("任务被取消")
+
+            task_function(*args, **kwargs)
+            if not media_processor_instance.is_stop_requested():
                 task_completed_normally = True
+        except InterruptedError: # 捕获我们自己抛出的中断错误
+            logger.info(f"后台任务 '{task_name}' 被中止。")
+            update_status_from_thread(-1, "任务已中止")
         except Exception as e:
             logger.error(f"后台任务 '{task_name}' 执行失败: {e}", exc_info=True)
             update_status_from_thread(-1, f"任务失败: {str(e)[:100]}...")
@@ -560,7 +506,6 @@ def _execute_task_with_lock(task_function, task_name: str, *args, **kwargs):
             if media_processor_instance:
                 media_processor_instance.clear_stop_signal()
             logger.info(f"后台任务 '{task_name}' 状态已重置。")
-
 # --- 定时任务 ---
 def scheduled_task_job_internal(force_reprocess: bool):
     """定时任务的实际执行内容 (被 _execute_task_with_lock 调用)"""
@@ -577,7 +522,56 @@ def scheduled_task_job_wrapper(force_reprocess: bool):
     task_name = "定时全量扫描"
     if force_reprocess: task_name += " (强制)"
     _execute_task_with_lock(scheduled_task_job_internal, task_name, force_reprocess)
+#--- 通用队列 ---
+def task_worker_function():
+    """
+    通用工人线程，从队列中获取并处理各种后台任务。
+    """
+    logger.info("通用任务工人线程已启动，等待任务...")
+    while True:
+        try:
+            # 从队列中获取任务元组
+            task_info = task_queue.get()
 
+            if task_info is None: # 停止信号
+                logger.info("工人线程收到停止信号，即将退出。")
+                break
+
+            # 解包任务信息
+            task_function, task_name, args, kwargs = task_info
+            
+            # ✨ 直接调用我们已有的、带锁的执行器 ✨
+            # 注意：现在 _execute_task_with_lock 内部的锁检查其实是多余的了
+            # 因为工人线程本身就是单线程消费，天然串行。但保留它也无妨。
+            _execute_task_with_lock(task_function, task_name, *args, **kwargs)
+            
+            task_queue.task_done()
+        except Exception as e:
+            logger.error(f"通用工人线程发生未知错误: {e}", exc_info=True)
+            time.sleep(5)
+
+def start_task_worker_if_not_running():
+    """
+    安全地启动通用工人线程。
+    """
+    global task_worker_thread
+    with task_worker_lock:
+        if task_worker_thread is None or not task_worker_thread.is_alive():
+            logger.info("通用任务工人线程未运行，正在启动...")
+            task_worker_thread = threading.Thread(target=task_worker_function, daemon=True)
+            task_worker_thread.start()
+        else:
+            logger.debug("通用任务工人线程已在运行。")
+#--- 为通用队列添加任务 ---
+def submit_task_to_queue(task_function, task_name: str, *args, **kwargs):
+    """
+    将一个任务提交到通用队列中。
+    """
+    logger.info(f"任务 '{task_name}' 已提交到队列。")
+    task_info = (task_function, task_name, args, kwargs)
+    task_queue.put(task_info)
+    # 确保工人线程在运行
+    start_task_worker_if_not_running() # (需要把 start_webhook_worker... 重命名)
 
 def setup_scheduled_tasks():
     config = load_config()
@@ -738,9 +732,19 @@ def emby_webhook():
 
     if item_id and item_type in trigger_types:
         logger.info(f"Webhook事件 '{event_type}' 触发，项目 '{item_name}' (ID: {item_id}, 类型: {item_type}) 已加入处理队列。")
-        
-        webhook_task_queue.put(item_id)
-        start_webhook_worker_if_not_running()
+        def single_item_task(id_to_process):
+            """这个函数是真正要被队列里的工人线程执行的。"""
+            if media_processor_instance:
+                # Webhook 触发的，我们通常希望它进行深度处理
+                # 所以 process_episodes=True 是一个合理的默认值
+                media_processor_instance.process_single_item(
+                    id_to_process, 
+                    force_reprocess_this_item=True, # Webhook 来的通常是新项目，可以强制处理
+                    process_episodes=True
+                )
+            else:
+                logger.error(f"Webhook处理 Item ID {id_to_process} 失败：MediaProcessor 未初始化。")
+        submit_task_to_queue(single_item_task, f"Webhook处理: {item_name}", item_id)
         
         return jsonify({"status": "task_queued", "item_id": item_id}), 202
     
@@ -861,35 +865,43 @@ def api_get_emby_libraries():
 
 # --- 应用退出处理 ---
 def application_exit_handler():
-    global media_processor_instance, scheduler
+    global media_processor_instance, scheduler, task_worker_thread
     logger.info("应用程序正在退出 (atexit)，执行清理操作...")
-    if media_processor_instance and hasattr(media_processor_instance, 'close'):
-        logger.info("正在关闭 MediaProcessor 实例 (atexit)...")
-        try: media_processor_instance.close()
-        except Exception as e: logger.error(f"atexit 关闭 MediaProcessor 时出错: {e}", exc_info=True)
-        else: logger.debug("MediaProcessor 实例已关闭 (atexit)。")
 
-    if scheduler and scheduler.running:
-        logger.info("正在关闭 APScheduler (atexit)...")
-        try: scheduler.shutdown(wait=False) # wait=False 避免阻塞退出
-        except Exception as e: logger.error(f"关闭 APScheduler 时发生错误 (atexit): {e}", exc_info=True)
-        else: logger.debug("APScheduler 已关闭 (atexit)。")
-    logger.info("atexit 清理操作执行完毕。")
+    # 1. 立刻通知当前正在运行的任务停止
+    if media_processor_instance:
+        logger.info("正在发送停止信号给当前任务...")
+        media_processor_instance.signal_stop()
 
-    # ✨✨✨ 停止 Webhook 工人线程 ✨✨✨
-    if webhook_worker_thread and webhook_worker_thread.is_alive():
-        logger.info("正在发送停止信号给 Webhook 工人线程...")
-        webhook_task_queue.put(None) # 发送“毒丸”
-        webhook_worker_thread.join(timeout=5) # 等待线程退出，最多等5秒
-        if webhook_worker_thread.is_alive():
-            logger.warning("Webhook 工人线程在5秒内未能正常退出。")
+    # 2. 清空任务队列，丢弃所有排队中的任务
+    if not task_queue.empty():
+        logger.info(f"队列中还有 {task_queue.qsize()} 个任务，正在清空...")
+        while not task_queue.empty():
+            try:
+                task_queue.get_nowait()
+            except Queue.Empty:
+                break
+        logger.info("任务队列已清空。")
+
+    # 3. 停止工人线程
+    if task_worker_thread and task_worker_thread.is_alive():
+        logger.info("正在发送停止信号给任务工人线程...")
+        task_queue.put(None) # 发送“毒丸”
+        task_worker_thread.join(timeout=5) # 等待线程退出
+        if task_worker_thread.is_alive():
+            logger.warning("任务工人线程在5秒内未能正常退出。")
         else:
-            logger.info("Webhook 工人线程已成功停止。")
+            logger.info("任务工人线程已成功停止。")
 
+    # 4. 关闭其他资源
+    if media_processor_instance:
+        media_processor_instance.close()
+    if scheduler and scheduler.running:
+        scheduler.shutdown(wait=False)
+    
     logger.info("atexit 清理操作执行完毕。")
 
 atexit.register(application_exit_handler)
-logger.info("已注册应用程序退出处理程序 (atexit)。")
 # --- 应用退出处理结束 ---
 
 # --- API 端点 搜索媒体库 ---
@@ -1132,6 +1144,10 @@ def api_mark_item_processed(item_id):
 def api_handle_trigger_full_scan():
     logger.info("API Endpoint: Received request to trigger full scan.")
     try:
+        if media_processor_instance:
+            media_processor_instance.clear_stop_signal()
+        else:
+            return jsonify({"error": "核心处理器未就绪"}), 503
         # 只从前端获取“是否强制”这一个临时选项
         force_reprocess = request.form.get('force_reprocess_all') == 'on'
         
@@ -1160,11 +1176,8 @@ def api_handle_trigger_full_scan():
                 logger.error("API: 全量扫描无法执行：MediaProcessor 未初始化。")
                 update_status_from_thread(-1, "错误：核心处理器未就绪")
 
-        thread = threading.Thread(
-            target=_execute_task_with_lock,
-            args=(task_to_run, action_message)
-        )
-        thread.start()
+        submit_task_to_queue(task_to_run, action_message)
+    
         
         return jsonify({"message": f"{action_message} 任务已提交启动。"}), 202
     except Exception as e:
@@ -1212,11 +1225,7 @@ def api_handle_trigger_sync_map():
                 update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
 
         # 4. 启动线程，把 full_sync_flag 作为参数传进去
-        thread = threading.Thread(
-            target=_execute_task_with_lock, 
-            args=(sync_task_with_option, task_name_for_api, full_sync_flag)
-        )
-        thread.start()
+        submit_task_to_queue(sync_task_with_option, task_name_for_api, full_sync_flag)
 
         return jsonify({"message": f"'{task_name_for_api}' 任务已提交启动。"}), 202
     except Exception as e:
@@ -1226,22 +1235,13 @@ def api_handle_trigger_sync_map():
 @app.route('/api/trigger_stop_task', methods=['POST'])
 def api_handle_trigger_stop_task():
     logger.info("API Endpoint: Received request to stop current task.")
-    try:
-        # (调用你实际停止任务的逻辑，例如设置一个全局的停止事件)
-        # global_stop_event.set() # 假设你有这样一个事件
-        if media_processor_instance and hasattr(media_processor_instance, 'signal_stop'):
-            media_processor_instance.signal_stop()
-            logger.info("API: 已发送停止信号给 MediaProcessor。")
-            # 你可能还需要停止其他类型的任务，例如同步任务
-            # 这取决于你的 _execute_task_with_lock 如何处理停止信号
-            # 或者你有一个更通用的任务管理器来发送停止信号
-        else:
-            logger.warning("API: MediaProcessor 未初始化，无法发送停止信号。")
-
+    if media_processor_instance:
+        media_processor_instance.signal_stop()
+        logger.info("API: 已发送停止信号给当前正在运行的任务。")
         return jsonify({"message": "已发送停止任务请求。"}), 200
-    except Exception as e:
-        logger.error(f"API /api/trigger_stop_task error: {e}", exc_info=True)
-        return jsonify({"error": "发送停止任务请求时发生服务器内部错误"}), 500
+    else:
+        logger.warning("API: MediaProcessor 未初始化，无法发送停止信号。")
+        return jsonify({"error": "核心处理器未就绪"}), 503
     
 @app.route('/api/preview_processed_cast/<item_id>', methods=['POST'])
 def api_preview_processed_cast(item_id):
@@ -1290,11 +1290,7 @@ def api_update_edited_cast(item_id):
         )
 
     # 使用你现有的 _execute_task_with_lock 来运行
-    thread = threading.Thread(
-        target=_execute_task_with_lock,
-        args=(manual_update_task, f"手动更新: {item_name}")
-    )
-    thread.start()
+    submit_task_to_queue(manual_update_task, f"手动更新: {item_name}")
     
     return jsonify({"message": "手动更新任务已在后台启动。"}), 202
     
@@ -1366,79 +1362,82 @@ def api_export_person_map():
 @app.route('/api/import_person_map', methods=['POST'])
 def api_import_person_map():
     """
-    从上传的 CSV 文件导入数据到 person_identity_map 表。
+    【TMDb为核心版】从上传的 CSV 文件导入数据到 person_identity_map 表。
     """
     logger.info("API: 收到导入人物映射表的请求。")
     
-    # 检查是否有文件被上传
     if 'file' not in request.files:
         return jsonify({"error": "请求中未找到文件部分"}), 400
     
     file = request.files['file']
     
-    if file.filename == '':
-        return jsonify({"error": "未选择文件"}), 400
+    if file.filename == '' or not file.filename.endswith('.csv'):
+        return jsonify({"error": "未选择文件或文件类型不正确 (需要 .csv)"}), 400
 
-    if file and file.filename.endswith('.csv'):
-        try:
-            # 读取文件内容
-            # 为了处理不同编码，最好先解码
-            stream = StringIO(file.stream.read().decode("utf-8"), newline=None)
-            csv_reader = csv.DictReader(stream)
+    try:
+        stream = StringIO(file.stream.read().decode("utf-8"), newline=None)
+        # 使用 DictReader 可以方便地通过列名访问数据
+        csv_reader = csv.DictReader(stream)
+        
+        stats = {"total": 0, "processed": 0, "skipped": 0, "errors": 0}
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        for row in csv_reader:
+            stats["total"] += 1
             
-            # 准备统计数据
-            stats = {"total": 0, "inserted": 0, "updated": 0, "skipped": 0, "errors": 0}
+            # ✨ 1. 以 tmdb_person_id 为核心 ✨
+            tmdb_id = row.get('tmdb_person_id')
             
-            conn = get_db_connection()
-            cursor = conn.cursor()
-
-            for row in csv_reader:
-                stats["total"] += 1
-                emby_pid = row.get('emby_person_id')
-                
-                if not emby_pid:
-                    stats["skipped"] += 1
-                    continue
-                
-                # 使用 REPLACE INTO (UPSERT) 逻辑来插入或更新
-                # 这会根据 PRIMARY KEY 或 UNIQUE 约束来工作
-                # 确保你的 emby_person_id 是 UNIQUE 的
-                sql = """
-                    REPLACE INTO person_identity_map (
-                        emby_person_id, emby_person_name, imdb_id, 
-                        tmdb_person_id, douban_celebrity_id, last_updated_at
-                    ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """
-                params = (
-                    emby_pid,
-                    row.get('emby_person_name'),
-                    row.get('imdb_id'),
-                    row.get('tmdb_person_id'),
-                    row.get('douban_celebrity_id')
-                )
-                
-                try:
-                    cursor.execute(sql, params)
-                    # cursor.rowcount 在 REPLACE 语句中，如果是插入则为1，如果是替换则为2
-                    if cursor.rowcount > 0:
-                        # 简单起见，我们不区分插入和更新，都算成功
-                        stats["updated"] += 1 # 或者你可以用更复杂的逻辑来区分
-                except Exception as e_row:
-                    stats["errors"] += 1
-                    logger.error(f"导入行 {row} 时出错: {e_row}")
-
-            conn.commit()
-            conn.close()
+            if not tmdb_id:
+                logger.warning(f"导入跳过：行 {row} 缺少核心的 tmdb_person_id。")
+                stats["skipped"] += 1
+                continue
             
-            message = f"导入完成。总行数: {stats['total']}, 成功处理: {stats['updated']}, 跳过: {stats['skipped']}, 错误: {stats['errors']}."
-            logger.info(f"API: {message}")
-            return jsonify({"message": message}), 200
+            # 2. 准备要写入的数据，并清理空字符串
+            data_to_write = {
+                "tmdb_person_id": tmdb_id,
+                "emby_person_id": row.get('emby_person_id') or None,
+                "emby_person_name": row.get('emby_person_name') or None,
+                "imdb_id": row.get('imdb_id') or None,
+                "douban_celebrity_id": row.get('douban_celebrity_id') or None,
+                "tmdb_name": row.get('tmdb_name') or None,
+                "douban_name": row.get('douban_name') or None,
+            }
+            clean_data = {k: v for k, v in data_to_write.items() if v is not None and v != ''}
 
-        except Exception as e:
-            logger.error(f"导入文件时发生严重错误: {e}", exc_info=True)
-            return jsonify({"error": f"处理文件时发生错误: {e}"}), 500
-    else:
-        return jsonify({"error": "无效的文件类型，请上传 .csv 文件"}), 400  
+            # 3. 构建并执行 UPSERT 语句
+            cols = list(clean_data.keys())
+            vals = list(clean_data.values())
+            
+            update_clauses = [f"{col} = COALESCE(excluded.{col}, person_identity_map.{col})" for col in cols if col != "tmdb_person_id"]
+            
+            sql = f"""
+                INSERT INTO person_identity_map ({', '.join(cols)}, last_updated_at)
+                VALUES ({', '.join(['?'] * len(cols))}, CURRENT_TIMESTAMP)
+                ON CONFLICT(tmdb_person_id) DO UPDATE SET
+                    {', '.join(update_clauses)},
+                    last_updated_at = CURRENT_TIMESTAMP;
+            """
+            
+            try:
+                cursor.execute(sql, tuple(vals))
+                stats["processed"] += 1
+            except sqlite3.Error as e_row:
+                stats["errors"] += 1
+                logger.error(f"导入行 {row} 时数据库出错: {e_row}")
+
+        conn.commit()
+        conn.close()
+        
+        message = f"导入完成。总行数: {stats['total']}, 成功处理: {stats['processed']}, 跳过: {stats['skipped']}, 错误: {stats['errors']}."
+        logger.info(f"API: {message}")
+        return jsonify({"message": message}), 200
+
+    except Exception as e:
+        logger.error(f"导入文件时发生严重错误: {e}", exc_info=True)
+        return jsonify({"error": f"处理文件时发生错误: {e}"}), 500 
 # ✨✨✨ 加载编辑页面的API接口 ✨✨✨
 @app.route('/api/media_with_cast_for_editing/<item_id>', methods=['GET'])
 def api_get_media_for_editing(item_id):
@@ -1587,8 +1586,7 @@ if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
     init_db()
     initialize_media_processor()
-    # ✨✨✨ 新增：应用启动时就启动工人线程 ✨✨✨
-    start_webhook_worker_if_not_running()
+    start_task_worker_if_not_running()
     if not scheduler.running:
         try:
             scheduler.start()

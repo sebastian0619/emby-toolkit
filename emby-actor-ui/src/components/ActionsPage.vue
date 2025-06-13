@@ -45,27 +45,48 @@
     <!-- ★★★ 3. 第二个卡片，包裹同步映射表区域 ★★★ -->
     <n-card title="同步Emby演员映射表" class="beautified-card" :bordered="false">
       <n-space vertical>
-        <!-- ✨✨✨ START: 新增的复选框 ✨✨✨ -->
         <n-checkbox v-model:checked="forceFullSyncMap" :disabled="taskStatus.is_running">
           强制全量同步 (会合并所有记录，耗时较长)
         </n-checkbox>
-        <!-- ✨✨✨ END: 新增的复选框 ✨✨✨ -->
-
+        
+        <!-- ✨✨✨ 检查这个 n-space 是否完整 ✨✨✨ -->
         <n-space align="center">
+          <!-- 按钮 1: 同步 -->
           <n-button
             type="primary"
             @click="triggerSyncMap"
             :loading="taskStatus.is_running && currentActionIncludesSyncMap"
             :disabled="taskStatus.is_running && !currentActionIncludesSyncMap"
           >
-            <!-- 根据复选框状态改变按钮文字 -->
             {{ forceFullSyncMap ? '启动全量同步' : '启动增量同步' }}
           </n-button>
 
-          <!-- ... 导出和导入按钮 (保持不变) ... -->
+          <!-- ✨✨✨ 按钮 2: 导出 (检查这里) ✨✨✨ -->
+          <n-button @click="exportMap" :loading="isExporting">
+            <template #icon><n-icon :component="ExportIcon" /></template>
+            导出
+          </n-button>
+          
+          <!-- ✨✨✨ 按钮 3: 导入 (检查这里) ✨✨✨ -->
+          <n-upload
+            action="/api/import_person_map"
+            :show-file-list="false"
+            @before-upload="beforeImport"
+            @finish="afterImport"
+            @error="errorImport"
+            accept=".csv"
+          >
+            <n-button :loading="isImporting">
+              <template #icon><n-icon :component="ImportIcon" /></template>
+              导入
+            </n-button>
+          </n-upload>
         </n-space>
         
-        <!-- ... 提示文字 (保持不变) ... -->
+        <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">
+          <b>同步：</b>从Emby读取所有人物信息为后续创建各数据源ID映射表。<br>
+          <b>导出/导入：</b>用于备份或迁移人物映射数据。导入会覆盖现有相同 Emby Person ID 的记录。
+        </p>
       </n-space>
     </n-card>
 

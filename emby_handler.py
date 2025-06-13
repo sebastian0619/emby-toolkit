@@ -5,6 +5,7 @@ import os
 import shutil
 import json
 import time
+import threading
 from typing import Optional, List, Dict, Any
 
 # (SimpleLogger 和 logger 的导入保持不变)
@@ -521,7 +522,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
         logger.error(f"  - 刷新请求时发生未知错误: {e}\n{traceback.format_exc()}")
         return False
 
-def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str] = None, stop_event: Optional[threading.Event] = None) -> Optional[List[Dict[str, Any]]]:
     """获取 Emby 中所有的 Person 条目及其 ProviderIds。"""
     api_url = f"{base_url.rstrip('/')}/Persons" # 通常是这个端点
     params = {
@@ -539,6 +540,10 @@ def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str
 
     logger.info("开始从 Emby 获取所有 Person 数据...")
     while True:
+        if stop_event and stop_event.is_set():
+            logger.info("Emby Person 获取任务被中止。")
+            # 返回已经获取到的部分数据，或者直接返回 None/[]
+            return all_persons 
         params["StartIndex"] = start_index
         params["Limit"] = batch_size
         logger.debug(f"  获取 Person 批次: StartIndex={start_index}, Limit={batch_size}")

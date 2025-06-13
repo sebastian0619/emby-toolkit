@@ -44,7 +44,7 @@ class DoubanApi:
         "search": "/search/weixin", "imdbid": "/movie/imdb/%s",
         "movie_detail": "/movie/", "tv_detail": "/tv/",
         "movie_celebrities": "/movie/%s/celebrities", "tv_celebrities": "/tv/%s/celebrities",
-        "celebrity_detail": "/celebrity/%s/",
+        "celebrity_detail": "/celebrity/%s",
     }
     _user_agents = [
         "api-client/1 com.douban.frodo/7.22.0.beta9(231) Android/23 product/Mate 40 vendor/HUAWEI model/Mate 40 brand/HUAWEI  rom/android  network/wifi  platform/AndroidPad",

@@ -331,7 +331,7 @@ class MediaProcessor:
 
     def _process_cast_list_from_local(self, local_cast_list: List[Dict[str, Any]], emby_item_info: Dict[str, Any], cursor: sqlite3.Cursor) -> List[Dict[str, Any]]:
         """
-        【最终确认版】处理本地演员列表，与豆瓣数据进行匹配、丰富，并根据数据库映射有条件地补全新增演员。
+        【最终毕业版 V8】使用正确的路径解析豆瓣名人详情中的 IMDb ID。
         """
         try:
             douban_candidates = self._format_douban_cast(self._fetch_douban_cast(emby_item_info))
@@ -342,80 +342,127 @@ class MediaProcessor:
                     if name_key not in final_cast_map:
                         final_cast_map[name_key] = actor
 
-            for d_actor in douban_candidates:
-                if self.is_stop_requested(): raise InterruptedError("任务在匹配豆瓣演员时被中止")
-                
-                match_found = False
-                
-                # --- 匹配阶段 ---
-                # 优先级 1: 名字
-                logger.debug(f"  -> 尝试为豆瓣演员 '{d_actor.get('name')}' 进行 [名字] 匹配...")
+            unmatched_douban_candidates = []
+
+            # --- 步骤 1: 用豆瓣演员名和原始演员表匹配 ---
+            logger.info("--- 匹配阶段 1: 按名字匹配 ---")
+            matched_douban_indices = set()
+            for i, d_actor in enumerate(douban_candidates):
                 for l_actor in final_cast_map.values():
                     if utils.are_names_match(d_actor.get("name"), d_actor.get("original_name"), l_actor.get("name"), l_actor.get("original_name")):
-                        logger.info(f"  匹配成功 (按名字): 豆瓣演员 '{d_actor.get('name')}' -> 本地演员 '{l_actor.get('name')}'")
-                        l_actor["name"] = d_actor.get("name"); l_actor["character"] = self._select_best_role(l_actor.get("character"), d_actor.get("character"))
-                        if d_actor.get("douban_id") and not l_actor.get("douban_id"): l_actor["douban_id"] = d_actor.get("douban_id")
-                        if d_actor.get("imdb_id") and not l_actor.get("imdb_id"): l_actor["imdb_id"] = d_actor.get("imdb_id")
-                        match_found = True; break
-                
-                # 优先级 2: 豆瓣ID
-                if not match_found:
-                    d_douban_id = d_actor.get("douban_id")
-                    logger.debug(f"  -> 名字匹配失败。尝试为 '{d_actor.get('name')}' (豆瓣ID: {d_douban_id}) 进行 [豆瓣ID] 匹配...")
-                    if d_douban_id:
-                        for l_actor in final_cast_map.values():
-                            if l_actor.get("douban_id") == d_douban_id:
-                                logger.info(f"  匹配成功 (按豆瓣ID '{d_douban_id}'): 豆瓣演员 '{d_actor.get('name')}' -> 本地演员 '{l_actor.get('name')}'")
-                                l_actor["name"] = d_actor.get("name"); l_actor["character"] = self._select_best_role(l_actor.get("character"), d_actor.get("character"))
-                                if d_actor.get("imdb_id") and not l_actor.get("imdb_id"): l_actor["imdb_id"] = d_actor.get("imdb_id")
-                                match_found = True; break
-                
-                # 优先级 3: IMDb ID
-                if not match_found:
-                    d_imdb_id = d_actor.get("imdb_id")
-                    logger.debug(f"  -> 豆瓣ID匹配失败。尝试为 '{d_actor.get('name')}' (IMDb ID: {d_imdb_id}) 进行 [IMDb ID] 匹配...")
-                    if d_imdb_id:
-                        for l_actor in final_cast_map.values():
-                            if l_actor.get("imdb_id") == d_imdb_id:
-                                logger.info(f"  匹配成功 (按IMDb ID '{d_imdb_id}'): 豆瓣演员 '{d_actor.get('name')}' -> 本地演员 '{l_actor.get('name')}'")
-                                l_actor["name"] = d_actor.get("name"); l_actor["character"] = self._select_best_role(l_actor.get("character"), d_actor.get("character"))
-                                if d_actor.get("douban_id") and not l_actor.get("douban_id"): l_actor["douban_id"] = d_actor.get("douban_id")
-                                match_found = True; break
+                        logger.info(f"  匹配成功 (名字): 豆瓣演员 '{d_actor.get('name')}' -> 本地演员 '{l_actor.get('name')}'")
+                        l_actor["name"] = d_actor.get("name")
+                        l_actor["character"] = self._select_best_role(l_actor.get("character"), d_actor.get("character"))
+                        if d_actor.get("douban_id"): l_actor["douban_id"] = d_actor.get("douban_id")
+                        matched_douban_indices.add(i)
+                        break
+            
+            unmatched_douban_candidates = [d for i, d in enumerate(douban_candidates) if i not in matched_douban_indices]
+            
+            # --- 步骤 2: 溢出的演员用豆瓣ID遍历演员映射表匹配 ---
+            logger.info(f"--- 匹配阶段 2: 用豆瓣ID查 person_identity_map ({len(unmatched_douban_candidates)} 位演员) ---")
+            still_unmatched = []
+            for d_actor in unmatched_douban_candidates:
+                if self.is_stop_requested():
+                    logger.info("任务在处理豆瓣演员时被中止 (循环开始)。")
+                    raise InterruptedError("任务中止")
+                d_douban_id = d_actor.get("douban_id")
+                match_found = False
+                if d_douban_id:
+                    entry = self._find_person_in_map_by_douban_id(d_douban_id, cursor)
+                    
+                    # ✨✨✨ START: 核心修正 ✨✨✨
+                    # 旧的错误逻辑: if entry and entry["tmdb_person_id"] and entry["tmdb_person_id"] in final_cast_map:
+                    
+                    # 新的正确逻辑: 只要在映射表里找到了对应的 TMDb ID，就新增这个演员
+                    if entry and entry["tmdb_person_id"]:
+                        tmdb_id_from_map = entry["tmdb_person_id"]
+                        
+                        # 确保这个演员还没有被处理过
+                        if tmdb_id_from_map not in final_cast_map:
+                            logger.info(f"  新增成功 (数据库映射): 豆瓣演员 '{d_actor.get('name')}' -> 新增 TMDbID: {tmdb_id_from_map}")
+                            
+                            new_actor_entry = {
+                                "id": tmdb_id_from_map,
+                                "name": d_actor.get("name"),
+                                "original_name": d_actor.get("original_name"),
+                                "character": d_actor.get("character"),
+                                "adult": False, "gender": 0, "known_for_department": "Acting",
+                                "popularity": 0.0, "profile_path": None, "cast_id": None,
+                                "credit_id": None, "order": -1,
+                                "imdb_id": entry["imdb_id"], # 从映射表里取
+                                "douban_id": d_douban_id,
+                                "_is_newly_added": True
+                            }
+                            final_cast_map[tmdb_id_from_map] = new_actor_entry
+                        
+                        # 无论新增还是已存在，都算作匹配成功
+                        match_found = True
+                    # ✨✨✨ END: 核心修正 ✨✨✨
 
-                # --- 新增阶段 (严格按规则) ---
                 if not match_found:
-                    logger.info(f"  -> 所有匹配均失败，放弃为 '{d_actor.get('name')}' 作为新演员补充。")
-                    d_douban_id = d_actor.get("douban_id")
-                    if d_douban_id:
-                        person_map_entry = self._find_person_in_map_by_douban_id(d_douban_id, cursor)
-                        if person_map_entry and person_map_entry["tmdb_person_id"]:
-                            tmdb_id_from_map = person_map_entry["tmdb_person_id"]
-                            if tmdb_id_from_map not in final_cast_map:
-                                # 按需获取 IMDb ID 的逻辑可以保留，因为它只在新增时触发
-                                imdb_id_for_new_actor = person_map_entry["imdb_id"] or d_actor.get("imdb_id")
-                                if not imdb_id_for_new_actor and self.douban_api:
-                                    details = self.douban_api.celebrity_details(d_douban_id)
-                                    if details and not details.get("error"):
-                                        imdb_attr = details.get("attrs", {}).get("imdb")
-                                        if isinstance(imdb_attr, list) and imdb_attr: imdb_id_for_new_actor = imdb_attr[0]
-                                        elif isinstance(imdb_attr, str): imdb_id_for_new_actor = imdb_attr
-                                
-                                logger.info(f"通过数据库映射补充了新演员: '{d_actor.get('name')}' (TMDbID: {tmdb_id_from_map})")
-                                new_actor_entry = {
-                                    "id": tmdb_id_from_map, "name": d_actor.get("name"), "original_name": d_actor.get("original_name"),
-                                    "character": d_actor.get("character"), "adult": False, "gender": 0, "known_for_department": "Acting",
-                                    "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": -1,
-                                    "imdb_id": imdb_id_for_new_actor, "douban_id": d_douban_id, "_is_newly_added": True
-                                }
-                                final_cast_map[tmdb_id_from_map] = new_actor_entry
-                        else:
-                            logger.debug(f"  -> 丢弃演员: '{d_actor.get('name')}' (豆瓣ID: {d_douban_id}) 在 person_identity_map 中无有效TMDb映射。")
-                    else:
-                        logger.debug(f"  -> 丢弃演员: '{d_actor.get('name')}' 因无豆瓣ID且无匹配。")
+                    still_unmatched.append(d_actor)
+            
+            unmatched_douban_candidates = still_unmatched
+
+            # --- 步骤 3 & 4: 查询IMDbID -> TMDb反查 -> 新增 ---
+            logger.info(f"--- 匹配阶段 3 & 4: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_candidates)} 位演员) ---")
+            still_unmatched_final = []
+            for d_actor in unmatched_douban_candidates:
+                if self.is_stop_requested(): raise InterruptedError("任务中止")
+                d_douban_id = d_actor.get("douban_id")
+                match_found = False
+                if d_douban_id and self.douban_api and self.tmdb_api_key:
+                    if self.is_stop_requested():
+                        logger.info("任务在处理豆瓣演员时被中止 (豆瓣API调用前)。")
+                        raise InterruptedError("任务中止")
+                    details = self.douban_api.celebrity_details(d_douban_id)
+                    time.sleep(0.3)
+                    
+                    d_imdb_id = None
+                    if details and not details.get("error"):
+                        try:
+                            info_list = details.get("extra", {}).get("info", [])
+                            if isinstance(info_list, list):
+                                for item in info_list:
+                                    if isinstance(item, list) and len(item) == 2 and item[0] == 'IMDb编号':
+                                        d_imdb_id = item[1]
+                                        break
+                        except Exception as e_parse:
+                            logger.warning(f"    -> 解析 IMDb ID 时发生意外错误: {e_parse}")
+                    
+                    if d_imdb_id:
+                        logger.debug(f"    -> 为 '{d_actor.get('name')}' 获取到 IMDb ID: {d_imdb_id}，开始反查...")
+                        if self.is_stop_requested():
+                            logger.info("任务在处理豆瓣演员时被中止 (TMDb API调用前)。")
+                            raise InterruptedError("任务中止")
+                        person_from_tmdb = tmdb_handler.find_person_by_external_id(d_imdb_id, self.tmdb_api_key, "imdb_id")
+                        if person_from_tmdb and person_from_tmdb.get("id"):
+                            tmdb_id_from_find = str(person_from_tmdb.get("id"))
+                            # 直接新增，因为我们已经知道它在本地列表里没有匹配项
+                            logger.info(f"  新增成功 (TMDb反查): 豆瓣演员 '{d_actor.get('name')}' -> 新增 TMDbID: {tmdb_id_from_find}")
+                            new_actor_entry = {
+                                "id": tmdb_id_from_find, "name": d_actor.get("name"), "original_name": d_actor.get("original_name"),
+                                "character": d_actor.get("character"), "adult": False, "gender": 0, "known_for_department": "Acting",
+                                "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": -1,
+                                "imdb_id": d_imdb_id, "douban_id": d_douban_id, "_is_newly_added": True
+                            }
+                            final_cast_map[tmdb_id_from_find] = new_actor_entry
+                            match_found = True
+                
+                if not match_found:
+                    still_unmatched_final.append(d_actor)
+
+            if still_unmatched_final:
+                discarded_names = [d.get('name') for d in still_unmatched_final]
+                logger.info(f"--- 最终丢弃 {len(still_unmatched_final)} 位无匹配的豆瓣演员: {', '.join(discarded_names[:5])}{'...' if len(discarded_names) > 5 else ''} ---")
 
             # 统一对所有演员进行处理
             final_cast_list = list(final_cast_map.values())
             for actor in final_cast_list:
+                if self.is_stop_requested():
+                    logger.info("任务在翻译演员列表时被中止。")
+                    raise InterruptedError("任务在翻译演员列表时被中止")
                 # ✨ 在循环开始时检查 ✨
                 if self.is_stop_requested(): raise InterruptedError("任务在翻译演员列表时被中止")
                 # 清理角色名
@@ -464,7 +511,7 @@ class MediaProcessor:
 
     def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool = False) -> bool:
         """
-        【最终毕业版】优化数据库事务，并补全缺失的功能代码。
+        【最终毕业版 V11】以TMDb ID为核心，在处理流程中实时、安全地反哺映射表。
         """
         item_id = item_details_from_emby.get("Id")
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
@@ -484,10 +531,11 @@ class MediaProcessor:
             return False
         
         try:
-            # --- 阶段1: 演员处理和翻译 (使用独立的短事务) ---
+            # --- 阶段1: 演员处理、翻译、数据库反哺 (在一个事务中完成) ---
             final_cast_perfect = []
             initial_actor_count = 0
             
+            # 路径和数据准备
             cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
             base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
             base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
@@ -498,18 +546,35 @@ class MediaProcessor:
             if not base_json_data_original:
                 raise ValueError(f"无法读取基础JSON文件: {os.path.join(base_cache_dir, base_json_filename)}")
             
-            with self._get_db_connection() as conn_translate:
-                cursor_translate = conn_translate.cursor()
+            # ✨ 使用 with 语句管理数据库连接，确保所有相关操作在同一个事务中 ✨
+            with self._get_db_connection() as conn:
+                cursor = conn.cursor()
+                
                 if self.is_stop_requested(): raise InterruptedError("任务被中止")
+
                 original_cast_from_local = base_json_data_original.get("credits", {}).get("cast") or base_json_data_original.get("casts", {}).get("cast", [])
                 initial_actor_count = len(original_cast_from_local)
-                intermediate_cast = self._process_cast_list_from_local(original_cast_from_local, item_details_from_emby, cursor_translate)
+                
+                # a. 生成理想的演员列表 (包含匹配和新增)
+                intermediate_cast = self._process_cast_list_from_local(original_cast_from_local, item_details_from_emby, cursor)
+                
                 genres = item_details_from_emby.get("Genres", [])
                 is_animation = "Animation" in genres or "动画" in genres
                 if is_animation:
                     logger.info(f"检测到媒体 '{item_name_for_log}' 为动画片，将处理配音角色。")
+
                 if self.is_stop_requested(): raise InterruptedError("任务被中止")
+
+                # b. 格式化角色名等
                 final_cast_perfect = self._format_and_complete_cast_list(intermediate_cast, is_animation)
+                
+                # c. ✨✨✨ 在这里进行反哺 ✨✨✨
+                logger.info("--- 开始实时更新 person_identity_map 映射表 ---")
+                for actor_data in final_cast_perfect:
+                    self._update_person_map_entry(cursor, actor_data)
+                logger.info("--- person_identity_map 映射表更新完成 ---")
+
+                # with 块结束时，conn 会被自动 commit，所有翻译缓存和映射表更新都会被保存
             
             # --- 阶段2: 文件写入 (不涉及数据库) ---
             base_json_data_for_override = copy.deepcopy(base_json_data_original)
@@ -530,7 +595,6 @@ class MediaProcessor:
                 if os.path.exists(temp_json_path): os.remove(temp_json_path)
                 raise e_write
 
-            # ✨✨✨ START: 补全缺失的功能代码 ✨✨✨
             if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
                 logger.info(f"深度处理已启用，开始为 '{item_name_for_log}' 的所有子项目注入演员表...")
                 for filename in os.listdir(base_cache_dir):
@@ -566,9 +630,8 @@ class MediaProcessor:
                             season_number, episode_number = child.get("ParentIndexNumber"), child.get("IndexNumber")
                             if season_number is not None and episode_number is not None:
                                 emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
-            # ✨✨✨ END: 补全缺失的功能代码 ✨✨✨
 
-            # --- 阶段3: 统计、评分和最终日志记录 (使用独立的短事务) ---
+            # --- 阶段3: 统计、评分和最终日志记录 ---
             final_actor_count = len(final_cast_perfect)
             logger.info(f"【处理统计】'{item_name_for_log}':")
             logger.info(f"  - 本地缓存演员: {initial_actor_count} 位")
@@ -609,6 +672,47 @@ class MediaProcessor:
             logger.error(f"处理 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
             self.save_to_failed_log(item_id, item_name_for_log, f"核心处理异常: {str(e)}", item_type)
             return False
+        
+    def _update_person_map_entry(self, cursor: sqlite3.Cursor, actor_data: Dict[str, Any]):
+        """
+        【TMDb为核心版】使用 UPSERT 逻辑，高效地更新或插入 person_identity_map 记录。
+        """
+        tmdb_id = actor_data.get("id")
+        # 只有存在 TMDb ID 时，才进行操作
+        if not tmdb_id:
+            return
+
+        # 准备要写入的数据
+        data_to_write = {
+            "tmdb_person_id": tmdb_id,
+            "imdb_id": actor_data.get("imdb_id"),
+            "douban_celebrity_id": actor_data.get("douban_id"),
+            "emby_person_name": actor_data.get("name"), # 使用处理后的中文名
+            "tmdb_name": actor_data.get("original_name") or actor_data.get("name"),
+            "douban_name": actor_data.get("name"),
+        }
+        # 清理掉值为 None 的键
+        clean_data = {k: v for k, v in data_to_write.items() if v is not None}
+        
+        cols = list(clean_data.keys())
+        vals = list(clean_data.values())
+        
+        # 构建 UPSERT 语句，当 tmdb_person_id 冲突时，执行更新
+        update_clauses = [f"{col} = COALESCE(excluded.{col}, person_identity_map.{col})" for col in cols if col != "tmdb_person_id"]
+        
+        sql = f"""
+            INSERT INTO person_identity_map ({', '.join(cols)}, last_updated_at)
+            VALUES ({', '.join(['?'] * len(cols))}, CURRENT_TIMESTAMP)
+            ON CONFLICT(tmdb_person_id) DO UPDATE SET
+                {', '.join(update_clauses)},
+                last_updated_at = CURRENT_TIMESTAMP;
+        """
+        
+        try:
+            cursor.execute(sql, tuple(vals))
+            logger.debug(f"  -> 成功 UPSERT 映射表 for TMDb ID: {tmdb_id}")
+        except sqlite3.Error as e:
+            logger.error(f"  -> 更新映射表失败 for TMDb ID {tmdb_id}: {e}")
 
     def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False, process_episodes: bool = True) -> bool:
         if self.is_stop_requested(): return False
@@ -691,11 +795,12 @@ class MediaProcessor:
 
     def process_item_with_manual_cast(self, item_id: str, manual_cast_list: List[Dict[str, Any]], item_name: str) -> bool:
         """
-        【最终毕业版】手动处理流程，遵循所有配置和安全实践。
+        【最终毕业版 V2】补全所有缺失的变量定义。
         """
         logger.info(f"手动处理流程启动 (神医模式)：ItemID: {item_id} ('{item_name}')")
 
         try:
+            # 1. 获取媒体详情
             item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
             if not item_details:
                 logger.error(f"手动处理失败：无法获取项目 {item_id} 的详情。")
@@ -703,102 +808,124 @@ class MediaProcessor:
             
             tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
             item_type = item_details.get("Type")
-
             if not tmdb_id:
                 logger.error(f"手动处理失败：项目 {item_id} 缺少 TMDb ID，无法定位 override 文件。")
                 return False
-        except Exception as e:
-            logger.error(f"手动处理失败：获取项目 {item_id} 详情时异常: {e}")
-            return False
 
-        cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-        base_json_filename = "all.json" if item_type == "Movie" else "series.json"
-        base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
-        base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
-        image_override_dir = os.path.join(base_override_dir, "images")
-        os.makedirs(image_override_dir, exist_ok=True) # 这一行已经隐式创建了 base_override_dir
-        override_json_path = os.path.join(base_override_dir, base_json_filename)
-
-        base_json_data_original = _read_local_json(os.path.join(base_cache_dir, base_json_filename))
-        if not base_json_data_original:
-            logger.warning(f"手动处理：未找到原始 cache 文件，将创建一个新的元数据结构。")
-            base_json_data_original = {}
-        base_json_data_for_override = copy.deepcopy(base_json_data_original)
-
-        final_cast_for_json = []
-        for idx, actor in enumerate(manual_cast_list):
-            final_cast_for_json.append({
-                "id": actor.get("tmdbId"), "name": actor.get("name"), "original_name": actor.get("original_name"),
-                "character": actor.get("role"), "order": idx, "adult": False, "gender": 0, "known_for_department": "Acting",
-                "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None,
-                "douban_id": actor.get("doubanId"), "imdb_id": actor.get("imdbId"),
-            })
-
-        if item_type == "Movie":
-            base_json_data_for_override.setdefault("casts", {})["cast"] = final_cast_for_json
-        else:
-            base_json_data_for_override.setdefault("credits", {})["cast"] = final_cast_for_json
-
-        temp_json_path = f"{override_json_path}.{random.randint(1000, 9999)}.tmp"
-        try:
-            with open(temp_json_path, 'w', encoding='utf-8') as f:
-                json.dump(base_json_data_for_override, f, ensure_ascii=False, indent=4)
-            os.replace(temp_json_path, override_json_path)
-            logger.info(f"手动处理：成功生成覆盖元数据文件: {override_json_path}")
-        except Exception as e_write:
-            logger.error(f"手动处理：写入 override 文件时发生错误: {e_write}", exc_info=True)
-            if os.path.exists(temp_json_path): os.remove(temp_json_path)
-            return False
-
-        if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
-            logger.info(f"手动处理：深度处理已启用，将为所有子项目注入手动编辑后的演员表...")
-            for filename in os.listdir(base_cache_dir):
-                if filename.startswith("season-") and filename.endswith(".json"):
-                    child_json_original = _read_local_json(os.path.join(base_cache_dir, filename))
-                    if child_json_original:
-                        child_json_for_override = copy.deepcopy(child_json_original)
-                        child_json_for_override.setdefault("credits", {})["cast"] = final_cast_for_json
-                        override_child_path = os.path.join(base_override_dir, filename)
-                        try:
-                            temp_child_path = f"{override_child_path}.{random.randint(1000, 9999)}.tmp"
-                            with open(temp_child_path, 'w', encoding='utf-8') as f:
-                                json.dump(child_json_for_override, f, ensure_ascii=False, indent=4)
-                            os.replace(temp_child_path, override_child_path)
-                        except Exception as e:
-                            logger.error(f"手动处理：写入子项目JSON失败: {override_child_path}, {e}")
-
-        if self.sync_images_enabled:
-            logger.info(f"手动处理：图片同步已启用，开始下载图片...")
-            image_map = {"Primary": "poster.jpg", "Backdrop": "fanart.jpg", "Logo": "clearlogo.png"}
-            if item_type == "Movie": image_map["Thumb"] = "landscape.jpg"
-            for image_type, filename in image_map.items():
-                emby_handler.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
+            # ✨✨✨ START: 补全缺失的变量定义 ✨✨✨
+            # 2. 构造所有需要的路径和文件名
+            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+            base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
+            base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+            image_override_dir = os.path.join(base_override_dir, "images") # 定义 image_override_dir
+            os.makedirs(image_override_dir, exist_ok=True)
             
-            if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
-                children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name) or []
-                for child in children:
-                    child_type, child_id = child.get("Type"), child.get("Id")
-                    if child_type == "Season":
-                        season_number = child.get("IndexNumber")
-                        if season_number is not None:
-                            emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}.jpg"), self.emby_url, self.emby_api_key)
-                    elif child_type == "Episode":
-                        season_number, episode_number = child.get("ParentIndexNumber"), child.get("IndexNumber")
-                        if season_number is not None and episode_number is not None:
-                            emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
+            base_json_filename = "all.json" if item_type == "Movie" else "series.json" # 定义 base_json_filename
+            override_json_path = os.path.join(base_override_dir, base_json_filename)
+            # ✨✨✨ END: 补全缺失的变量定义 ✨✨✨
 
-        logger.info(f"手动处理：准备刷新 Emby 项目 {item_name}...")
-        emby_handler.refresh_emby_item_metadata(
-            item_id, self.emby_url, self.emby_api_key, 
-            replace_all_metadata_param=True, 
-            item_name_for_log=item_name
-        )
+            # 3. 读取并深拷贝 cache 文件
+            base_json_data_original = _read_local_json(os.path.join(base_cache_dir, base_json_filename)) or {}
+            base_json_data_for_override = copy.deepcopy(base_json_data_original)
+
+            # 4. 格式化演员列表
+            final_cast_for_json = []
+            for idx, actor in enumerate(manual_cast_list):
+                final_cast_for_json.append({
+                    "id": actor.get("tmdbId"), "name": actor.get("name"), "original_name": actor.get("original_name"),
+                    "character": actor.get("role"), "order": idx, "adult": False, "gender": 0, "known_for_department": "Acting",
+                    "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None,
+                    "douban_id": actor.get("doubanId"), "imdb_id": actor.get("imdbId"),
+                })
+
+            # ✨✨✨ 3. 数据库反哺阶段 ✨✨✨
+            logger.info("--- 手动处理：开始更新 person_identity_map 映射表 ---")
+            with self._get_db_connection() as conn:
+                cursor = conn.cursor()
+                for actor_data in final_cast_for_json:
+                    # 调用我们已经写好的、健壮的更新方法
+                    self._update_person_map_entry(cursor, actor_data)
+                # with 块结束时，conn 会被自动 commit
+            logger.info("--- 手动处理：person_identity_map 映射表更新完成 ---")
+
+            # 4. 文件写入阶段
+            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+            base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
+            base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+            override_json_path = os.path.join(base_override_dir, base_json_filename)
+            
+            base_json_data_original = _read_local_json(os.path.join(base_cache_dir, base_json_filename)) or {}
+            base_json_data_for_override = copy.deepcopy(base_json_data_original)
+            
+            if item_type == "Movie":
+                base_json_data_for_override.setdefault("casts", {})["cast"] = final_cast_for_json
+            else:
+                base_json_data_for_override.setdefault("credits", {})["cast"] = final_cast_for_json
+
+            temp_json_path = f"{override_json_path}.{random.randint(1000, 9999)}.tmp"
+            try:
+                with open(temp_json_path, 'w', encoding='utf-8') as f:
+                    json.dump(base_json_data_for_override, f, ensure_ascii=False, indent=4)
+                os.replace(temp_json_path, override_json_path)
+                logger.info(f"手动处理：成功生成覆盖元数据文件: {override_json_path}")
+            except Exception as e_write:
+                logger.error(f"手动处理：写入 override 文件时发生错误: {e_write}", exc_info=True)
+                if os.path.exists(temp_json_path): os.remove(temp_json_path)
+                return False
+
+            if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
+                logger.info(f"手动处理：深度处理已启用，将为所有子项目注入手动编辑后的演员表...")
+                for filename in os.listdir(base_cache_dir):
+                    if filename.startswith("season-") and filename.endswith(".json"):
+                        child_json_original = _read_local_json(os.path.join(base_cache_dir, filename))
+                        if child_json_original:
+                            child_json_for_override = copy.deepcopy(child_json_original)
+                            child_json_for_override.setdefault("credits", {})["cast"] = final_cast_for_json
+                            override_child_path = os.path.join(base_override_dir, filename)
+                            try:
+                                temp_child_path = f"{override_child_path}.{random.randint(1000, 9999)}.tmp"
+                                with open(temp_child_path, 'w', encoding='utf-8') as f:
+                                    json.dump(child_json_for_override, f, ensure_ascii=False, indent=4)
+                                os.replace(temp_child_path, override_child_path)
+                            except Exception as e:
+                                logger.error(f"手动处理：写入子项目JSON失败: {override_child_path}, {e}")
+
+            if self.sync_images_enabled:
+                logger.info(f"手动处理：图片同步已启用，开始下载图片...")
+                image_map = {"Primary": "poster.jpg", "Backdrop": "fanart.jpg", "Logo": "clearlogo.png"}
+                if item_type == "Movie": image_map["Thumb"] = "landscape.jpg"
+                for image_type, filename in image_map.items():
+                    emby_handler.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
+                
+                if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
+                    children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name) or []
+                    for child in children:
+                        child_type, child_id = child.get("Type"), child.get("Id")
+                        if child_type == "Season":
+                            season_number = child.get("IndexNumber")
+                            if season_number is not None:
+                                emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}.jpg"), self.emby_url, self.emby_api_key)
+                        elif child_type == "Episode":
+                            season_number, episode_number = child.get("ParentIndexNumber"), child.get("IndexNumber")
+                            if season_number is not None and episode_number is not None:
+                                emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
+
+            logger.info(f"手动处理：准备刷新 Emby 项目 {item_name}...")
+            emby_handler.refresh_emby_item_metadata(
+                item_id, self.emby_url, self.emby_api_key, 
+                replace_all_metadata_param=True, 
+                item_name_for_log=item_name
+            )
+            
+            self.save_to_processed_log(item_id, item_name, score=10.0)
+            self._remove_from_failed_log_if_exists(item_id)
+            
+            logger.info(f"✅ 手动处理 '{item_name}' 流程完成。")
+            return True
         
-        self.save_to_processed_log(item_id, item_name, score=10.0)
-        self._remove_from_failed_log_if_exists(item_id)
-        
-        logger.info(f"✅ 手动处理 '{item_name}' 流程完成。")
-        return True
+        except Exception as e:
+            logger.error(f"手动处理 '{item_name}' 时发生严重错误: {e}", exc_info=True)
+            return False
 
     def get_cast_for_editing(self, item_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -926,25 +1053,23 @@ class MediaProcessor:
 
 
 class SyncHandler:
-    def __init__(self, db_path: str, emby_url: str, emby_api_key: str, emby_user_id: Optional[str], stop_event: threading.Event):
-        """
-        【修复】初始化时接收一个 threading.Event 对象用于停止。
-        """
+    def __init__(self, db_path: str, emby_url: str, emby_api_key: str, emby_user_id: Optional[str], stop_event: threading.Event, tmdb_api_key: str):
         self.db_path = db_path
         self.emby_url = emby_url
         self.emby_api_key = emby_api_key
         self.emby_user_id = emby_user_id
-        self.stop_event = stop_event # 保存停止事件
+        self.stop_event = stop_event
+        self.tmdb_api_key = tmdb_api_key # 保存 TMDb Key 用于可能的反查
         logger.info(f"SyncHandler initialized with stop event.")
 
     def _get_db_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         return conn
 
     def sync_emby_person_map_to_db(self, full_sync: bool = False, update_status_callback: Optional[callable] = None):
         """
-        【最终重构版】同步 Emby Person 映射表，并智能合并冗余数据。
+        【TMDb为核心版】同步 Emby Person，并智能合并冗余数据。
         """
         mode_text = "全量同步" if full_sync else "增量同步"
         logger.info(f"开始同步 Emby Person 映射表，模式: {mode_text}")
@@ -955,7 +1080,12 @@ class SyncHandler:
             if update_status_callback: update_status_callback(-1, "任务已取消")
             return
 
-        persons_from_emby = emby_handler.get_all_persons_from_emby(self.emby_url, self.emby_api_key, self.emby_user_id)
+        persons_from_emby = emby_handler.get_all_persons_from_emby(
+            self.emby_url, 
+            self.emby_api_key, 
+            self.emby_user_id,
+            stop_event=self.stop_event 
+        )
         if persons_from_emby is None:
             if update_status_callback: update_status_callback(-1, "从Emby获取人物信息失败")
             return
@@ -970,108 +1100,72 @@ class SyncHandler:
             cursor = conn.cursor()
             
             for idx, person_base in enumerate(persons_from_emby):
-                if self.stop_event.is_set():
-                    logger.info(f"同步任务在处理第 {idx+1} 个演员时被用户中止。")
-                    break
+                if self.stop_event.is_set(): break
 
                 stats["processed"] += 1
                 if update_status_callback:
-                    progress = int(((idx + 1) / total_emby_persons) * 100) if total_emby_persons > 0 else 100
+                    progress = int(((idx + 1) / total_emby_persons) * 100)
                     update_status_callback(progress, f"正在处理第 {idx+1}/{total_emby_persons} 个新演员...")
 
                 emby_pid = person_base.get("Id")
                 if not emby_pid: continue
 
-                # 获取 Person 完整详情
+                if self.stop_event.is_set(): break
                 person_details = emby_handler.get_emby_item_details(emby_pid, self.emby_url, self.emby_api_key, self.emby_user_id)
                 if not person_details:
                     stats["errors"] += 1
                     continue
 
-                # ✨✨✨ 1. 打印最原始的 ProviderIds ✨✨✨
-                if self.stop_event.is_set():
-                    logger.info(f"同步任务在获取演员 {emby_pid} 详情前被用户中止。")
-                    break
-                provider_ids_raw = person_details.get("ProviderIds", {})
-                # 1. 提取当前 Emby Person 的所有 ID
-                current_ids = {
+                provider_ids = person_details.get("ProviderIds", {})
+                tmdb_id = provider_ids.get("Tmdb") or provider_ids.get("tmdb")
+                imdb_id = provider_ids.get("Imdb") or provider_ids.get("imdb")
+                douban_id = provider_ids.get("Douban") or provider_ids.get("douban")
+                
+                # ✨ 核心逻辑：如果 Emby Person 没有 TMDb ID，尝试通过 IMDb ID 补全 ✨
+                if not tmdb_id and imdb_id and self.tmdb_api_key:
+                    logger.info(f"  演员 '{person_details.get('Name')}' 缺少 TMDb ID，尝试通过 IMDb ID '{imdb_id}' 反查...")
+                    person_from_tmdb = tmdb_handler.find_person_by_external_id(imdb_id, self.tmdb_api_key, "imdb_id")
+                    if person_from_tmdb and person_from_tmdb.get("id"):
+                        tmdb_id = str(person_from_tmdb.get("id"))
+                
+                # ✨ 如果最终还是没有 TMDb ID，我们就无法操作这张表，只能跳过 ✨
+                if not tmdb_id:
+                    logger.warning(f"  跳过演员 '{person_details.get('Name')}' (EmbyID: {emby_pid})，因其缺少或无法补全 TMDb ID。")
+                    continue
+
+                # --- 执行 UPSERT 操作 ---
+                data_to_write = {
+                    "tmdb_person_id": tmdb_id,
                     "emby_person_id": emby_pid,
                     "emby_person_name": person_details.get("Name"),
-                    # ✨✨✨ 关键修复：同时检查大写和小写键名 ✨✨✨
-                    "tmdb_person_id": provider_ids_raw.get("Tmdb") or provider_ids_raw.get("tmdb"),
-                    "imdb_id": provider_ids_raw.get("Imdb") or provider_ids_raw.get("imdb"),
-                    "douban_celebrity_id": provider_ids_raw.get("Douban") or provider_ids_raw.get("douban"),
+                    "imdb_id": imdb_id,
+                    "douban_celebrity_id": douban_id,
                 }
-                # 清理空值
-                current_ids = {k: v for k, v in current_ids.items() if v}
-
-                # 2. 查找所有相关的数据库记录
-                search_conditions = []
-                search_values = []
-                for key, value in current_ids.items():
-                    if key.endswith("_id"): # 只用 ID 字段进行查找
-                        search_conditions.append(f"{key} = ?")
-                        search_values.append(value)
+                clean_data = {k: v for k, v in data_to_write.items() if v is not None}
                 
-                if not search_values: continue # 如果这个 Emby Person 没有任何 ID，跳过
+                cols = list(clean_data.keys())
+                vals = list(clean_data.values())
+                
+                update_clauses = [f"{col} = COALESCE(excluded.{col}, person_identity_map.{col})" for col in cols if col != "tmdb_person_id"]
+                
+                sql = f"""
+                    INSERT INTO person_identity_map ({', '.join(cols)}, last_synced_at, last_updated_at)
+                    VALUES ({', '.join(['?'] * len(cols))}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT(tmdb_person_id) DO UPDATE SET
+                        {', '.join(update_clauses)},
+                        last_synced_at = CURRENT_TIMESTAMP;
+                """
+                try:
+                    cursor.execute(sql, tuple(vals))
+                    # rowcount 在 UPSERT 时的值不固定，但 > 0 表示有操作
+                    if cursor.rowcount > 0: stats["updated"] += 1
+                except sqlite3.Error as e:
+                    logger.error(f"  -> 同步映射表失败 for TMDb ID {tmdb_id}: {e}")
+                    stats["errors"] += 1
 
-                sql_find = f"SELECT * FROM person_identity_map WHERE {' OR '.join(search_conditions)}"
-                cursor.execute(sql_find, tuple(search_values))
-                related_db_rows = cursor.fetchall()
-
-                # 3. 决策与执行
-                if not related_db_rows:
-                    # --- 情况 A: 新增 ---
-                    logger.info(f"  新增记录: {current_ids.get('emby_person_name')} (EmbyID: {emby_pid})")
-                    cols = list(current_ids.keys())
-                    vals = list(current_ids.values())
-                    placeholders = ', '.join(['?'] * len(cols))
-                    sql_insert = f"INSERT INTO person_identity_map ({', '.join(cols)}, last_synced_at, last_updated_at) VALUES ({placeholders}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-                    cursor.execute(sql_insert, tuple(vals))
-                    stats["added"] += 1
-                else:
-                    # --- 情况 B/C: 更新或合并 ---
-                    # a. 将当前 Emby Person 的信息和所有找到的 DB 记录信息合并
-                    merged_record = current_ids.copy()
-                    all_map_ids_to_process = []
-                    for row in related_db_rows:
-                        all_map_ids_to_process.append(row["map_id"])
-                        for col in row.keys():
-                            # 合并规则：如果 merged_record 里没有这个字段，或者这个字段是空的，就用数据库里的值填充
-                            if col not in merged_record or not merged_record.get(col):
-                                if row[col] is not None:
-                                    merged_record[col] = row[col]
-                    
-                    # b. 确定主记录 ID 和要删除的冗余记录 ID
-                    all_map_ids_to_process.sort() # 排序，选择最小的 ID 作为主记录
-                    primary_map_id = all_map_ids_to_process[0]
-                    redundant_map_ids = all_map_ids_to_process[1:]
-
-                    # c. 更新主记录
-                    update_cols = list(merged_record.keys())
-                    if "map_id" in update_cols: update_cols.remove("map_id")
-                    
-                    set_clauses = [f"{col} = ?" for col in update_cols]
-                    update_vals = [merged_record.get(col) for col in update_cols]
-                    
-                    sql_update = f"UPDATE person_identity_map SET {', '.join(set_clauses)}, last_updated_at = CURRENT_TIMESTAMP WHERE map_id = ?"
-                    update_vals.append(primary_map_id)
-                    cursor.execute(sql_update, tuple(update_vals))
-                    stats["updated"] += 1
-
-                    # d. 如果有冗余记录，删除它们
-                    if redundant_map_ids:
-                        logger.warning(f"  发现并合并冗余记录 for {current_ids.get('emby_person_name')}. 主记录ID: {primary_map_id}, 将删除冗余ID: {redundant_map_ids}")
-                        placeholders = ', '.join(['?'] * len(redundant_map_ids))
-                        sql_delete = f"DELETE FROM person_identity_map WHERE map_id IN ({placeholders})"
-                        cursor.execute(sql_delete, tuple(redundant_map_ids))
-                        stats["merged"] += len(redundant_map_ids)
-
-                # 定期提交事务
                 if idx > 0 and idx % 200 == 0:
                     conn.commit()
 
-            # 循环结束后提交所有剩余更改
             conn.commit()
 
         except Exception as e:
