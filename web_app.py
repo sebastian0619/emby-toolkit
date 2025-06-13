@@ -849,38 +849,37 @@ def emby_webhook():
     event_type = data.get("Event") if data else "未知事件"
     logger.info(f"收到Emby Webhook: {event_type}")
     
-    # 我们关心的事件列表
     trigger_events = ["item.add", "library.new"] 
 
     if event_type not in trigger_events:
         logger.info(f"Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
         return jsonify({"status": "event_ignored_not_in_trigger_list"}), 200
 
-    # ✨ 核心修改：不再关心事件类型，只要有Item ID就处理 ✨
     item = data.get("Item", {}) if data else {}
     item_id = item.get("Id")
     item_name = item.get("Name", "未知项目")
     item_type = item.get("Type")
     
-    # 我们只处理有ID，并且类型是电影或剧集或单集的项目
-    # 注意：即使是 library.new 事件，如果它由神医插件等聚合，也可能包含Item信息
     trigger_types = ["Movie", "Series", "Episode"]
 
     if item_id and item_type in trigger_types:
-        logger.info(f"Webhook事件 '{event_type}' 触发，项目 '{item_name}' (ID: {item_id}, 类型: {item_type}) 已加入处理队列。")
-        def single_item_task(id_to_process):
-            """这个函数是真正要被队列里的工人线程执行的。"""
-            if media_processor_instance:
-                # Webhook 触发的，我们通常希望它进行深度处理
-                # 所以 process_episodes=True 是一个合理的默认值
-                media_processor_instance.process_single_item(
-                    id_to_process, 
-                    force_reprocess_this_item=True, # Webhook 来的通常是新项目，可以强制处理
-                    process_episodes=True
-                )
-            else:
-                logger.error(f"Webhook处理 Item ID {id_to_process} 失败：MediaProcessor 未初始化。")
-        submit_task_to_queue(single_item_task, f"Webhook处理: {item_name}", item_id)
+        if not media_processor_instance:
+            logger.error(f"Webhook 任务 '{item_name}' 无法处理：MediaProcessor 未初始化。")
+            return jsonify({"error": "Core processor not ready"}), 503
+
+        logger.info(f"Webhook事件 '{event_type}' 触发，项目 '{item_name}' (ID: {item_id}) 已提交到处理系统。")
+        
+        # ★★★ 核心修改：不再定义嵌套函数 ★★★
+        # 直接将 media_processor_instance.process_single_item 方法本身作为任务，
+        # 并将 item_id 和其他参数作为它的参数传递。
+        # 这就是你说的“统一起点”的完美实现！
+        submit_task_to_queue(
+            media_processor_instance.process_single_item, 
+            f"Webhook处理: {item_name}",
+            item_id,
+            force_reprocess_this_item=True,
+            process_episodes=True
+        )
         
         return jsonify({"status": "task_queued", "item_id": item_id}), 202
     
