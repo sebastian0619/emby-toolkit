@@ -855,36 +855,81 @@ def emby_webhook():
         logger.info(f"Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
         return jsonify({"status": "event_ignored_not_in_trigger_list"}), 200
 
-    item = data.get("Item", {}) if data else {}
-    item_id = item.get("Id")
-    item_name = item.get("Name", "未知项目")
-    item_type = item.get("Type")
+    item_from_webhook = data.get("Item", {}) if data else {}
+    original_item_id = item_from_webhook.get("Id")
+    original_item_name = item_from_webhook.get("Name", "未知项目")
+    original_item_type = item_from_webhook.get("Type")
     
+    # 我们关心的类型是电影、剧集和分集
     trigger_types = ["Movie", "Series", "Episode"]
 
-    if item_id and item_type in trigger_types:
-        if not media_processor_instance:
-            logger.error(f"Webhook 任务 '{item_name}' 无法处理：MediaProcessor 未初始化。")
-            return jsonify({"error": "Core processor not ready"}), 503
+    if not (original_item_id and original_item_type in trigger_types):
+        logger.debug(f"Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略（缺少ID或类型不匹配）。")
+        return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
 
-        logger.info(f"Webhook事件 '{event_type}' 触发，项目 '{item_name}' (ID: {item_id}) 已提交到处理系统。")
-        
-        # ★★★ 核心修改：不再定义嵌套函数 ★★★
-        # 直接将 media_processor_instance.process_single_item 方法本身作为任务，
-        # 并将 item_id 和其他参数作为它的参数传递。
-        # 这就是你说的“统一起点”的完美实现！
-        submit_task_to_queue(
-            media_processor_instance.process_single_item, 
-            f"Webhook处理: {item_name}",
-            item_id,
-            force_reprocess_this_item=True,
-            process_episodes=True
-        )
-        
-        return jsonify({"status": "task_queued", "item_id": item_id}), 202
+    if not media_processor_instance:
+        logger.error(f"Webhook 任务 '{original_item_name}' 无法处理：MediaProcessor 未初始化。")
+        return jsonify({"error": "Core processor not ready"}), 503
+
+    # ★★★ 核心修复逻辑 START ★★★
     
-    logger.debug(f"Webhook事件 '{event_type}' (项目: {item_name}, 类型: {item_type}) 被忽略（缺少ItemID或类型不匹配）。")
-    return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
+    id_to_process = original_item_id
+    type_to_process = original_item_type
+
+    # 1. 如果是分集，向上查找剧集ID
+    if original_item_type == "Episode":
+        logger.info(f"Webhook 收到分集 '{original_item_name}' (ID: {original_item_id})，正在向上查找其所属剧集...")
+        series_id = emby_handler.get_series_id_from_child_id(
+            original_item_id,
+            media_processor_instance.emby_url,
+            media_processor_instance.emby_api_key,
+            media_processor_instance.emby_user_id
+        )
+        if series_id:
+            id_to_process = series_id
+            type_to_process = "Series" # 明确类型为剧集
+            logger.info(f"成功找到所属剧集 ID: {id_to_process}。将处理此剧集。")
+        else:
+            logger.error(f"无法为分集 '{original_item_name}' 找到所属剧集ID，将跳过处理。")
+            return jsonify({"status": "event_ignored_series_not_found"}), 200
+
+    # 2. 无论最初是什么类型，都用最终确定的ID重新获取一次完整的项目详情
+    logger.info(f"准备重新获取项目 {id_to_process} 的最新、最完整的元数据...")
+    full_item_details = emby_handler.get_emby_item_details(
+        item_id=id_to_process,
+        emby_server_url=media_processor_instance.emby_url,
+        emby_api_key=media_processor_instance.emby_api_key,
+        user_id=media_processor_instance.emby_user_id
+    )
+
+    if not full_item_details:
+        logger.error(f"无法获取项目 {id_to_process} 的完整详情，处理中止。")
+        return jsonify({"status": "event_ignored_details_fetch_failed"}), 200
+
+    # 3. 从新获取的详情中提取最终的名称和TMDb ID
+    final_item_name = full_item_details.get("Name", f"未知项目(ID:{id_to_process})")
+    provider_ids = full_item_details.get("ProviderIds", {})
+    tmdb_id = provider_ids.get("Tmdb")
+
+    # 4. 在提交到队列前，做最后一次检查
+    if not tmdb_id:
+        logger.warning(f"项目 '{final_item_name}' (ID: {id_to_process}) 缺少 TMDb ID，无法进行处理。这可能是因为 Emby 尚未完成对该项目的元数据刮削。将跳过本次 Webhook 请求。")
+        return jsonify({"status": "event_ignored_no_tmdb_id"}), 200
+        
+    # ★★★ 核心修复逻辑 END ★★★
+
+    logger.info(f"Webhook事件 '{event_type}' 触发，最终处理项目 '{final_item_name}' (ID: {id_to_process}, TMDbID: {tmdb_id}) 已提交到任务队列。")
+    
+    # 使用最终确定的信息提交任务
+    submit_task_to_queue(
+        media_processor_instance.process_single_item, 
+        f"Webhook处理: {final_item_name}",
+        id_to_process,
+        force_reprocess_this_item=True, # Webhook 触发的通常都需要强制处理
+        process_episodes=True
+    )
+    
+    return jsonify({"status": "task_queued", "item_id": id_to_process}), 202
 
 
 @app.route('/trigger_full_scan', methods=['POST'])
