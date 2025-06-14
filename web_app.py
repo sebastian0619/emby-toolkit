@@ -390,12 +390,12 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
     app_cfg["accept_language"] = config_parser.get("Network", "accept_language", fallback='zh-CN,zh;q=0.9,en;q=0.8')
 
     # AITranslation Section
-    app_cfg["ai_translation_enabled"] = config_parser.getboolean("AITranslation", "ai_translation_enabled", fallback=False)
-    app_cfg["ai_provider"] = config_parser.get("AITranslation", "ai_provider", fallback="openai")
-    app_cfg["ai_api_key"] = config_parser.get("AITranslation", "ai_api_key", fallback="")
-    app_cfg["ai_model_name"] = config_parser.get("AITranslation", "ai_model_name", fallback="gpt-3.5-turbo")
-    app_cfg["ai_base_url"] = config_parser.get("AITranslation", "ai_base_url", fallback="")
-    app_cfg["ai_translation_prompt"] = config_parser.get("AITranslation", "ai_translation_prompt", fallback=constants.DEFAULT_AI_TRANSLATION_PROMPT)
+    app_cfg[constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED] = config_parser.getboolean(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, fallback=False)
+    app_cfg[constants.CONFIG_OPTION_AI_PROVIDER] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_PROVIDER, fallback="openai")
+    app_cfg[constants.CONFIG_OPTION_AI_API_KEY] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_API_KEY, fallback="")
+    app_cfg[constants.CONFIG_OPTION_AI_MODEL_NAME] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_MODEL_NAME, fallback="gpt-3.5-turbo")
+    app_cfg[constants.CONFIG_OPTION_AI_BASE_URL] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_BASE_URL, fallback="")
+    app_cfg[constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT, fallback=constants.DEFAULT_AI_TRANSLATION_PROMPT)
 
     # Scheduler Section
     app_cfg["schedule_enabled"] = config_parser.getboolean("Scheduler", "schedule_enabled", fallback=False)
@@ -440,7 +440,7 @@ def save_config(new_config: Dict[str, Any], trigger_reload: bool = True):
         "General",
         "Scheduler",
         "Network",
-        "AITranslation" # 确保AI的节在这里
+        constants.CONFIG_SECTION_AI_TRANSLATION
     ]
     all_sections_to_manage.append(constants.CONFIG_SECTION_AUTH)
 
@@ -492,12 +492,12 @@ def save_config(new_config: Dict[str, Any], trigger_reload: bool = True):
     config.set("Network", "accept_language", str(new_config.get("accept_language", "")))
 
     # AITranslation Section
-    config.set("AITranslation", "ai_translation_enabled", str(new_config.get("ai_translation_enabled", False)).lower())
-    config.set("AITranslation", "ai_provider", str(new_config.get("ai_provider", "openai")))
-    config.set("AITranslation", "ai_api_key", str(new_config.get("ai_api_key", "")))
-    config.set("AITranslation", "ai_model_name", str(new_config.get("ai_model_name", "gpt-3.5-turbo")))
-    config.set("AITranslation", "ai_base_url", str(new_config.get("ai_base_url", "")))
-    config.set("AITranslation", "ai_translation_prompt", str(new_config.get("ai_translation_prompt", "")))
+    config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, str(new_config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False)).lower())
+    config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_PROVIDER, str(new_config.get(constants.CONFIG_OPTION_AI_PROVIDER, "openai")))
+    config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_API_KEY, str(new_config.get(constants.CONFIG_OPTION_AI_API_KEY, "")))
+    config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_MODEL_NAME, str(new_config.get(constants.CONFIG_OPTION_AI_MODEL_NAME, "gpt-3.5-turbo")))
+    config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_BASE_URL, str(new_config.get(constants.CONFIG_OPTION_AI_BASE_URL, "")))
+    config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT, str(new_config.get(constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT, "")))
 
     # Scheduler Section
     config.set("Scheduler", "schedule_enabled", str(new_config.get("schedule_enabled", False)).lower())
