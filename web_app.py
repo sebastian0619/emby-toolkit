@@ -733,17 +733,17 @@ def setup_scheduled_tasks():
     else:
         logger.info("定时全量扫描任务未启用。")
 
-    # --- 处理同步人物映射表的定时任务 ---
+    # --- 处理同步演员映射表的定时任务 ---
     schedule_sync_map_enabled = config.get("schedule_sync_map_enabled", False)
     sync_map_cron_expression = config.get("schedule_sync_map_cron", "0 1 * * *")
 
     if scheduler.get_job(JOB_ID_SYNC_PERSON_MAP):
         scheduler.remove_job(JOB_ID_SYNC_PERSON_MAP)
-        logger.info("已移除旧的定时同步人物映射表任务。")
+        logger.info("已移除旧的定时同步演员映射表任务。")
     if schedule_sync_map_enabled:
         try:
             def scheduled_sync_map_wrapper(): # 这个包装器是正确的
-                task_name = "定时同步Emby人物映射表"
+                task_name = "定时同步Emby演员映射表"
                 def sync_map_task_for_scheduler():
                     if media_processor_instance and media_processor_instance.emby_url and media_processor_instance.emby_api_key:
                         logger.info(f"'{task_name}' (定时): 准备创建 SyncHandler 实例...")
@@ -752,7 +752,7 @@ def setup_scheduled_tasks():
                             from core_processor import SyncHandler # 或者 from sync_handler import SyncHandler
                             sync_handler_instance = SyncHandler(
                                 db_path=DB_PATH, emby_url=media_processor_instance.emby_url,
-                                emby_api_key=media_processor_instance.emby_api_key, emby_user_id=media_processor_instance.emby_user_id
+                                emby_api_key=media_processor_instance.emby_api_key, emby_user_id=media_processor_instance.emby_user_id, local_data_path=media_processor_instance.local_data_path
                             )
                             logger.info(f"'{task_name}' (定时): SyncHandler 实例已创建。")
                             sync_handler_instance.sync_emby_person_map_to_db(update_status_callback=update_status_from_thread)
@@ -770,13 +770,13 @@ def setup_scheduled_tasks():
             scheduler.add_job(
                 func=scheduled_sync_map_wrapper,
                 trigger=CronTrigger.from_crontab(sync_map_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                id=JOB_ID_SYNC_PERSON_MAP, name="定时同步Emby人物映射表", replace_existing=True
+                id=JOB_ID_SYNC_PERSON_MAP, name="定时同步Emby演员映射表", replace_existing=True
             )
-            logger.info(f"已设置定时同步人物映射表任务: CRON='{sync_map_cron_expression}'")
+            logger.info(f"已设置定时同步演员映射表任务: CRON='{sync_map_cron_expression}'")
         except Exception as e:
-            logger.error(f"设置定时同步人物映射表任务失败: CRON='{sync_map_cron_expression}', 错误: {e}", exc_info=True)
+            logger.error(f"设置定时同步演员映射表任务失败: CRON='{sync_map_cron_expression}', 错误: {e}", exc_info=True)
     else:
-        logger.info("定时同步人物映射表任务未启用。")
+        logger.info("定时同步演员映射表任务未启用。")
 
     if scheduler.running:
         try: scheduler.print_jobs()
@@ -1414,7 +1414,7 @@ def api_handle_trigger_sync_map():
         if task_lock.locked():
             return jsonify({"error": "已有其他后台任务正在运行，请稍后再试。"}), 409
 
-        task_name_for_api = "同步Emby人物映射表 (API)"
+        task_name_for_api = "同步Emby演员映射表 (API)"
         if full_sync_flag:
             task_name_for_api += " [全量模式]"
 
@@ -1429,7 +1429,8 @@ def api_handle_trigger_sync_map():
                         emby_api_key=media_processor_instance.emby_api_key,
                         emby_user_id=media_processor_instance.emby_user_id,
                         stop_event=media_processor_instance._stop_event,
-                        tmdb_api_key=media_processor_instance.tmdb_api_key
+                        tmdb_api_key=media_processor_instance.tmdb_api_key,
+                        local_data_path=media_processor_instance.local_data_path
                     )
                     # 3. 把标志传递给核心方法
                     sync_handler.sync_emby_person_map_to_db(
@@ -1517,7 +1518,7 @@ def api_export_person_map():
     """
     导出 person_identity_map 表为 CSV 文件。
     """
-    logger.info("API: 收到导出人物映射表的请求。")
+    logger.info("API: 收到导出演员映射表的请求。")
     
     def generate_csv():
         # 使用 StringIO 作为内存中的文件缓冲区
@@ -1582,7 +1583,7 @@ def api_import_person_map():
     """
     【TMDb为核心版】从上传的 CSV 文件导入数据到 person_identity_map 表。
     """
-    logger.info("API: 收到导入人物映射表的请求。")
+    logger.info("API: 收到导入演员映射表的请求。")
     
     if 'file' not in request.files:
         return jsonify({"error": "请求中未找到文件部分"}), 400
@@ -1813,7 +1814,7 @@ if __name__ == '__main__':
         except Exception as e_scheduler_start:
             logger.error(f"APScheduler 启动失败: {e_scheduler_start}", exc_info=True)
     setup_scheduled_tasks()
-    app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=False)
+    app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=True, use_reloader=False)
 
 # if __name__ == '__main__':
 #     RUN_MANUAL_TESTS = False  # <--- 在这里控制是否运行测试代码

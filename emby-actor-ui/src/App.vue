@@ -127,7 +127,7 @@ const menuOptions = computed(() => [
   { label: 'Emby 配置', key: 'settings-emby', icon: renderIcon(EmbyIcon) },
   { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
   { type: 'divider', key: 'd1' },
-  { label: '全量处理', key: 'actions-status', icon: renderIcon(ActionsIcon) },
+  { label: '任务中心', key: 'actions-status', icon: renderIcon(ActionsIcon) },
   { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
   { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
   { type: 'divider', key: 'd2' },

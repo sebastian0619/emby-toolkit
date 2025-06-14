@@ -1,121 +1,129 @@
+<!-- src/components/ActionsPage.vue -->
+
 <template>
-  <!-- ★★★ 1. 使用 n-space 作为根容器 ★★★ -->
-  <n-space vertical :size="24" style="margin-top: 15px;">
-    <n-alert 
-      v-if="taskStatus.is_running" 
-      title="后台任务运行中" 
-      type="warning" 
-      closable
-    >
-      当前有后台任务正在执行 ({{ taskStatus.current_action }})。
-      在此期间，任何需要写入数据库的操作都可能会失败。
-      建议等待当前任务完成后再进行其他操作。
-    </n-alert>
-
-    <!-- ★★★ 2. 第一个卡片，包裹全量扫描区域 ★★★ -->
-    <n-card title="全量媒体库扫描" class="beautified-card" :bordered="false">
-      <template #header-extra>
-        <n-button
-          type="error"
-          size="small"
-          @click="triggerStopTask"
-          :disabled="!taskStatus.is_running"
-          ghost
-        >
-          停止当前任务
-        </n-button>
-      </template>
-
-      <n-space vertical align="start">
-        <n-checkbox v-model:checked="forceReprocessAll" :disabled="taskStatus.is_running">
-          强制重新处理所有项目 (将清除已处理记录)
-        </n-checkbox>
-        <n-button
-          type="primary"
-          @click="triggerFullScan"
-          :loading="taskStatus.is_running && currentActionIncludesScan"
-          :disabled="taskStatus.is_running && !currentActionIncludesScan"
-        >
-          启动全量扫描
-        </n-button>
-        <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">友情提示：全量扫描耗时较长，大约3-5分钟才能处理一部影片，建议定时夜里悄悄的干活。</p>
-      </n-space>
-    </n-card>
-
-    <!-- ★★★ 3. 第二个卡片，包裹同步映射表区域 ★★★ -->
-    <n-card title="同步Emby演员映射表" class="beautified-card" :bordered="false">
-      <n-space vertical>
-        <n-checkbox v-model:checked="forceFullSyncMap" :disabled="taskStatus.is_running">
-          强制全量同步 (会合并所有记录，耗时较长)
-        </n-checkbox>
-        
-        <!-- ✨✨✨ 检查这个 n-space 是否完整 ✨✨✨ -->
-        <n-space align="center">
-          <!-- 按钮 1: 同步 -->
-          <n-button
-            type="primary"
-            @click="triggerSyncMap"
-            :loading="taskStatus.is_running && currentActionIncludesSyncMap"
-            :disabled="taskStatus.is_running && !currentActionIncludesSyncMap"
+  <!-- 1. 使用一个普通的 div 作为根元素，就像 MediaEditPage.vue 一样 -->
+  <div class="actions-page-container">
+    
+    <!-- 2. 在这个 div 内部使用 n-grid 来进行布局 -->
+    <n-grid cols="1 l:3" :x-gap="24" :y-gap="24" responsive="screen">
+      
+      <!-- 3. 左侧列：任务操作区 -->
+      <!-- 在大屏幕(l)及以上占 2 列，在小屏幕占满 1 列 -->
+      <n-gi span="1 l:2">
+        <n-space vertical :size="24">
+          <n-alert 
+            v-if="taskStatus.is_running" 
+            title="后台任务运行中" 
+            type="warning" 
+            closable
           >
-            {{ forceFullSyncMap ? '启动全量同步' : '启动增量同步' }}
-          </n-button>
+            当前有后台任务正在执行 ({{ taskStatus.current_action }})。
+            在此期间，任何需要写入数据库的操作都可能会失败。
+            建议等待当前任务完成后再进行其他操作。
+          </n-alert>
 
-          <!-- ✨✨✨ 按钮 2: 导出 (检查这里) ✨✨✨ -->
-          <n-button @click="exportMap" :loading="isExporting">
-            <template #icon><n-icon :component="ExportIcon" /></template>
-            导出
-          </n-button>
-          
-          <!-- ✨✨✨ 按钮 3: 导入 (检查这里) ✨✨✨ -->
-          <n-upload
-            action="/api/import_person_map"
-            :show-file-list="false"
-            @before-upload="beforeImport"
-            @finish="afterImport"
-            @error="errorImport"
-            accept=".csv"
-          >
-            <n-button :loading="isImporting">
-              <template #icon><n-icon :component="ImportIcon" /></template>
-              导入
-            </n-button>
-          </n-upload>
+          <!-- 卡片1: 全量扫描 -->
+          <n-card title="全量媒体库扫描" class="beautified-card" :bordered="false">
+            <template #header-extra>
+              <n-button
+                type="error"
+                size="small"
+                @click="triggerStopTask"
+                :disabled="!taskStatus.is_running"
+                ghost
+              >
+                停止当前任务
+              </n-button>
+            </template>
+            <n-space vertical align="start">
+              <n-checkbox v-model:checked="forceReprocessAll" :disabled="taskStatus.is_running">
+                强制重新处理所有项目 (将清除已处理记录)
+              </n-checkbox>
+              <n-button
+                type="primary"
+                @click="triggerFullScan"
+                :loading="taskStatus.is_running && currentActionIncludesScan"
+                :disabled="taskStatus.is_running && !currentActionIncludesScan"
+              >
+                启动全量扫描
+              </n-button>
+              <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">友情提示：全量扫描耗时较长，大约3-5分钟才能处理一部影片，建议定时夜里悄悄的干活。</p>
+            </n-space>
+          </n-card>
+
+          <!-- 卡片2: 同步映射表 -->
+          <n-card title="同步Emby演员映射表" class="beautified-card" :bordered="false">
+            <n-space vertical>
+              <n-checkbox v-model:checked="forceFullSyncMap" :disabled="taskStatus.is_running">
+                全量同步 (会尝试在线补全演员外部ID，耗时较长)
+              </n-checkbox>
+              <n-space align="center">
+                <n-button
+                  type="primary"
+                  @click="triggerSyncMap"
+                  :loading="taskStatus.is_running && currentActionIncludesSyncMap"
+                  :disabled="taskStatus.is_running && !currentActionIncludesSyncMap"
+                >
+                  {{ forceFullSyncMap ? '启动全量同步' : '启动快速同步' }}
+                </n-button>
+                <n-button @click="exportMap" :loading="isExporting">
+                  <template #icon><n-icon :component="ExportIcon" /></template>
+                  导出
+                </n-button>
+                <n-upload
+                  action="/api/import_person_map"
+                  :show-file-list="false"
+                  @before-upload="beforeImport"
+                  @finish="afterImport"
+                  @error="errorImport"
+                  accept=".csv"
+                >
+                  <n-button :loading="isImporting">
+                    <template #icon><n-icon :component="ImportIcon" /></template>
+                    导入
+                  </n-button>
+                </n-upload>
+              </n-space>
+              <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">
+                <b>同步：</b>读取所有演员信息为后续创建各数据源ID映射表。<br>
+                <b>导出/导入：</b>用于备份或迁移演员映射数据。导入会追加更新现有演员的记录。
+              </p>
+            </n-space>
+          </n-card>
         </n-space>
-        
-        <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">
-          <b>同步：</b>从Emby读取所有人物信息为后续创建各数据源ID映射表。<br>
-          <b>导出/导入：</b>用于备份或迁移人物映射数据。导入会覆盖现有相同 Emby Person ID 的记录。
-        </p>
-      </n-space>
-    </n-card>
+      </n-gi>
 
-    <!-- ★★★ 4. 第三个卡片，包裹实时日志显示区域 ★★★ -->
-    <n-card title="实时日志" class="beautified-card" :bordered="false" content-style="padding: 0;">
-       <template #header-extra>
-        <n-button text @click="clearLogs" style="font-size: 14px;">
-          <template #icon><n-icon :component="TrashIcon" /></template>
-          清空日志
-        </n-button>
-      </template>
-      <n-log
-        :log="logContent"
-        trim
-        :rows="15"
-        style="font-size: 13px; line-height: 1.6;"
-      />
-    </n-card>
-  </n-space>
+      <!-- 4. 右侧列：实时日志区 -->
+      <!-- 在大屏幕(l)及以上占 1 列，在小屏幕占满 1 列 -->
+      <n-gi span="1 l:1">
+        <n-card title="实时日志" class="beautified-card" :bordered="false" content-style="padding: 0;">
+          <template #header-extra>
+            <n-button text @click="clearLogs" style="font-size: 14px;">
+              <template #icon><n-icon :component="TrashIcon" /></template>
+              清空日志
+            </n-button>
+          </template>
+          <!-- 这里的 n-log 不需要额外处理高度，因为它会在卡片内自然撑开 -->
+          <n-log
+            :log="logContent"
+            trim
+            :rows="30"
+            style="font-size: 13px; line-height: 1.6;"
+          />
+        </n-card>
+      </n-gi>
+
+    </n-grid>
+  </div>
 </template>
 
 <script setup>
-// ... 你的 <script setup> 部分完全不需要任何修改 ...
-// ★★★ 只需要确保从 naive-ui 导入了 NCard 和 NSpace ★★★
+// 确保导入了 NGrid 和 NGi
 import { ref, computed } from 'vue';
 import axios from 'axios';
 import { 
   NCard, NButton, NCheckbox, NSpace, NAlert, NLog, NIcon, useMessage, 
-  NUpload 
+  NUpload, NGrid, NGi
 } from 'naive-ui';
 
 import { 
@@ -147,7 +155,9 @@ const isImporting = ref(false);
 
 const logContent = computed(() => {
   if (props.taskStatus && Array.isArray(props.taskStatus.logs)) {
-    return props.taskStatus.logs.slice().reverse().join('\n');
+    const logs = props.taskStatus.logs;
+    const slicedLogs = logs.length > 300 ? logs.slice(logs.length - 300) : logs;
+    return slicedLogs.slice().reverse().join('\n');
   }
   return '等待日志...';
 });
@@ -175,11 +185,9 @@ const triggerFullScan = async () => {
 
 const triggerSyncMap = async () => {
   try {
-    // ✨ 2. 准备要发送的数据
     const payload = {
       full_sync: forceFullSyncMap.value
     };
-    // ✨ 3. 在 post 请求中发送数据
     await axios.post('/api/trigger_sync_person_map', payload);
     
     const messageText = forceFullSyncMap.value ? '全量同步任务已启动！' : '增量同步任务已启动！';
@@ -266,8 +274,5 @@ const errorImport = ({ event }) => {
     message.error('导入失败，并且无法解析服务器错误响应。');
   }
 };
-
 </script>
 
-<!-- ★★★ 5. 移除旧的 scoped 样式 ★★★ -->
-<!-- 原来的 <style scoped> 已被删除，因为卡片间距由 n-space 控制 -->

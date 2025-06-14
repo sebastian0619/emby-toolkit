@@ -1,37 +1,34 @@
-# utils.py
+# utils.py (最终智能匹配版)
+
 import re
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
-# 假设你的日志记录器已经设置好，并且可以全局导入
-# from logger_setup import logger
-# 如果没有全局 logger，你可能需要在这里初始化一个简单的 logger 或从其他地方传入
-# 为了简单，我这里假设 logger 存在或暂时不用它打印 utils 内部的日志
+import unicodedata
 
-# 假设你使用的翻译库是 'translators'
-# 如果不是，你需要修改下面的导入和调用
+# 尝试导入 pypinyin，如果失败则创建一个模拟函数
+try:
+    from pypinyin import pinyin, Style
+    PYPINYIN_AVAILABLE = True
+except ImportError:
+    PYPINYIN_AVAILABLE = False
+    def pinyin(*args, **kwargs):
+        # 如果库不存在，这个模拟函数将导致中文名无法转换为拼音进行匹配
+        return []
+
+# 尝试导入 translators
 try:
     from translators import translate_text as translators_translate_text
-    # from translators import apis as translators_apis # 如果需要检查引擎是否存在
     TRANSLATORS_LIB_AVAILABLE = True
 except ImportError:
     TRANSLATORS_LIB_AVAILABLE = False
-    def translators_translate_text(*args, **kwargs): # 模拟一个空函数
-        # print("[UTILS_WARN] 'translators' 库未安装，翻译功能不可用。")
+    def translators_translate_text(*args, **kwargs):
         raise NotImplementedError("translators 库未安装")
-
-# 你在 core_processor.py 中用到的常量，如果它们在 constants.py 中定义，确保能访问
-# 例如： DEFAULT_TRANSLATOR_ENGINES_ORDER = ['bing', 'google'] # 来自 constants.py
 
 def contains_chinese(text: Optional[str]) -> bool:
     """检查字符串是否包含中文字符。"""
     if not text:
         return False
     for char in text:
-        # 基本的 Unicode 中文字符范围判断
-        # CJK Unified Ideographs: U+4E00 to U+9FFF
-        # CJK Compatibility Ideographs: U+F900 to U+FAFF
-        # CJK Unified Ideographs Extension A: U+3400 to U+4DBF
-        # 还有其他扩展区，但这些是核心
         if '\u4e00' <= char <= '\u9fff' or \
            '\u3400' <= char <= '\u4dbf' or \
            '\uf900' <= char <= '\ufaff':
@@ -39,166 +36,156 @@ def contains_chinese(text: Optional[str]) -> bool:
     return False
 
 def clean_character_name_static(character_name: Optional[str]) -> str:
-    """
-    清理角色名，移除常见的前缀、后缀，并处理中英混合及国家代码的情况。
-    """
+    """清理角色名，移除常见的前缀、后缀等。"""
     if not character_name:
         return ""
-    
     name = str(character_name).strip()
-    
-    # 1. 移除复杂的后缀模式，如 (voice UK)
-    # 这个模式已经包含了 (voice XX) 的情况
     country_code_pattern = r'\s*\((?:voice|配音)[,\s]*[A-Z]{2}\)\s*$'
     name = re.sub(country_code_pattern, '', name, flags=re.IGNORECASE).strip()
-
-    # 2. ✨✨✨ 修复核心：集中处理所有已知的前缀 ✨✨✨
-    # 按照从长到短的顺序检查，防止 "配音" 被 "配" 错误处理
     prefixes_to_remove = ["饰 ", "饰", "配音 ", "配音", "配 "]
-    # 循环检查，直到没有前缀匹配为止，这可以处理 "饰 配音 角色名" 这样的情况
     cleaned_in_loop = True
     while cleaned_in_loop:
         cleaned_in_loop = False
         for prefix in prefixes_to_remove:
-            if name.lower().startswith(prefix): # 使用 lower() 使匹配不区分大小写（如果需要）
+            if name.lower().startswith(prefix):
                 name = name[len(prefix):].strip()
                 cleaned_in_loop = True
-                break # 找到并移除一个前缀后，重新开始循环
-
-    # 3. 处理中英混合的核心逻辑 (例如 "中文名 / English Name")
+                break
     match = re.match(r'^([\u4e00-\u9fa5·\s]+)[\s/]+[a-zA-Z0-9\s\.]+$', name)
     if match:
         name = match.group(1).strip()
-
-    # 再次处理简单的斜杠分隔
     if '/' in name:
         name = name.split('/')[0].strip()
-        
-    # 4. 移除通用的后缀标记 (voice), [voice], (v.o.), 配音
-    # 注意：这里的 '配音' 和 '配' 只作为后缀处理
     voice_patterns_suffix = [
-        r'\s*\((?:voice|v\.o\.)\)\s*$', # 整合了 (voice) 和 (v.o.)
-        r'\s*\[voice\]\s*$',
-        r'\s*配\s*音\s*$', # 只在结尾时移除
-        r'\s*配\s*$',      # 只在结尾时移除
+        r'\s*\((?:voice|v\.o\.)\)\s*$', r'\s*\[voice\]\s*$',
+        r'\s*配\s*音\s*$', r'\s*配\s*$',
     ]
     for pattern in voice_patterns_suffix:
         name = re.sub(pattern, '', name, flags=re.IGNORECASE).strip()
-        
     return name.strip()
 
 def translate_text_with_translators(
     query_text: str,
-    to_language: str = 'zh', # 目标语言通常是中文 'zh' 或 'zh-CN'
+    to_language: str = 'zh',
     engine_order: Optional[List[str]] = None,
-    from_language: str = 'auto' # 源语言自动检测
+    from_language: str = 'auto'
 ) -> Optional[Dict[str, str]]:
-    """
-    使用指定的翻译引擎顺序尝试翻译文本。
-    返回一个包含翻译结果和所用引擎的字典，或在失败时返回None。
-    返回格式: {"text": "翻译后的文本", "engine": "使用的引擎名"}
-    """
-    if not query_text or not query_text.strip():
-        # print("[UTILS_DEBUG] translate_text_with_translators: query_text 为空，跳过翻译。")
+    """使用指定的翻译引擎顺序尝试翻译文本。"""
+    if not query_text or not query_text.strip() or not TRANSLATORS_LIB_AVAILABLE:
         return None
-
-    if not TRANSLATORS_LIB_AVAILABLE:
-        print("[UTILS_ERROR] 'translators' 库不可用，无法执行翻译。")
-        return None
-
-    if engine_order is None or not engine_order:
-        # print("[UTILS_WARN] translate_text_with_translators: 未提供翻译引擎顺序，使用默认。")
-        engine_order = ['bing', 'google', 'baidu'] # 确保有默认值
-
-    # print(f"[UTILS_INFO] 翻译 '{query_text}': 使用引擎顺序 {engine_order}")
-
+    if engine_order is None:
+        engine_order = ['bing', 'google', 'baidu']
     for engine_name in engine_order:
-        # print(f"[UTILS_DEBUG] 尝试引擎 [{engine_name}] 翻译: '{query_text}'")
         try:
-            # 实际调用 translators 库
-            # 注意：你需要确认你的 translators 库版本和用法
-            # to_language='zh' 或 'zh-CN' 或 'zh-Hans' 取决于库和引擎支持
             translated_text = translators_translate_text(
-                query_text,
-                translator=engine_name,
-                to_language=to_language,
-                from_language=from_language, # 'auto' 通常是默认值
-                timeout=10.0 # 设置超时
+                query_text, translator=engine_name, to_language=to_language,
+                from_language=from_language, timeout=10.0
             )
-
-            if translated_text and translated_text.strip() and translated_text.strip().lower() != query_text.strip().lower():
-                # print(f"[UTILS_SUCCESS] 引擎 [{engine_name}] 成功: '{query_text}' -> '{translated_text}'")
+            if translated_text and translated_text.strip().lower() != query_text.strip().lower():
                 return {"text": translated_text.strip(), "engine": engine_name}
-            elif translated_text and translated_text.strip().lower() == query_text.strip().lower():
-                # print(f"[UTILS_INFO] 引擎 [{engine_name}] 返回结果与原文相同: '{query_text}'")
-                # 可以选择视为翻译失败并尝试下一个引擎，或者接受这个结果
-                # 如果接受，也应该返回引擎名
-                # return {"text": translated_text.strip(), "engine": engine_name}
-                continue # 视为无效翻译，尝试下一个
-            else:
-                # print(f"[UTILS_WARN] 引擎 [{engine_name}] 返回空结果 for '{query_text}'")
-                continue # 尝试下一个引擎
-
-        except Exception as e:
-            # print(f"[UTILS_WARN] 引擎 [{engine_name}] 翻译 '{query_text}' 失败: {e}")
-            continue # 尝试下一个引擎
-
-    # print(f"[UTILS_ERROR] 所有引擎都未能翻译: '{query_text}'")
-    return None # 所有引擎都失败了
-
-# 你可能还有其他辅助函数，比如格式化演员名、角色名等
-def format_actor_display_name(name_cn: Optional[str], name_en: Optional[str]) -> str:
-    if name_cn and name_en and name_cn != name_en:
-        return f"{name_cn} ({name_en})"
-    elif name_cn:
-        return name_cn
-    elif name_en:
-        return name_en
-    return "未知演员"
-
-def format_character_display_name(char_cn: Optional[str], char_en: Optional[str]) -> str:
-    # 角色名通常不需要同时显示中英文，除非特殊需求
-    if char_cn:
-        return char_cn
-    elif char_en: # 如果没有中文，显示英文
-        return char_en
-    return "" # 或者 "未知角色"
+        except Exception:
+            continue
+    return None
 
 def generate_search_url(site: str, title: str, year: Optional[int] = None) -> str:
-    """
-    为指定网站生成搜索链接。
-    """
+    """为指定网站生成搜索链接。"""
     query = f'"{title}"'
-    if year:
-        query += f' {year}'
+    if year: query += f' {year}'
+    final_query = f'site:zh.wikipedia.org {query} 演员表' if site == 'wikipedia' else query + " 演员表 cast"
+    return f"https://www.google.com/search?q={quote_plus(final_query)}"
+
+# --- ★★★ 全新的智能名字匹配核心逻辑 ★★★ ---
+
+def normalize_name_for_matching(name: Optional[str]) -> str:
+    """
+    将名字极度标准化，用于模糊比较。
+    转小写、移除所有非字母数字字符、处理 Unicode 兼容性。
+    例如 "Chloë Grace Moretz" -> "chloegracemoretz"
+    """
+    if not name:
+        return ""
+    # NFKD 分解可以将 'ë' 分解为 'e' 和 '̈'
+    nfkd_form = unicodedata.normalize('NFKD', str(name))
+    # 只保留基本字符，去除重音等组合标记
+    ascii_name = u"".join([c for c in nfkd_form if not unicodedata.combining(c)])
+    # 转小写并只保留字母和数字
+    return ''.join(filter(str.isalnum, ascii_name.lower()))
+
+def get_name_variants(name: Optional[str]) -> set:
+    """
+    根据一个名字生成所有可能的变体集合，用于匹配。
+    处理中文转拼音、英文名姓/名顺序。
+    """
+    if not name:
+        return set()
     
-    if site == 'wikipedia':
-        final_query = f'site:zh.wikipedia.org {query} 演员表' # 加上“演员表”关键词，更精确
-    else:
-        final_query = query + " 演员表 cast"
+    name_str = str(name).strip()
+    
+    # 检查是否包含中文字符
+    if contains_chinese(name_str):
+        if PYPINYIN_AVAILABLE:
+            # 如果是中文，转换为无音调拼音
+            pinyin_list = pinyin(name_str, style=Style.NORMAL)
+            pinyin_flat = "".join([item[0] for item in pinyin_list if item])
+            return {pinyin_flat.lower()}
+        else:
+            # 如果 pypinyin 不可用，无法处理中文名，返回空集合
+            return set()
 
-    encoded_query = quote_plus(final_query)
-    return f"https://www.google.com/search?q={encoded_query}"
+    # 如果是英文/拼音，处理姓和名顺序
+    parts = name_str.split()
+    if not parts:
+        return set()
+        
+    # 标准化并移除所有空格和特殊字符
+    normalized_direct = normalize_name_for_matching(name_str)
+    variants = {normalized_direct}
+    
+    # 如果有多于一个部分，尝试颠倒顺序
+    if len(parts) > 1:
+        reversed_name = " ".join(parts[::-1])
+        normalized_reversed = normalize_name_for_matching(reversed_name)
+        variants.add(normalized_reversed)
+        
+    return variants
 
-def are_names_match(name1: Optional[str], original_name1: Optional[str], name2: Optional[str], original_name2: Optional[str]) -> bool:
-    names_set1 = {str(name).lower().strip() for name in [name1, original_name1] if name and str(name).strip()}
-    names_set2 = {str(name).lower().strip() for name in [name2, original_name2] if name and str(name).strip()}
-    if not names_set1 or not names_set2:
+def are_names_match(name1_a: Optional[str], name1_b: Optional[str], name2_a: Optional[str], name2_b: Optional[str]) -> bool:
+    """
+    【智能版】比较两组名字是否可能指向同一个人。
+    """
+    # 为第一组名字（通常是 TMDb）生成变体集合
+    variants1 = get_name_variants(name1_a)
+    if name1_b:
+        variants1.update(get_name_variants(name1_b))
+    
+    # 为第二组名字（通常是豆瓣）生成变体集合
+    variants2 = get_name_variants(name2_a)
+    if name2_b:
+        variants2.update(get_name_variants(name2_b))
+
+    # 移除可能产生的空字符串，避免错误匹配
+    if "" in variants1: variants1.remove("")
+    if "" in variants2: variants2.remove("")
+        
+    # 如果任何一个集合为空，则无法匹配
+    if not variants1 or not variants2:
         return False
-    return not names_set1.isdisjoint(names_set2)
+            
+    # 检查两个集合是否有任何共同的元素（交集不为空）
+    return not variants1.isdisjoint(variants2)
+
+# --- ★★★ 智能匹配逻辑结束 ★★★ ---
 
 if __name__ == '__main__':
-    # 测试 contains_chinese
-    print(f"'Hello': {contains_chinese('Hello')}")  # False
-    print(f"'你好': {contains_chinese('你好')}")    # True
-    print(f"'Hello 你好': {contains_chinese('Hello 你好')}") # True
-    print(f"None: {contains_chinese(None)}")      # False
-    print(f"Empty string: {contains_chinese('')}") # False
-
-    # 测试 clean_character_name_static
-    test_roles = [
-        "饰 蝙蝠侠 / 布鲁斯·韦恩", "饰蝙蝠侠", "蝙蝠侠 (voice)", "蝙蝠侠 [VOICE]",
-        "超人 (v.o.)", "神奇女侠", None, "", "  饰 小丑  ", "配音", "饰 配音", "饰 钢铁侠 配音"
-    ]
-    for role in test_roles:
-        print(f"Original: '{role}' -> Cleaned: '{clean_character_name_static(role)}'")
+    # 测试新的 are_names_match
+    print("\n--- Testing are_names_match ---")
+    # 测试1: 张子枫
+    print(f"张子枫 vs Zhang Zifeng: {are_names_match('Zhang Zifeng', 'Zhang Zifeng', '张子枫', 'Zifeng Zhang')}") # 应该为 True
+    # 测试2: 姓/名顺序
+    print(f"Jon Hamm vs Hamm Jon: {are_names_match('Jon Hamm', None, 'Hamm Jon', None)}") # 应该为 True
+    # 测试3: 特殊字符和大小写
+    print(f"Chloë Moretz vs chloe moretz: {are_names_match('Chloë Moretz', None, 'chloe moretz', None)}") # 应该为 True
+    # 测试4: 中文 vs 拼音
+    print(f"张三 vs zhang san: {are_names_match('zhang san', None, '张三', None)}") # 应该为 True
+    # 测试5: 不匹配
+    print(f"Zhang San vs Li Si: {are_names_match('Zhang San', None, 'Li Si', None)}") # 应该为 False
