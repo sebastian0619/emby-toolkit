@@ -44,7 +44,7 @@
             <n-form-item label="本地数据源路径" path="local_data_path">
               <n-input v-model:value="configModel.local_data_path" placeholder="神医TMDB缓存目录 (cache和override的上层)" />
             </n-form-item>
-            <n-form-item label="TMDB API Key (v3)" path="tmdb_api_key">
+            <n-form-item label="TMDB API Key" path="tmdb_api_key">
               <n-input type="password" show-password-on="mousedown" v-model:value="configModel.tmdb_api_key" placeholder="输入你的 TMDB API Key" />
             </n-form-item>
           </n-card>

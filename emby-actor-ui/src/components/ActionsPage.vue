@@ -47,7 +47,7 @@
               >
                 启动全量扫描
               </n-button>
-              <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">友情提示：全量扫描耗时较长，大约3-5分钟才能处理一部影片，建议定时夜里悄悄的干活。</p>
+              <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">建议定时夜里悄悄的干活。</p>
             </n-space>
           </n-card>
 

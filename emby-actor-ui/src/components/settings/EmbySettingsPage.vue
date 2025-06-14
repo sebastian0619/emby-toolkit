@@ -28,7 +28,7 @@
             <n-space align="center">
               <n-switch v-model:value="configModel.process_episodes" />
               <n-text :depth="3" type="error" style="font-size: 0.85em;">
-                不建议开启，处理剧集时会深入每一集，耗时极长。
+                处理剧集时会递归处理每一集。
               </n-text>
             </n-space>
           </n-form-item-grid-item>
@@ -38,7 +38,7 @@
             <n-space align="center">
               <n-switch v-model:value="configModel.sync_images" />
               <n-text :depth="3" type="info" style="font-size: 0.85em;">
-                启用后，在全量处理时会下载封面、海报等图片到本地。
+                同时下载海报等图片到覆盖缓存。
               </n-text>
             </n-space>
           </n-form-item-grid-item>

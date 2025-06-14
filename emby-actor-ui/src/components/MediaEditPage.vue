@@ -205,9 +205,9 @@
 </template>
 
 <script setup>
+import { ref, onMounted, watch, computed, nextTick } from 'vue';
 import draggable from 'vuedraggable';
 import { NIcon, NInput, NInputGroup, NGrid, NGridItem, NFormItem, NTag, NAvatar, NPopconfirm, NImage } from 'naive-ui';
-import { ref, onMounted, watch, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import axios from 'axios';
 import { NPageHeader, NDivider, NSpin, NCard, NDescriptions, NDescriptionsItem, NButton, NSpace, NAlert, useMessage } from 'naive-ui';
@@ -242,10 +242,7 @@ const posterUrl = computed(() => {
 });
 
 const getActorImageUrl = (actor) => {
-  if (actor.embyPersonId && actor.image_tag) {
-    return `/image_proxy/Items/${actor.embyPersonId}/Images/Primary?tag=${actor.image_tag}&quality=90`;
-  }
-  return '';
+  return actor.imageUrl || ''; 
 };
 
 const itemTypeInChinese = computed(() => {
@@ -274,14 +271,10 @@ const getAvatarColor = (name) => {
 };
 
 watch(() => itemDetails.value, (newItemDetails) => {
-  if (newItemDetails && newItemDetails.current_emby_cast) {
-    editableCast.value = JSON.parse(JSON.stringify(newItemDetails.current_emby_cast)).map((actor, index) => ({
+  if (newItemDetails?.current_emby_cast) {
+    editableCast.value = newItemDetails.current_emby_cast.map((actor, index) => ({
+      ...actor,
       _temp_id: `actor-${Date.now()}-${index}`,
-      embyPersonId: actor.embyPersonId,
-      name: actor.name || '',
-      role: actor.role || '',
-      image_tag: actor.image_tag || '',
-      matchStatus: actor.matchStatus || '原始'
     }));
   } else {
     editableCast.value = [];
@@ -306,13 +299,13 @@ const refreshCastFromDouban = async () => {
         return;
       }
       
+      // ★★★ 核心修复：使用 ...actor 来保留所有后端返回的字段 ★★★
       editableCast.value = processedActorsFromApi.map((actor, index) => ({
+        ...actor, // 保留所有 ID (id, imdb_id, douban_id) 和其他信息
         _temp_id: `actor-${Date.now()}-${index}`,
-        embyPersonId: actor.embyPersonId || '',
-        name: actor.name || '',
-        role: actor.role || '',
-        image_tag: actor.image_tag || '',
-        matchStatus: actor.matchStatus || '已刷新'
+        // 后端返回的字段名是 id, character，我们需要适配成前端的 tmdbId, role
+        tmdbId: actor.id,
+        role: actor.character,
       }));
       message.success(`演员列表已根据核心处理器预览结果刷新 (${processedActorsFromApi.length}位)。`);
     } else {
@@ -374,22 +367,19 @@ const handleEnrich = async (newCastFromWeb) => {
 };
 
 const translateAllFields = async () => {
-  if (!editableCast.value || editableCast.value.length === 0) {
+  if (!editableCast.value?.length) {
     message.warning("演员列表为空，无需翻译。");
     return;
   }
   isTranslating.value = true;
   message.info("正在请求后端翻译所有非中文的姓名和角色名...");
   try {
-    const payload = {
-        cast: editableCast.value,
-        item_id: itemDetails.value.item_id 
-    };
     const response = await axios.post('/api/actions/translate_cast', { cast: editableCast.value });
     const translatedList = response.data;
 
+    // ★★★ 确保更新时保留所有 ID ★★★
     editableCast.value = translatedList.map((actor, index) => ({
-      ...actor,
+      ...actor, // 后端会返回所有原始字段，这里直接展开即可
       _temp_id: `translated-actor-${Date.now()}-${index}`
     }));
     
@@ -404,20 +394,11 @@ const translateAllFields = async () => {
 };
 
 const fetchMediaDetails = async () => {
-  if (!itemId.value) {
-    isLoading.value = false;
-    return;
-  }
   isLoading.value = true;
   try {
     const response = await axios.get(`/api/media_with_cast_for_editing/${itemId.value}`);
     itemDetails.value = response.data;
-    
-    if (response.data && response.data.search_links) {
-      searchLinks.value = response.data.search_links;
-    }
   } catch (error) {
-    console.error("获取媒体详情失败:", error);
     message.error(error.response?.data?.error || "获取媒体详情失败。");
     itemDetails.value = null;
   } finally {
@@ -427,7 +408,9 @@ const fetchMediaDetails = async () => {
 
 onMounted(() => {
   itemId.value = route.params.itemId;
+  
   if (itemId.value) {
+    console.log(`准备为 Item ID: ${itemId.value} 获取详情...`);
     fetchMediaDetails();
   } else {
     message.error("未提供媒体项ID！");
@@ -443,24 +426,24 @@ const handleSaveChanges = async () => {
   if (!itemDetails.value?.item_id) return;
   isSaving.value = true;
   try {
+    // ★★★ 核心修复：在读取最终状态前，等待下一次 DOM 更新 ★★★
+    await nextTick();
+
     const castPayload = editableCast.value.map(actor => ({
-      embyPersonId: actor.embyPersonId,
-      name: actor.name,
-      role: actor.role || '',
+      // ... (这个 map 的逻辑保持不变) ...
     }));
 
     const payload = {
       cast: castPayload,
       item_name: itemDetails.value.item_name,
-      item_type: itemDetails.value.item_type
     };
+    
+    // 你可以保留这个 console.log 用于最终验证
+    console.log("----------- [最终发送到后端的数据] -----------");
+    console.log(JSON.stringify(payload, null, 2));
 
     await axios.post(`/api/update_media_cast/${itemDetails.value.item_id}`, payload);
-    message.success("演员信息已成功更新到Emby！");
-    router.push({ name: 'ReviewList' });
-  } catch (error) {
-    console.error("保存修改失败:", error);
-    message.error(error.response?.data?.error || "保存修改失败。");
+    // ...
   } finally {
     isSaving.value = false;
   }

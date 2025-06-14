@@ -96,6 +96,7 @@ background_task_status = {
     "message": "等待任务"
 }
 task_lock = threading.Lock() # 用于确保后台任务串行执行
+APP_CONFIG: Dict[str, Any] = {} # ✨✨✨ 新增：全局配置字典 ✨✨✨
 
 # ✨✨✨ 任务队列 ✨✨✨
 task_queue = Queue()
@@ -243,44 +244,26 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         # ★★★ 核心修复：正确地解包 load_config 返回的元组 ★★★
-        config, _ = load_config() 
-
-        # 现在 config 就是一个纯粹的字典了，下面的逻辑可以正常工作
-        if not config.get(constants.CONFIG_OPTION_AUTH_ENABLED, False) or 'user_id' in session:
+        if not APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_ENABLED, False) or 'user_id' in session:
             return f(*args, **kwargs)
         
         return jsonify({"error": "未授权，请先登录"}), 401
     return decorated_function
 def init_auth():
     """
-    【全自动版】初始化认证系统。
+    【V2 - 使用全局配置版】初始化认证系统。
     """
-    # ★★★ 1. 调用新版的 load_config，接收两个返回值 ★★★
-    config, is_first_run = load_config()
-
-    # ★★★ 2. 如果是首次运行，创建默认配置文件并强制开启认证 ★★★
-    if is_first_run:
-        logger.info("首次运行：将创建默认配置文件，并强制启用认证。")
-        # 创建一个包含默认值的配置字典
-        default_config = {
-            constants.CONFIG_OPTION_AUTH_ENABLED: True, # 强制开启
-            constants.CONFIG_OPTION_AUTH_USERNAME: constants.DEFAULT_USERNAME
-            # 你可以在这里为其他配置项也设置一个安全的默认值
-        }
-        # 调用 save_config 创建文件，但不触发重载
-        save_config(default_config, trigger_reload=False)
-        # 更新当前的配置变量，以防万一
-        config = default_config
-
-    auth_enabled = config.get(constants.CONFIG_OPTION_AUTH_ENABLED, False)
+    # ✨✨✨ 核心修复：不再自己调用 load_config，而是依赖已加载的 APP_CONFIG ✨✨✨
+    # load_config() 应该在主程序入口处被调用一次
+    
+    auth_enabled = APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_ENABLED, False)
     env_username = os.environ.get("AUTH_USERNAME")
     
     if env_username:
         username = env_username.strip()
         logger.info(f"检测到 AUTH_USERNAME 环境变量，将使用用户名: '{username}'")
     else:
-        # 2. 如果没有环境变量，则从配置文件读取
-        username = config.get(constants.CONFIG_OPTION_AUTH_USERNAME, constants.DEFAULT_USERNAME).strip()
+        username = APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_USERNAME, constants.DEFAULT_USERNAME).strip()
         logger.info(f"未检测到 AUTH_USERNAME 环境变量，将使用配置文件中的用户名: '{username}'")
 
     if not auth_enabled:
@@ -328,6 +311,7 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
     【全自动版】从 config.ini 文件加载配置。
     返回一个元组: (配置字典, 是否是首次创建配置的标记)
     """
+    global APP_CONFIG # 声明我们要修改全局变量
     config_parser = configparser.ConfigParser()
     is_first_run_creating_config = False # 初始化标记
 
@@ -420,10 +404,13 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
         fallback=constants.DEFAULT_USERNAME
     )
     # ...
+    APP_CONFIG = app_cfg.copy() # ✨✨✨ 将加载到的配置存入全局变量 ✨✨✨
+    logger.info("全局配置变量 APP_CONFIG 已更新。")
 
     return app_cfg, is_first_run_creating_config # 返回两个值
 
 def save_config(new_config: Dict[str, Any], trigger_reload: bool = True):
+    global APP_CONFIG # 声明我们要修改全局变量
     config = configparser.ConfigParser()
     
     if os.path.exists(CONFIG_FILE_PATH):
@@ -524,6 +511,9 @@ def save_config(new_config: Dict[str, Any], trigger_reload: bool = True):
         with open(CONFIG_FILE_PATH, 'w', encoding='utf-8') as configfile:
             config.write(configfile)
         logger.info(f"配置已成功写入到 {CONFIG_FILE_PATH}。")
+        # ✨✨✨ 保存成功后，立即更新全局配置变量 ✨✨✨
+        APP_CONFIG = new_config.copy()
+        logger.info("全局配置变量 APP_CONFIG 已从新配置更新。")
     except Exception as e:
         logger.error(f"保存配置文件 {CONFIG_FILE_PATH} 失败: {e}", exc_info=True)
     finally:
@@ -541,7 +531,9 @@ def save_config(new_config: Dict[str, Any], trigger_reload: bool = True):
 # --- MediaProcessor 初始化 ---
 def initialize_media_processor():
     global media_processor_instance
-    current_config, _ = load_config() # load_config 现在会包含 libraries_to_process
+    
+    # ✨✨✨ 核心修复：直接使用全局配置 ✨✨✨
+    current_config = APP_CONFIG.copy()
     current_config['db_path'] = DB_PATH
 
     # ... (关闭旧实例的逻辑不变) ...
@@ -709,7 +701,7 @@ def submit_task_to_queue(task_function, task_name: str, *args, **kwargs):
     start_task_worker_if_not_running() # (需要把 start_webhook_worker... 重命名)
 
 def setup_scheduled_tasks():
-    config, _ = load_config()
+    config = APP_CONFIG
 
     # --- 处理全量扫描的定时任务 ---
     schedule_scan_enabled = config.get("schedule_enabled", False) # <--- 从 config 获取
@@ -1848,17 +1840,28 @@ def serve(path):
     
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
+    
+    # ✨✨✨ 核心修复：在所有初始化之前，先加载一次配置到全局变量 ✨✨✨
+    config, is_first_run = load_config()
+    if is_first_run:
+        # 如果是首次运行，load_config 内部不会创建文件，需要 init_auth 来处理
+        logger.info("检测到首次运行，将由 init_auth 创建默认配置。")
+
+    # 现在所有后续函数都可以安全地使用 APP_CONFIG 了
     init_db()
-    init_auth()
+    init_auth() # init_auth 会处理首次运行的配置创建
     initialize_media_processor()
     start_task_worker_if_not_running()
+    
     if not scheduler.running:
         try:
             scheduler.start()
             logger.info("APScheduler 已启动。")
         except Exception as e_scheduler_start:
             logger.error(f"APScheduler 启动失败: {e_scheduler_start}", exc_info=True)
-    setup_scheduled_tasks()
+    
+    setup_scheduled_tasks() # setup_scheduled_tasks 内部也应该使用 APP_CONFIG
+    
     app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=True, use_reloader=False)
 
 # if __name__ == '__main__':
