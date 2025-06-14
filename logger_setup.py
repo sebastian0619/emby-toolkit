@@ -5,30 +5,16 @@ import sys
 from collections import deque
 import constants
 import os
-from logging.handlers import RotatingFileHandler # ✨ 1. 导入 RotatingFileHandler
+from logging.handlers import RotatingFileHandler
 
-# --- 2. 从 web_app 导入持久化数据路径 ---
-# 我们需要知道日志文件应该存放在哪里。
-# 为了避免循环导入，我们只在需要时导入这个变量。
-try:
-    from web_app import PERSISTENT_DATA_PATH
-except (ImportError, ModuleNotFoundError):
-    # 如果导入失败（例如，在独立测试此模块时），提供一个后备路径
-    PERSISTENT_DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "local_data_fallback")
-    if not os.path.exists(PERSISTENT_DATA_PATH):
-        os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
-    print(f"[LOGGER_SETUP_WARNING] Could not import PERSISTENT_DATA_PATH from web_app.py. Using fallback path: {PERSISTENT_DATA_PATH}")
-
-# --- 3. 定义日志文件相关的常量 ---
+# --- 定义常量，但不立即使用路径 ---
 LOG_FILE_NAME = "app.log"
-LOG_FILE_PATH = os.path.join(PERSISTENT_DATA_PATH, LOG_FILE_NAME)
-LOG_FILE_MAX_SIZE_MB = 3  # 日志文件最大大小 (MB)
-LOG_FILE_BACKUP_COUNT = 5 # 保留的旧日志文件数量
+LOG_FILE_MAX_SIZE_MB = 3
+LOG_FILE_BACKUP_COUNT = 5
 
-# --- 前端实时日志的全局队列 (保持不变) ---
+# --- 前端队列和 Handler (保持不变) ---
 frontend_log_queue = deque(maxlen=200)
 
-# --- 自定义的日志处理器 (保持不变) ---
 class FrontendQueueHandler(logging.Handler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -40,13 +26,12 @@ class FrontendQueueHandler(logging.Handler):
         except Exception:
             self.handleError(record)
 
-# --- 原有的 logger 初始化代码 (保持不变) ---
+# --- 初始化基础 Logger (不包含文件 Handler) ---
 logger = logging.getLogger("app_logger")
 logger.setLevel(logging.DEBUG if constants.DEBUG_MODE else logging.INFO)
 
-# --- 配置并添加 Handler (核心修改区域) ---
 if not logger.handlers:
-    # 1. 控制台 Handler (保持不变)
+    # 1. 控制台 Handler
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setLevel(logging.DEBUG if constants.DEBUG_MODE else logging.INFO)
     console_formatter = logging.Formatter(
@@ -55,7 +40,7 @@ if not logger.handlers:
     stream_handler.setFormatter(console_formatter)
     logger.addHandler(stream_handler)
 
-    # 2. 前端队列 Handler (保持不变)
+    # 2. 前端队列 Handler
     try:
         frontend_handler = FrontendQueueHandler()
         frontend_handler.setLevel(logging.INFO)
@@ -65,29 +50,42 @@ if not logger.handlers:
     except Exception as e:
         logger.error(f"Failed to add FrontendQueueHandler: {e}", exc_info=True)
 
-    # ✨ 3. 新增的文件轮转 Handler ✨
+# ✨✨✨ 核心修改：创建一个专门用于添加文件日志的函数 ✨✨✨
+def add_file_handler(log_directory: str):
+    """
+    向主 logger 添加一个轮转文件处理器。
+    这个函数应该在确定了持久化数据路径后被调用。
+    """
     try:
-        # 确保日志文件所在的目录存在
-        log_dir = os.path.dirname(LOG_FILE_PATH)
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir, exist_ok=True)
+        if not os.path.exists(log_directory):
+            os.makedirs(log_directory, exist_ok=True)
+            logger.info(f"日志目录已创建: {log_directory}")
 
-        # 创建一个轮转文件处理器
+        log_file_path = os.path.join(log_directory, LOG_FILE_NAME)
+        
+        # 使用和控制台一样的详细格式化器
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)'
+        )
+
         file_handler = RotatingFileHandler(
-            LOG_FILE_PATH,
-            maxBytes=LOG_FILE_MAX_SIZE_MB * 1024 * 1024, # 将 MB 转换为字节
+            log_file_path,
+            maxBytes=LOG_FILE_MAX_SIZE_MB * 1024 * 1024,
             backupCount=LOG_FILE_BACKUP_COUNT,
             encoding='utf-8'
         )
-        # 文件中记录 DEBUG 及以上的所有日志，方便排查最详细的问题
-        file_handler.setLevel(logging.DEBUG) 
-        # 文件日志使用和控制台一样的详细格式
-        file_handler.setFormatter(console_formatter)
-        logger.addHandler(file_handler)
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(formatter)
         
-    except Exception as e:
-        # 如果文件日志配置失败，至少在控制台能看到错误
-        logger.error(f"Failed to configure file logger: {e}", exc_info=True)
+        # 检查是否已经存在相同类型的文件处理器，避免重复添加
+        if not any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
+            logger.addHandler(file_handler)
+            logger.info(f"文件日志功能已成功配置。日志将写入到: {log_file_path}")
+        else:
+            logger.warning("文件日志处理器已存在，本次不再重复添加。")
 
-    # 这条初始日志现在会被所有三个 handler 捕获
-    logger.info("Logger setup complete. All handlers (Console, Frontend, File) are active.")
+    except Exception as e:
+        logger.error(f"配置日志文件处理器时发生错误: {e}", exc_info=True)
+
+# 启动时打印一条消息，表示基础 logger 已就绪
+logger.info("基础 Logger (控制台/前端) 已初始化。")

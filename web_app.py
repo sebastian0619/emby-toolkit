@@ -26,7 +26,7 @@ from flask import session
 # --- 核心模块导入 ---
 import constants # 你的常量定义
 from core_processor import MediaProcessor # 核心处理逻辑
-from logger_setup import logger, frontend_log_queue # 日志记录器和前端日志队列
+from logger_setup import logger, frontend_log_queue, add_file_handler # 日志记录器和前端日志队列
 # emby_handler 和 utils 会在需要的地方被 core_processor 或此文件中的函数调用
 # 如果直接在此文件中使用它们的功能，也需要在这里导入
 import utils       # 例如，用于 /api/search_media
@@ -82,7 +82,7 @@ CONFIG_FILE_PATH = os.path.join(PERSISTENT_DATA_PATH, CONFIG_FILE_NAME)
 
 DB_NAME = getattr(constants, 'DB_NAME', "emby_actor_processor.sqlite")
 DB_PATH = os.path.join(PERSISTENT_DATA_PATH, DB_NAME)
-
+add_file_handler(PERSISTENT_DATA_PATH)
 logger.info(f"配置文件路径 (CONFIG_FILE_PATH) 设置为: {CONFIG_FILE_PATH}")
 logger.info(f"数据库文件路径 (DB_PATH) 设置为: {DB_PATH}")
 
