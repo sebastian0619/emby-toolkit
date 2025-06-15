@@ -968,11 +968,10 @@ def emby_webhook():
     
     # 使用最终确定的信息提交任务
     submit_task_to_queue(
-        task_process_single_item,  # 传递包装函数
+        task_process_single_item,
         f"Webhook处理: {final_item_name}",
-        # --- 后面是传递给 task_process_single_item 的参数 (除了第一个 processor) ---
         id_to_process,
-        force_reprocess_this_item=True,
+        force_reprocess=True, 
         process_episodes=True
     )
     
