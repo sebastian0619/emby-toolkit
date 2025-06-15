@@ -780,7 +780,7 @@ class MediaProcessor:
 
     def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False, process_episodes: bool = True) -> bool:
         if self.is_stop_requested(): return False
-        if not force_reprocess_this_item and emby_item_id in self.processed_items_cache: return True
+        #if not force_reprocess_this_item and emby_item_id in self.processed_items_cache: return True
 
         item_details = emby_handler.get_emby_item_details(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
         if not item_details:
@@ -833,11 +833,23 @@ class MediaProcessor:
 
         for i, item in enumerate(all_items):
             if self.is_stop_requested(): break
-            item_name = item.get('Name', f"ID:{item.get('Id')}")
+            
+            item_id = item.get('Id')
+            item_name = item.get('Name', f"ID:{item_id}")
+
+            # ★★★ 在这里添加跳过逻辑和日志 ★★★
+            if not force_reprocess_all and item_id in self.processed_items_cache:
+                logger.info(f"正在跳过已处理的项目: {item_name}")
+                # 同时更新前端进度条，避免卡住
+                if update_status_callback:
+                    update_status_callback(int(((i + 1) / total) * 100), f"跳过: {item_name}")
+                continue # 使用 continue 跳到下一个项目
+
+            # 如果不跳过，才执行处理
             if update_status_callback:
                 update_status_callback(int(((i + 1) / total) * 100), f"处理中 ({i+1}/{total}): {item_name}")
             
-            self.process_single_item(item.get('Id'), force_reprocess_all, process_episodes)
+            self.process_single_item(item_id, force_reprocess_all, process_episodes)
             
             time.sleep(float(self.config.get("delay_between_items_sec", 0.5)))
         
