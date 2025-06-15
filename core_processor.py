@@ -225,7 +225,7 @@ class MediaProcessor:
             # 情况 A: 缓存中有成功的翻译结果
             if cached_entry.get("translated_text"):
                 cached_translation = cached_entry.get("translated_text")
-                logger.debug(f"数据库翻译缓存命中 for '{text_stripped}' -> '{cached_translation}'")
+                logger.info(f"数据库翻译缓存命中 for '{text_stripped}' -> '{cached_translation}'")
                 return cached_translation
             # 情况 B: 缓存中明确记录了这是一个失败的翻译
             else:
