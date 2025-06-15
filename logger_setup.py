@@ -35,7 +35,7 @@ if not logger.handlers:
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setLevel(logging.DEBUG if constants.DEBUG_MODE else logging.INFO)
     console_formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)'
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     stream_handler.setFormatter(console_formatter)
     logger.addHandler(stream_handler)
@@ -65,7 +65,7 @@ def add_file_handler(log_directory: str):
         
         # 使用和控制台一样的详细格式化器
         formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)'
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
 
         file_handler = RotatingFileHandler(

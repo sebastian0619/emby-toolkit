@@ -1299,7 +1299,7 @@ def api_get_review_items():
 
         # --- 在这里加上确认日志 ---
         print(f"DATABASE CHECK: Found a total of {total_matching_items} items.")
-        logger.info(f"DATABASE CHECK: Found a total of {total_matching_items} items.")
+        logger.debug(f"DATABASE CHECK: Found a total of {total_matching_items} items.")
         # --- -------------------- ---
 
         # 2. 查询当前页的数据
