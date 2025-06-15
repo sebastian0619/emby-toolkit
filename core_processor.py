@@ -238,12 +238,28 @@ class MediaProcessor:
         final_engine = "unknown"
 
         # 根据配置选择翻译方式
+        ai_translation_attempted = False
+
+        # 步骤 1: 如果AI翻译启用，优先尝试AI
         if self.ai_translator and self.config.get("ai_translation_enabled", False):
-            # --- 使用AI翻译 ---
-            final_translation = self.ai_translator.translate(text_stripped)
-            final_engine = self.ai_translator.provider
-        else:
-            # --- 使用传统翻译引擎 ---
+            ai_translation_attempted = True
+            logger.debug(f"AI翻译已启用，优先尝试使用 '{self.ai_translator.provider}' 进行翻译...")
+            try:
+                # ai_translator.translate 应该在失败时返回 None 或抛出异常
+                ai_result = self.ai_translator.translate(text_stripped)
+                if ai_result: # 确保AI返回了有效结果
+                    final_translation = ai_result
+                    final_engine = self.ai_translator.provider
+            except Exception as e_ai:
+                # 如果AI翻译器内部抛出异常，在这里捕获
+                logger.error(f"AI翻译器在翻译 '{text_stripped}' 时发生异常: {e_ai}")
+                # 不做任何事，让流程继续往下走，尝试传统引擎
+
+        # 步骤 2: 如果AI翻译未启用，或AI翻译失败/未返回结果，则使用传统引擎
+        if not final_translation:
+            if ai_translation_attempted:
+                logger.warning(f"AI翻译未能获取有效结果，将降级使用传统翻译引擎...")
+            
             translation_result = utils.translate_text_with_translators(
                 text_stripped,
                 engine_order=self.translator_engines
