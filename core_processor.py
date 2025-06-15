@@ -551,7 +551,24 @@ class MediaProcessor:
 
                 actor['name'] = self._translate_actor_field(actor.get('name'), "演员名", actor.get('name'), cursor)
 
-            return final_cast_list
+            max_actors = self.config.get(
+                constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS,
+                constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+            )
+
+            # 确保 max_actors 是一个正整数，如果配置错误则使用默认值
+            try:
+                limit = int(max_actors)
+                if limit <= 0:
+                    limit = constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+            except (ValueError, TypeError):
+                limit = constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+            
+            if len(final_cast_list) > limit:
+                logger.info(f"演员列表数量 ({len(final_cast_list)}) 超过上限 ({limit})，将进行截断。")
+                return final_cast_list[:limit] # 只返回前 limit 个演员
+            else:
+                return final_cast_list
         
         except InterruptedError:
             # 捕获到中止信号，直接重新抛出，让上层处理

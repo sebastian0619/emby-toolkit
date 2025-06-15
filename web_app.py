@@ -372,6 +372,11 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
         constants.CONFIG_OPTION_SYNC_IMAGES,
         fallback=False
     )
+    app_cfg[constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS] = config_parser.getint(
+    constants.CONFIG_SECTION_GENERAL,
+    constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS,
+    fallback=constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+    )
 
     # Network Section
     app_cfg["user_agent"] = config_parser.get("Network", "user_agent", fallback='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36')
@@ -476,6 +481,11 @@ def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，�
         "General", # 将其归入 [General] 节
         constants.CONFIG_OPTION_SYNC_IMAGES,
         str(sync_images_val).lower() # 保存为 'true' 或 'false'
+    )
+    config.set(
+    constants.CONFIG_SECTION_GENERAL,
+    constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS,
+    str(new_config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, constants.DEFAULT_MAX_ACTORS_TO_PROCESS))
     )
 
     # Network Section

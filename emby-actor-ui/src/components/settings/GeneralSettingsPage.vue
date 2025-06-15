@@ -16,19 +16,30 @@
           <!-- 卡片: 基础设置 -->
           <n-card title="基础设置" size="small" class="beautified-card">
             <n-form-item-grid-item label="处理项目间的延迟 (秒)" path="delay_between_items_sec">
-              <n-input-number v-model:value="configModel.delay_between_items_sec" :min="0" :step="0.1" placeholder="例如: 0.5" style="width: 100%;" />
+              <n-input-number v-model:value="configModel.delay_between_items_sec" :min="0" :step="0.1" placeholder="例如: 0.5"/>
             </n-form-item-grid-item>
             
             <n-form-item-grid-item label="豆瓣API默认冷却时间 (秒)" path="api_douban_default_cooldown_seconds">
-              <n-input-number v-model:value="configModel.api_douban_default_cooldown_seconds" :min="0.1" :step="0.1" placeholder="例如: 1.0" style="width: 100%;" />
+              <n-input-number v-model:value="configModel.api_douban_default_cooldown_seconds" :min="0.1" :step="0.1" placeholder="例如: 1.0"/>
             </n-form-item-grid-item>
 
             <n-form-item-grid-item label="需手动处理的最低评分阈值" path="min_score_for_review">
-              <n-input-number v-model:value="configModel.min_score_for_review" :min="0" :max="10" :step="0.1" placeholder="例如: 6.0" style="width: 100%;" />
+              <n-input-number v-model:value="configModel.min_score_for_review" :max="10" :step="10" placeholder="例如: 6.0"/>
               <template #feedback>
                 <n-text depth="3" style="font-size:0.8em;">处理质量评分低于此值的项目将进入待复核列表。</n-text>
               </template>
             </n-form-item-grid-item>
+            <n-form-item-grid-item label="最大处理演员数" path="max_actors_to_process">
+            <n-input-number 
+              v-model:value="configModel.max_actors_to_process" 
+              :min="10" 
+              :step="10" 
+              placeholder="建议 30-100"
+            />
+            <template #feedback>
+              <n-text depth="3" style="font-size:0.8em;">设置最终写入元数据的演员数量上限，避免列表过长。</n-text>
+            </template>
+          </n-form-item-grid-item>
             <n-form-item label="处理分集" path="process_episodes">
               <n-switch v-model:value="configModel.process_episodes" />
               <template #feedback>开启后，处理电视剧时会为每一季/每一集生成单独的元数据文件。</template>
