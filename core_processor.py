@@ -795,15 +795,41 @@ class MediaProcessor:
         self.clear_stop_signal()
         if force_reprocess_all: self.clear_processed_log()
         
-        libs = self.config.get("libraries_to_process", [])
-        if not libs: return
+        libs_to_process_ids = self.config.get("libraries_to_process", [])
+        if not libs_to_process_ids:
+            logger.warning("未在配置中指定要处理的媒体库。")
+            return
 
-        movies = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Movie", self.emby_user_id, libs) or []
-        series = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Series", self.emby_user_id, libs) or []
+        # --- 步骤 1: 获取库名对照表 ---
+        logger.info("正在获取所有Emby媒体库信息以显示名称...")
+        all_emby_libraries = emby_handler.get_emby_libraries(self.emby_url, self.emby_api_key, self.emby_user_id) or []
+        library_name_map = {lib.get('Id'): lib.get('Name', '未知库名') for lib in all_emby_libraries}
+        logger.debug(f"已生成媒体库名称对照表: {library_name_map}")
+
+        # --- 步骤 2: 分别获取电影和电视剧 ---
+        movies = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Movie", self.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
+        series = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Series", self.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
+        
+        # --- 步骤 3: 汇总和打印漂亮的日志 ---
+        if movies:
+            source_movie_lib_ids = sorted(list({item.get('_SourceLibraryId') for item in movies if item.get('_SourceLibraryId')}))
+            source_movie_lib_names = [library_name_map.get(id, str(id)) for id in source_movie_lib_ids]
+            logger.info(f"从媒体库【{', '.join(source_movie_lib_names)}】获取到 {len(movies)} 个电影项目。")
+
+        if series:
+            source_series_lib_ids = sorted(list({item.get('_SourceLibraryId') for item in series if item.get('_SourceLibraryId')}))
+            source_series_lib_names = [library_name_map.get(id, str(id)) for id in source_series_lib_ids]
+            logger.info(f"从媒体库【{', '.join(source_series_lib_names)}】获取到 {len(series)} 个电视剧项目。")
+
+        # --- 步骤 4: 合并并继续后续处理 ---
         all_items = movies + series
         
         total = len(all_items)
-        if total == 0: return
+        if total == 0:
+            logger.info("在所有选定的库中未找到任何可处理的项目。")
+            if update_status_callback:
+                update_status_callback(100, "未找到可处理的项目。")
+            return
 
         for i, item in enumerate(all_items):
             if self.is_stop_requested(): break
