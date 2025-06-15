@@ -481,7 +481,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
     log_identifier = f"'{item_name_for_log}'" if item_name_for_log else f"ItemID: {item_emby_id}"
     
     # 2. 打印一条总的开始日志
-    logger.info(f"开始为 {log_identifier} 触发Emby刷新...")
+    logger.info(f"开始为 {log_identifier} 通知Emby刷新...")
 
     refresh_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}/Refresh"
     params = {

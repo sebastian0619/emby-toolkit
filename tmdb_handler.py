@@ -400,7 +400,7 @@ def find_person_by_external_id(external_id: str, api_key: str, source: str = "im
         return None
     api_url = f"https://api.themoviedb.org/3/find/{external_id}"
     params = {"api_key": api_key, "external_source": source, "language": "en-US"}
-    logger.info(f"TMDb: 正在通过 {source} '{external_id}' 查找人物...")
+    logger.debug(f"TMDb: 正在通过 {source} '{external_id}' 查找人物...")
     try:
         response = requests.get(api_url, params=params, timeout=10)
         response.raise_for_status()
@@ -408,10 +408,10 @@ def find_person_by_external_id(external_id: str, api_key: str, source: str = "im
         person_results = data.get("person_results", [])
         if person_results:
             person_found = person_results[0]
-            logger.info(f"  -> 查找成功: 找到了 '{person_found.get('name')}' (TMDb ID: {person_found.get('id')})")
+            logger.debug(f"  -> 查找成功: 找到了 '{person_found.get('name')}' (TMDb ID: {person_found.get('id')})")
             return person_found
         else:
-            logger.warning(f"  -> 未能通过 {source} '{external_id}' 找到任何人物。")
+            logger.debug(f"  -> 未能通过 {source} '{external_id}' 找到任何人物。")
             return None
     except requests.exceptions.RequestException as e:
         logger.error(f"TMDb: 通过外部ID查找时发生网络错误: {e}")

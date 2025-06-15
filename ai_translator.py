@@ -72,7 +72,7 @@ class AITranslator:
     def _translate_with_openai(self, text: str) -> Optional[str]:
         if not self.client: return None
         try:
-            logger.info(f"使用 OpenAI ({self.model}) 翻译: '{text}'")
+            logger.debug(f"使用 (OpenAI) 翻译: '{text}'")
             chat_completion = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -85,7 +85,7 @@ class AITranslator:
             )
             result = chat_completion.choices[0].message.content
             cleaned_result = result.strip().strip('"').strip("'") if result else ""
-            logger.info(f"OpenAI 翻译成功: '{text}' -> '{cleaned_result}'")
+            logger.info(f"(OpenAI) 翻译成功: '{text}' -> '{cleaned_result}'")
             return cleaned_result
         except APIError as e:
             logger.error(f"OpenAI API 错误: {e.status_code} - {e.response.text}")

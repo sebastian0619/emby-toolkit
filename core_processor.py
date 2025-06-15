@@ -233,7 +233,7 @@ class MediaProcessor:
                 return text # 直接返回原文，避免重复请求
 
         # 4. 如果缓存中完全没有记录，才进行在线翻译
-        logger.info(f"'{text_stripped}' 在翻译缓存中未找到，将进行在线翻译...")
+        logger.debug(f"'{text_stripped}' 在翻译缓存中未找到，将进行在线翻译...")
         final_translation = None
         final_engine = "unknown"
 
@@ -338,7 +338,7 @@ class MediaProcessor:
         local_json_path = self._find_local_douban_json(imdb_id, douban_id, douban_cache_path)
 
         if local_json_path:
-            logger.info(f"发现本地豆瓣缓存文件，将直接使用: {local_json_path}")
+            logger.debug(f"发现本地豆瓣缓存文件，将直接使用: {local_json_path}")
             douban_data = _read_local_json(local_json_path)
             # 注意：豆瓣刮削器缓存的键是 'actors'
             if douban_data and 'actors' in douban_data:
@@ -415,7 +415,7 @@ class MediaProcessor:
             unmatched_douban_candidates = []
 
             # --- 步骤 1: 用豆瓣演员名和原始演员表匹配 ---
-            logger.info("--- 匹配阶段 1: 按名字匹配 ---")
+            logger.debug("--- 匹配阶段 1: 按名字匹配 ---")
             matched_douban_indices = set()
             for i, d_actor in enumerate(douban_candidates):
                 for l_actor in final_cast_map.values():
@@ -430,7 +430,7 @@ class MediaProcessor:
             unmatched_douban_candidates = [d for i, d in enumerate(douban_candidates) if i not in matched_douban_indices]
             
             # --- 步骤 2: 溢出的演员用豆瓣ID遍历演员映射表匹配 ---
-            logger.info(f"--- 匹配阶段 2: 用豆瓣ID查 person_identity_map ({len(unmatched_douban_candidates)} 位演员) ---")
+            logger.debug(f"--- 匹配阶段 2: 用豆瓣ID查 person_identity_map ({len(unmatched_douban_candidates)} 位演员) ---")
             still_unmatched = []
             for d_actor in unmatched_douban_candidates:
                 if self.is_stop_requested():
@@ -469,7 +469,7 @@ class MediaProcessor:
             unmatched_douban_candidates = still_unmatched
 
             # --- 步骤 3 & 4: 查询IMDbID -> TMDb反查 -> 新增 ---
-            logger.info(f"--- 匹配阶段 3 & 4: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_candidates)} 位演员) ---")
+            logger.debug(f"--- 匹配阶段 3 & 4: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_candidates)} 位演员) ---")
             still_unmatched_final = []
             for d_actor in unmatched_douban_candidates:
                 if self.is_stop_requested(): raise InterruptedError("任务中止")
@@ -582,7 +582,7 @@ class MediaProcessor:
         tmdb_id = item_details_from_emby.get("ProviderIds", {}).get("Tmdb")
         item_type = item_details_from_emby.get("Type")
 
-        logger.info(f"--- 开始核心处理: '{item_name_for_log}' (TMDbID: {tmdb_id}) ---")
+        logger.debug(f"--- 开始核心处理: '{item_name_for_log}' (TMDbID: {tmdb_id}) ---")
 
         if self.is_stop_requested():
             logger.info(f"任务在处理 '{item_name_for_log}' 前被中止。")
@@ -633,10 +633,10 @@ class MediaProcessor:
                 final_cast_perfect = self._format_and_complete_cast_list(intermediate_cast, is_animation)
                 
                 # c. ✨✨✨ 在这里进行反哺 ✨✨✨
-                logger.info("--- 开始实时更新 person_identity_map 映射表 ---")
+                logger.info("--- 开始实时更新 演员映射表 ---")
                 for actor_data in final_cast_perfect:
                     self._update_person_map_entry(cursor, actor_data)
-                logger.info("--- person_identity_map 映射表更新完成 ---")
+                logger.debug("--- person_identity_map 映射表更新完成 ---")
 
                 # with 块结束时，conn 会被自动 commit，所有翻译缓存和映射表更新都会被保存
             
