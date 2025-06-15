@@ -16,7 +16,6 @@ import utils
 from logger_setup import logger
 import constants
 from ai_translator import AITranslator
-
 try:
     from douban import DoubanApi
     DOUBAN_API_AVAILABLE = True
@@ -1076,57 +1075,6 @@ class MediaProcessor:
             logger.error(f"获取编辑数据失败 for ItemID {item_id}: {e}", exc_info=True)
             return None
 
-        # --- 前端豆瓣刷新方法 ---
-    def get_preview_of_processed_cast(self, item_id: str) -> Optional[List[Dict[str, Any]]]:
-        """
-        【新】为前端“从豆瓣刷新”功能设计。
-        它会完整地执行一次处理流程（但不写入文件或数据库），并返回最终的演员列表。
-        """
-        logger.info(f"预览处理流程启动：ItemID {item_id}")
-
-        # 1. 获取 Emby 详情
-        try:
-            item_details = emby_handler.get_emby_item_details(
-                item_id, self.emby_url, self.emby_api_key, self.emby_user_id
-            )
-            if not item_details:
-                logger.error(f"预览失败：在Emby中未找到项目 {item_id}")
-                return None
-        except Exception as e:
-            logger.error(f"预览失败：获取Emby详情时异常 for ItemID {item_id}: {e}", exc_info=True)
-            return None
-
-        # 2. 获取本地缓存的演员列表 (从 all.json)
-        tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-        if not tmdb_id:
-            logger.error(f"预览失败：项目 {item_id} 缺少 TMDb ID，无法找到本地缓存。")
-            return None
-            
-        item_type = item_details.get("Type")
-        cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-        base_json_filename = "all.json" if item_type == "Movie" else "series.json"
-        base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
-        base_json_data = _read_local_json(os.path.join(base_cache_dir, base_json_filename))
-        
-        original_cast_from_local = []
-        if base_json_data:
-            original_cast_from_local = base_json_data.get("credits", {}).get("cast") or base_json_data.get("casts", {}).get("cast", [])
-        else:
-             logger.warning(f"预览：未找到本地缓存文件 for {item_id}，将使用空的演员列表作为基准。")
-
-        # 3. 调用核心处理方法，并返回结果
-        try:
-            with self._get_db_connection() as conn:
-                cursor = conn.cursor()
-                processed_cast = self._process_cast_list_from_local(
-                    local_cast_list=original_cast_from_local,
-                    emby_item_info=item_details,
-                    cursor=cursor
-                )
-            return processed_cast
-        except Exception as e:
-            logger.error(f"预览失败：在处理演员列表时发生错误 for ID {item_id}: {e}", exc_info=True)
-            return None
     
     def close(self):
         if self.douban_api: self.douban_api.close()

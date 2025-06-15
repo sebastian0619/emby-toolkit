@@ -65,14 +65,6 @@
                       Google搜索
                     </n-button>
                     <n-button
-                      type="default"
-                      @click="refreshCastFromDouban"
-                      :loading="isRefreshingFromDouban"
-                      :disabled="isLoading" 
-                    >
-                      从豆瓣刷新
-                    </n-button>
-                    <n-button
                       type="info"
                       @click="translateAllFields" 
                       :loading="isTranslating" 
@@ -231,7 +223,6 @@ const isSaving = ref(false);
 const searchLinks = ref({ google_search_wiki: '' });
 const isParsingFromUrl = ref(false);
 const urlToParse = ref('');
-const isRefreshingFromDouban = ref(false);
 const isTranslating = ref(false);
 
 const posterUrl = computed(() => {
@@ -286,38 +277,6 @@ const removeActor = (index) => {
   message.info("已从编辑列表移除一个演员（尚未保存）。");
 };
 
-const refreshCastFromDouban = async () => {
-  if (!itemDetails.value?.item_id) return;
-  isRefreshingFromDouban.value = true;
-  try {
-    const response = await axios.post(`/api/preview_processed_cast/${itemDetails.value.item_id}`);
-    const processedActorsFromApi = response.data;
-
-    if (processedActorsFromApi && Array.isArray(processedActorsFromApi)) {
-      if (processedActorsFromApi.length === 0) {
-        message.info("处理器返回了一个空的演员列表。");
-        return;
-      }
-      
-      // ★★★ 核心修复：使用 ...actor 来保留所有后端返回的字段 ★★★
-      editableCast.value = processedActorsFromApi.map((actor, index) => ({
-        ...actor, // 保留所有 ID (id, imdb_id, douban_id) 和其他信息
-        _temp_id: `actor-${Date.now()}-${index}`,
-        // 后端返回的字段名是 id, character，我们需要适配成前端的 tmdbId, role
-        tmdbId: actor.id,
-        role: actor.character,
-      }));
-      message.success(`演员列表已根据核心处理器预览结果刷新 (${processedActorsFromApi.length}位)。`);
-    } else {
-      message.error("刷新演员信息失败或返回格式不正确。");
-    }
-  } catch (error) {
-    console.error("刷新演员列表失败:", error);
-    message.error(error.response?.data?.error || "刷新演员列表失败。");
-  } finally {
-    isRefreshingFromDouban.value = false;
-  }
-};
 
 const parseCastFromUrl = async () => {
   if (!urlToParse.value.trim()) {
@@ -398,6 +357,14 @@ const fetchMediaDetails = async () => {
   try {
     const response = await axios.get(`/api/media_with_cast_for_editing/${itemId.value}`);
     itemDetails.value = response.data;
+
+    // ★★★ 核心修复：在这里添加下面这行代码 ★★★
+    // 检查后端返回的数据中是否有 search_links，如果有，就更新它
+    if (response.data && response.data.search_links) {
+      searchLinks.value = response.data.search_links;
+    }
+    // ★★★ 修复结束 ★★★
+
   } catch (error) {
     message.error(error.response?.data?.error || "获取媒体详情失败。");
     itemDetails.value = null;
@@ -426,24 +393,39 @@ const handleSaveChanges = async () => {
   if (!itemDetails.value?.item_id) return;
   isSaving.value = true;
   try {
-    // ★★★ 核心修复：在读取最终状态前，等待下一次 DOM 更新 ★★★
+    // 等待任何可能的输入框更新完成
     await nextTick();
 
-    const castPayload = editableCast.value.map(actor => ({
-      // ... (这个 map 的逻辑保持不变) ...
-    }));
+    // ★★★ 核心修复：明确构建发送到后端的演员对象结构 ★★★
+    const castPayload = editableCast.value.map(actor => {
+      // 从前端的 actor 对象中提取需要的数据，并使用后端期望的键名
+      return {
+        tmdbId: actor.tmdbId, // 确保发送 tmdbId
+        name: actor.name,     // 发送 name
+        role: actor.role      // 发送 role
+      };
+    });
 
     const payload = {
       cast: castPayload,
       item_name: itemDetails.value.item_name,
     };
     
-    // 你可以保留这个 console.log 用于最终验证
+    // (可选) 在发送前打印最终的 payload，用于调试
     console.log("----------- [最终发送到后端的数据] -----------");
     console.log(JSON.stringify(payload, null, 2));
 
     await axios.post(`/api/update_media_cast/${itemDetails.value.item_id}`, payload);
-    // ...
+    
+    message.success("修改已保存，Emby将自动刷新。");
+    // 延迟一小段时间再返回，给用户反馈时间
+    setTimeout(() => {
+      goBack();
+    }, 1500);
+
+  } catch (error) {
+    console.error("保存修改失败:", error);
+    message.error(error.response?.data?.error || "保存修改失败，请检查后端日志。");
   } finally {
     isSaving.value = false;
   }

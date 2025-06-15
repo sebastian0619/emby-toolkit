@@ -109,6 +109,10 @@ JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
 # --- 全局变量结束 ---
 
 # --- 数据库辅助函数 ---
+def task_process_single_item(processor: MediaProcessor, item_id: str, force_reprocess: bool, process_episodes: bool):
+    """任务：处理单个媒体项"""
+    processor.process_single_item(item_id, force_reprocess, process_episodes)
+
 def get_db_connection() -> sqlite3.Connection:
     # 确保 DB_PATH 是有效的，并且目录存在
     # 这个函数本身不应该处理目录创建，那是 init_db 的责任
@@ -409,8 +413,8 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
 
     return app_cfg, is_first_run_creating_config # 返回两个值
 
-def save_config(new_config: Dict[str, Any], trigger_reload: bool = True):
-    global APP_CONFIG # 声明我们要修改全局变量
+def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，它总是应该触发
+    global APP_CONFIG
     config = configparser.ConfigParser()
     
     if os.path.exists(CONFIG_FILE_PATH):
@@ -513,46 +517,45 @@ def save_config(new_config: Dict[str, Any], trigger_reload: bool = True):
         logger.info(f"配置已成功写入到 {CONFIG_FILE_PATH}。")
         # ✨✨✨ 保存成功后，立即更新全局配置变量 ✨✨✨
         APP_CONFIG = new_config.copy()
-        logger.info("全局配置变量 APP_CONFIG 已从新配置更新。")
+        logger.info("全局配置变量 APP_CONFIG 已更新。")
+        
+        logger.info("配置已保存，正在重新初始化所有相关组件...")
+        initialize_media_processor() # 使用新配置创建新的 MediaProcessor 实例
+        init_auth()                  # 重新检查认证设置
+        setup_scheduled_tasks()      # 根据新配置重新设置定时任务
+        logger.info("所有组件已根据新配置重新初始化完毕。")
+
     except Exception as e:
-        logger.error(f"保存配置文件 {CONFIG_FILE_PATH} 失败: {e}", exc_info=True)
-    finally:
-        if trigger_reload:
-            logger.info("save_config: trigger_reload is True, re-initializing components...")
-            init_auth()
-            initialize_media_processor()
-            setup_scheduled_tasks()
-        else:
-            logger.info("save_config: trigger_reload is False, skipping component re-initialization.")
-        initialize_media_processor()
-        setup_scheduled_tasks()
-# --- 配置加载与保存结束 --- (确保这个注释和你的文件结构匹配)
+        logger.error(f"保存配置文件或重新初始化组件时失败: {e}", exc_info=True)
 
 # --- MediaProcessor 初始化 ---
 def initialize_media_processor():
+    """
+    【V2 - 单例模式版】创建或更新全局的 MediaProcessor 实例。
+    这个函数只应该在应用启动和配置保存后被调用。
+    """
     global media_processor_instance
     
-    # ✨✨✨ 核心修复：直接使用全局配置 ✨✨✨
+    # 1. 准备配置
     current_config = APP_CONFIG.copy()
     current_config['db_path'] = DB_PATH
 
-    # ... (关闭旧实例的逻辑不变) ...
-    if media_processor_instance and hasattr(media_processor_instance, 'close'):
-        logger.debug("准备关闭旧的 MediaProcessor 实例...")
+    # 2. 如果已有实例，先安全关闭
+    if media_processor_instance:
+        logger.debug("正在关闭旧的 MediaProcessor 实例以便重新加载...")
         try:
             media_processor_instance.close()
-            logger.debug("旧的 MediaProcessor 实例已关闭。")
         except Exception as e_close_old:
             logger.error(f"关闭旧 MediaProcessor 实例时出错: {e_close_old}", exc_info=True)
 
-    logger.info("准备创建新的 MediaProcessor 实例...")
+    # 3. 创建新的实例并赋值给全局变量
+    logger.info("正在创建新的 MediaProcessor 实例...")
     try:
-        media_processor_instance = MediaProcessor(config=current_config) # current_config 已包含所需信息
-        logger.debug("新的 MediaProcessor 实例已创建/更新。")
+        media_processor_instance = MediaProcessor(config=current_config)
+        logger.info("新的 MediaProcessor 实例已成功创建。")
     except Exception as e_init_mp:
-        logger.error(f"创建 MediaProcessor 实例失败: {e_init_mp}", exc_info=True)
-        media_processor_instance = None
-        print(f"CRITICAL ERROR: MediaProcessor 核心处理器初始化失败: {e_init_mp}. 应用可能无法正常工作。")
+        logger.critical(f"CRITICAL: 创建 MediaProcessor 实例失败: {e_init_mp}", exc_info=True)
+        media_processor_instance = None # 明确设置为 None，表示失败
 # --- 后台任务回调 ---
 def update_status_from_thread(progress: int, message: str):
     global background_task_status
@@ -561,16 +564,18 @@ def update_status_from_thread(progress: int, message: str):
     background_task_status["message"] = message
     # logger.debug(f"状态更新回调: Progress={progress}%, Message='{message}'") # 这条日志太频繁，可以注释掉
 # --- 后台任务封装 ---
-def _execute_task_with_lock(task_function, task_name: str, *args, **kwargs):
-    """通用后台任务执行器，包含锁和状态管理"""
+def _execute_task_with_lock(task_function, task_name: str, processor: MediaProcessor, *args, **kwargs):
+    """
+    【V2 - 工人专用版】通用后台任务执行器。
+    第一个参数必须是 MediaProcessor 实例。
+    """
     global background_task_status
-    if task_lock.locked():
-        logger.warning(f"任务 '{task_name}' 触发：但已有其他后台任务运行，本次跳过。")
-        if 'update_status_callback' in kwargs: # 如果有回调，通知它
-             kwargs['update_status_callback'](-1, "已有任务运行，本次跳过")
-        return
+    # 锁的检查可以移到提交任务的地方，或者保留作为双重保险
+    # if task_lock.locked(): ...
 
     with task_lock:
+        # processor 已经作为参数传入，不再需要全局变量
+        processor.clear_stop_signal()
         if media_processor_instance:
             frontend_log_queue.clear()
         if media_processor_instance:
@@ -590,24 +595,16 @@ def _execute_task_with_lock(task_function, task_name: str, *args, **kwargs):
 
         task_completed_normally = False
         try:
-            if media_processor_instance.is_stop_requested():
-                logger.info(f"任务 '{task_name}' 在启动前被已存在的停止信号取消。")
+            if processor.is_stop_requested():
                 raise InterruptedError("任务被取消")
 
-            task_function(*args, **kwargs)
-            if not media_processor_instance.is_stop_requested():
-                task_completed_normally = True
-        except InterruptedError: # 捕获我们自己抛出的中断错误
-            logger.info(f"后台任务 '{task_name}' 被中止。")
-            update_status_from_thread(-1, "任务已中止")
-        except Exception as e:
-            logger.error(f"后台任务 '{task_name}' 执行失败: {e}", exc_info=True)
-            update_status_from_thread(-1, f"任务失败: {str(e)[:100]}...")
+            # ★★★ 核心修复：直接调用，参数已经对齐 ★★★
+            task_function(processor, *args, **kwargs)
         finally:
             final_message_for_status = "未知结束状态"
             current_progress = background_task_status["progress"] # 获取当前进度
 
-            if media_processor_instance and media_processor_instance.is_stop_requested():
+            if processor and processor.is_stop_requested():
                 final_message_for_status = "任务已成功中断。"
             elif task_completed_normally:
                 final_message_for_status = "处理完成。"
@@ -617,7 +614,8 @@ def _execute_task_with_lock(task_function, task_name: str, *args, **kwargs):
             update_status_from_thread(current_progress, final_message_for_status)
             logger.info(f"后台任务 '{task_name}' 结束，最终状态: {final_message_for_status}")
 
-            if media_processor_instance and hasattr(media_processor_instance, 'close'):
+            if processor:
+                processor.close()
                 logger.debug(f"任务 '{task_name}' 结束 (finally块)，准备调用 media_processor_instance.close() ...")
                 try:
                     media_processor_instance.close()
@@ -625,14 +623,14 @@ def _execute_task_with_lock(task_function, task_name: str, *args, **kwargs):
                 except Exception as e_close_proc:
                     logger.error(f"调用 media_processor_instance.close() 时发生错误: {e_close_proc}", exc_info=True)
 
-            time.sleep(1) # 给前端一点时间抓取最终状态
-            background_task_status["is_running"] = False
-            background_task_status["current_action"] = "无"
-            background_task_status["progress"] = 0
-            background_task_status["message"] = "等待任务"
-            if media_processor_instance:
-                media_processor_instance.clear_stop_signal()
-            logger.info(f"后台任务 '{task_name}' 状态已重置。")
+            time.sleep(1)
+        background_task_status["is_running"] = False
+        background_task_status["current_action"] = "无"
+        background_task_status["progress"] = 0
+        background_task_status["message"] = "等待任务"
+        if processor:
+            processor.clear_stop_signal()
+        logger.info(f"后台任务 '{task_name}' 状态已重置。")
 # --- 定时任务 ---
 def scheduled_task_job_internal(force_reprocess: bool):
     """定时任务的实际执行内容 (被 _execute_task_with_lock 调用)"""
@@ -666,11 +664,17 @@ def task_worker_function():
 
             # 解包任务信息
             task_function, task_name, args, kwargs = task_info
+            # ★★★ 核心修复：在任务执行前，检查全局实例是否可用 ★★★
+            if not media_processor_instance:
+                logger.error(f"任务 '{task_name}' 无法执行：MediaProcessor 未初始化。")
+                update_status_from_thread(-1, "错误：核心处理器未就绪")
+                task_queue.task_done()
+                continue
             
             # ✨ 直接调用我们已有的、带锁的执行器 ✨
             # 注意：现在 _execute_task_with_lock 内部的锁检查其实是多余的了
             # 因为工人线程本身就是单线程消费，天然串行。但保留它也无妨。
-            _execute_task_with_lock(task_function, task_name, *args, **kwargs)
+            _execute_task_with_lock(task_function, task_name, media_processor_instance, *args, **kwargs)
             
             task_queue.task_done()
         except Exception as e:
@@ -695,10 +699,10 @@ def submit_task_to_queue(task_function, task_name: str, *args, **kwargs):
     将一个任务提交到通用队列中。
     """
     logger.info(f"任务 '{task_name}' 已提交到队列。")
+    # 注意：这里不再传递 media_processor_instance，因为 worker 会在执行时动态获取
     task_info = (task_function, task_name, args, kwargs)
     task_queue.put(task_info)
-    # 确保工人线程在运行
-    start_task_worker_if_not_running() # (需要把 start_webhook_worker... 重命名)
+    start_task_worker_if_not_running()
 
 def setup_scheduled_tasks():
     config = APP_CONFIG
@@ -834,6 +838,46 @@ def api_specific_sync_map_task(api_task_name: str): # <--- API 专属的，接�
         logger.error(f"'{api_task_name}' (API) 无法执行：MediaProcessor 未初始化或 Emby 配置不完整。")
         update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
 
+def task_process_full_library(processor: MediaProcessor, force_reprocess: bool, process_episodes: bool):
+    """任务：执行全量媒体库扫描"""
+    processor.process_full_library(
+        update_status_callback=update_status_from_thread,
+        force_reprocess_all=force_reprocess,
+        process_episodes=process_episodes
+    )
+
+def task_sync_person_map(processor: MediaProcessor, is_full_sync: bool):
+    """任务：同步演员映射表"""
+    task_name = "同步Emby演员映射表"
+    if is_full_sync: task_name += " [全量模式]"
+    
+    try:
+        sync_handler = SyncHandler(
+            db_path=DB_PATH,
+            emby_url=processor.emby_url,
+            emby_api_key=processor.emby_api_key,
+            emby_user_id=processor.emby_user_id,
+            stop_event=processor._stop_event,
+            tmdb_api_key=processor.tmdb_api_key,
+            local_data_path=processor.local_data_path
+        )
+        sync_handler.sync_emby_person_map_to_db(
+            full_sync=is_full_sync,
+            update_status_callback=update_status_from_thread
+        )
+    except Exception as e:
+        logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
+        update_status_from_thread(-1, f"错误：同步失败 ({str(e)[:50]}...)")
+
+def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list: list, item_name: str):
+    """任务：使用手动编辑的结果处理媒体项"""
+    processor.process_item_with_manual_cast(
+        item_id=item_id,
+        manual_cast_list=manual_cast_list,
+        item_name=item_name
+    )
+
+# --- 路由区 ---
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
 def emby_webhook():
@@ -914,10 +958,11 @@ def emby_webhook():
     
     # 使用最终确定的信息提交任务
     submit_task_to_queue(
-        media_processor_instance.process_single_item, 
+        task_process_single_item,  # 传递包装函数
         f"Webhook处理: {final_item_name}",
+        # --- 后面是传递给 task_process_single_item 的参数 (除了第一个 processor) ---
         id_to_process,
-        force_reprocess_this_item=True, # Webhook 触发的通常都需要强制处理
+        force_reprocess_this_item=True,
         process_episodes=True
     )
     
@@ -930,18 +975,16 @@ def trigger_full_scan():
     action_message = "全量媒体库扫描"
     if force_reprocess: action_message += " (强制重处理所有)"
 
-    def full_scan_task_internal(force_flag): # 内部任务函数
-        if media_processor_instance:
-            media_processor_instance.process_full_library(
-                update_status_callback=update_status_from_thread,
-                force_reprocess_all=force_flag
-            )
-        else:
-            logger.error("全量扫描无法执行：MediaProcessor 未初始化。")
-            update_status_from_thread(-1, "错误：核心处理器未就绪")
-
-    thread = threading.Thread(target=_execute_task_with_lock, args=(full_scan_task_internal, action_message, force_reprocess))
-    thread.start()
+    config, _ = load_config()
+    process_episodes = config.get('process_episodes', True)
+    
+    submit_task_to_queue(
+        task_process_full_library,
+        action_message,
+        force_reprocess,
+        process_episodes
+    )
+    
     flash(f"{action_message}任务已在后台启动。", "info")
     return redirect(url_for('settings_page'))
 
@@ -952,38 +995,11 @@ def trigger_sync_person_map(): # WebUI 用的
     task_name = "同步Emby演员映射表 (WebUI)"
     logger.info(f"收到手动触发 '{task_name}' 的请求。")
 
-    def sync_map_task_internal_for_webui(): # <--- 这是 WebUI 专属的内部任务函数
-        logger.info(f"'{task_name}': WebUI专属同步任务开始执行。")
-        if media_processor_instance and \
-           media_processor_instance.emby_url and \
-           media_processor_instance.emby_api_key:
-            try:
-                sync_handler_instance = SyncHandler(
-                    db_path=DB_PATH,
-                    emby_url=media_processor_instance.emby_url,
-                    emby_api_key=media_processor_instance.emby_api_key,
-                    emby_user_id=media_processor_instance.emby_user_id,
-                    stop_event=media_processor_instance._stop_event,
-                    tmdb_api_key=media_processor_instance.tmdb_api_key
-                )
-                logger.info(f"'{task_name}': SyncHandler 实例已创建 (WebUI)。")
-                sync_handler_instance.sync_emby_person_map_to_db(
-                    update_status_callback=update_status_from_thread
-                )
-                logger.info(f"'{task_name}': 同步操作完成 (WebUI)。")
-            except NameError as ne:
-                 logger.error(f"'{task_name}' (WebUI) 无法执行：SyncHandler 类未定义或未导入。错误: {ne}", exc_info=True)
-                 update_status_from_thread(-1, "错误：同步功能组件未找到")
-            except Exception as e_sync:
-                logger.error(f"'{task_name}' (WebUI) 执行过程中发生严重错误: {e_sync}", exc_info=True)
-                update_status_from_thread(-1, f"错误：同步失败 ({str(e_sync)[:50]}...)")
-        else:
-            logger.error(f"'{task_name}' (WebUI) 无法执行：MediaProcessor 未初始化或 Emby 配置不完整。")
-            update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
-
-    # WebUI 路由调用它自己的内部任务函数
-    thread = threading.Thread(target=_execute_task_with_lock, args=(sync_map_task_internal_for_webui, task_name))
-    thread.start()
+    submit_task_to_queue(
+        task_sync_person_map,
+        task_name,
+        is_full_sync=False
+    )
 
     flash(f"'{task_name}' 任务已在后台启动。", "info")
     return redirect(url_for('settings_page'))
@@ -1334,23 +1350,13 @@ def api_reprocess_item(item_id):
     # 或者我们在这里只触发一个后台任务
     logger.info(f"API: 收到重新处理项目 {item_id} 的请求。")
     
-    def reprocess_task_internal(id_to_process):
-        success = media_processor_instance.process_single_item(id_to_process, force_reprocess_this_item=True)
-        if success:
-            # 尝试从 failed_log 移除 (如果 process_single_item 没处理)
-            # 通常 process_single_item 会根据新评分决定是否移除或更新
-            logger.info(f"项目 {id_to_process} 重新处理任务完成。")
-        else:
-            logger.warning(f"项目 {id_to_process} 重新处理任务可能未完全成功。")
-
-    # 使用 _execute_task_with_lock 来管理这个单一任务
-    # 注意：_execute_task_with_lock 通常用于长时间运行的任务，
-    # 如果 process_single_item 很快，直接调用也可以，但要处理好状态。
-    # 为了一致性，我们还是用它，但任务名可以更具体。
-    thread = threading.Thread(target=_execute_task_with_lock, 
-                              args=(reprocess_task_internal, f"重新处理项目: {item_id}", item_id))
-    thread.start()
-    
+    submit_task_to_queue(
+        task_process_single_item, # 复用这个任务函数
+        f"重新处理项目: {item_id}",
+        item_id,
+        force_reprocess=True,
+        process_episodes=True
+    )
     return jsonify({"message": f"项目 {item_id} 已提交重新处理。"}), 202
 
 @app.route('/api/actions/mark_item_processed/<item_id>', methods=['POST'])
@@ -1398,40 +1404,22 @@ def api_mark_item_processed(item_id):
 def api_handle_trigger_full_scan():
     logger.info("API Endpoint: Received request to trigger full scan.")
     try:
-        if media_processor_instance:
-            media_processor_instance.clear_stop_signal()
-        else:
-            return jsonify({"error": "核心处理器未就绪"}), 503
-        # 只从前端获取“是否强制”这一个临时选项
         force_reprocess = request.form.get('force_reprocess_all') == 'on'
-        
-        # “处理深度”将由后台任务自己去读取配置，不再从这里传递
-        
-        logger.info(f"API /api/trigger_full_scan: 强制重处理={force_reprocess}")
-        
         action_message = "全量媒体库扫描"
         if force_reprocess: action_message += " (强制)"
-        # 任务名称里不再体现深度，因为它是由配置决定的
 
-        def task_to_run():
-            """这个嵌套函数会在后台执行"""
-            if media_processor_instance:
-                # ✨ 在任务执行时，才去读取配置 ✨
-                config, _ = load_config()
-                process_episodes = config.get('process_episodes', True) # 默认为True
-                logger.info(f"全量扫描任务：根据配置，处理分集开关为: {process_episodes}")
+        # 在提交任务时，才去读取配置来决定处理深度
+        config, _ = load_config()
+        process_episodes = config.get('process_episodes', True)
+        logger.info(f"全量扫描任务提交：根据配置，处理分集开关为: {process_episodes}")
 
-                media_processor_instance.process_full_library(
-                    update_status_callback=update_status_from_thread,
-                    force_reprocess_all=force_reprocess,
-                    process_episodes=process_episodes
-                )
-            else:
-                logger.error("API: 全量扫描无法执行：MediaProcessor 未初始化。")
-                update_status_from_thread(-1, "错误：核心处理器未就绪")
-
-        submit_task_to_queue(task_to_run, action_message)
-    
+        submit_task_to_queue(
+            task_process_full_library, # 传递包装函数
+            action_message,
+            # --- 后面是传递给 task_process_full_library 的参数 ---
+            force_reprocess,
+            process_episodes
+        )
         
         return jsonify({"message": f"{action_message} 任务已提交启动。"}), 202
     except Exception as e:
@@ -1442,46 +1430,17 @@ def api_handle_trigger_full_scan():
 def api_handle_trigger_sync_map():
     logger.info("API Endpoint: Received request to trigger sync person map.")
     try:
-        # 1. 从前端请求中获取 full_sync 标志
-        # 前端可以用 form-data 发送，或者包含在 JSON body 里
-        # 我们假设前端会发送一个 'full_sync': true/false 的 JSON
         data = request.json or {}
         full_sync_flag = data.get('full_sync', False)
-
-        if task_lock.locked():
-            return jsonify({"error": "已有其他后台任务正在运行，请稍后再试。"}), 409
-
         task_name_for_api = "同步Emby演员映射表 (API)"
-        if full_sync_flag:
-            task_name_for_api += " [全量模式]"
+        if full_sync_flag: task_name_for_api += " [全量模式]"
 
-        # 2. 修改后台任务函数，让它能接收 full_sync_flag
-        def sync_task_with_option(is_full_sync):
-            # 这个函数现在是我们的目标任务
-            if media_processor_instance:
-                try:
-                    sync_handler = SyncHandler(
-                        db_path=DB_PATH,
-                        emby_url=media_processor_instance.emby_url,
-                        emby_api_key=media_processor_instance.emby_api_key,
-                        emby_user_id=media_processor_instance.emby_user_id,
-                        stop_event=media_processor_instance._stop_event,
-                        tmdb_api_key=media_processor_instance.tmdb_api_key,
-                        local_data_path=media_processor_instance.local_data_path
-                    )
-                    # 3. 把标志传递给核心方法
-                    sync_handler.sync_emby_person_map_to_db(
-                        full_sync=is_full_sync,
-                        update_status_callback=update_status_from_thread
-                    )
-                except Exception as e:
-                    logger.error(f"'{task_name_for_api}' 执行过程中发生严重错误: {e}", exc_info=True)
-                    update_status_from_thread(-1, f"错误：同步失败 ({str(e)[:50]}...)")
-            else:
-                update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
-
-        # 4. 启动线程，把 full_sync_flag 作为参数传进去
-        submit_task_to_queue(sync_task_with_option, task_name_for_api, full_sync_flag)
+        submit_task_to_queue(
+            task_sync_person_map, # 传递包装函数
+            task_name_for_api,
+            # --- 后面是传递给 task_sync_person_map 的参数 ---
+            full_sync_flag
+        )
 
         return jsonify({"message": f"'{task_name_for_api}' 任务已提交启动。"}), 202
     except Exception as e:
@@ -1499,31 +1458,6 @@ def api_handle_trigger_stop_task():
         logger.warning("API: MediaProcessor 未初始化，无法发送停止信号。")
         return jsonify({"error": "核心处理器未就绪"}), 503
     
-@app.route('/api/preview_processed_cast/<item_id>', methods=['POST'])
-def api_preview_processed_cast(item_id):
-    if not media_processor_instance:
-        return jsonify({"error": "核心处理器未就绪"}), 503
-
-    # 直接调用 core_processor 的新方法
-    preview_cast_list = media_processor_instance.get_preview_of_processed_cast(item_id)
-    
-    if preview_cast_list is not None:
-        # 成功获取到预览列表，将其转换为前端期望的格式
-        cast_for_frontend = []
-        for actor_data in preview_cast_list:
-            cast_for_frontend.append({
-                "embyPersonId": None,
-                "name": actor_data.get("name"),
-                "role": actor_data.get("character"),
-                "imdbId": actor_data.get("imdb_id"),
-                "doubanId": actor_data.get("douban_id"),
-                "tmdbId": actor_data.get("id"),
-            })
-        return jsonify(cast_for_frontend)
-    else:
-        return jsonify({"error": "无法生成预览，请检查后端日志获取详细错误信息。"}), 500
-        return jsonify({"error": "在服务器端处理演员列表时发生内部错误"}), 500
-    
 # ✨✨✨ 保存手动编辑结果的 API ✨✨✨
 @app.route('/api/update_media_cast/<item_id>', methods=['POST'])
 def api_update_edited_cast(item_id):
@@ -1537,16 +1471,14 @@ def api_update_edited_cast(item_id):
     edited_cast = data["cast"]
     item_name = data.get("item_name", f"未知项目(ID:{item_id})")
 
-    # 使用后台任务执行器来处理，避免API超时
-    def manual_update_task():
-        media_processor_instance.process_item_with_manual_cast(
-            item_id=item_id,
-            manual_cast_list=edited_cast,
-            item_name=item_name
-        )
-
-    # 使用你现有的 _execute_task_with_lock 来运行
-    submit_task_to_queue(manual_update_task, f"手动更新: {item_name}")
+    submit_task_to_queue(
+        task_manual_update, # 传递包装函数
+        f"手动更新: {item_name}",
+        # --- 后面是传递给 task_manual_update 的参数 ---
+        item_id,
+        edited_cast,
+        item_name
+    )
     
     return jsonify({"message": "手动更新任务已在后台启动。"}), 202
     
@@ -1841,27 +1773,27 @@ def serve(path):
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
     
-    # ✨✨✨ 核心修复：在所有初始化之前，先加载一次配置到全局变量 ✨✨✨
-    config, is_first_run = load_config()
-    if is_first_run:
-        # 如果是首次运行，load_config 内部不会创建文件，需要 init_auth 来处理
-        logger.info("检测到首次运行，将由 init_auth 创建默认配置。")
-
-    # 现在所有后续函数都可以安全地使用 APP_CONFIG 了
+    # 1. 加载配置到全局变量
+    load_config()
+    
+    # 2. 初始化数据库
     init_db()
-    init_auth() # init_auth 会处理首次运行的配置创建
+    
+    # 3. 初始化认证系统 (它会依赖全局配置)
+    init_auth()
+    
+    # 4. ★★★ 创建唯一的 MediaProcessor 实例 ★★★
     initialize_media_processor()
+    
+    # 5. 启动后台任务工人
     start_task_worker_if_not_running()
     
+    # 6. 设置定时任务 (它会依赖全局配置和实例)
     if not scheduler.running:
-        try:
-            scheduler.start()
-            logger.info("APScheduler 已启动。")
-        except Exception as e_scheduler_start:
-            logger.error(f"APScheduler 启动失败: {e_scheduler_start}", exc_info=True)
+        scheduler.start()
+    setup_scheduled_tasks()
     
-    setup_scheduled_tasks() # setup_scheduled_tasks 内部也应该使用 APP_CONFIG
-    
+    # 7. 运行 Flask 应用
     app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=True, use_reloader=False)
 
 # if __name__ == '__main__':

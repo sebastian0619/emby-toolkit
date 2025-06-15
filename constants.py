@@ -30,7 +30,9 @@ CONFIG_SECTION_AUTH = "Authentication"
 CONFIG_OPTION_AUTH_ENABLED = "auth_enabled"
 CONFIG_OPTION_AUTH_USERNAME = "username"
 DEFAULT_USERNAME = "admin"
-
+# --- 新增：翻译缓存配置 ---
+CONFIG_OPTION_TRANSLATION_FAILURE_RETRY_DAYS = "translation_failure_retry_days"
+DEFAULT_TRANSLATION_FAILURE_RETRY_DAYS = 1 # 默认1天后重试
 # --- 翻译引擎 ---
 # 你可以定义所有可用的翻译引擎列表，供设置页面选择
 AVAILABLE_TRANSLATOR_ENGINES = ['bing', 'google', 'baidu', 'alibaba', 'youdao', 'tencent']
