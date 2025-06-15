@@ -73,16 +73,15 @@ class MediaProcessor:
         logger.info("MediaProcessor 初始化完成。")
 
     #---评分---
-    def _evaluate_cast_processing_quality(self, final_cast: List[Dict[str, Any]], original_cast_count: int) -> float:
+    def _evaluate_cast_processing_quality(self, final_cast: List[Dict[str, Any]], original_cast_count: int, expected_final_count: Optional[int] = None) -> float:
         """
         评估处理后的演员列表质量，并返回一个分数 (0.0 - 10.0)。
-        这个版本是从旧代码迁移过来的，后续可以根据新的数据结构优化。
         """
         if not final_cast: return 0.0
         total_actors = len(final_cast)
         accumulated_score = 0.0
         
-        logger.debug(f"  质量评估开始：原始演员数={original_cast_count}, 处理后演员数={total_actors}")
+        logger.debug(f"  质量评估开始：原始演员数={original_cast_count}, 处理后演员数={total_actors}, 预期数={expected_final_count or 'N/A'}")
 
         for actor_data in final_cast:
             score = 0.0
@@ -107,20 +106,36 @@ class MediaProcessor:
             if actor_data.get("imdb_id"): score += 1.5 # IMDb ID
             if actor_data.get("douban_id"): score += 0.5 # Douban ID
             
-            # 确保单个演员分数在 0 到 10 之间
             final_actor_score = min(10.0, score)
             accumulated_score += final_actor_score
             logger.debug(f"    演员 '{actor_data.get('name', '未知')}' 单项评分: {final_actor_score:.1f}")
 
+        # ★★★ 核心修改 1：只在这里计算一次 avg_score ★★★
         avg_score = accumulated_score / total_actors if total_actors > 0 else 0.0
         
-        # 如果演员数量大幅减少，进行惩罚
-        if total_actors < original_cast_count * 0.8:
-            logger.warning(f"  质量评估：演员数量从 {original_cast_count} 大幅减少到 {total_actors}，评分将乘以惩罚系数。")
+        # ★★★ 核心修改 2：移除旧的惩罚逻辑，只保留新的 if/elif/else 结构 ★★★
+        
+        # 情况一：我们主动进行了截断 (expected_final_count 被提供了)
+        if expected_final_count is not None:
+            # 检查截断后的数量是否因为某些原因意外减少了
+            if total_actors < expected_final_count * 0.8:
+                logger.warning(f"  质量评估：演员数量 ({total_actors}) 显著少于截断后的预期值 ({expected_final_count})，将进行惩罚。")
+                avg_score *= (total_actors / expected_final_count)
+            else:
+                # 这是最常见的情况：数量符合预期，不惩罚
+                logger.info(f"  质量评估：演员数量符合主动截断后的预期 ({total_actors}/{expected_final_count})，不进行惩罚。")
+        
+        # 情况二：我们没有主动截断，但数量意外大幅减少
+        elif total_actors < original_cast_count * 0.8:
+            logger.warning(f"  质量评估：演员数量从 {original_cast_count} 大幅减少到 {total_actors} (非主动截断)，将进行惩罚。")
             avg_score *= (total_actors / original_cast_count)
-            
+        
+        # 情况三：数量正常，没有截断，也没有大幅减少
+        else:
+            logger.info(f"  质量评估：演员数量 ({total_actors}/{original_cast_count}) 正常，不进行惩罚。")
+
         final_score_rounded = round(avg_score, 1)
-        logger.info(f"  处理质量评估完成，最终评分: {final_score_rounded:.1f}")
+        logger.info(f"  媒体项演员处理质量评估完成，最终评分: {final_score_rounded:.1f}")
         return final_score_rounded
 
     def _get_db_connection(self) -> sqlite3.Connection:
@@ -535,13 +550,38 @@ class MediaProcessor:
                 discarded_names = [d.get('name') for d in still_unmatched_final]
                 logger.info(f"--- 最终丢弃 {len(still_unmatched_final)} 位无匹配的豆瓣演员: {', '.join(discarded_names[:5])}{'...' if len(discarded_names) > 5 else ''} ---")
 
-            # 统一对所有演员进行处理
-            final_cast_list = list(final_cast_map.values())
-            for actor in final_cast_list:
+            # 1. 将 map 转换回列表
+            intermediate_cast_list = list(final_cast_map.values())
+            
+            # 2. 获取配置的上限值
+            max_actors = self.config.get(
+                constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS,
+                constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+            )
+            try:
+                limit = int(max_actors)
+                if limit <= 0: limit = constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+            except (ValueError, TypeError):
+                limit = constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+            
+            # 3. 进行截断
+            original_count = len(intermediate_cast_list)
+            if original_count > limit:
+                logger.info(f"演员列表总数 ({original_count}) 超过上限 ({limit})，将在翻译前进行截断。")
+                # 截断前最好先排序，确保最重要的演员被保留
+                # TMDb的原始列表通常就是按重要性排序的，我们利用 order 字段来排序
+                # 新增的演员 order 可能是 -1 或 None，我们把它们放在后面
+                intermediate_cast_list.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
+                cast_to_process = intermediate_cast_list[:limit]
+            else:
+                cast_to_process = intermediate_cast_list
+
+            # --- 步骤 2: 只对截断后的列表进行翻译 ---
+            logger.info(f"将对 {len(cast_to_process)} 位演员进行最终的翻译和格式化处理...")
+            
+            for actor in cast_to_process:
                 if self.is_stop_requested():
-                    logger.info("任务在翻译演员列表时被中止。")
                     raise InterruptedError("任务在翻译演员列表时被中止")
-                if self.is_stop_requested(): raise InterruptedError("任务在翻译演员列表时被中止")
                 
                 original_character = actor.get('character')
                 cleaned_character = utils.clean_character_name_static(original_character)
@@ -551,33 +591,14 @@ class MediaProcessor:
 
                 actor['name'] = self._translate_actor_field(actor.get('name'), "演员名", actor.get('name'), cursor)
 
-            max_actors = self.config.get(
-                constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS,
-                constants.DEFAULT_MAX_ACTORS_TO_PROCESS
-            )
-
-            # 确保 max_actors 是一个正整数，如果配置错误则使用默认值
-            try:
-                limit = int(max_actors)
-                if limit <= 0:
-                    limit = constants.DEFAULT_MAX_ACTORS_TO_PROCESS
-            except (ValueError, TypeError):
-                limit = constants.DEFAULT_MAX_ACTORS_TO_PROCESS
-            
-            if len(final_cast_list) > limit:
-                logger.info(f"演员列表数量 ({len(final_cast_list)}) 超过上限 ({limit})，将进行截断。")
-                return final_cast_list[:limit] # 只返回前 limit 个演员
-            else:
-                return final_cast_list
+            # 返回处理完的、已经截断的列表
+            return cast_to_process
         
         except InterruptedError:
-            # 捕获到中止信号，直接重新抛出，让上层处理
             logger.info("在演员列表处理中检测到任务中止信号，将中断当前项目。")
             raise
         except Exception as e:
-            # 只捕获其他真正的未知错误
             logger.error(f"在 _process_cast_list_from_local 中发生未知错误: {e}", exc_info=True)
-            # 发生错误时返回一个空列表，让主流程能继续处理，但可能会导致评分低
             return []
 
     def _format_and_complete_cast_list(self, cast_list: List[Dict[str, Any]], is_animation: bool) -> List[Dict[str, Any]]:
@@ -739,7 +760,12 @@ class MediaProcessor:
 
             if self.is_stop_requested(): raise InterruptedError("任务被中止")
 
-            processing_score = self._evaluate_cast_processing_quality(final_cast_perfect, initial_actor_count)
+            # ★★★ 核心修改：在调用时，传入预期的最终数量 ★★★
+            processing_score = self._evaluate_cast_processing_quality(
+                final_cast=final_cast_perfect,
+                original_cast_count=initial_actor_count,
+                expected_final_count=len(final_cast_perfect) # 把截断后的数量告诉评估函数
+            )
             min_score_for_review = float(self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW))
             
             refresh_success = emby_handler.refresh_emby_item_metadata(
