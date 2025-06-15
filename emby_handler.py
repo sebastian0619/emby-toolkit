@@ -384,7 +384,8 @@ def get_emby_library_items(
     media_type_filter: Optional[str] = None,
     user_id: Optional[str] = None,
     library_ids: Optional[List[str]] = None,
-    search_term: Optional[str] = None  # <--- 新增：搜索关键词参数
+    search_term: Optional[str] = None,
+    library_name_map: Optional[Dict[str, str]] = None
 ) -> Optional[List[Dict[str, Any]]]:
     """
     获取指定媒体库中特定类型的媒体项目列表。
@@ -394,31 +395,43 @@ def get_emby_library_items(
         logger.error("get_emby_library_items: base_url 或 api_key 未提供。")
         return None
 
-    # 如果是搜索模式，API 端点和参数会不同
+    # ★★★ 定义 1：在这里定义 media_type_in_chinese ★★★
+    # 它在函数的最外层，所以整个函数内部的任何地方都能看到它。
+    type_to_chinese = {
+        "Movie": "电影",
+        "Series": "电视剧",
+        "Video": "视频",
+        "Movie,Series": "电影和电视剧"
+    }
+    media_type_in_chinese = type_to_chinese.get(media_type_filter, media_type_filter or '所有')
+
+    # --- 搜索模式的逻辑保持不变 ---
     if search_term and search_term.strip():
         logger.info(f"进入搜索模式，关键词: '{search_term}'")
-        # 搜索时，我们通常使用 /Users/{UserId}/Items 端点，并且不限制 ParentId
+        # ... (搜索逻辑不变) ...
+        # 为了完整性，这里也用中文名
+        search_type_in_chinese = type_to_chinese.get(media_type_filter or "Movie,Series", media_type_filter or "Movie,Series")
         api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
         params = {
             "api_key": api_key,
             "SearchTerm": search_term.strip(),
-            "IncludeItemTypes": media_type_filter or "Movie,Series", # 搜索时必须指定类型
+            "IncludeItemTypes": media_type_filter or "Movie,Series",
             "Recursive": "true",
             "Fields": "Id,Name,Type,ProductionYear,ProviderIds,Path",
-            "Limit": 100 # 限制搜索结果数量
+            "Limit": 100
         }
         try:
             response = requests.get(api_url, params=params, timeout=20)
             response.raise_for_status()
             data = response.json()
             items = data.get("Items", [])
-            logger.info(f"搜索到 {len(items)} 个匹配项。")
+            logger.info(f"在 Emby 中搜索 '{search_term}' (类型: {search_type_in_chinese})，找到 {len(items)} 个匹配项。")
             return items
         except requests.exceptions.RequestException as e:
             logger.error(f"搜索 Emby 时发生网络错误: {e}")
             return None
 
-    # --- 以下是您原有的、非搜索模式下的代码，保持不变 ---
+    # --- 非搜索模式下的代码 ---
     if not library_ids:
         logger.info("get_emby_library_items: 未指定要处理的媒体库ID，不获取任何项目。")
         return []
@@ -427,12 +440,15 @@ def get_emby_library_items(
     for lib_id in library_ids:
         if not lib_id or not lib_id.strip():
             continue
+        
+        # ★★★ 定义 2：在这里定义 library_name ★★★
+        # 它在 for 循环的开始，所以在本次循环的任何地方（包括 try 和 except）都能看到它。
+        library_name = library_name_map.get(lib_id, lib_id) if library_name_map else lib_id
 
         api_url = f"{base_url.rstrip('/')}/Items"
         params = {
             "api_key": api_key,
             "Recursive": "true",
-
             "ParentId": lib_id,
             "Fields": "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines",
         }
@@ -444,19 +460,22 @@ def get_emby_library_items(
         if user_id:
             params["UserId"] = user_id
 
-        logger.debug(f"Requesting items from library ID '{lib_id}'. URL: {api_url}, Params: {params}")
+        logger.debug(f"Requesting items from library '{library_name}' (ID: {lib_id}). URL: {api_url}, Params: {params}")
         try:
             response = requests.get(api_url, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
             items_in_lib = data.get("Items", [])
+            
+            # ★★★ 使用点 1：这里的两个变量都是明确定义过的 ★★★
             if items_in_lib:
-                logger.info(f"从库 ID '{lib_id}' (类型: {media_type_filter or '所有'}) 获取到 {len(items_in_lib)} 个项目。")
+                logger.info(f"从库 '{library_name}' (类型: {media_type_in_chinese}) 获取到 {len(items_in_lib)} 个项目。")
                 all_items_from_selected_libraries.extend(items_in_lib)
             else:
-                logger.info(f"库 ID '{lib_id}' (类型: {media_type_filter or '所有'}) 中未找到项目。")
+                logger.info(f"库 '{library_name}' (类型: {media_type_in_chinese}) 中未找到项目。")
         except Exception as e:
-            logger.error(f"请求库 '{lib_id}' 中的项目失败: {e}", exc_info=True)
+            # ★★★ 使用点 2：这里的 library_name 也是明确定义过的 ★★★
+            logger.error(f"请求库 '{library_name}' 中的项目失败: {e}", exc_info=True)
             continue
 
     logger.info(f"总共从选定的 {len(library_ids)} 个库中获取到 {len(all_items_from_selected_libraries)} 个项目。")
