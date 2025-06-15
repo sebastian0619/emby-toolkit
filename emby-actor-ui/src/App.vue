@@ -216,7 +216,7 @@ let statusIntervalId = null;
 onMounted(() => {
   if (authStore.isLoggedIn) {
     fetchStatus();
-    statusIntervalId = setInterval(fetchStatus, 1000);
+    statusIntervalId = setInterval(fetchStatus, 200);
   }
 });
 
@@ -228,7 +228,7 @@ watch(() => authStore.isLoggedIn, (newIsLoggedIn) => {
   if (newIsLoggedIn) {
     if (!statusIntervalId) {
       fetchStatus();
-      statusIntervalId = setInterval(fetchStatus, 1000);
+      statusIntervalId = setInterval(fetchStatus, 200);
     }
   } else {
     if (statusIntervalId) {

@@ -1,6 +1,6 @@
 <!-- src/components/settings/GeneralSettingsPage.vue -->
-
 <template>
+  <div v-if="configModel">
   <n-form
     v-if="configModel"
     @submit.prevent="save"
@@ -152,6 +152,7 @@
 
   <div v-else>
     正在加载配置...
+  </div>
   </div>
 </template>
 

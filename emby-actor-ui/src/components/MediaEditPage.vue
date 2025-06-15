@@ -1,4 +1,5 @@
 <template>
+  <div v-if="configModel">
   <div class="media-edit-page">
     <n-page-header @back="goBack">
       <template #title>
@@ -193,6 +194,7 @@
         <n-button text @click="goBack" style="margin-left: 10px;">返回列表</n-button>
       </n-alert>
     </div>
+  </div>
   </div>
 </template>
 

@@ -5,11 +5,11 @@
   <div class="actions-page-container">
     
     <!-- 2. 在这个 div 内部使用 n-grid 来进行布局 -->
-    <n-grid cols="1 l:3" :x-gap="24" :y-gap="24" responsive="screen">
+    <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
       
       <!-- 3. 左侧列：任务操作区 -->
       <!-- 在大屏幕(l)及以上占 2 列，在小屏幕占满 1 列 -->
-      <n-gi span="1 l:2">
+      <n-gi span="1">
         <n-space vertical :size="24">
           <n-alert 
             v-if="taskStatus.is_running" 
@@ -95,7 +95,7 @@
 
       <!-- 4. 右侧列：实时日志区 -->
       <!-- 在大屏幕(l)及以上占 1 列，在小屏幕占满 1 列 -->
-      <n-gi span="1 l:1">
+      <n-gi span="1">
         <n-card title="实时日志" class="beautified-card" :bordered="false" content-style="padding: 0;">
           <template #header-extra>
             <n-button text @click="clearLogs" style="font-size: 14px;">
@@ -105,6 +105,7 @@
           </template>
           <!-- 这里的 n-log 不需要额外处理高度，因为它会在卡片内自然撑开 -->
           <n-log
+            ref="logRef"
             :log="logContent"
             trim
             :rows="30"
@@ -119,7 +120,7 @@
 
 <script setup>
 // 确保导入了 NGrid 和 NGi
-import { ref, computed } from 'vue';
+import { ref, computed, watch, nextTick } from 'vue';
 import axios from 'axios';
 import { 
   NCard, NButton, NCheckbox, NSpace, NAlert, NLog, NIcon, useMessage, 
@@ -131,7 +132,7 @@ import {
   DownloadOutline as ExportIcon, 
   CloudUploadOutline as ImportIcon 
 } from '@vicons/ionicons5';
-
+const logRef = ref(null);
 const message = useMessage();
 
 const props = defineProps({
@@ -155,9 +156,8 @@ const isImporting = ref(false);
 
 const logContent = computed(() => {
   if (props.taskStatus && Array.isArray(props.taskStatus.logs)) {
-    const logs = props.taskStatus.logs;
-    const slicedLogs = logs.length > 300 ? logs.slice(logs.length - 300) : logs;
-    return slicedLogs.slice().reverse().join('\n');
+    // 不再使用 reverse()，保持日志的原始时间顺序
+    return props.taskStatus.logs.join('\n');
   }
   return '等待日志...';
 });
@@ -168,6 +168,15 @@ const currentActionIncludesScan = computed(() =>
 const currentActionIncludesSyncMap = computed(() => 
   props.taskStatus.current_action && props.taskStatus.current_action.toLowerCase().includes('sync')
 );
+
+watch(() => props.taskStatus.logs, async () => {
+  // 等待 DOM 更新完成
+  await nextTick();
+  // 调用 n-log 组件的 scrollTo 方法
+  if (logRef.value) {
+    logRef.value.scrollTo({ position: 'bottom', slient: true });
+  }
+}, { deep: true });
 
 const triggerFullScan = async () => {
   try {

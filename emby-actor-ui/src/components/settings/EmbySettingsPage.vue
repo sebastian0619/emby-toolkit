@@ -1,4 +1,5 @@
 <template>
+  <div v-if="configModel">
   <n-space vertical :size="24" style="margin-top: 15px;">
     <!-- Emby 连接设置卡片 (保持不变) -->
     <n-card title="Emby 连接设置" class="beautified-card" :bordered="false">
@@ -71,6 +72,7 @@
       </n-spin>
     </n-card>
   </n-space>
+  </div>
 </template>
 
 <script setup>

@@ -58,8 +58,8 @@ async function handleChangePassword() {
     message.error('所有字段均为必填项');
     return;
   }
-  if (passwords.value.new_password.length < 8) {
-    message.error('新密码长度不能少于8位');
+  if (passwords.value.new_password.length < 6) {
+    message.error('新密码长度不能少于6位');
     return;
   }
   if (passwords.value.new_password !== passwords.value.confirm_password) {
