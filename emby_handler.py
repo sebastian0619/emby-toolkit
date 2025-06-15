@@ -439,7 +439,7 @@ def get_emby_library_items(
 
     type_to_chinese = {"Movie": "电影", "Series": "电视剧"}
     media_type_in_chinese = type_to_chinese.get(media_type_filter, media_type_filter or '所有')
-    logger.info(f"总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
+    logger.debug(f"总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
     
     return all_items_from_selected_libraries
 
