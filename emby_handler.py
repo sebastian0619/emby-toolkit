@@ -344,9 +344,9 @@ def get_emby_libraries(base_url: str, api_key: str, user_id: Optional[str] = Non
                 })
         
         if not libraries:
-            logger.warning("get_emby_libraries: 未能从用户视图中找到任何有效的媒体库。请检查Emby设置。")
+            logger.warning("未能找到任何有效的媒体库,请检查Emby设置。")
         else:
-            logger.info(f"get_emby_libraries: 成功获取到 {len(libraries)} 个媒体库。")
+            logger.debug(f"成功获取到 {len(libraries)} 个媒体库。")
         
         return libraries
         

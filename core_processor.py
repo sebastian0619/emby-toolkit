@@ -801,7 +801,7 @@ class MediaProcessor:
             return
 
         # --- 步骤 1: 获取库名对照表 ---
-        logger.info("正在获取所有Emby媒体库信息以显示名称...")
+        logger.info("正在尝试从Emby获取媒体项目...")
         all_emby_libraries = emby_handler.get_emby_libraries(self.emby_url, self.emby_api_key, self.emby_user_id) or []
         library_name_map = {lib.get('Id'): lib.get('Name', '未知库名') for lib in all_emby_libraries}
         logger.debug(f"已生成媒体库名称对照表: {library_name_map}")
