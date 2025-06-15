@@ -308,73 +308,53 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
 
 def get_emby_libraries(base_url: str, api_key: str, user_id: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
     """
-    获取 Emby 用户可见的所有顶层媒体库列表。
-    返回一个列表，每个元素是一个包含 'Name' 和 'Id' 的字典。
+    【V2 - 修复版】获取 Emby 用户可见的所有顶层媒体库列表。
+    使用 /Users/{UserId}/Views 端点，这通常更准确。
     """
-    # API 端点可能因 Emby 版本而异，常见的有 /Library/VirtualFolders 或通过用户视图获取
-    # 这是一个示例，你可能需要查找确切的 API 端点
-    # 方案一：获取用户的主视图，然后遍历其中的文件夹
-    # 另一种可能是直接获取 VirtualFolders，但这可能包含非媒体库的文件夹
-    # 我们先尝试获取用户视图下的文件夹，这通常更准确地代表媒体库
+    if not user_id:
+        logger.error("get_emby_libraries: 必须提供 user_id 才能准确获取用户可见的媒体库。")
+        return None
+    if not base_url or not api_key:
+        logger.error("get_emby_libraries: 缺少 base_url 或 api_key。")
+        return None
 
-    if not user_id:  # 如果没有提供 user_id，可能需要先获取一个管理员用户或默认用户
-        logger.warning("get_emby_libraries: 未提供 user_id，可能无法准确获取用户可见的库。")
-        # 可以尝试获取系统信息中的第一个本地用户ID作为后备，但这不可靠
-        # system_info = get_system_info(base_url, api_key)
-        # if system_info and system_info.get("LocalAdminPassword"): # 只是个例子，实际API不同
-        #     user_id = ...
-        # else:
-        #     return None # 或者尝试一个公共的获取库的API（如果存在）
-
-    # 尝试获取用户视图 (User Views)
-    # 端点通常是 /Users/{UserId}/Views
-    # 或者直接获取 /Library/VirtualFolders，然后用户根据名称判断
-    # 我们先用一个更通用的 /Library/VirtualFolders，然后让用户自己识别哪些是他们的主媒体库
-    # 因为 /Users/{UserId}/Views 返回的是用户配置的视图，可能不是直接的物理库列表
-
-    api_url = f"{base_url}/Library/VirtualFolders"
+    # ★★★ 核心修复：使用更可靠的 /Users/{UserId}/Views API 端点 ★★★
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Views"
     params = {"api_key": api_key}
-    if user_id:  # 有些API端点可能接受 UserId 作为过滤条件
-        # params["UserId"] = user_id # 取决于具体API是否支持
-        pass
 
-    logger.debug(f"get_emby_libraries: Requesting URL: {api_url}")
+    logger.debug(f"get_emby_libraries: 正在从 URL 请求用户视图: {api_url}")
     try:
-        response = requests.get(api_url, params=params, timeout=10)
+        response = requests.get(api_url, params=params, timeout=15)
         response.raise_for_status()
-        data = response.json()  # 假设返回的是一个包含 Items 列表的结构
+        data = response.json()
 
         libraries = []
-        # 返回的结构可能直接是文件夹列表，或者在 Items 键下
-        items_to_check = data if isinstance(
-            data, list) else data.get("Items", [])
+        # 这个端点返回的 Items 就是用户的主屏幕视图
+        items_to_check = data.get("Items", [])
 
         for item in items_to_check:
-            # 我们需要判断哪些是真正的媒体库文件夹
-            # 通常媒体库有 CollectionType (e.g., "movies", "tvshows", "music")
-            # 并且 LocationType 应该是 FileSystem
-            # 简单的判断：如果它有 Name 和 Id，并且看起来像个顶层文件夹
-            if item.get("Name") and item.get("Id"):
-                # 为了更准确，可以检查 item.get("CollectionType") 是否为 movies, tvshows 等
-                # 或者检查 item.get("IsFolder") == True 并且它在顶层
-                # 这里我们先简单地将所有看起来像文件夹的都列出来，让用户自己选
-                # 更好的做法是只列出 CollectionType 为 movies, tvshows, homevideos, music 的
-                collection_type = item.get("CollectionType")
-                # 常见媒体库类型
-                if collection_type in ["movies", "tvshows", "homevideos", "music", "mixed", "boxsets"]:
-                    libraries.append({
-                        "Name": item.get("Name"),
-                        "Id": item.get("Id"),
-                        "CollectionType": collection_type
-                    })
-        logger.info(f"get_emby_libraries: 成功获取到 {len(libraries)} 个可能的媒体库。")
+            # 真正的媒体库通常有 CollectionType 字段
+            collection_type = item.get("CollectionType")
+            if item.get("Name") and item.get("Id") and collection_type:
+                logger.debug(f"  发现媒体库: '{item.get('Name')}' (ID: {item.get('Id')}, 类型: {collection_type})")
+                libraries.append({
+                    "Name": item.get("Name"),
+                    "Id": item.get("Id"),
+                    "CollectionType": collection_type
+                })
+        
+        if not libraries:
+            logger.warning("get_emby_libraries: 未能从用户视图中找到任何有效的媒体库。请检查Emby设置。")
+        else:
+            logger.info(f"get_emby_libraries: 成功获取到 {len(libraries)} 个媒体库。")
+        
         return libraries
+        
     except requests.exceptions.RequestException as e:
-        logger.error(f"get_emby_libraries: 请求 Emby 库列表失败: {e}", exc_info=True)
+        logger.error(f"get_emby_libraries: 请求 Emby 用户视图失败: {e}", exc_info=True)
         return None
     except json.JSONDecodeError as e:
-        logger.error(
-            f"get_emby_libraries: 解析 Emby 库列表响应失败: {e}", exc_info=True)
+        logger.error(f"get_emby_libraries: 解析 Emby 用户视图响应失败: {e}", exc_info=True)
         return None
 
 
