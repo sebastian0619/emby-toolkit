@@ -641,22 +641,7 @@ def _execute_task_with_lock(task_function, task_name: str, processor: MediaProce
         if processor:
             processor.clear_stop_signal()
         logger.info(f"后台任务 '{task_name}' 状态已重置。")
-# --- 定时任务 ---
-def scheduled_task_job_internal(force_reprocess: bool):
-    """定时任务的实际执行内容 (被 _execute_task_with_lock 调用)"""
-    if media_processor_instance:
-        media_processor_instance.process_full_library(
-            update_status_callback=update_status_from_thread,
-            force_reprocess_all=force_reprocess
-        )
-    else:
-        logger.error("定时任务无法执行：MediaProcessor 未初始化。")
 
-def scheduled_task_job_wrapper(force_reprocess: bool):
-    """定时任务的包装器，用于被 APScheduler 调用"""
-    task_name = "定时全量扫描"
-    if force_reprocess: task_name += " (强制)"
-    _execute_task_with_lock(scheduled_task_job_internal, task_name, force_reprocess)
 #--- 通用队列 ---
 def task_worker_function():
     """
@@ -718,26 +703,77 @@ def setup_scheduled_tasks():
     config = APP_CONFIG
 
     # --- 处理全量扫描的定时任务 ---
-    schedule_scan_enabled = config.get("schedule_enabled", False) # <--- 从 config 获取
+    schedule_scan_enabled = config.get("schedule_enabled", False)
     scan_cron_expression = config.get("schedule_cron", "0 3 * * *")
     force_reprocess_scheduled_scan = config.get("schedule_force_reprocess", False)
 
     if scheduler.get_job(JOB_ID_FULL_SCAN):
         scheduler.remove_job(JOB_ID_FULL_SCAN)
         logger.info("已移除旧的定时全量扫描任务。")
-    if schedule_scan_enabled: # <--- 使用这里定义的 schedule_scan_enabled
+        
+    if schedule_scan_enabled:
         try:
+            # ★★★ 核心修改：创建一个专门用于被 APScheduler 调用的函数 ★★★
+            def submit_scheduled_scan_to_queue():
+                logger.info(f"定时任务触发：准备提交全量扫描到任务队列 (强制={force_reprocess_scheduled_scan})。")
+                
+                # 在任务触发时，才去读取最新的配置
+                current_config, _ = load_config()
+                process_episodes = current_config.get('process_episodes', True)
+                
+                # 使用我们统一的队列提交函数
+                submit_task_to_queue(
+                    task_process_full_library, # 复用这个任务执行函数
+                    "定时全量扫描",
+                    force_reprocess=force_reprocess_scheduled_scan,
+                    process_episodes=process_episodes
+                )
+
             scheduler.add_job(
-                func=scheduled_task_job_wrapper,
+                func=submit_scheduled_scan_to_queue, # ★★★ 让定时器调用这个新函数 ★★★
                 trigger=CronTrigger.from_crontab(scan_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                id=JOB_ID_FULL_SCAN, name="定时全量媒体库扫描", replace_existing=True,
-                args=[force_reprocess_scheduled_scan]
+                id=JOB_ID_FULL_SCAN,
+                name="定时全量媒体库扫描",
+                replace_existing=True,
+                # 注意：这里不再需要 args，因为所有参数都在 submit_scheduled_scan_to_queue 内部处理了
             )
             logger.info(f"已设置定时全量扫描任务: CRON='{scan_cron_expression}', 强制={force_reprocess_scheduled_scan}")
         except Exception as e:
             logger.error(f"设置定时全量扫描任务失败: CRON='{scan_cron_expression}', 错误: {e}", exc_info=True)
     else:
         logger.info("定时全量扫描任务未启用。")
+
+    # --- 对同步映射表的定时任务也做类似修改 ---
+    schedule_sync_map_enabled = config.get("schedule_sync_map_enabled", False)
+    sync_map_cron_expression = config.get("schedule_sync_map_cron", "0 1 * * *")
+
+    if scheduler.get_job(JOB_ID_SYNC_PERSON_MAP):
+        scheduler.remove_job(JOB_ID_SYNC_PERSON_MAP)
+        logger.info("已移除旧的定时同步演员映射表任务。")
+        
+    if schedule_sync_map_enabled:
+        try:
+            def submit_scheduled_sync_to_queue():
+                logger.info("定时任务触发：准备提交演员映射表同步到任务队列。")
+                # 定时任务通常执行非全量同步
+                submit_task_to_queue(
+                    task_sync_person_map, # 复用我们为API定义的任务函数
+                    "定时同步演员映射表",
+                    is_full_sync=False 
+                )
+
+            scheduler.add_job(
+                func=submit_scheduled_sync_to_queue, # ★★★ 调用新的提交函数 ★★★
+                trigger=CronTrigger.from_crontab(sync_map_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                id=JOB_ID_SYNC_PERSON_MAP,
+                name="定时同步Emby演员映射表",
+                replace_existing=True
+            )
+            logger.info(f"已设置定时同步演员映射表任务: CRON='{sync_map_cron_expression}'")
+        except Exception as e:
+            logger.error(f"设置定时同步演员映射表任务失败: CRON='{sync_map_cron_expression}', 错误: {e}", exc_info=True)
+    else:
+        logger.info("定时同步演员映射表任务未启用。")
 
     # --- 处理同步演员映射表的定时任务 ---
     schedule_sync_map_enabled = config.get("schedule_sync_map_enabled", False)
