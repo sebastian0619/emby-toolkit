@@ -8,6 +8,7 @@ import ActionsPage from '../components/ActionsPage.vue';
 import EmbySettingsPage from '../components/settings/EmbySettingsPage.vue';
 import SchedulerSettingsPage from '../components/settings/SchedulerSettingsPage.vue';
 import GeneralSettingsPage from '../components/settings/GeneralSettingsPage.vue';
+import WatchlistPage from '../components/WatchlistPage.vue';
 
 // ★★★ 导入我们新创建的登录组件 ★★★
 import Login from '../components/Login.vue'; 
@@ -59,6 +60,12 @@ const routes = [
     path: '/settings/general',
     name: 'settings-general',
     component: GeneralSettingsPage,
+    meta: { requiresAuth: true }, // 需要登录
+  },
+  {
+    path: '/watchlist',
+    name: 'Watchlist', // ★★★ 给它一个名字
+    component: WatchlistPage,
     meta: { requiresAuth: true }, // 需要登录
   },
   {

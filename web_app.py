@@ -8,11 +8,12 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, f
 from werkzeug.utils import safe_join
 from queue import Queue
 from functools import wraps
+from watchlist_processor import WatchlistProcessor
 import threading
 import time
 import requests
 from douban import DoubanApi
-from typing import Optional, Dict, Any, List, Tuple # 确保 List 被导入
+from typing import Optional, Dict, Any, List, Tuple, Union # 确保 List 被导入
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz # 用于处理时区
@@ -97,6 +98,8 @@ background_task_status = {
 }
 task_lock = threading.Lock() # 用于确保后台任务串行执行
 APP_CONFIG: Dict[str, Any] = {} # ✨✨✨ 新增：全局配置字典 ✨✨✨
+media_processor_instance: Optional[MediaProcessor] = None
+watchlist_processor_instance: Optional[WatchlistProcessor] = None
 
 # ✨✨✨ 任务队列 ✨✨✨
 task_queue = Queue()
@@ -220,8 +223,28 @@ def init_db():
         """)
         logger.info("Table 'users' schema confirmed/created if not exists.")
 
+        # ★★★ 今天的新增内容：创建 watchlist 表 ★★★
+        logger.info("正在检查/创建 'watchlist' 表...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS watchlist (
+                item_id TEXT PRIMARY KEY,
+                tmdb_id TEXT NOT NULL,
+                item_name TEXT,
+                item_type TEXT DEFAULT 'Series',
+                status TEXT DEFAULT 'Watching',
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_checked_at TIMESTAMP
+            )
+        """)
+        # 为新表创建索引，提高查询效率
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_tmdb_id ON watchlist (tmdb_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
+        logger.info("表 'watchlist' 和其索引已确认/创建。")
+        # ★★★ 新增结束 ★★★
+
         conn.commit()
         logger.info(f"数据库表结构已在 '{DB_PATH}' 检查/创建完毕 (如果不存在)。")
+        
 
     except sqlite3.Error as e_sqlite: # 更具体地捕获 SQLite 错误
         logger.error(f"数据库初始化时发生 SQLite 错误: {e_sqlite}", exc_info=True)
@@ -397,6 +420,19 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
     app_cfg["schedule_sync_map_enabled"] = config_parser.getboolean("Scheduler", "schedule_sync_map_enabled", fallback=False)
     app_cfg["schedule_sync_map_cron"] = config_parser.get("Scheduler", "schedule_sync_map_cron", fallback="0 1 * * *")
 
+    # ★★★ 新增：读取追剧定时任务的配置 ★★★
+    app_cfg[constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED] = config_parser.getboolean(
+        constants.CONFIG_SECTION_SCHEDULER,
+        constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED,
+        fallback=False  # 默认不开启
+    )
+    app_cfg[constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON] = config_parser.get(
+        constants.CONFIG_SECTION_SCHEDULER,
+        constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON,
+        fallback=constants.DEFAULT_SCHEDULE_WATCHLIST_CRON # 使用常量里的默认值
+    )
+    # ★★★ 新增结束 ★★★
+
     # Authentication Section
     if is_first_run_creating_config:
         app_cfg[constants.CONFIG_OPTION_AUTH_ENABLED] = True
@@ -507,6 +543,19 @@ def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，�
     config.set("Scheduler", "schedule_sync_map_enabled", str(new_config.get("schedule_sync_map_enabled", False)).lower())
     config.set("Scheduler", "schedule_sync_map_cron", str(new_config.get("schedule_sync_map_cron", "0 1 * * *")))
 
+    # ★★★ 新增：写入追剧定时任务的配置 ★★★
+    config.set(
+        constants.CONFIG_SECTION_SCHEDULER,
+        constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED,
+        str(new_config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False)).lower()
+    )
+    config.set(
+        constants.CONFIG_SECTION_SCHEDULER,
+        constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON,
+        str(new_config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON, constants.DEFAULT_SCHEDULE_WATCHLIST_CRON))
+    )
+    # ★★★ 新增结束 ★★★
+
     #user
     config.set(
         constants.CONFIG_SECTION_AUTH,
@@ -530,7 +579,7 @@ def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，�
         logger.info("全局配置变量 APP_CONFIG 已更新。")
         
         logger.info("配置已保存，正在重新初始化所有相关组件...")
-        initialize_media_processor() # 使用新配置创建新的 MediaProcessor 实例
+        initialize_processors() # 使用新配置创建新的 MediaProcessor 实例
         init_auth()                  # 重新检查认证设置
         setup_scheduled_tasks()      # 根据新配置重新设置定时任务
         logger.info("所有组件已根据新配置重新初始化完毕。")
@@ -539,33 +588,30 @@ def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，�
         logger.error(f"保存配置文件或重新初始化组件时失败: {e}", exc_info=True)
 
 # --- MediaProcessor 初始化 ---
-def initialize_media_processor():
-    """
-    【V2 - 单例模式版】创建或更新全局的 MediaProcessor 实例。
-    这个函数只应该在应用启动和配置保存后被调用。
-    """
-    global media_processor_instance
+def initialize_processors(): # ★★★ 函数改名为 initialize_processors ★★★
+    global media_processor_instance, watchlist_processor_instance
     
-    # 1. 准备配置
     current_config = APP_CONFIG.copy()
     current_config['db_path'] = DB_PATH
 
-    # 2. 如果已有实例，先安全关闭
+    # --- 初始化 MediaProcessor (不变) ---
     if media_processor_instance:
-        logger.debug("正在关闭旧的 MediaProcessor 实例以便重新加载...")
-        try:
-            media_processor_instance.close()
-        except Exception as e_close_old:
-            logger.error(f"关闭旧 MediaProcessor 实例时出错: {e_close_old}", exc_info=True)
-
-    # 3. 创建新的实例并赋值给全局变量
-    logger.info("正在创建新的 MediaProcessor 实例...")
+        media_processor_instance.close()
     try:
         media_processor_instance = MediaProcessor(config=current_config)
-        logger.info("新的 MediaProcessor 实例已成功创建。")
-    except Exception as e_init_mp:
-        logger.critical(f"CRITICAL: 创建 MediaProcessor 实例失败: {e_init_mp}", exc_info=True)
-        media_processor_instance = None # 明确设置为 None，表示失败
+        logger.info("MediaProcessor 实例已创建/更新。")
+    except Exception as e:
+        logger.error(f"创建 MediaProcessor 实例失败: {e}", exc_info=True)
+        media_processor_instance = None
+
+    # ★★★ 新增：初始化 WatchlistProcessor ★★★
+    # 它不需要 close 方法，所以直接创建
+    try:
+        watchlist_processor_instance = WatchlistProcessor(config=current_config)
+        logger.info("WatchlistProcessor 实例已创建/更新。")
+    except Exception as e:
+        logger.error(f"创建 WatchlistProcessor 实例失败: {e}", exc_info=True)
+        watchlist_processor_instance = None
 # --- 后台任务回调 ---
 def update_status_from_thread(progress: int, message: str):
     global background_task_status
@@ -574,7 +620,7 @@ def update_status_from_thread(progress: int, message: str):
     background_task_status["message"] = message
     # logger.debug(f"状态更新回调: Progress={progress}%, Message='{message}'") # 这条日志太频繁，可以注释掉
 # --- 后台任务封装 ---
-def _execute_task_with_lock(task_function, task_name: str, processor: MediaProcessor, *args, **kwargs):
+def _execute_task_with_lock(task_function, task_name: str, processor: Union[MediaProcessor, WatchlistProcessor], *args, **kwargs):
     """
     【V2 - 工人专用版】通用后台任务执行器。
     第一个参数必须是 MediaProcessor 实例。
@@ -660,16 +706,19 @@ def task_worker_function():
             # 解包任务信息
             task_function, task_name, args, kwargs = task_info
             # ★★★ 核心修复：在任务执行前，检查全局实例是否可用 ★★★
-            if not media_processor_instance:
-                logger.error(f"任务 '{task_name}' 无法执行：MediaProcessor 未初始化。")
-                update_status_from_thread(-1, "错误：核心处理器未就绪")
+            if "追剧" in task_name or "watchlist" in task_function.__name__:
+                processor_to_use = watchlist_processor_instance
+                logger.debug(f"任务 '{task_name}' 将使用 WatchlistProcessor。")
+            else:
+                processor_to_use = media_processor_instance
+                logger.debug(f"任务 '{task_name}' 将使用 MediaProcessor。")
+
+            if not processor_to_use:
+                logger.error(f"任务 '{task_name}' 无法执行：对应的处理器未初始化。")
                 task_queue.task_done()
                 continue
-            
-            # ✨ 直接调用我们已有的、带锁的执行器 ✨
-            # 注意：现在 _execute_task_with_lock 内部的锁检查其实是多余的了
-            # 因为工人线程本身就是单线程消费，天然串行。但保留它也无妨。
-            _execute_task_with_lock(task_function, task_name, media_processor_instance, *args, **kwargs)
+
+            _execute_task_with_lock(task_function, task_name, processor_to_use, *args, **kwargs)
             
             task_queue.task_done()
         except Exception as e:
@@ -706,6 +755,39 @@ def setup_scheduled_tasks():
     schedule_scan_enabled = config.get("schedule_enabled", False)
     scan_cron_expression = config.get("schedule_cron", "0 3 * * *")
     force_reprocess_scheduled_scan = config.get("schedule_force_reprocess", False)
+    JOB_ID_WATCHLIST_UPDATE = "scheduled_watchlist_update"
+    schedule_watchlist_enabled = APP_CONFIG.get("schedule_watchlist_enabled", False)
+    watchlist_cron_expression = APP_CONFIG.get("schedule_watchlist_cron", "0 */6 * * *") # 默认每6小时
+    if scheduler.get_job(JOB_ID_WATCHLIST_UPDATE):
+        scheduler.remove_job(JOB_ID_WATCHLIST_UPDATE)
+        logger.info("已移除旧的定时追剧更新任务。")
+    
+    if schedule_watchlist_enabled:
+        try:
+            def submit_watchlist_update_to_queue():
+                logger.info("定时任务触发：准备提交追剧列表更新到任务队列。")
+                if watchlist_processor_instance:
+                    # 注意：这里的任务函数是 watchlist_processor_instance 的方法
+                    submit_task_to_queue(
+                        task_process_watchlist,
+                        "定时追剧更新"
+                        # 这个任务不需要额外参数
+                    )
+                else:
+                    logger.error("无法执行定时追剧更新：WatchlistProcessor 未初始化。")
+
+            scheduler.add_job(
+                func=submit_watchlist_update_to_queue,
+                trigger=CronTrigger.from_crontab(watchlist_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                id=JOB_ID_WATCHLIST_UPDATE,
+                name="定时追剧列表更新",
+                replace_existing=True
+            )
+            logger.info(f"已设置定时追剧更新任务: CRON='{watchlist_cron_expression}'")
+        except Exception as e:
+            logger.error(f"设置定时追剧更新任务失败: {e}", exc_info=True)
+    else:
+        logger.info("定时追剧更新任务未启用。")
 
     if scheduler.get_job(JOB_ID_FULL_SCAN):
         scheduler.remove_job(JOB_ID_FULL_SCAN)
@@ -922,7 +1004,18 @@ def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list
         manual_cast_list=manual_cast_list,
         item_name=item_name
     )
-
+# --- 追剧 ---    
+def task_process_watchlist(processor: WatchlistProcessor):
+    """
+    任务：处理追剧列表。
+    注意：这个函数接收的是 WatchlistProcessor 的实例。
+    """
+    processor.process_watching_list()
+# ★★★ 新增：只处理单个追剧项目的任务函数 ★★★
+def task_process_single_watchlist_item(processor: WatchlistProcessor, item_id: str):
+    """任务：只更新追剧列表中的一个特定项目"""
+    # 我们需要一个新的方法来实现这个功能
+    processor.process_single_watching_item(item_id)
 # --- 路由区 ---
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
@@ -1170,7 +1263,9 @@ def api_search_emby_library():
                 "item_type": item.get("Type"),
                 "failed_at": None,
                 "error_message": f"来自 Emby 库的搜索结果 (年份: {item.get('ProductionYear', 'N/A')})",
-                "score": None
+                "score": None,
+                # ★★★ 核心修复：把 ProviderIds 也传递给前端 ★★★
+                "provider_ids": item.get("ProviderIds") 
             })
         
         return jsonify({
@@ -1802,7 +1897,168 @@ def api_clear_review_items():
         logger.error(f"清空待复核列表时失败: {e}", exc_info=True)
         return jsonify({"error": "服务器在清空数据库时发生内部错误"}), 500
 # ✨✨✨ END: 新增 API ✨✨✨
+
+# ★★★ 今天的新增内容：获取追剧列表的API ★★★
+@app.route('/api/watchlist', methods=['GET'])
+@login_required # 如果你的API需要登录保护，加上这个装饰器
+def api_get_watchlist():
+    logger.info("API: 收到获取追剧列表的请求。")
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # 查询所有追剧列表中的项目，按添加时间倒序排列
+        cursor.execute("""
+            SELECT item_id, tmdb_id, item_name, status, added_at, last_checked_at 
+            FROM watchlist 
+            ORDER BY added_at DESC
+        """)
+        items = [dict(row) for row in cursor.fetchall()]
+        
+        conn.close()
+        
+        logger.info(f"成功获取到 {len(items)} 条追剧项目。")
+        return jsonify(items)
+        
+    except Exception as e:
+        logger.error(f"获取追剧列表时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "获取追剧列表时发生服务器内部错误"}), 500
+# ★★★ 新增：手动添加到追剧列表的API ★★★
+@app.route('/api/watchlist/add', methods=['POST'])
+@login_required
+def api_add_to_watchlist():
+    data = request.json
+    item_id = data.get('item_id')
+    tmdb_id = data.get('tmdb_id')
+    item_name = data.get('item_name')
+    item_type = data.get('item_type')
+
+    if not all([item_id, tmdb_id, item_name, item_type]):
+        return jsonify({"error": "缺少必要的项目信息"}), 400
     
+    if item_type != 'Series':
+        return jsonify({"error": "只能将'剧集'类型添加到追剧列表"}), 400
+
+    logger.info(f"API: 收到手动添加 '{item_name}' 到追剧列表的请求。")
+    try:
+        # 我们直接操作数据库，因为 watchlist_processor 主要是为定时任务服务的
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            INSERT OR REPLACE INTO watchlist (item_id, tmdb_id, item_name, item_type, status, last_checked_at)
+            VALUES (?, ?, ?, ?, 'Watching', NULL)
+        """, (item_id, tmdb_id, item_name, item_type))
+        # 使用 INSERT OR REPLACE 确保如果已存在，会更新其状态为 Watching
+
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"message": f"《{item_name}》已成功添加到追剧列表！"}), 200
+        
+    except Exception as e:
+        logger.error(f"手动添加项目到追剧列表时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在添加时发生内部错误"}), 500
+
+# ★★★ 新增：手动触发追剧列表更新的API ★★★
+@app.route('/api/watchlist/trigger_update', methods=['POST'])
+@login_required
+def api_trigger_watchlist_update():
+    logger.info("API: 收到手动触发追剧列表更新的请求。")
+    
+    # 检查是否有其他任务正在运行
+    if task_lock.locked():
+        logger.warning("无法手动触发追剧更新：已有其他后台任务正在运行。")
+        return jsonify({"error": "已有其他后台任务正在运行，请稍后再试。"}), 409
+
+    if not watchlist_processor_instance:
+        logger.error("无法手动触发追剧更新：WatchlistProcessor 未初始化。")
+        return jsonify({"error": "追剧处理模块未就绪。"}), 503
+
+    # 使用我们统一的队列提交函数
+    # 复用之前为定时任务创建的 task_process_watchlist 函数
+    submit_task_to_queue(
+        task_process_watchlist,
+        "手动追剧更新" # 给它一个明确的任务名
+    )
+    
+    return jsonify({"message": "追剧列表更新任务已在后台启动！"}), 202
+# ★★★ 新增：手动更新追剧状态的API ★★★
+@app.route('/api/watchlist/update_status', methods=['POST'])
+@login_required
+def api_update_watchlist_status():
+    # 1. 检查任务锁，防止并发写入
+    if task_lock.locked():
+        logger.warning("API: 无法更新追剧状态，因为有后台任务正在运行。")
+        return jsonify({"error": "后台任务正在运行，请稍后再试"}), 409
+
+    data = request.json
+    item_id = data.get('item_id')
+    new_status = data.get('new_status')
+
+    if not item_id or new_status not in ['Watching', 'Ended', 'Paused']:
+        return jsonify({"error": "请求参数无效"}), 400
+
+    logger.info(f"API: 收到请求，将项目 {item_id} 的追剧状态更新为 '{new_status}'。")
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE watchlist SET status = ? WHERE item_id = ?",
+                (new_status, item_id)
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                logger.warning(f"尝试更新追剧状态，但未在列表中找到项目 {item_id}。")
+                return jsonify({"error": "未在追剧列表中找到该项目"}), 404
+        
+        return jsonify({"message": "状态更新成功"}), 200
+        
+    except Exception as e:
+        logger.error(f"更新追剧状态时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在更新状态时发生内部错误"}), 500
+
+
+# ★★★ 新增：手动从追剧列表移除的API ★★★
+@app.route('/api/watchlist/remove/<item_id>', methods=['POST'])
+@login_required
+def api_remove_from_watchlist(item_id):
+    # 1. 检查任务锁
+    if task_lock.locked():
+        logger.warning(f"API: 无法移除项目 {item_id}，因为有后台任务正在运行。")
+        return jsonify({"error": "后台任务正在运行，请稍后再试"}), 409
+
+    logger.info(f"API: 收到请求，将项目 {item_id} 从追剧列表移除。")
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM watchlist WHERE item_id = ?", (item_id,))
+            conn.commit()
+        return jsonify({"message": "已从追剧列表移除"}), 200
+    except Exception as e:
+        logger.error(f"从追剧列表移除项目时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "移除项目时发生服务器内部错误"}), 500
+# ★★★ 新增：手动触发单项追剧更新的API ★★★
+@app.route('/api/watchlist/trigger_update/<item_id>/', methods=['POST'])
+@login_required
+def api_trigger_single_watchlist_update(item_id):
+    logger.info(f"API: 收到对单个项目 {item_id} 的追剧更新请求。")
+    
+    if task_lock.locked():
+        return jsonify({"error": "后台有其他任务正在运行，请稍后再试"}), 409
+
+    if not watchlist_processor_instance:
+        return jsonify({"error": "追剧处理模块未就绪"}), 503
+
+    # 我们需要一个新的、只处理单个项目的任务函数
+    # 我们在下面定义它
+    submit_task_to_queue(
+        task_process_single_watchlist_item,
+        f"手动单项追剧更新: {item_id}",
+        item_id # 把 item_id 作为参数传给任务
+    )
+    
+    return jsonify({"message": f"项目 {item_id} 的更新任务已在后台启动！"}), 202
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
@@ -1828,7 +2084,7 @@ if __name__ == '__main__':
     init_auth()
     
     # 4. ★★★ 创建唯一的 MediaProcessor 实例 ★★★
-    initialize_media_processor()
+    initialize_processors()
     
     # 5. 启动后台任务工人
     start_task_worker_if_not_running()

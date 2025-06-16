@@ -40,6 +40,18 @@
       </n-form>
     </n-card>
 
+    <n-card title="智能追剧更新" class="beautified-card" :bordered="false">
+      <n-form-item label="启用定时追剧更新">
+        <n-switch v-model:value="configModel.schedule_watchlist_enabled" />
+      </n-form-item>
+      <n-form-item label="追剧更新CRON表达式" v-if="configModel.schedule_watchlist_enabled">
+        <n-input v-model:value="configModel.schedule_watchlist_cron" placeholder="例如: 0 */6 * * * (每6小时)" />
+        <template #feedback>
+          高频率地检查追剧列表中的剧集是否有更新。
+        </template>
+      </n-form-item>
+    </n-card>
+
     <!-- ★★★ 4. 页面底部的保存按钮 ★★★ -->
     <n-button size="medium" type="primary" @click="savePageConfig" :loading="savingConfig" block>
       保存定时任务配置

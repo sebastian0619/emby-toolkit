@@ -14,7 +14,7 @@ DEFAULT_AI_TRANSLATION_PROMPT = """
 """
 
 # --- Web Application Settings ---
-APP_VERSION = "2.0.4"  # 或者你的实际版本号
+APP_VERSION = "2.0.5"  # 或者你的实际版本号
 DEBUG_MODE = False      # 开发时设为 True，部署到生产环境时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 
@@ -94,6 +94,11 @@ DEFAULT_MIN_SCORE_FOR_REVIEW = 6.0
 CONFIG_SECTION_GENERAL = "General"
 CONFIG_OPTION_MAX_ACTORS_TO_PROCESS = "max_actors_to_process"
 DEFAULT_MAX_ACTORS_TO_PROCESS = 50 # 最多演员数量默认值
+CONFIG_SECTION_SCHEDULER = "Scheduler"
+# ★★★ 新增追剧定时任务的常量 ★★★
+CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED = "schedule_watchlist_enabled"
+CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON = "schedule_watchlist_cron"
+DEFAULT_SCHEDULE_WATCHLIST_CRON = "0 */6 * * *" # 默认每6小时执行一次
 # ✨✨✨ AI 翻译相关的常量 ✨✨✨
 CONFIG_SECTION_AI_TRANSLATION = "AITranslation"
 CONFIG_OPTION_AI_TRANSLATION_ENABLED = "ai_translation_enabled"

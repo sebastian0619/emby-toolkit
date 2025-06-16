@@ -75,6 +75,7 @@ import {
     NCard, NSpin, NAlert, NText, NDataTable, NButton, NSpace, NPopconfirm, NEmpty, NInput, NIcon,
     useMessage
 } from 'naive-ui';
+import { HeartOutline as AddToWatchlistIcon } from '@vicons/ionicons5';
 import { SearchOutline as SearchIcon, PlayForwardOutline as ReprocessIcon, CheckmarkCircleOutline as MarkDoneIcon, TrashOutline as TrashIcon } from '@vicons/ionicons5';
 const router = useRouter();
 const message = useMessage();
@@ -89,7 +90,37 @@ const searchQuery = ref('');
 const loadingAction = ref({});
 const currentRowId = ref(null);
 const isShowingSearchResults = ref(false);
+// ★★★ 新增：调用后端API将剧集添加到追剧列表的函数 ★★★
+const addToWatchlist = async (rowData) => {
+  // 再次确认是剧集类型
+  if (rowData.item_type !== 'Series') {
+    message.warning('只有剧集类型才能添加到追剧列表。');
+    return;
+  }
+  
+  // 从 ProviderIds 中提取 tmdb_id
+  // 注意：搜索结果里的 ProviderIds 可能不存在，需要做安全检查
+  const tmdbId = rowData.provider_ids?.Tmdb;
+  if (!tmdbId) {
+      message.error('无法添加到追剧列表：此项目缺少TMDb ID。');
+      return;
+  }
 
+  try {
+    // 准备发送给后端的数据
+    const payload = {
+      item_id: rowData.item_id,
+      tmdb_id: tmdbId,
+      item_name: rowData.item_name,
+      item_type: rowData.item_type,
+    };
+    
+    const response = await axios.post('/api/watchlist/add', payload);
+    message.success(response.data.message || '添加成功！');
+  } catch (error) {
+    message.error(error.response?.data?.error || '添加到追剧列表失败，可能已存在。');
+  }
+};
 const formatDate = (timestamp) => {
   if (!timestamp) return 'N/A';
   try {
@@ -147,19 +178,15 @@ const columns = computed(() => [
     title: '媒体名称 (ID)',
     key: 'item_name',
     resizable: true,
-    // ★★★ START: 核心修改 ★★★
     render(row) {
-      // 将 onClick 和 style 移到外层的 div 上
       return h('div', { 
-        style: 'cursor: pointer; padding: 5px 0;', // 给整个div添加手型光标和一点垂直内边距，增加点击区域
+        style: 'cursor: pointer; padding: 5px 0;',
         onClick: () => goToEditPage(row) 
       }, [
-        // 内部的 NText 不再需要 onClick 和 style
         h(NText, { strong: true }, { default: () => row.item_name || '未知名称' }),
         h(NText, { depth: 3, style: 'font-size: 0.8em; display: block; margin-top: 2px;' }, { default: () => `(ID: ${row.item_id || 'N/A'})` })
       ]);
     }
-    // ★★★ END: 核心修改 ★★★
   },
   { 
     title: '类型', 
@@ -167,11 +194,7 @@ const columns = computed(() => [
     width: 80, 
     resizable: true,
     render(row) {
-      const typeMap = {
-        'Movie': '电影',
-        'Series': '电视剧',
-        'Episode': '剧集'
-      };
+      const typeMap = { 'Movie': '电影', 'Series': '电视剧', 'Episode': '剧集' };
       return typeMap[row.item_type] || row.item_type;
     }
   },
@@ -199,39 +222,54 @@ const columns = computed(() => [
     align: 'center',
     fixed: 'right',
     render(row) {
-      return h(NSpace, { justify: 'center' }, {
-        default: () => [
-          h(NButton,
-            {
+      // ★★★ 核心修改：动态构建按钮列表 ★★★
+      const actionButtons = [];
+
+      // 按钮1: 手动编辑 (对所有行都显示)
+      actionButtons.push(
+        h(NButton, {
+          size: 'small',
+          type: 'primary',
+          onClick: () => goToEditPage(row)
+        }, { default: () => '手动编辑' })
+      );
+
+      // 按钮2: 标记已处理 (只对待复核列表显示)
+      if (!isShowingSearchResults.value) {
+        actionButtons.push(
+          h(NPopconfirm, { onPositiveClick: () => handleMarkAsProcessed(row) }, {
+            trigger: () => h(NButton, {
               size: 'small',
-              type: 'primary',
-              onClick: () => goToEditPage(row)
-            },
-            { default: () => '手动编辑' }
-          ),
-          !isShowingSearchResults.value ? h(NPopconfirm,
-            {
-              onPositiveClick: () => handleMarkAsProcessed(row),
-            },
-            {
-              trigger: () => h(NButton,
-                {
-                  size: 'small',
-                  type: 'success',
-                  ghost: true,
-                  loading: loadingAction.value[row.item_id] && currentRowId.value === row.item_id,
-                  disabled: loadingAction.value[row.item_id]
-                },
-                {
-                  icon: () => h(NIcon, { component: MarkDoneIcon }),
-                  default: () => '标记已处理'
-                }
-              ),
-              default: () => `确定要将 "${row.item_name}" 标记为已处理吗？`
-            }
-          ) : null,
-        ]
-      });
+              type: 'success',
+              ghost: true,
+              loading: loadingAction.value[row.item_id] && currentRowId.value === row.item_id,
+              disabled: loadingAction.value[row.item_id]
+            }, {
+              icon: () => h(NIcon, { component: MarkDoneIcon }),
+              default: () => '标记完成' // 文本改短一点
+            }),
+            default: () => `确定要将 "${row.item_name}" 标记为已处理吗？`
+          })
+        );
+      }
+
+      // 按钮3: 添加到追剧列表 (只对剧集类型显示)
+      if (row.item_type === 'Series') {
+        actionButtons.push(
+          h(NButton, {
+            size: 'small',
+            circle: true,
+            ghost: true,
+            type: 'info', // 用 info 颜色
+            title: '添加到追剧列表',
+            onClick: () => addToWatchlist(row)
+          }, {
+            icon: () => h(NIcon, { component: AddToWatchlistIcon })
+          })
+        );
+      }
+      
+      return h(NSpace, { justify: 'center' }, { default: () => actionButtons });
     }
   }
 ]);

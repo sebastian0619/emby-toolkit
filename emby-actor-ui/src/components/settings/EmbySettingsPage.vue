@@ -149,14 +149,28 @@ onMounted(() => {
   }
 
   unwatchEmbyConfig = watch(
-    () => [configModel.value.emby_server_url, configModel.value.emby_api_key],
-    async ([newUrl, newKey], [oldUrl, oldKey]) => {
-      if (!componentIsMounted.value) return;
+    // 1. 直接监听 configModel 这个 ref 对象
+    configModel, 
+    // 2. 在回调函数中，先检查 newValue 是否有值
+    async (newValue, oldValue) => {
+      if (!componentIsMounted.value || !newValue) {
+        // 如果组件已卸载，或者新的 configModel 还是 null，就什么都不做
+        return;
+      }
+      
+      // 只有在 newValue 存在时，才安全地访问它的属性
+      const newUrl = newValue.emby_server_url;
+      const newKey = newValue.emby_api_key;
+      const oldUrl = oldValue?.emby_server_url; // 使用可选链 ?. 来安全地访问旧值
+      const oldKey = oldValue?.emby_api_key;
+
       if (newUrl !== oldUrl || newKey !== oldKey) {
         await fetchEmbyLibrariesInternal("url/key changed in watch");
       }
     },
-    { immediate: false }
+    { 
+      deep: true // ★★★ 使用 deep: true 来监听对象内部属性的变化 ★★★
+    }
   );
 });
 

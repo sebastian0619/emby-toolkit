@@ -16,6 +16,7 @@ import utils
 from logger_setup import logger
 import constants
 from ai_translator import AITranslator
+from watchlist_processor import WatchlistProcessor
 try:
     from douban import DoubanApi
     DOUBAN_API_AVAILABLE = True
@@ -649,6 +650,17 @@ class MediaProcessor:
             return False
         
         try:
+            # ★★★ 先进行智能追剧判断 ★★★
+            if item_type == "Series":
+                logger.debug(f"项目 '{item_name_for_log}' 是剧集，开始进行追剧状态判断...")
+                try:
+                    # 我们需要一个 WatchlistProcessor 的实例来调用它的方法。
+                    # 理想的架构是依赖注入，但为了快速实现，我们在这里临时创建一个。
+                    # 注意：这要求 self.config 包含了所有 WatchlistProcessor 需要的配置。
+                    watchlist_proc = WatchlistProcessor(self.config)
+                    watchlist_proc.add_series_to_watchlist(item_details_from_emby)
+                except Exception as e_watchlist:
+                    logger.error(f"在自动添加 '{item_name_for_log}' 到追剧列表时发生错误: {e_watchlist}", exc_info=True)
             # --- 阶段1: 演员处理、翻译、数据库反哺 (在一个事务中完成) ---
             final_cast_perfect = []
             initial_actor_count = 0
@@ -661,6 +673,11 @@ class MediaProcessor:
             os.makedirs(image_override_dir, exist_ok=True)
             base_json_filename = "all.json" if item_type == "Movie" else "series.json"
             base_json_data_original = _read_local_json(os.path.join(base_cache_dir, base_json_filename))
+            if item_details_from_emby.get("Type") == "Series":
+                # 创建一个临时的 WatchlistProcessor 实例来执行添加操作
+                # 理想情况下，这个实例应该由 web_app 传递进来
+                temp_watchlist_proc = WatchlistProcessor(self.config)
+                temp_watchlist_proc.add_series_to_watchlist(item_details_from_emby)
             if not base_json_data_original:
                 raise ValueError(f"无法读取基础JSON文件: {os.path.join(base_cache_dir, base_json_filename)}")
             
@@ -1361,7 +1378,9 @@ class SyncHandler:
                         progress = int(((i + 1) / total_to_enrich) * 100) if total_to_enrich > 0 else 100
                         if update_status_callback: update_status_callback(progress, f"深度补充 ({i+1}/{total_to_enrich}): {record['tmdb_name']}")
                         
-                        details = tmdb_handler.get_person_details_from_tmdb(record["tmdb_person_id"], self.tmdb_api_key)
+                        # ★★★ 核心修复：使用文件中实际存在的函数名 ★★★
+                        details = tmdb_handler.get_person_details_tmdb(record["tmdb_person_id"], self.tmdb_api_key)
+                        
                         time.sleep(0.2)
                         if details and details.get("imdb_id"):
                             stats["imdb_added"] += 1
