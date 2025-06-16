@@ -65,6 +65,7 @@ COPY constants.py .
 COPY local_data_handler.py .
 COPY web_parser.py .  
 COPY ai_translator.py . 
+COPY watchlist_processor.py .
 
 COPY templates/ ./templates/ 
 
