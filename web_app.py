@@ -692,7 +692,7 @@ def _execute_task_with_lock(task_function, task_name: str, processor: Union[Medi
         background_task_status["message"] = "等待任务"
         if processor:
             processor.clear_stop_signal()
-        logger.info(f"后台任务 '{task_name}' 状态已重置。")
+        logger.debug(f"后台任务 '{task_name}' 状态已重置。")
 
 #--- 通用队列 ---
 def task_worker_function():
