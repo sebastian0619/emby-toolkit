@@ -133,7 +133,7 @@ class MediaProcessor:
         
         # 情况三：数量正常，没有截断，也没有大幅减少
         else:
-            logger.info(f"  质量评估：演员数量 ({total_actors}/{original_cast_count}) 正常，不进行惩罚。")
+            logger.debug(f"  质量评估：演员数量 ({total_actors}/{original_cast_count}) 正常，不进行惩罚。")
 
         final_score_rounded = round(avg_score, 1)
         logger.info(f"  媒体项演员处理质量评估完成，最终评分: {final_score_rounded:.1f}")
@@ -433,6 +433,25 @@ class MediaProcessor:
         【V9 - 集成本地缓存优先】使用本地缓存或在线API获取豆瓣演员，再进行匹配和处理。
         """
         try:
+            # ★★★ V-Final 优化：在源头过滤无头像演员 ★★★
+            initial_count = len(local_cast_list)
+            if self.config.get("filter_actors_without_avatar", True):
+                logger.info(f"【头像过滤】开始检查 {initial_count} 位原始演员的头像信息...")
+                
+                # 只保留那些 profile_path 字段存在且不为空的演员
+                cast_to_process_after_filter = [
+                    actor for actor in local_cast_list if actor.get("profile_path")
+                ]
+                
+                filtered_count = initial_count - len(cast_to_process_after_filter)
+                if filtered_count > 0:
+                    logger.info(f"【头像过滤】已过滤掉 {filtered_count} 位无头像的演员。")
+                
+                # 使用过滤后的列表进行后续所有操作
+                local_cast_list = cast_to_process_after_filter
+            else:
+                logger.info("【源头过滤】未启用无头像演员过滤功能。")
+            # ★★★ 源头过滤结束 ★★★
             # ✨ 核心修改：调用新的封装函数，它会优先使用本地缓存
             douban_candidates_raw = self._get_douban_cast_with_local_cache(emby_item_info)
             douban_candidates = self._format_douban_cast(douban_candidates_raw)
@@ -627,10 +646,74 @@ class MediaProcessor:
             perfect_cast.append(actor)
                 
         return perfect_cast
+    
+    # ★★★ V-Final 新增：API轨道处理函数 ★★★
+    def _process_api_track_person_names_only(self, item_details: Dict[str, Any]):
+        """
+        【API轨道 - 绝对安全版】
+        此函数只负责一件事：将指定媒体项目中演员的英文名翻译成中文，并更新回Emby。
+        它严格遵守“指名道姓”原则，只通过 Emby Person ID 操作，只修改 Name 字段，
+        不触碰任何其他数据，确保绝对安全，不会造成“货不对板”。
+        """
+        item_id = item_details.get("Id")
+        item_name_for_log = item_details.get("Name", f"未知媒体(ID:{item_id})")
+        logger.info(f"【API轨道】开始为 '{item_name_for_log}' 进行纯演员名中文化...")
+
+        # 1. 从传入的 item_details 中获取原始演员列表
+        original_cast = item_details.get("People", [])
+        if not original_cast:
+            logger.info("【API轨道】该媒体在Emby中没有演员信息，跳过此轨道。")
+            return
+
+        # 2. 使用数据库连接进行翻译（为了利用缓存）
+        try:
+            with self._get_db_connection() as conn:
+                cursor = conn.cursor()
+
+                for person in original_cast:
+                    if self.is_stop_requested():
+                        logger.info("【API轨道】任务被中止。")
+                        break
+                    
+                    emby_person_id = person.get("Id")
+                    current_name = person.get("Name")
+
+                    # 基本检查
+                    if not emby_person_id or not current_name:
+                        continue
+                    
+                    # 如果名字已经是中文或无需翻译，则跳过
+                    if utils.contains_chinese(current_name):
+                        continue
+
+                    # 3. 调用翻译函数
+                    translated_name = self._translate_actor_field(current_name, "演员名", current_name, cursor)
+
+                    # 4. 如果翻译成功且名字有变化，就执行更新
+                    if translated_name and translated_name != current_name:
+                        logger.info(f"  【API轨道】准备更新: '{current_name}' -> '{translated_name}' (Emby Person ID: {emby_person_id})")
+                        
+                        # ★★★ 直接调用您现有的、安全的 update_person_details 函数 ★★★
+                        emby_handler.update_person_details(
+                            person_id=emby_person_id,
+                            new_data={"Name": translated_name}, # 只传递一个包含新名字的字典
+                            emby_server_url=self.emby_url,
+                            emby_api_key=self.emby_api_key,
+                            user_id=self.emby_user_id
+                        )
+                        # 增加微小延迟，避免请求过快
+                        time.sleep(0.2)
+        
+        except Exception as e:
+            logger.error(f"【API轨道】在为 '{item_name_for_log}' 处理演员中文化时发生错误: {e}", exc_info=True)
+        
+        logger.info(f"【API轨道】为 '{item_name_for_log}' 的演员中文化处理完成。")
 
     def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool = False) -> bool:
         """
-        【最终毕业版 V11】以TMDb ID为核心，在处理流程中实时、安全地反哺映射表。
+        【V-Final 双轨串行版】
+        首先执行独立的、绝对安全的API轨道，仅中文化演员名。
+        然后，执行现有的、完整的JSON轨道，处理并生成本地元数据。
         """
         item_id = item_details_from_emby.get("Id")
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
@@ -643,10 +726,16 @@ class MediaProcessor:
             logger.info(f"任务在处理 '{item_name_for_log}' 前被中止。")
             return False
 
+        # ★★★ V-Final 新增：执行 API 轨道 ★★★
+        self._process_api_track_person_names_only(item_details_from_emby)
+        # ★★★ API 轨道结束 ★★★
+
+        # --- 下面是您现有的、完整的 JSON 轨道逻辑，保持不变 ---
+        logger.info(f"--- 开始执行【JSON轨道】：处理本地元数据并生成覆盖文件 ---")
         if not tmdb_id or not self.local_data_path:
             error_msg = "缺少TMDbID" if not tmdb_id else "未配置本地数据路径"
-            logger.warning(f"跳过处理 '{item_name_for_log}'，原因: {error_msg}。")
-            self.save_to_failed_log(item_id, item_name_for_log, f"预处理失败: {error_msg}", item_type)
+            logger.warning(f"【JSON轨道】跳过处理 '{item_name_for_log}'，原因: {error_msg}。")
+            self.save_to_failed_log(item_id, item_name_for_log, f"JSON轨道预处理失败: {error_msg}", item_type)
             return False
         
         try:
