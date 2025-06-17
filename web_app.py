@@ -655,8 +655,13 @@ def _execute_task_with_lock(task_function, task_name: str, processor: Union[Medi
             if processor.is_stop_requested():
                 raise InterruptedError("任务被取消")
 
-            # ★★★ 核心修复：直接调用，参数已经对齐 ★★★
+            # 执行核心任务
             task_function(processor, *args, **kwargs)
+            
+            # ★★★ 核心修复：如果任务能顺利执行到这里，说明它正常完成了 ★★★
+            # 我们只在没有被用户中止的情况下，才标记为正常完成
+            if not processor.is_stop_requested():
+                task_completed_normally = True
         finally:
             final_message_for_status = "未知结束状态"
             current_progress = background_task_status["progress"] # 获取当前进度
