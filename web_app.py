@@ -1,5 +1,6 @@
 # web_app.py
 import os
+import re
 import sqlite3
 import emby_handler
 import utils
@@ -1377,21 +1378,33 @@ def api_get_config():
 @app.route('/api/config', methods=['POST'])
 def api_save_config():
     try:
-        new_config_data = request.json # 前端发送的是 JSON 数据
+        new_config_data = request.json
         if not new_config_data:
-            logger.warning("API /api/config (POST): 未收到配置数据。")
             return jsonify({"error": "请求体中未包含配置数据"}), 400
         
-        logger.info(f"API /api/config (POST): 收到新的配置数据，准备保存...")
-        # logger.debug(f"收到的原始配置数据: {new_config_data}") # 可以取消注释用于调试
+        # ★★★ 核心修改：在这里进行严格校验并“打回去” ★★★
+        user_id_to_save = new_config_data.get("emby_user_id", "").strip()
 
-        # 调用你实际的 save_config 函数
-        # save_config 函数内部应该处理数据转换、写入文件、
-        # 以及调用 initialize_media_processor() 和 setup_scheduled_tasks()
+        # 规则1：检查是否为空
+        if not user_id_to_save:
+            error_message = "Emby User ID 不能为空！这是获取媒体库列表的必需项。"
+            logger.warning(f"API /api/config (POST): 拒绝保存，原因: {error_message}")
+            return jsonify({"error": error_message}), 400
+
+        # 规则2：检查格式是否正确
+        if not re.match(r'^[a-f0-9]{32}$', user_id_to_save, re.I):
+            error_message = "Emby User ID 格式不正确！它应该是一串32位的字母和数字。"
+            logger.warning(f"API /api/config (POST): 拒绝保存，原因: {error_message} (输入值: '{user_id_to_save}')")
+            return jsonify({"error": error_message}), 400
+        # ★★★ 校验结束 ★★★
+
+        logger.info(f"API /api/config (POST): 收到新的配置数据，准备保存...")
+        
+        # 校验通过后，才调用保存函数
         save_config(new_config_data) 
         
         logger.info("API /api/config (POST): 配置已成功传递给 save_config 函数。")
-        return jsonify({"message": "配置已成功保存并已触发重新加载。"}) # 返回成功消息
+        return jsonify({"message": "配置已成功保存并已触发重新加载。"})
         
     except Exception as e:
         logger.error(f"API /api/config (POST) 保存配置时发生错误: {e}", exc_info=True)

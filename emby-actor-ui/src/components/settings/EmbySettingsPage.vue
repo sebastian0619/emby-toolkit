@@ -11,9 +11,20 @@
           <n-form-item-grid-item label="Emby API Key" path="emby_api_key">
             <n-input v-model:value="configModel.emby_api_key" type="password" show-password-on="click" placeholder="输入你的 Emby API Key" />
           </n-form-item-grid-item>
-          <n-form-item-grid-item label="Emby 用户 ID" path="emby_user_id">
-            <n-input v-model:value="configModel.emby_user_id" placeholder="通常用于特定用户操作或获取库列表" />
-          </n-form-item-grid-item>
+          <n-form-item-grid-item label="Emby 用户 ID" :rule="embyUserIdRule" path="emby_user_id">
+          <n-input v-model:value="configModel.emby_user_id" placeholder="请输入32位的用户ID，而非用户名" />
+          <!-- 在输入框下方增加一个友好的提示 -->
+          <template #feedback>
+            <!-- 当输入格式错误时，显示红色警告 -->
+            <div v-if="isInvalidUserId" style="color: #e88080; margin-top: 4px; font-size: 12px;">
+              格式错误！ID通常是一串32位的字母和数字，是Emby后台用户管理的地址栏userId=后面那串由32个字母和数字组成的长ID。
+            </div>
+            <!-- 默认情况下，显示灰色提示 -->
+            <div v-else style="font-size: 12px; color: #888; margin-top: 4px;">
+              提示：这不是用户名。请前往 Emby 后台 -> 用户管理 -> 点击您的账户 -> 然后从浏览器地址栏中复制userId=后面那串由32个字母和数字组成的长ID。
+            </div>
+          </template>
+        </n-form-item-grid-item>
         </n-grid>
       </n-form>
     </n-card>
@@ -77,7 +88,7 @@
 
 <script setup>
 // ... 你的 <script setup> 部分完全不需要任何修改 ...
-import { ref, watch, onMounted, onUnmounted } from 'vue';
+import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
 import {
   NForm, NFormItemGridItem, NInput, NSwitch, NCheckboxGroup, NCheckbox,
   NSpace, NSpin, NText, NGrid, NButton, NCard, // ★★★ 确保导入了 NCard ★★★
@@ -87,6 +98,35 @@ import { useConfig } from '../../composables/useConfig.js';
 import axios from 'axios';
 
 const message = useMessage();
+// ★★★ START: 新增的用户ID校验逻辑 ★★★
+
+// 正则表达式，用于匹配32位的十六进制字符串
+const embyUserIdRegex = /^[a-f0-9]{32}$/i;
+
+// 计算属性，用于判断当前输入是否是无效格式
+const isInvalidUserId = computed(() => {
+  // 确保 configModel.value 存在后再访问
+  if (!configModel.value || !configModel.value.emby_user_id) {
+    return false;
+  }
+  const userId = configModel.value.emby_user_id.trim();
+  // 只有当用户输入了内容，但格式又不匹配时，才认为是“无效”的
+  return userId !== '' && !embyUserIdRegex.test(userId);
+});
+
+// 表单验证规则，在点击保存时会触发
+const embyUserIdRule = {
+  trigger: ['input', 'blur'],
+  validator(rule, value) {
+    if (value && !embyUserIdRegex.test(value)) {
+      // 这个错误信息会显示在 label 旁边
+      return new Error('ID格式不正确，应为32位字母和数字组合。');
+    }
+    return true;
+  }
+};
+
+// ★★★ END: 新增的用户ID校验逻辑 ★★★
 
 const {
   configModel,
