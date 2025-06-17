@@ -124,7 +124,7 @@ class MediaProcessor:
                 avg_score *= (total_actors / expected_final_count)
             else:
                 # 这是最常见的情况：数量符合预期，不惩罚
-                logger.info(f"  质量评估：演员数量符合主动截断后的预期 ({total_actors}/{expected_final_count})，不进行惩罚。")
+                logger.debug(f"  质量评估：演员数量符合主动截断后的预期 ({total_actors}/{expected_final_count})，不进行惩罚。")
         
         # 情况二：我们没有主动截断，但数量意外大幅减少
         elif total_actors < original_cast_count * 0.8:
