@@ -287,7 +287,7 @@ class MediaProcessor:
         # 5. 处理在线翻译的结果，并更新缓存
         if final_translation and final_translation.strip() and final_translation.strip().lower() != text_stripped.lower():
             # 翻译成功，存入缓存并返回结果
-            logger.info(f"在线翻译成功: '{text_stripped}' -> '{final_translation}' (使用引擎: {final_engine})")
+            logger.debug(f"在线翻译成功: '{text_stripped}' -> '{final_translation}' (使用引擎: {final_engine})")
             DoubanApi._save_translation_to_db(text_stripped, final_translation, final_engine, cursor=db_cursor)
             return final_translation
         else:
