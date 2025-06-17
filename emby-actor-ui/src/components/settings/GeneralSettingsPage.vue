@@ -24,7 +24,7 @@
             </n-form-item-grid-item>
 
             <n-form-item-grid-item label="需手动处理的最低评分阈值" path="min_score_for_review">
-              <n-input-number v-model:value="configModel.min_score_for_review" :max="10" :step="10" placeholder="例如: 6.0"/>
+              <n-input-number v-model:value="configModel.min_score_for_review" :min="0.0" :max="10" :step="0.1" placeholder="例如: 6.0"/>
               <template #feedback>
                 <n-text depth="3" style="font-size:0.8em;">处理质量评分低于此值的项目将进入待复核列表。</n-text>
               </template>
