@@ -92,7 +92,7 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
 
         response.raise_for_status()
         item_data = response.json()
-        logger.debug(
+        logger.de(
             f"成功获取Emby演员 '{item_data.get('Name', item_id)}' (ID: {item_id}, User: {user_id}) 的详情。")
 
         if not item_data.get('Name') or not item_data.get('Type'):

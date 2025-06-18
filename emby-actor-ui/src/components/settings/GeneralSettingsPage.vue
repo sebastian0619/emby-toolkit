@@ -40,6 +40,9 @@
               <n-text depth="3" style="font-size:0.8em;">设置最终写入元数据的演员数量上限，避免列表过长。</n-text>
             </template>
           </n-form-item-grid-item>
+            <n-form-item-grid-item label="更新后刷新 Emby 媒体项">
+              <n-switch v-model:value="configModel.refresh_emby_after_update" />
+            </n-form-item-grid-item>
             <n-form-item label="处理分集" path="process_episodes">
               <n-switch v-model:value="configModel.process_episodes" />
               <template #feedback>开启后，处理电视剧时会为每一季/每一集生成单独的元数据文件。</template>

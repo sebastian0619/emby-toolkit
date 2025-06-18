@@ -29,36 +29,6 @@
       </n-form>
     </n-card>
 
-    <!-- 处理选项卡片 (★ 添加新选项 ★) -->
-    <n-card title="处理选项" class="beautified-card" :bordered="false">
-       <n-form :model="configModel" label-placement="left" label-width="auto" require-mark-placement="right-hanging">
-        <n-grid :cols="1" :x-gap="24">
-          <n-form-item-grid-item label="更新后刷新 Emby 媒体项">
-            <n-switch v-model:value="configModel.refresh_emby_after_update" />
-          </n-form-item-grid-item>
-          <n-form-item-grid-item label="深度处理剧集" path="process_episodes">
-            <n-space align="center">
-              <n-switch v-model:value="configModel.process_episodes" />
-              <n-text :depth="3" type="error" style="font-size: 0.85em;">
-                处理剧集时会递归处理每一集。
-              </n-text>
-            </n-space>
-          </n-form-item-grid-item>
-
-          <!-- ★★★ START: 新增的同步图片选项 ★★★ -->
-          <n-form-item-grid-item label="同步图片" path="sync_images">
-            <n-space align="center">
-              <n-switch v-model:value="configModel.sync_images" />
-              <n-text :depth="3" type="info" style="font-size: 0.85em;">
-                同时下载海报等图片到覆盖缓存。
-              </n-text>
-            </n-space>
-          </n-form-item-grid-item>
-          <!-- ★★★ END: 新增的同步图片选项 ★★★ -->
-
-        </n-grid>
-      </n-form>
-    </n-card>
 
     <!-- 媒体库选择卡片 (保持不变) -->
     <n-card class="beautified-card" :bordered="false">
@@ -136,7 +106,6 @@ const {
   loadingConfig: globalLoadingConfig
 } = useConfig();
 
-const processEpisodes = ref(false);
 const availableLibraries = ref([]);
 const loadingLibraries = ref(false);
 const libraryError = ref(null);
