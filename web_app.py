@@ -1338,8 +1338,8 @@ def change_password():
     if not current_password or not new_password:
         return jsonify({"error": "缺少当前密码或新密码"}), 400
     
-    if len(new_password) < 8:
-        return jsonify({"error": "新密码长度不能少于8位"}), 400
+    if len(new_password) < 6:
+        return jsonify({"error": "新密码长度不能少于6位"}), 400
 
     user_id = session.get('user_id')
     conn = get_db_connection()

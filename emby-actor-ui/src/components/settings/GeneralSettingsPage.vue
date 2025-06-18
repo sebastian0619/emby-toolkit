@@ -62,11 +62,6 @@
               <n-input type="password" show-password-on="mousedown" v-model:value="configModel.tmdb_api_key" placeholder="输入你的 TMDB API Key" />
             </n-form-item>
           </n-card>
-
-          <!-- 卡片: 安全设置 -->
-          <n-card v-if="authStore.isAuthEnabled" title="安全设置" size="small" class="beautified-card">
-            <ChangePassword />
-          </n-card>
         </n-space>
       </n-gi>
 
@@ -180,7 +175,6 @@ import {
 } from 'naive-ui';
 import { MoveOutline as DragHandleIcon } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
-import ChangePassword from './ChangePassword.vue';
 import { useAuthStore } from '../../stores/auth';
 
 const { configModel, loadingConfig, savingConfig, configError, handleSaveConfig } = useConfig();

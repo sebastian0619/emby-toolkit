@@ -13,14 +13,27 @@
           <n-layout-header :bordered="false" class="app-header">
             <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
               <span>Emby 演员管理</span>
-                <div style="display: flex; align-items: center; gap: 12px;">
-                <span v-if="authStore.isAuthEnabled" style="font-size: 14px;">欢迎, {{ authStore.username }}</span>
-                <span style="font-size: 12px; color: #999;">v{{ appVersion }}</span>
-                <n-switch v-model:value="isDarkTheme" size="small">
-                  <template #checked>暗色</template>
-                  <template #unchecked>亮色</template>
-                </n-switch>
-              </div>
+                <div style="display: flex; align-items: center; gap: 16px;">
+                  <!-- 用户名下拉菜单 -->
+                  <n-dropdown 
+                    v-if="authStore.isAuthEnabled" 
+                    trigger="hover" 
+                    :options="userOptions" 
+                    @select="handleUserSelect"
+                  >
+                    <div style="display: flex; align-items: center; cursor: pointer; gap: 4px;">
+                      <span style="font-size: 14px;">欢迎, {{ authStore.username }}</span>
+                      <!-- 可以加一个下拉小箭头图标，更美观 -->
+                      <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="currentColor" d="m7 10l5 5l5-5z"></path></svg>
+                    </div>
+                  </n-dropdown>
+
+                  <span style="font-size: 12px; color: #999;">v{{ appVersion }}</span>
+                  <n-switch v-model:value="isDarkTheme" size="small">
+                    <template #checked>暗色</template>
+                    <template #unchecked>亮色</template>
+                  </n-switch>
+                </div>
             </div>
           </n-layout-header>
           <n-layout has-sider>
@@ -76,8 +89,20 @@
             </n-layout-content>
           </n-layout>
         </n-layout>
+        <n-modal 
+            v-model:show="showPasswordModal"
+            preset="card"
+            style="width: 90%; max-width: 500px;"
+            title="修改密码"
+            :bordered="false"
+            size="huge"
+          >
+            <!-- 当密码修改成功后，ChangePassword 组件应该 emit 一个事件来关闭弹窗 -->
+            <!-- 如果 ChangePassword 组件没有这个功能，弹窗依然可以通过点击遮罩层关闭 -->
+            <ChangePassword @password-changed="showPasswordModal = false" />
+          </n-modal>
 
-      </n-message-provider>
+        </n-message-provider>
     </n-config-provider>
   </div>
 </template>
@@ -89,11 +114,12 @@ import {
   NConfigProvider, NLayout, NLayoutHeader, NLayoutSider, NLayoutContent,
   NMenu, NSwitch, NIcon, NCard, NText, NProgress,
   darkTheme, zhCN, dateZhCN, useMessage, NMessageProvider,
+  NModal, NDropdown
 } from 'naive-ui';
 import axios from 'axios';
 import { useAuthStore } from './stores/auth';
 import Login from './components/Login.vue';
-
+import ChangePassword from './components/settings/ChangePassword.vue';
 import {
   PlayCircleOutline as ActionsIcon,
   ListOutline as ReviewListIcon,
@@ -104,11 +130,14 @@ import {
   LogOutOutline as LogoutIcon,
   HeartOutline as WatchlistIcon,
 } from '@vicons/ionicons5';
+import { Password24Regular as PasswordIcon } from '@vicons/fluent'
 
 const router = useRouter(); 
 const route = useRoute(); 
 const authStore = useAuthStore();
 
+// --- 状态定义 (Refs) ---
+const showPasswordModal = ref(false);
 const isDarkTheme = ref(localStorage.getItem('theme') !== 'light');
 const collapsed = ref(false);
 const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲', message: '等待任务', progress: 0 });
@@ -124,6 +153,30 @@ const renderIcon = (iconComponent) => {
   return () => h(NIcon, null, { default: () => h(iconComponent) });
 };
 
+// --- [修正] 用户下拉菜单的逻辑应该放在这里 ---
+const userOptions = computed(() => [
+  {
+    label: '修改密码',
+    key: 'change-password',
+    icon: renderIcon(PasswordIcon)
+  },
+  {
+    label: '退出登录',
+    key: 'logout',
+    icon: renderIcon(LogoutIcon)
+  }
+]);
+
+const handleUserSelect = async (key) => {
+  if (key === 'change-password') {
+    showPasswordModal.value = true;
+  } else if (key === 'logout') {
+    await authStore.logout();
+    router.push({ name: 'Login' });
+  }
+};
+
+// --- [修正] 侧边栏菜单的定义 ---
 const menuOptions = computed(() => [
   { label: 'Emby 配置', key: 'settings-emby', icon: renderIcon(EmbyIcon) },
   { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
@@ -132,21 +185,12 @@ const menuOptions = computed(() => [
   { label: '追剧列表', key: 'Watchlist', icon: renderIcon(WatchlistIcon) },
   { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
   { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
-  { type: 'divider', key: 'd2' },
-  { 
-    label: '退出登录', 
-    key: 'logout', 
-    icon: renderIcon(LogoutIcon),
-    show: authStore.isAuthEnabled 
-  },
+  // [修正] 退出登录已移至顶部下拉菜单，此处删除
 ]);
 
+// --- [修正] 菜单点击事件处理 ---
 async function handleMenuUpdate(key) {
-  if (key === 'logout') {
-    await authStore.logout();
-    router.push({ name: 'Login' });
-    return;
-  }
+  // 旧的退出登录逻辑已移除
   router.push({ name: key });
 }
 
@@ -163,26 +207,17 @@ const fetchStatus = async () => {
   }
 };
 
-// ★★★ 这里是修改的核心 ★★★
 const themeOverridesComputed = computed(() => {
-  // 为亮色模式和暗色模式都定义一个好看的阴影
   const lightCardShadow = '0 1px 2px -2px rgba(0, 0, 0, 0.08), 0 3px 6px 0 rgba(0, 0, 0, 0.06), 0 5px 12px 4px rgba(0, 0, 0, 0.04)';
   const darkCardShadow = '0 1px 2px -2px rgba(0, 0, 0, 0.24), 0 3px 6px 0 rgba(0, 0, 0, 0.18), 0 5px 12px 4px rgba(0, 0, 0, 0.12)';
 
   if (!isDarkTheme.value) {
-    // 亮色模式
     return {
-      common: { 
-        bodyColor: '#f0f2f5' 
-      },
-      Card: {
-        // 在这里为亮色模式的卡片加上阴影
-        boxShadow: lightCardShadow,
-      }
+      common: { bodyColor: '#f0f2f5' },
+      Card: { boxShadow: lightCardShadow }
     };
   }
   
-  // 暗色模式
   return {
     common: { 
       bodyColor: '#101014', 
@@ -194,7 +229,6 @@ const themeOverridesComputed = computed(() => {
     Card: { 
       color: '#1a1a1e', 
       titleTextColor: 'rgba(255, 255, 255, 0.92)',
-      // 在这里为暗色模式的卡片加上阴影
       boxShadow: darkCardShadow,
     },
     DataTable: { 
@@ -202,14 +236,8 @@ const themeOverridesComputed = computed(() => {
       thColor: '#1a1a1e', 
       tdColorStriped: '#202024' 
     },
-    Input: { 
-      color: '#1a1a1e' 
-    },
-    Select: { 
-      peers: { 
-        InternalSelection: { color: '#1a1a1e' } 
-      } 
-    }
+    Input: { color: '#1a1a1e' },
+    Select: { peers: { InternalSelection: { color: '#1a1a1e' } } }
   };
 });
 

@@ -14,7 +14,7 @@
           type="password"
           show-password-on="mousedown"
           v-model:value="passwords.new_password"
-          placeholder="请输入新密码 (至少8位)"
+          placeholder="请输入新密码 (至少6位)"
         />
       </n-form-item-row>
       <n-form-item-row label="确认新密码">
