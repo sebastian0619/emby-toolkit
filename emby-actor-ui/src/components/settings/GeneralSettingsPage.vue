@@ -15,6 +15,14 @@
         <n-space vertical :size="24">
           <!-- 卡片: 基础设置 -->
           <n-card title="基础设置" size="small" class="beautified-card">
+            <n-form-item-grid-item label="启用神医Pro模式 (文件 I/O)">
+                <n-switch v-model:value="configModel.use_sa_mode" />
+                <template #feedback>
+                  <n-text depth="3" style="font-size:0.8em;">
+                    开启后，将通过读写本地JSON文件处理元数据 (需神医Pro支持)。关闭后，将切换到直接读写Emby API普通模式，功能较少。
+                  </n-text>
+                </template>
+              </n-form-item-grid-item>
             <n-form-item-grid-item label="处理项目间的延迟 (秒)" path="delay_between_items_sec">
               <n-input-number v-model:value="configModel.delay_between_items_sec" :min="0" :step="0.1" placeholder="例如: 0.5"/>
             </n-form-item-grid-item>
@@ -48,16 +56,26 @@
               <template #feedback>开启后，处理电视剧时会为每一季/每一集生成单独的元数据文件。</template>
             </n-form-item>
             <n-form-item label="同步图片" path="sync_images">
-              <n-switch v-model:value="configModel.sync_images" />
-              <template #feedback>开启后，处理媒体时会下载海报、横幅图等图片文件。</template>
-            </n-form-item>
+                <!-- ★★★ 在这里添加 :disabled 绑定 ★★★ -->
+                <n-switch v-model:value="configModel.sync_images" :disabled="!configModel.use_sa_mode" />
+                <template #feedback>
+                  开启后，处理媒体时会下载海报、横幅图等图片文件。
+                  <span v-if="!configModel.use_sa_mode" style="color: var(--n-warning-color); font-weight: bold;"> (仅在神医模式下可用)</span>
+                </template>
+              </n-form-item>
           </n-card>
 
           <!-- 卡片: 数据源与 API -->
           <n-card title="数据源与 API" size="small" class="beautified-card">
             <n-form-item label="本地数据源路径" path="local_data_path">
-              <n-input v-model:value="configModel.local_data_path" placeholder="神医TMDB缓存目录 (cache和override的上层)" />
-            </n-form-item>
+                <!-- ★★★ 在这里添加 :disabled 绑定 ★★★ -->
+                <n-input v-model:value="configModel.local_data_path" placeholder="神医TMDB缓存目录 (cache和override的上层)" :disabled="!configModel.use_sa_mode" />
+                 <template #feedback>
+                  <n-text v-if="!configModel.use_sa_mode" depth="3" style="font-size:0.8em; color: var(--n-warning-color); font-weight: bold;">
+                    此项仅在“神医Pro模式”下需要配置。
+                  </n-text>
+                </template>
+              </n-form-item>
             <n-form-item label="TMDB API Key" path="tmdb_api_key">
               <n-input type="password" show-password-on="mousedown" v-model:value="configModel.tmdb_api_key" placeholder="输入你的 TMDB API Key" />
             </n-form-item>

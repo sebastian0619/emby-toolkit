@@ -15,8 +15,12 @@ DEFAULT_AI_TRANSLATION_PROMPT = """
 
 # --- Web Application Settings ---
 APP_VERSION = "2.0.6"  # 或者你的实际版本号
-DEBUG_MODE = False      # 开发时设为 True，部署到生产环境时应设为 False
+DEBUG_MODE = True      # 开发时设为 True，部署到生产环境时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
+
+# --- 功能模式切换开关 ---
+CONFIG_SECTION_FEATURES = "Features"
+CONFIG_OPTION_USE_SA_MODE = "use_sa_mode"
 
 # --- 数据库设置 ---
 DB_NAME = "emby_actor_processor.sqlite" # 数据库文件名 (也可以在这里定义，然后在 web_app.py 中引用)

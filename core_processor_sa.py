@@ -1,4 +1,4 @@
-# core_processor.py
+# core_processor_sa.py
 
 import os
 import json
@@ -42,7 +42,7 @@ def _read_local_json(file_path: str) -> Optional[Dict[str, Any]]:
         logger.error(f"读取本地JSON文件失败: {file_path}, 错误: {e}")
         return None
 
-class MediaProcessor:
+class MediaProcessorSA:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.db_path = config.get('db_path')

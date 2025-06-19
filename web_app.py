@@ -19,7 +19,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz # 用于处理时区
 import atexit # 用于应用退出处理
-from core_processor import MediaProcessor, SyncHandler
+from core_processor_sa import MediaProcessorSA, SyncHandler
+from core_processor_api import MediaProcessorAPI
 import csv
 from io import StringIO
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -90,7 +91,7 @@ logger.info(f"数据库文件路径 (DB_PATH) 设置为: {DB_PATH}")
 
 
 # --- 全局变量 ---
-media_processor_instance: Optional[MediaProcessor] = None
+media_processor_instance: Optional[Union[MediaProcessorSA, MediaProcessorAPI]] = None
 background_task_status = {
     "is_running": False,
     "current_action": "无",
@@ -421,7 +422,6 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
     app_cfg["schedule_sync_map_enabled"] = config_parser.getboolean("Scheduler", "schedule_sync_map_enabled", fallback=False)
     app_cfg["schedule_sync_map_cron"] = config_parser.get("Scheduler", "schedule_sync_map_cron", fallback="0 1 * * *")
 
-    # ★★★ 新增：读取追剧定时任务的配置 ★★★
     app_cfg[constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED] = config_parser.getboolean(
         constants.CONFIG_SECTION_SCHEDULER,
         constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED,
@@ -431,6 +431,16 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
         constants.CONFIG_SECTION_SCHEDULER,
         constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON,
         fallback=constants.DEFAULT_SCHEDULE_WATCHLIST_CRON # 使用常量里的默认值
+    )
+
+    # ★★★ 新增神医开关 ★★★
+    if not config_parser.has_section(constants.CONFIG_SECTION_FEATURES):
+        config_parser.add_section(constants.CONFIG_SECTION_FEATURES)
+        
+    app_cfg[constants.CONFIG_OPTION_USE_SA_MODE] = config_parser.getboolean(
+        constants.CONFIG_SECTION_FEATURES,
+        constants.CONFIG_OPTION_USE_SA_MODE,
+        fallback=True  # 默认开启神医模式，因为它是功能更全的版本
     )
     # ★★★ 新增结束 ★★★
 
@@ -544,7 +554,6 @@ def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，�
     config.set("Scheduler", "schedule_sync_map_enabled", str(new_config.get("schedule_sync_map_enabled", False)).lower())
     config.set("Scheduler", "schedule_sync_map_cron", str(new_config.get("schedule_sync_map_cron", "0 1 * * *")))
 
-    # ★★★ 新增：写入追剧定时任务的配置 ★★★
     config.set(
         constants.CONFIG_SECTION_SCHEDULER,
         constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED,
@@ -554,6 +563,16 @@ def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，�
         constants.CONFIG_SECTION_SCHEDULER,
         constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON,
         str(new_config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON, constants.DEFAULT_SCHEDULE_WATCHLIST_CRON))
+    )
+
+    # ★★★ 新增：写入追剧定时任务的配置 ★★★
+    if not config.has_section(constants.CONFIG_SECTION_FEATURES):
+        config.add_section(constants.CONFIG_SECTION_FEATURES)
+    
+    config.set(
+        constants.CONFIG_SECTION_FEATURES,
+        constants.CONFIG_OPTION_USE_SA_MODE,
+        str(new_config.get(constants.CONFIG_OPTION_USE_SA_MODE, True)).lower()
     )
     # ★★★ 新增结束 ★★★
 
@@ -589,30 +608,46 @@ def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，�
         logger.error(f"保存配置文件或重新初始化组件时失败: {e}", exc_info=True)
 
 # --- MediaProcessor 初始化 ---
-def initialize_processors(): # ★★★ 函数改名为 initialize_processors ★★★
-    global media_processor_instance, watchlist_processor_instance
+def initialize_processors():
+    global media_processor_instance
     
+    # ★★★ 3. 这是最核心的修改：根据配置创建不同的实例 ★★★
+    
+    # 确保 APP_CONFIG 已经加载
+    if not APP_CONFIG:
+        logger.error("无法初始化处理器：全局配置 APP_CONFIG 为空。")
+        return
+
     current_config = APP_CONFIG.copy()
     current_config['db_path'] = DB_PATH
 
-    # --- 初始化 MediaProcessor (不变) ---
+    # 先关闭旧的实例（如果存在）
     if media_processor_instance:
         media_processor_instance.close()
+
+    # 根据模式开关，决定实例化哪个类
+    use_sa_mode = current_config.get(constants.CONFIG_OPTION_USE_SA_MODE, True)
+    
     try:
-        media_processor_instance = MediaProcessor(config=current_config)
-        logger.info("MediaProcessor 实例已创建/更新。")
+        if use_sa_mode:
+            logger.info("【模式切换】正在创建【神医模式】的处理器实例 (MediaProcessorSA)...")
+            media_processor_instance = MediaProcessorSA(config=current_config)
+        else:
+            logger.info("【模式切换】正在创建【API模式】的处理器实例 (MediaProcessorAPI)...")
+            media_processor_instance = MediaProcessorAPI(config=current_config)
+        
+        logger.info("处理器实例已成功创建/更新。")
     except Exception as e:
-        logger.error(f"创建 MediaProcessor 实例失败: {e}", exc_info=True)
+        logger.error(f"创建处理器实例失败: {e}", exc_info=True)
         media_processor_instance = None
 
-    # ★★★ 新增：初始化 WatchlistProcessor ★★★
-    # 它不需要 close 方法，所以直接创建
-    try:
+    # ★★★ 4. 禁用/启用相关功能 ★★★
+    # 追剧功能
+    global watchlist_processor_instance
+    if use_sa_mode:
         watchlist_processor_instance = WatchlistProcessor(config=current_config)
-        logger.info("WatchlistProcessor 实例已创建/更新。")
-    except Exception as e:
-        logger.error(f"创建 WatchlistProcessor 实例失败: {e}", exc_info=True)
-        watchlist_processor_instance = None
+    else:
+        watchlist_processor_instance = None # API模式下禁用
 # --- 后台任务回调 ---
 def update_status_from_thread(progress: int, message: str):
     global background_task_status
@@ -621,7 +656,7 @@ def update_status_from_thread(progress: int, message: str):
     background_task_status["message"] = message
     # logger.debug(f"状态更新回调: Progress={progress}%, Message='{message}'") # 这条日志太频繁，可以注释掉
 # --- 后台任务封装 ---
-def _execute_task_with_lock(task_function, task_name: str, processor: Union[MediaProcessor, WatchlistProcessor], *args, **kwargs):
+def _execute_task_with_lock(task_function, task_name: str, processor: Union[MediaProcessorSA, MediaProcessorAPI, WatchlistProcessor], *args, **kwargs):
     """
     【V2 - 工人专用版】通用后台任务执行器。
     第一个参数必须是 MediaProcessor 实例。
@@ -943,34 +978,44 @@ def enrich_and_match_douban_cast_to_emby(
     logger.info(f"enrich_and_match_douban_cast_to_emby: 处理完成，返回 {len(results)} 个匹配/增强的演员信息。")
     return results
 
-def api_specific_sync_map_task(api_task_name: str): # <--- API 专属的，接收一个任务名参数
+def api_specific_sync_map_task(api_task_name: str, is_full_sync: bool): # 增加 is_full_sync 参数
     logger.info(f"'{api_task_name}': API专属同步任务开始执行。")
-    if media_processor_instance and \
-       media_processor_instance.emby_url and \
-       media_processor_instance.emby_api_key:
-        try:
-            sync_handler_instance = SyncHandler(
-                db_path=DB_PATH,
-                emby_url=media_processor_instance.emby_url,
-                emby_api_key=media_processor_instance.emby_api_key,
-                emby_user_id=media_processor_instance.emby_user_id,
-                stop_event=media_processor_instance._stop_event,
-                tmdb_api_key=media_processor_instance.tmdb_api_key
-            )
-            logger.info(f"'{api_task_name}': SyncHandler 实例已创建 (API)。")
-            sync_handler_instance.sync_emby_person_map_to_db(
-                update_status_callback=update_status_from_thread
-            )
-            logger.info(f"'{api_task_name}': 同步操作完成 (API)。")
-        except NameError as ne:
-             logger.error(f"'{api_task_name}' (API) 无法执行：SyncHandler 类未定义或未导入。错误: {ne}", exc_info=True)
-             update_status_from_thread(-1, "错误：同步功能组件未找到")
-        except Exception as e_sync:
-            logger.error(f"'{api_task_name}' (API) 执行过程中发生严重错误: {e_sync}", exc_info=True)
-            update_status_from_thread(-1, f"错误：同步失败 ({str(e_sync)[:50]}...)")
-    else:
-        logger.error(f"'{api_task_name}' (API) 无法执行：MediaProcessor 未初始化或 Emby 配置不完整。")
-        update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
+    
+    # 您已经添加了这个检查，非常正确！
+    if not APP_CONFIG.get(constants.CONFIG_OPTION_USE_SA_MODE, True):
+        logger.warning(f"'{api_task_name}' 被中止，因为当前不处于神医模式。")
+        update_status_from_thread(-1, "错误：此功能仅在神医模式下可用。")
+        return
+
+    # 确保神医版的处理器实例存在
+    if not isinstance(media_processor_instance, MediaProcessorSA):
+        logger.error(f"'{api_task_name}' 无法执行：当前处理器实例不是神医版 (MediaProcessorSA)。")
+        update_status_from_thread(-1, "错误：核心处理器模式不匹配。")
+        return
+
+    try:
+        # SyncHandler 是神医模式的一部分，所以它的参数应该从 MediaProcessorSA 实例获取
+        sync_handler_instance = SyncHandler(
+            db_path=DB_PATH,
+            emby_url=media_processor_instance.emby_url,
+            emby_api_key=media_processor_instance.emby_api_key,
+            emby_user_id=media_processor_instance.emby_user_id,
+            stop_event=media_processor_instance._stop_event, # 从实例获取 stop_event
+            tmdb_api_key=media_processor_instance.tmdb_api_key,
+            local_data_path=media_processor_instance.local_data_path # SyncHandler 需要这个
+        )
+        logger.info(f"'{api_task_name}': SyncHandler 实例已创建。")
+        
+        # 调用同步方法，并传递 is_full_sync 参数
+        sync_handler_instance.sync_emby_person_map_to_db(
+            full_sync=is_full_sync,
+            update_status_callback=update_status_from_thread
+        )
+        logger.info(f"'{api_task_name}': 同步操作完成。")
+        
+    except Exception as e_sync:
+        logger.error(f"'{api_task_name}' 执行过程中发生严重错误: {e_sync}", exc_info=True)
+        update_status_from_thread(-1, f"错误：同步失败 ({str(e_sync)[:50]}...)")
 # --- 执行全量媒体库扫描 ---
 def task_process_full_library(processor: MediaProcessor, process_episodes: bool):
     processor.process_full_library(
@@ -978,28 +1023,13 @@ def task_process_full_library(processor: MediaProcessor, process_episodes: bool)
         process_episodes=process_episodes
     )
 
-def task_sync_person_map(processor: MediaProcessor, is_full_sync: bool):
+def task_sync_person_map(processor, is_full_sync: bool): # processor 参数在这里其实没用到，但为了统一签名保留
     """任务：同步演员映射表"""
     task_name = "同步Emby演员映射表"
     if is_full_sync: task_name += " [全量模式]"
     
-    try:
-        sync_handler = SyncHandler(
-            db_path=DB_PATH,
-            emby_url=processor.emby_url,
-            emby_api_key=processor.emby_api_key,
-            emby_user_id=processor.emby_user_id,
-            stop_event=processor._stop_event,
-            tmdb_api_key=processor.tmdb_api_key,
-            local_data_path=processor.local_data_path
-        )
-        sync_handler.sync_emby_person_map_to_db(
-            full_sync=is_full_sync,
-            update_status_callback=update_status_from_thread
-        )
-    except Exception as e:
-        logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
-        update_status_from_thread(-1, f"错误：同步失败 ({str(e)[:50]}...)")
+    # ★★★ 直接调用我们修改后的函数 ★★★
+    api_specific_sync_map_task(task_name, is_full_sync)
 
 def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list: list, item_name: str):
     """任务：使用手动编辑的结果处理媒体项"""
@@ -1664,7 +1694,11 @@ def api_handle_trigger_full_scan():
     return jsonify({"message": f"{action_message} 任务已提交启动。"}), 202
 
 @app.route('/api/trigger_sync_person_map', methods=['POST'])
+@login_required # 假设需要登录
 def api_handle_trigger_sync_map():
+    # ★★★ 在函数开头增加检查 ★★★
+    if not APP_CONFIG.get(constants.CONFIG_OPTION_USE_SA_MODE, True):
+        return jsonify({"error": "此功能仅在神医模式下可用。"}), 403 # 403 Forbidden
     logger.info("API Endpoint: Received request to trigger sync person map.")
     try:
         data = request.json or {}
@@ -1697,7 +1731,11 @@ def api_handle_trigger_stop_task():
     
 # ✨✨✨ 保存手动编辑结果的 API ✨✨✨
 @app.route('/api/update_media_cast/<item_id>', methods=['POST'])
+@login_required
 def api_update_edited_cast(item_id):
+    # ★★★ 在函数开头增加检查 ★★★
+    if not APP_CONFIG.get(constants.CONFIG_OPTION_USE_SA_MODE, True):
+        return jsonify({"error": "此功能仅在神医模式下可用。"}), 403
     if not media_processor_instance:
         return jsonify({"error": "核心处理器未就绪"}), 503
     
@@ -1865,7 +1903,11 @@ def api_import_person_map():
         return jsonify({"error": f"处理文件时发生错误: {e}"}), 500 
 # ✨✨✨ 加载编辑页面的API接口 ✨✨✨
 @app.route('/api/media_with_cast_for_editing/<item_id>', methods=['GET'])
+@login_required
 def api_get_media_for_editing(item_id):
+    # ★★★ 在函数开头增加检查 ★★★
+    if not APP_CONFIG.get(constants.CONFIG_OPTION_USE_SA_MODE, True):
+        return jsonify({"error": "此功能仅在神医模式下可用。"}), 403
     if not media_processor_instance:
         return jsonify({"error": "核心处理器未就绪"}), 503
 
@@ -1995,28 +2037,22 @@ def api_clear_review_items():
         return jsonify({"error": "服务器在清空数据库时发生内部错误"}), 500
 # ✨✨✨ END: 新增 API ✨✨✨
 
-# ★★★ 今天的新增内容：获取追剧列表的API ★★★
-@app.route('/api/watchlist', methods=['GET'])
-@login_required # 如果你的API需要登录保护，加上这个装饰器
-def api_get_watchlist():
+# # ★★★ 获取追剧列表的API ★★★
+@app.route('/api/watchlist', methods=['GET']) 
+@login_required
+def api_get_watchlist(): # <-- 函数名改为 api_get_watchlist
+    # 模式检查
+    if not APP_CONFIG.get(constants.CONFIG_OPTION_USE_SA_MODE, True):
+        return jsonify([]) # API模式下返回空列表
+
     logger.info("API: 收到获取追剧列表的请求。")
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # 查询所有追剧列表中的项目，按添加时间倒序排列
-        cursor.execute("""
-            SELECT item_id, tmdb_id, item_name, status, added_at, last_checked_at 
-            FROM watchlist 
-            ORDER BY added_at DESC
-        """)
+        cursor.execute("SELECT * FROM watchlist ORDER BY added_at DESC")
         items = [dict(row) for row in cursor.fetchall()]
-        
         conn.close()
-        
-        logger.info(f"成功获取到 {len(items)} 条追剧项目。")
         return jsonify(items)
-        
     except Exception as e:
         logger.error(f"获取追剧列表时发生错误: {e}", exc_info=True)
         return jsonify({"error": "获取追剧列表时发生服务器内部错误"}), 500
@@ -2057,28 +2093,21 @@ def api_add_to_watchlist():
         logger.error(f"手动添加项目到追剧列表时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在添加时发生内部错误"}), 500
 
-# ★★★ 新增：手动触发追剧列表更新的API ★★★
-@app.route('/api/watchlist/trigger_update', methods=['POST'])
+#★★★ 手动触发追剧列表更新的API ★★★
+@app.route('/api/watchlist/trigger_full_update', methods=['POST']) 
 @login_required
-def api_trigger_watchlist_update():
-    logger.info("API: 收到手动触发追剧列表更新的请求。")
+def api_trigger_watchlist_update(): # <-- 函数名可以不变，因为它和路径无关了
+    # 模式检查
+    if not APP_CONFIG.get(constants.CONFIG_OPTION_USE_SA_MODE, True):
+        return jsonify({"error": "此功能仅在神医模式下可用。"}), 403
+
+    # ... (这个函数的内部逻辑完全不变) ...
     
-    # 检查是否有其他任务正在运行
-    if task_lock.locked():
-        logger.warning("无法手动触发追剧更新：已有其他后台任务正在运行。")
-        return jsonify({"error": "已有其他后台任务正在运行，请稍后再试。"}), 409
-
-    if not watchlist_processor_instance:
-        logger.error("无法手动触发追剧更新：WatchlistProcessor 未初始化。")
-        return jsonify({"error": "追剧处理模块未就绪。"}), 503
-
-    # 使用我们统一的队列提交函数
-    # 复用之前为定时任务创建的 task_process_watchlist 函数
+    logger.info("API: 收到手动触发追剧列表更新的请求。")
     submit_task_to_queue(
         task_process_watchlist,
-        "手动追剧更新" # 给它一个明确的任务名
+        "手动追剧更新"
     )
-    
     return jsonify({"message": "追剧列表更新任务已在后台启动！"}), 202
 # ★★★ 新增：手动更新追剧状态的API ★★★
 @app.route('/api/watchlist/update_status', methods=['POST'])
