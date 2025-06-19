@@ -55,7 +55,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 拷贝后端源码
 COPY web_app.py .
-COPY core_processor.py .
+COPY core_processor_sa.py .
+COPY core_processor_api.py .
 COPY douban.py .
 COPY tmdb_handler.py .
 COPY emby_handler.py .
