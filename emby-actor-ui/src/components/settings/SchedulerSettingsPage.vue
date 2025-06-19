@@ -26,7 +26,7 @@
     <!-- ★★★ 3. 第二个卡片，包裹同步映射表定时任务 ★★★ -->
     <n-card title="同步演员映射表定时任务" class="beautified-card" :bordered="false">
       <template #header-extra>
-        <n-switch v-model:value="configModel.schedule_sync_map_enabled" :disabled="!configModel.use_sa_mode" >
+        <n-switch v-model:value="configModel.schedule_sync_map_enabled">
           <template #checked>已启用</template>
           <template #unchecked>已禁用</template>
         </n-switch>

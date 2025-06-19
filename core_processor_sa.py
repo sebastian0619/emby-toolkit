@@ -1318,7 +1318,7 @@ class SyncHandlerSA:
         self.stop_event = stop_event
         self.tmdb_api_key = tmdb_api_key
         self.local_data_path = local_data_path
-        logger.info(f"SyncHandler initialized for local cache sync.")
+        logger.info(f"SyncHandlerSA initialized for local cache sync.")
 
     def _get_db_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=10.0)

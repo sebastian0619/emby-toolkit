@@ -859,74 +859,27 @@ def setup_scheduled_tasks():
 
     if scheduler.get_job(JOB_ID_SYNC_PERSON_MAP):
         scheduler.remove_job(JOB_ID_SYNC_PERSON_MAP)
-        logger.info("已移除旧的定时同步演员映射表任务。")
-        
+    
+    # ★★★ 核心修正：不再检查 use_sa_mode ★★★
     if schedule_sync_map_enabled:
         try:
-            def submit_scheduled_sync_to_queue():
-                logger.info("定时任务触发：准备提交演员映射表同步到任务队列。")
-                # 定时任务通常执行非全量同步
+            def scheduled_sync_map_task():
+                logger.info("定时任务触发：演员映射表同步。")
+                # 提交任务，让 task_worker_function 去动态判断使用哪个处理器
                 submit_task_to_queue(
-                    task_sync_person_map, # 复用我们为API定义的任务函数
+                    task_sync_person_map, 
                     "定时同步演员映射表",
-                    is_full_sync=False 
+                    is_full_sync=False # 定时任务通常执行快速同步
                 )
 
             scheduler.add_job(
-                func=submit_scheduled_sync_to_queue, # ★★★ 调用新的提交函数 ★★★
-                trigger=CronTrigger.from_crontab(sync_map_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                id=JOB_ID_SYNC_PERSON_MAP,
-                name="定时同步Emby演员映射表",
-                replace_existing=True
-            )
-            logger.info(f"已设置定时同步演员映射表任务: CRON='{sync_map_cron_expression}'")
-        except Exception as e:
-            logger.error(f"设置定时同步演员映射表任务失败: CRON='{sync_map_cron_expression}', 错误: {e}", exc_info=True)
-    else:
-        logger.info("定时同步演员映射表任务未启用。")
-
-    # --- 处理同步演员映射表的定时任务 ---
-    schedule_sync_map_enabled = config.get("schedule_sync_map_enabled", False)
-    sync_map_cron_expression = config.get("schedule_sync_map_cron", "0 1 * * *")
-
-    if scheduler.get_job(JOB_ID_SYNC_PERSON_MAP):
-        scheduler.remove_job(JOB_ID_SYNC_PERSON_MAP)
-        logger.info("已移除旧的定时同步演员映射表任务。")
-    if schedule_sync_map_enabled:
-        try:
-            def scheduled_sync_map_wrapper(): # 这个包装器是正确的
-                task_name = "定时同步Emby演员映射表"
-                def sync_map_task_for_scheduler():
-                    if media_processor_instance and media_processor_instance.emby_url and media_processor_instance.emby_api_key:
-                        logger.info(f"'{task_name}' (定时): 准备创建 SyncHandlerSA 实例...")
-                        try:
-                            # 假设 SyncHandler 在 core_processor.py 中定义，或者你已正确导入
-                            from core_processor_sa import SyncHandlerSA # 或者 from sync_handler import SyncHandlerSA
-                            sync_handler_instance = SyncHandlerSA(
-                                db_path=DB_PATH, emby_url=media_processor_instance.emby_url,
-                                emby_api_key=media_processor_instance.emby_api_key, emby_user_id=media_processor_instance.emby_user_id, local_data_path=media_processor_instance.local_data_path
-                            )
-                            logger.info(f"'{task_name}' (定时): SyncHandlerSA 实例已创建。")
-                            sync_handler_instance.sync_emby_person_map_to_db(update_status_callback=update_status_from_thread)
-                        except NameError as ne: # SyncHandlerSA 未定义
-                            logger.error(f"'{task_name}' (定时) 无法执行：SyncHandlerSA 类未定义或未导入。错误: {ne}", exc_info=True)
-                            update_status_from_thread(-1, "错误：同步功能组件未找到 (定时)")
-                        except Exception as e_sync_sched:
-                            logger.error(f"'{task_name}' (定时) 执行过程中发生错误: {e_sync_sched}", exc_info=True)
-                            update_status_from_thread(-1, f"错误：定时同步失败 ({str(e_sync_sched)[:50]}...)")
-                    else:
-                        logger.error(f"'{task_name}' (定时) 无法执行：MediaProcessor 未初始化或 Emby 配置不完整。")
-                        update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪 (定时)")
-                _execute_task_with_lock(sync_map_task_for_scheduler, task_name)
-
-            scheduler.add_job(
-                func=scheduled_sync_map_wrapper,
+                func=scheduled_sync_map_task,
                 trigger=CronTrigger.from_crontab(sync_map_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
                 id=JOB_ID_SYNC_PERSON_MAP, name="定时同步Emby演员映射表", replace_existing=True
             )
             logger.info(f"已设置定时同步演员映射表任务: CRON='{sync_map_cron_expression}'")
         except Exception as e:
-            logger.error(f"设置定时同步演员映射表任务失败: CRON='{sync_map_cron_expression}', 错误: {e}", exc_info=True)
+            logger.error(f"设置定时同步演员映射表任务失败: {e}", exc_info=True)
     else:
         logger.info("定时同步演员映射表任务未启用。")
 
@@ -1003,13 +956,62 @@ def task_process_full_library(processor: MediaProcessorSA, process_episodes: boo
         process_episodes=process_episodes
     )
 
-def task_sync_person_map(processor, is_full_sync: bool): # processor 参数在这里其实没用到，但为了统一签名保留
-    """任务：同步演员映射表"""
-    task_name = "同步Emby演员映射表"
+def task_sync_person_map(processor, is_full_sync: bool):
+    """
+    任务：同步演员映射表。
+    根据传入的处理器类型，调用不同的 SyncHandler。
+    """
+    task_name = "同步演员映射表"
     if is_full_sync: task_name += " [全量模式]"
     
-    # ★★★ 直接调用我们修改后的函数 ★★★
-    api_specific_sync_map_task(task_name, is_full_sync)
+    try:
+        # ★★★ 核心：根据处理器类型，执行不同的同步逻辑 ★★★
+        
+        if isinstance(processor, MediaProcessorSA):
+            logger.info(f"'{task_name}' 检测到神医模式，准备执行 SA 版同步...")
+            from core_processor_sa import SyncHandlerSA
+
+            sync_handler = SyncHandlerSA(
+                db_path=DB_PATH,
+                emby_url=processor.emby_url,
+                emby_api_key=processor.emby_api_key,
+                emby_user_id=processor.emby_user_id,
+                stop_event=processor._stop_event,
+                tmdb_api_key=processor.tmdb_api_key,
+                local_data_path=processor.local_data_path
+            )
+            # 神医版的同步方法可能叫 sync_emby_person_map_to_db
+            sync_handler.sync_emby_person_map_to_db(
+                full_sync=is_full_sync,
+                update_status_callback=update_status_from_thread
+            )
+
+        elif isinstance(processor, MediaProcessorAPI):
+            logger.info(f"'{task_name}' 检测到API模式，准备执行 API 版同步...")
+            from core_processor_api import SyncHandlerAPI
+
+            sync_handler = SyncHandlerAPI(
+                db_path=DB_PATH,
+                emby_url=processor.emby_url,
+                emby_api_key=processor.emby_api_key,
+                emby_user_id=processor.emby_user_id,
+                # API版的 SyncHandler 可能不需要 stop_event 等参数，根据您的实现调整
+            )
+            # API版的同步方法可能叫 sync_emby_person_map_to_db
+            sync_handler.sync_emby_person_map_to_db(
+                update_status_callback=update_status_from_thread
+            )
+            
+        else:
+            logger.error(f"'{task_name}' 无法执行，未知的处理器类型: {type(processor)}")
+            update_status_from_thread(-1, "错误：未知的处理器类型")
+
+    except ImportError as e:
+        logger.error(f"'{task_name}' 无法执行：无法导入所需的 SyncHandler。错误: {e}")
+        update_status_from_thread(-1, "错误：同步组件未找到")
+    except Exception as e:
+        logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
+        update_status_from_thread(-1, f"错误：同步失败 ({str(e)[:50]}...)")
 
 def task_manual_update(processor: MediaProcessorSA, item_id: str, manual_cast_list: list, item_name: str):
     """任务：使用手动编辑的结果处理媒体项"""
