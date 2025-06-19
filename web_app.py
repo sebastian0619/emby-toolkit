@@ -28,7 +28,6 @@ import secrets
 from flask import session
 # --- 核心模块导入 ---
 import constants # 你的常量定义
-from core_processor import MediaProcessor # 核心处理逻辑
 from logger_setup import logger, frontend_log_queue, add_file_handler # 日志记录器和前端日志队列
 # emby_handler 和 utils 会在需要的地方被 core_processor 或此文件中的函数调用
 # 如果直接在此文件中使用它们的功能，也需要在这里导入
@@ -100,7 +99,7 @@ background_task_status = {
 }
 task_lock = threading.Lock() # 用于确保后台任务串行执行
 APP_CONFIG: Dict[str, Any] = {} # ✨✨✨ 新增：全局配置字典 ✨✨✨
-media_processor_instance: Optional[MediaProcessor] = None
+media_processor_instance: Optional[MediaProcessorSA] = None
 watchlist_processor_instance: Optional[WatchlistProcessor] = None
 
 # ✨✨✨ 任务队列 ✨✨✨
@@ -114,7 +113,7 @@ JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
 # --- 全局变量结束 ---
 
 # --- 数据库辅助函数 ---
-def task_process_single_item(processor: MediaProcessor, item_id: str, force_reprocess: bool, process_episodes: bool):
+def task_process_single_item(processor: MediaProcessorSA, item_id: str, force_reprocess: bool, process_episodes: bool):
     """任务：处理单个媒体项"""
     processor.process_single_item(item_id, force_reprocess, process_episodes)
 
@@ -914,7 +913,7 @@ def setup_scheduled_tasks():
                         logger.info(f"'{task_name}' (定时): 准备创建 SyncHandler 实例...")
                         try:
                             # 假设 SyncHandler 在 core_processor.py 中定义，或者你已正确导入
-                            from core_processor import SyncHandler # 或者 from sync_handler import SyncHandler
+                            from core_processor_sa import SyncHandler # 或者 from sync_handler import SyncHandler
                             sync_handler_instance = SyncHandler(
                                 db_path=DB_PATH, emby_url=media_processor_instance.emby_url,
                                 emby_api_key=media_processor_instance.emby_api_key, emby_user_id=media_processor_instance.emby_user_id, local_data_path=media_processor_instance.local_data_path
@@ -1017,7 +1016,7 @@ def api_specific_sync_map_task(api_task_name: str, is_full_sync: bool): # 增加
         logger.error(f"'{api_task_name}' 执行过程中发生严重错误: {e_sync}", exc_info=True)
         update_status_from_thread(-1, f"错误：同步失败 ({str(e_sync)[:50]}...)")
 # --- 执行全量媒体库扫描 ---
-def task_process_full_library(processor: MediaProcessor, process_episodes: bool):
+def task_process_full_library(processor: MediaProcessorSA, process_episodes: bool):
     processor.process_full_library(
         update_status_callback=update_status_from_thread,
         process_episodes=process_episodes
@@ -1031,7 +1030,7 @@ def task_sync_person_map(processor, is_full_sync: bool): # processor 参数在�
     # ★★★ 直接调用我们修改后的函数 ★★★
     api_specific_sync_map_task(task_name, is_full_sync)
 
-def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list: list, item_name: str):
+def task_manual_update(processor: MediaProcessorSA, item_id: str, manual_cast_list: list, item_name: str):
     """任务：使用手动编辑的结果处理媒体项"""
     processor.process_item_with_manual_cast(
         item_id=item_id,
@@ -1040,7 +1039,7 @@ def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list
     )
 # ★★★ 1. 定义一个新的、用于编排任务的函数 ★★★
 # 这个函数将作为提交到任务队列的目标
-def webhook_processing_task(processor: MediaProcessor, item_id: str, force_reprocess: bool, process_episodes: bool):
+def webhook_processing_task(processor: MediaProcessorSA, item_id: str, force_reprocess: bool, process_episodes: bool):
     """
     【修复版】这个函数编排了处理新入库项目的完整流程。
     它的第一个参数现在是 MediaProcessor 实例，以匹配任务执行器的调用方式。
