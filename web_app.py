@@ -1010,18 +1010,53 @@ def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list
         manual_cast_list=manual_cast_list,
         item_name=item_name
     )
+# ★★★ 1. 定义一个新的、用于编排任务的函数 ★★★
+# 这个函数将作为提交到任务队列的目标
+def webhook_processing_task(item_id: str, force_reprocess: bool, process_episodes: bool):
+    """
+    这个函数编排了处理新入库项目的完整流程。
+    它将被任务队列（如 Celery, RQ, or a simple ThreadPoolExecutor）执行。
+    """
+    logger.info(f"Webhook 任务启动，处理项目: {item_id}")
+
+    # 步骤 A: 获取完整的项目详情，这是后续所有操作的基础
+    # 注意：我们在这里重新获取，以确保任务执行时数据是新鲜的
+    item_details = emby_handler.get_emby_item_details(
+        item_id, 
+        media_processor_instance.emby_url, 
+        media_processor_instance.emby_api_key, 
+        media_processor_instance.emby_user_id
+    )
+    if not item_details:
+        logger.error(f"Webhook 任务：无法获取项目 {item_id} 的详情，任务中止。")
+        return
+
+    # 步骤 B: ★★★ 仅在此处调用追剧判断 ★★★
+    # 这是整个流程的核心，确保了只有新入库的剧集才会触发自动添加
+    media_processor_instance.check_and_add_to_watchlist(item_details)
+
+    # 步骤 C: 执行通用的元数据处理流程
+    # 这个流程现在是“干净”的，不包含任何追剧逻辑
+    media_processor_instance.process_single_item(
+        item_id, 
+        force_reprocess_this_item=force_reprocess, 
+        process_episodes=process_episodes
+    )
+    
+    logger.info(f"Webhook 任务完成: {item_id}")
 # --- 追剧 ---    
 def task_process_watchlist(processor: WatchlistProcessor):
     """
     任务：处理追剧列表。
-    注意：这个函数接收的是 WatchlistProcessor 的实例。
     """
+    # 不传递 item_id，执行全量更新
     processor.process_watching_list()
-# ★★★ 新增：只处理单个追剧项目的任务函数 ★★★
+
+# ★★★ 核心修改：让这个任务函数调用改造后的方法 ★★★
 def task_process_single_watchlist_item(processor: WatchlistProcessor, item_id: str):
     """任务：只更新追剧列表中的一个特定项目"""
-    # 我们需要一个新的方法来实现这个功能
-    processor.process_single_watching_item(item_id)
+    # 传递 item_id，执行单项更新
+    processor.process_watching_list(item_id=item_id)
 # --- 路由区 ---
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
@@ -1099,12 +1134,14 @@ def emby_webhook():
         
     # ★★★ 核心修复逻辑 END ★★★
 
-    logger.info(f"Webhook事件 '{event_type}' 触发，最终处理项目 '{final_item_name}' (ID: {id_to_process}, TMDbID: {tmdb_id}) 已提交到任务队列。")
+    logger.info(f"Webhook事件触发，最终处理项目 '{final_item_name}' (ID: {id_to_process}, TMDbID: {tmdb_id}) 已提交到任务队列。")
     
-    # 使用最终确定的信息提交任务
+    # ★★★ 核心修改点在这里 ★★★
+    # 使用最终确定的信息，提交我们新的“编排任务”到队列
     submit_task_to_queue(
-        task_process_single_item,
+        webhook_processing_task,  # <--- 目标函数是这个，而不是 process_single_item
         f"Webhook处理: {final_item_name}",
+        # --- 传递给 webhook_processing_task 的参数 ---
         id_to_process,
         force_reprocess=True, 
         process_episodes=True
