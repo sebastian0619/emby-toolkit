@@ -26,7 +26,7 @@
     <!-- ★★★ 3. 第二个卡片，包裹同步映射表定时任务 ★★★ -->
     <n-card title="同步演员映射表定时任务" class="beautified-card" :bordered="false">
       <template #header-extra>
-        <n-switch v-model:value="configModel.schedule_sync_map_enabled">
+        <n-switch v-model:value="configModel.schedule_sync_map_enabled" :disabled="!configModel.use_sa_mode" >
           <template #checked>已启用</template>
           <template #unchecked>已禁用</template>
         </n-switch>
@@ -42,7 +42,7 @@
 
     <n-card title="智能追剧更新" class="beautified-card" :bordered="false">
       <n-form-item label="启用定时追剧更新">
-        <n-switch v-model:value="configModel.schedule_watchlist_enabled" />
+        <n-switch v-model:value="configModel.schedule_watchlist_enabled" :disabled="!configModel.use_sa_mode" />
       </n-form-item>
       <n-form-item label="追剧更新CRON表达式" v-if="configModel.schedule_watchlist_enabled">
         <n-input v-model:value="configModel.schedule_watchlist_cron" placeholder="例如: 0 */6 * * * (每6小时)" />

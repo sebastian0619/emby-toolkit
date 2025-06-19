@@ -2148,21 +2148,47 @@ def api_update_watchlist_status():
 @app.route('/api/watchlist/remove/<item_id>', methods=['POST'])
 @login_required
 def api_remove_from_watchlist(item_id):
-    # 1. 检查任务锁
+    # 1. 严格检查任务锁
     if task_lock.locked():
         logger.warning(f"API: 无法移除项目 {item_id}，因为有后台任务正在运行。")
-        return jsonify({"error": "后台任务正在运行，请稍后再试"}), 409
+        return jsonify({"error": "后台有长时间任务正在运行，请稍后再试"}), 409
 
     logger.info(f"API: 收到请求，将项目 {item_id} 从追剧列表移除。")
+    conn = None # ★★★ 将 conn 移到 try 外部
     try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM watchlist WHERE item_id = ?", (item_id,))
-            conn.commit()
-        return jsonify({"message": "已从追剧列表移除"}), 200
+        # ★★★ 不再使用 'with' 语句，手动管理连接 ★★★
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        logger.debug(f"准备执行 DELETE FROM watchlist WHERE item_id = {item_id}")
+        cursor.execute("DELETE FROM watchlist WHERE item_id = ?", (item_id,))
+        
+        # 检查是否真的有行被影响了
+        if cursor.rowcount > 0:
+            logger.info(f"成功执行 DELETE 语句，影响行数: {cursor.rowcount}。准备提交...")
+            conn.commit() # ★★★ 提交事务 ★★★
+            logger.info("数据库事务已提交。")
+            return jsonify({"message": "已从追剧列表移除"}), 200
+        else:
+            # 如果 rowcount 是 0，说明数据库里本来就没有这个 item_id
+            logger.warning(f"尝试删除项目 {item_id}，但在数据库中未找到匹配项。")
+            return jsonify({"error": "未在追剧列表中找到该项目"}), 404
+            
+    except sqlite3.OperationalError as e:
+        # ★★★ 专门捕获 OperationalError，它通常与锁定有关 ★★★
+        if "database is locked" in str(e).lower():
+            logger.error(f"从追剧列表移除项目时发生数据库锁定错误: {e}", exc_info=True)
+            return jsonify({"error": "数据库当前正忙，请稍后再试。"}), 503 # 503 Service Unavailable
+        else:
+            logger.error(f"从追剧列表移除项目时发生数据库操作错误: {e}", exc_info=True)
+            return jsonify({"error": "移除项目时发生数据库操作错误"}), 500
     except Exception as e:
-        logger.error(f"从追剧列表移除项目时发生错误: {e}", exc_info=True)
-        return jsonify({"error": "移除项目时发生服务器内部错误"}), 500
+        logger.error(f"从追剧列表移除项目时发生未知错误: {e}", exc_info=True)
+        return jsonify({"error": "移除项目时发生未知的服务器内部错误"}), 500
+    finally:
+        # ★★★ 确保连接总是被关闭 ★★★
+        if conn:
+            conn.close()
 # ★★★ 新增：手动触发单项追剧更新的API ★★★
 @app.route('/api/watchlist/trigger_update/<item_id>/', methods=['POST'])
 @login_required
