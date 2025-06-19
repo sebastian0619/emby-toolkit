@@ -1010,32 +1010,32 @@ def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list
     )
 # ★★★ 1. 定义一个新的、用于编排任务的函数 ★★★
 # 这个函数将作为提交到任务队列的目标
-def webhook_processing_task(item_id: str, force_reprocess: bool, process_episodes: bool):
+def webhook_processing_task(processor: MediaProcessor, item_id: str, force_reprocess: bool, process_episodes: bool):
     """
-    这个函数编排了处理新入库项目的完整流程。
-    它将被任务队列（如 Celery, RQ, or a simple ThreadPoolExecutor）执行。
+    【修复版】这个函数编排了处理新入库项目的完整流程。
+    它的第一个参数现在是 MediaProcessor 实例，以匹配任务执行器的调用方式。
     """
     logger.info(f"Webhook 任务启动，处理项目: {item_id}")
 
-    # 步骤 A: 获取完整的项目详情，这是后续所有操作的基础
-    # 注意：我们在这里重新获取，以确保任务执行时数据是新鲜的
+    # 步骤 A: 获取完整的项目详情
+    # ★★★ 修复：不再使用全局的 media_processor_instance，而是使用传入的 processor ★★★
     item_details = emby_handler.get_emby_item_details(
         item_id, 
-        media_processor_instance.emby_url, 
-        media_processor_instance.emby_api_key, 
-        media_processor_instance.emby_user_id
+        processor.emby_url, 
+        processor.emby_api_key, 
+        processor.emby_user_id
     )
     if not item_details:
         logger.error(f"Webhook 任务：无法获取项目 {item_id} 的详情，任务中止。")
         return
 
-    # 步骤 B: ★★★ 仅在此处调用追剧判断 ★★★
-    # 这是整个流程的核心，确保了只有新入库的剧集才会触发自动添加
-    media_processor_instance.check_and_add_to_watchlist(item_details)
+    # 步骤 B: 调用追剧判断
+    # ★★★ 修复：使用传入的 processor ★★★
+    processor.check_and_add_to_watchlist(item_details)
 
     # 步骤 C: 执行通用的元数据处理流程
-    # 这个流程现在是“干净”的，不包含任何追剧逻辑
-    media_processor_instance.process_single_item(
+    # ★★★ 修复：使用传入的 processor ★★★
+    processor.process_single_item(
         item_id, 
         force_reprocess_this_item=force_reprocess, 
         process_episodes=process_episodes
