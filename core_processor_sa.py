@@ -60,7 +60,6 @@ class MediaProcessorSA:
         self.local_data_path = self.config.get("local_data_path", "").strip()
         self.sync_images_enabled = self.config.get(constants.CONFIG_OPTION_SYNC_IMAGES, False)
         self.translator_engines = self.config.get(constants.CONFIG_OPTION_TRANSLATOR_ENGINES, constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
-        
         self.ai_translator = None
         if self.config.get("ai_translation_enabled", False):
             try:
@@ -1310,7 +1309,7 @@ class MediaProcessorSA:
 
 
 
-class SyncHandler:
+class SyncHandlerSA:
     def __init__(self, db_path: str, emby_url: str, emby_api_key: str, emby_user_id: Optional[str], stop_event: threading.Event, tmdb_api_key: str, local_data_path: str):
         self.db_path = db_path
         self.emby_url = emby_url

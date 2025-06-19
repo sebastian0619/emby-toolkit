@@ -187,14 +187,14 @@ const menuOptions = computed(() => {
     { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
     { type: 'divider', key: 'd1' },
     { label: '任务中心', key: 'actions-status', icon: renderIcon(ActionsIcon) },
+    { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
   ];
 
   // 仅当配置加载完成且神医Pro模式开启时，才显示相关菜单
   // 我们需要检查 configModel.value 是否存在，以避免在初始加载时出错
   if (configModel.value && configModel.value.use_sa_mode) {
     options.push(
-      { label: '追剧列表', key: 'Watchlist', icon: renderIcon(WatchlistIcon) },
-      { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) }
+      { label: '追剧列表', key: 'Watchlist', icon: renderIcon(WatchlistIcon) }
     );
   }
 
@@ -264,7 +264,7 @@ let statusIntervalId = null;
 onMounted(() => {
   if (authStore.isLoggedIn) {
     fetchStatus();
-    statusIntervalId = setInterval(fetchStatus, 200);
+    statusIntervalId = setInterval(fetchStatus, 1000);
   }
 });
 
@@ -276,7 +276,7 @@ watch(() => authStore.isLoggedIn, (newIsLoggedIn) => {
   if (newIsLoggedIn) {
     if (!statusIntervalId) {
       fetchStatus();
-      statusIntervalId = setInterval(fetchStatus, 200);
+      statusIntervalId = setInterval(fetchStatus, 1000);
     }
   } else {
     if (statusIntervalId) {

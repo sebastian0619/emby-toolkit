@@ -333,7 +333,7 @@ const translateAllFields = async () => {
   isTranslating.value = true;
   message.info("正在请求后端翻译所有非中文的姓名和角色名...");
   try {
-    const response = await axios.post('/api/actions/translate_cast', { cast: editableCast.value });
+    const response = await axios.post('/api/actions/translate_cast_sa', { cast: editableCast.value });
     const translatedList = response.data;
 
     // ★★★ 确保更新时保留所有 ID ★★★
@@ -355,7 +355,7 @@ const translateAllFields = async () => {
 const fetchMediaDetails = async () => {
   isLoading.value = true;
   try {
-    const response = await axios.get(`/api/media_with_cast_for_editing/${itemId.value}`);
+    const response = await axios.get(`/api/media_for_editing_sa/${itemId.value}`);
     itemDetails.value = response.data;
 
     // ★★★ 核心修复：在这里添加下面这行代码 ★★★
@@ -415,7 +415,7 @@ const handleSaveChanges = async () => {
     console.log("----------- [最终发送到后端的数据] -----------");
     console.log(JSON.stringify(payload, null, 2));
 
-    await axios.post(`/api/update_media_cast/${itemDetails.value.item_id}`, payload);
+    await axios.post(`/api/update_media_cast_sa/${itemDetails.value.item_id}`, payload);
     
     message.success("修改已保存，Emby将自动刷新。");
     // 延迟一小段时间再返回，给用户反馈时间

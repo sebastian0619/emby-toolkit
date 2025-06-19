@@ -19,8 +19,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz # 用于处理时区
 import atexit # 用于应用退出处理
-from core_processor_sa import MediaProcessorSA, SyncHandler
-from core_processor_api import MediaProcessorAPI
+from core_processor_sa import MediaProcessorSA, SyncHandlerSA
+from core_processor_api import MediaProcessorAPI, SyncHandlerAPI
 import csv
 from io import StringIO
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -196,10 +196,25 @@ def init_db():
                 map_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 emby_person_id TEXT UNIQUE,          -- ✨ 允许为 NULL，但如果存在则必须唯一
                 emby_person_name TEXT,
-                tmdb_person_id TEXT UNIQUE NOT NULL, -- ✨✨✨ 设为 UNIQUE NOT NULL，成为新的核心 ✨✨✨
+                tmdb_person_id INTEGER UNIQUE NOT NULL, -- ✨✨✨ 设为 UNIQUE NOT NULL，成为新的核心 ✨✨✨
                 tmdb_name TEXT,
                 imdb_id TEXT UNIQUE,                 -- ✨ IMDb ID 也应该是唯一的，允许为 NULL
                 douban_celebrity_id TEXT UNIQUE,     -- ✨ 豆瓣 ID 也应该是唯一的，允许为 NULL
+                douban_name TEXT,
+                last_synced_at TIMESTAMP,
+                last_updated_at TIMESTAMP
+            )
+        """)
+        # --- emby_actor_map 表 ---
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS emby_actor_map (
+                map_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                emby_person_id TEXT UNIQUE NOT NULL,
+                emby_person_name TEXT,
+                tmdb_person_id TEXT, 
+                tmdb_name TEXT,
+                imdb_id TEXT,
+                douban_celebrity_id TEXT,
                 douban_name TEXT,
                 last_synced_at TIMESTAMP,
                 last_updated_at TIMESTAMP
@@ -211,6 +226,7 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_imdb_id ON person_identity_map (imdb_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_celebrity_id ON person_identity_map (douban_celebrity_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_person_id ON person_identity_map (emby_person_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_person_id ON emby_actor_map (emby_person_id)")
         # ... (其他 person_identity_map 的索引) ...
         logger.info("Table 'person_identity_map' and indexes schema confirmed/created if not exists.")
 
@@ -795,39 +811,6 @@ def setup_scheduled_tasks():
     schedule_scan_enabled = config.get("schedule_enabled", False)
     scan_cron_expression = config.get("schedule_cron", "0 3 * * *")
     force_reprocess_scheduled_scan = config.get("schedule_force_reprocess", False)
-    JOB_ID_WATCHLIST_UPDATE = "scheduled_watchlist_update"
-    schedule_watchlist_enabled = APP_CONFIG.get("schedule_watchlist_enabled", False)
-    watchlist_cron_expression = APP_CONFIG.get("schedule_watchlist_cron", "0 */6 * * *") # 默认每6小时
-    if scheduler.get_job(JOB_ID_WATCHLIST_UPDATE):
-        scheduler.remove_job(JOB_ID_WATCHLIST_UPDATE)
-        logger.info("已移除旧的定时追剧更新任务。")
-    
-    if schedule_watchlist_enabled:
-        try:
-            def submit_watchlist_update_to_queue():
-                logger.info("定时任务触发：准备提交追剧列表更新到任务队列。")
-                if watchlist_processor_instance:
-                    # 注意：这里的任务函数是 watchlist_processor_instance 的方法
-                    submit_task_to_queue(
-                        task_process_watchlist,
-                        "定时追剧更新"
-                        # 这个任务不需要额外参数
-                    )
-                else:
-                    logger.error("无法执行定时追剧更新：WatchlistProcessor 未初始化。")
-
-            scheduler.add_job(
-                func=submit_watchlist_update_to_queue,
-                trigger=CronTrigger.from_crontab(watchlist_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                id=JOB_ID_WATCHLIST_UPDATE,
-                name="定时追剧列表更新",
-                replace_existing=True
-            )
-            logger.info(f"已设置定时追剧更新任务: CRON='{watchlist_cron_expression}'")
-        except Exception as e:
-            logger.error(f"设置定时追剧更新任务失败: {e}", exc_info=True)
-    else:
-        logger.info("定时追剧更新任务未启用。")
 
     if scheduler.get_job(JOB_ID_FULL_SCAN):
         scheduler.remove_job(JOB_ID_FULL_SCAN)
@@ -835,33 +818,38 @@ def setup_scheduled_tasks():
         
     if schedule_scan_enabled:
         try:
-            # ★★★ 核心修改：创建一个专门用于被 APScheduler 调用的函数 ★★★
             def submit_scheduled_scan_to_queue():
                 logger.info(f"定时任务触发：准备提交全量扫描到任务队列 (强制={force_reprocess_scheduled_scan})。")
                 
-                # 在任务触发时，才去读取最新的配置
+                # ★★★ 核心修正：在这里实现和 API 路由一样的逻辑 ★★★
+                if force_reprocess_scheduled_scan:
+                    logger.info("定时任务：检测到“强制重处理”选项，将在任务开始前清空已处理日志。")
+                    if media_processor_instance:
+                        media_processor_instance.clear_processed_log()
+                    else:
+                        logger.error("定时任务：无法清空日志，因为处理器未初始化。")
+
+                # 读取最新的处理深度配置
                 current_config, _ = load_config()
                 process_episodes = current_config.get('process_episodes', True)
                 
-                # 使用我们统一的队列提交函数
+                # ★★★ 核心修正：提交任务时，不再传递 force_reprocess ★★★
                 submit_task_to_queue(
-                    task_process_full_library, # 复用这个任务执行函数
+                    task_process_full_library,
                     "定时全量扫描",
-                    force_reprocess=force_reprocess_scheduled_scan,
-                    process_episodes=process_episodes
+                    process_episodes=process_episodes # 只传递这一个参数
                 )
 
             scheduler.add_job(
-                func=submit_scheduled_scan_to_queue, # ★★★ 让定时器调用这个新函数 ★★★
+                func=submit_scheduled_scan_to_queue,
                 trigger=CronTrigger.from_crontab(scan_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
                 id=JOB_ID_FULL_SCAN,
                 name="定时全量媒体库扫描",
                 replace_existing=True,
-                # 注意：这里不再需要 args，因为所有参数都在 submit_scheduled_scan_to_queue 内部处理了
             )
             logger.info(f"已设置定时全量扫描任务: CRON='{scan_cron_expression}', 强制={force_reprocess_scheduled_scan}")
         except Exception as e:
-            logger.error(f"设置定时全量扫描任务失败: CRON='{scan_cron_expression}', 错误: {e}", exc_info=True)
+            logger.error(f"设置定时全量扫描任务失败: {e}", exc_info=True)
     else:
         logger.info("定时全量扫描任务未启用。")
 
@@ -910,18 +898,18 @@ def setup_scheduled_tasks():
                 task_name = "定时同步Emby演员映射表"
                 def sync_map_task_for_scheduler():
                     if media_processor_instance and media_processor_instance.emby_url and media_processor_instance.emby_api_key:
-                        logger.info(f"'{task_name}' (定时): 准备创建 SyncHandler 实例...")
+                        logger.info(f"'{task_name}' (定时): 准备创建 SyncHandlerSA 实例...")
                         try:
                             # 假设 SyncHandler 在 core_processor.py 中定义，或者你已正确导入
-                            from core_processor_sa import SyncHandler # 或者 from sync_handler import SyncHandler
-                            sync_handler_instance = SyncHandler(
+                            from core_processor_sa import SyncHandlerSA # 或者 from sync_handler import SyncHandlerSA
+                            sync_handler_instance = SyncHandlerSA(
                                 db_path=DB_PATH, emby_url=media_processor_instance.emby_url,
                                 emby_api_key=media_processor_instance.emby_api_key, emby_user_id=media_processor_instance.emby_user_id, local_data_path=media_processor_instance.local_data_path
                             )
-                            logger.info(f"'{task_name}' (定时): SyncHandler 实例已创建。")
+                            logger.info(f"'{task_name}' (定时): SyncHandlerSA 实例已创建。")
                             sync_handler_instance.sync_emby_person_map_to_db(update_status_callback=update_status_from_thread)
-                        except NameError as ne: # SyncHandler 未定义
-                            logger.error(f"'{task_name}' (定时) 无法执行：SyncHandler 类未定义或未导入。错误: {ne}", exc_info=True)
+                        except NameError as ne: # SyncHandlerSA 未定义
+                            logger.error(f"'{task_name}' (定时) 无法执行：SyncHandlerSA 类未定义或未导入。错误: {ne}", exc_info=True)
                             update_status_from_thread(-1, "错误：同步功能组件未找到 (定时)")
                         except Exception as e_sync_sched:
                             logger.error(f"'{task_name}' (定时) 执行过程中发生错误: {e_sync_sched}", exc_info=True)
@@ -979,13 +967,6 @@ def enrich_and_match_douban_cast_to_emby(
 
 def api_specific_sync_map_task(api_task_name: str, is_full_sync: bool): # 增加 is_full_sync 参数
     logger.info(f"'{api_task_name}': API专属同步任务开始执行。")
-    
-    # 您已经添加了这个检查，非常正确！
-    if not APP_CONFIG.get(constants.CONFIG_OPTION_USE_SA_MODE, True):
-        logger.warning(f"'{api_task_name}' 被中止，因为当前不处于神医模式。")
-        update_status_from_thread(-1, "错误：此功能仅在神医模式下可用。")
-        return
-
     # 确保神医版的处理器实例存在
     if not isinstance(media_processor_instance, MediaProcessorSA):
         logger.error(f"'{api_task_name}' 无法执行：当前处理器实例不是神医版 (MediaProcessorSA)。")
@@ -993,17 +974,17 @@ def api_specific_sync_map_task(api_task_name: str, is_full_sync: bool): # 增加
         return
 
     try:
-        # SyncHandler 是神医模式的一部分，所以它的参数应该从 MediaProcessorSA 实例获取
-        sync_handler_instance = SyncHandler(
+        # SyncHandlerSA 是神医模式的一部分，所以它的参数应该从 MediaProcessorSA 实例获取
+        sync_handler_instance = SyncHandlerSA(
             db_path=DB_PATH,
             emby_url=media_processor_instance.emby_url,
             emby_api_key=media_processor_instance.emby_api_key,
             emby_user_id=media_processor_instance.emby_user_id,
             stop_event=media_processor_instance._stop_event, # 从实例获取 stop_event
             tmdb_api_key=media_processor_instance.tmdb_api_key,
-            local_data_path=media_processor_instance.local_data_path # SyncHandler 需要这个
+            local_data_path=media_processor_instance.local_data_path # SyncHandlerSA 需要这个
         )
-        logger.info(f"'{api_task_name}': SyncHandler 实例已创建。")
+        logger.info(f"'{api_task_name}': SyncHandlerSA 实例已创建。")
         
         # 调用同步方法，并传递 is_full_sync 参数
         sync_handler_instance.sync_emby_person_map_to_db(
@@ -1695,9 +1676,6 @@ def api_handle_trigger_full_scan():
 @app.route('/api/trigger_sync_person_map', methods=['POST'])
 @login_required # 假设需要登录
 def api_handle_trigger_sync_map():
-    # ★★★ 在函数开头增加检查 ★★★
-    if not APP_CONFIG.get(constants.CONFIG_OPTION_USE_SA_MODE, True):
-        return jsonify({"error": "此功能仅在神医模式下可用。"}), 403 # 403 Forbidden
     logger.info("API Endpoint: Received request to trigger sync person map.")
     try:
         data = request.json or {}
@@ -1728,13 +1706,10 @@ def api_handle_trigger_stop_task():
         logger.warning("API: MediaProcessor 未初始化，无法发送停止信号。")
         return jsonify({"error": "核心处理器未就绪"}), 503
     
-# ✨✨✨ 保存手动编辑结果的 API ✨✨✨
-@app.route('/api/update_media_cast/<item_id>', methods=['POST'])
+# ✨✨✨ 神医保存手动编辑结果的 API ✨✨✨
+@app.route('/api/update_media_cast_sa/<item_id>', methods=['POST'])
 @login_required
-def api_update_edited_cast(item_id):
-    # ★★★ 在函数开头增加检查 ★★★
-    if not APP_CONFIG.get(constants.CONFIG_OPTION_USE_SA_MODE, True):
-        return jsonify({"error": "此功能仅在神医模式下可用。"}), 403
+def api_update_edited_cast_sa(item_id):
     if not media_processor_instance:
         return jsonify({"error": "核心处理器未就绪"}), 503
     
@@ -1755,6 +1730,60 @@ def api_update_edited_cast(item_id):
     )
     
     return jsonify({"message": "手动更新任务已在后台启动。"}), 202
+@app.route('/api/update_media_cast_api/<item_id>', methods=['POST'])
+@login_required
+def api_update_edited_cast_api(item_id):
+    if not media_processor_instance:
+        return jsonify({"error": "核心处理器未就绪"}), 503
+    
+    try:
+        data = request.json
+        if not data or "cast" not in data or not isinstance(data["cast"], list):
+            return jsonify({"error": "请求体中缺少有效的 'cast' 列表"}), 400
+
+        edited_cast_from_frontend = data["cast"]
+        logger.info(f"API: 收到为 ItemID {item_id} 更新演员的请求，共 {len(edited_cast_from_frontend)} 位演员。")
+
+        # ======================================================================
+        # ✨✨✨ 逻辑变更：不再自己处理，而是交给 core_processor ✨✨✨
+        # ======================================================================
+
+        # 1. 更新翻译缓存 (这部分逻辑可以保留在 API 层)
+        # (您现有的更新翻译缓存的代码可以放在这里，我暂时省略以保持清晰)
+        # ... 您更新翻译缓存的代码 ...
+        
+        # 2. 准备传递给核心处理器的数据 (emby_handler 期望的格式)
+        cast_for_processor = []
+        for actor_frontend in edited_cast_from_frontend:
+            entry = {
+                "emby_person_id": str(actor_frontend.get("embyPersonId", "")).strip(),
+                "name": str(actor_frontend.get("name", "")).strip(),
+                "character": str(actor_frontend.get("role", "")).strip(),
+                "provider_ids": {} # 您可以根据需要填充这个
+            }
+            cast_for_processor.append(entry)
+
+        # 3. 调用新的核心处理函数
+        process_success = media_processor_instance.process_item_with_manual_cast(
+            item_id=item_id,
+            manual_cast_list=cast_for_processor
+        )
+
+        # 4. 根据处理结果返回响应
+        if process_success:
+            logger.info(f"API: ItemID {item_id} 的手动更新流程已成功执行。")
+            # 更新成功后，也应该更新处理日志
+            item_name_for_log = data.get("item_name", f"未知项目(ID:{item_id})")
+            media_processor_instance._remove_from_failed_log_if_exists(item_id)
+            media_processor_instance.save_to_processed_log(item_id, item_name_for_log, score=10.0) # 手动处理给满分
+            return jsonify({"message": "演员信息已成功更新，并执行了完整的处理流程。"}), 200
+        else:
+            logger.error(f"API: 核心处理器未能成功处理 ItemID {item_id} 的手动更新。")
+            return jsonify({"error": "核心处理器执行手动更新失败，请检查后端日志。"}), 500
+
+    except Exception as e:
+        logger.error(f"API /api/update_media_cast CRITICAL Error for {item_id}: {e}", exc_info=True)
+        return jsonify({"error": "保存演员信息时发生服务器内部错误"}), 500
     
 @app.route('/api/export_person_map', methods=['GET'])
 def api_export_person_map():
@@ -1900,13 +1929,10 @@ def api_import_person_map():
     except Exception as e:
         logger.error(f"导入文件时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": f"处理文件时发生错误: {e}"}), 500 
-# ✨✨✨ 加载编辑页面的API接口 ✨✨✨
-@app.route('/api/media_with_cast_for_editing/<item_id>', methods=['GET'])
+# ✨✨✨ 神医编辑页面的API接口 ✨✨✨
+@app.route('/api/media_for_editing_sa/<item_id>', methods=['GET'])
 @login_required
-def api_get_media_for_editing(item_id):
-    # ★★★ 在函数开头增加检查 ★★★
-    if not APP_CONFIG.get(constants.CONFIG_OPTION_USE_SA_MODE, True):
-        return jsonify({"error": "此功能仅在神医模式下可用。"}), 403
+def api_get_media_for_editing_sa(item_id):
     if not media_processor_instance:
         return jsonify({"error": "核心处理器未就绪"}), 503
 
@@ -1917,6 +1943,123 @@ def api_get_media_for_editing(item_id):
         return jsonify(data_for_editing)
     else:
         return jsonify({"error": f"无法获取项目 {item_id} 的编辑数据，请检查日志。"}), 404
+# ✨✨✨ 普通编辑页面的API接口 ✨✨✨
+@app.route('/api/media_api_edit_details/<item_id>', methods=['GET'])
+@login_required # ✨ 2. 确保依赖存在
+def api_get_media_for_editing_api(item_id):
+    logger.info(f"API: 收到为 ItemID {item_id} 获取编辑详情的请求。")
+
+    if not media_processor_instance:
+        return jsonify({"error": "核心处理器未就绪"}), 503
+
+    # 1. 从 Emby 获取详情 (保持不变)
+    try:
+        emby_details = emby_handler.get_emby_item_details(
+            item_id,
+            media_processor_instance.emby_url,
+            media_processor_instance.emby_api_key,
+            media_processor_instance.emby_user_id
+        )
+        if not emby_details:
+            return jsonify({"error": f"在Emby中未找到项目 {item_id}"}), 404
+    except Exception as e:
+        logger.error(f"API: 获取Emby详情失败 for ItemID {item_id}: {e}", exc_info=True)
+        return jsonify({"error": "获取Emby详情时发生服务器错误"}), 500
+
+    # 2. 从 failed_log 获取额外信息 (保持不变)
+    conn = None
+    failed_log_info = {}
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT item_name, item_type, error_message, score FROM failed_log WHERE item_id = ?", (item_id,))
+        row = cursor.fetchone()
+        if row:
+            failed_log_info = dict(row)
+    finally:
+        if conn:
+            conn.close()
+
+    # ★★★ START: 3. 格式化并丰富演员列表 (关键修改) ★★★
+    enriched_cast_for_frontend = []
+    if emby_details.get("People"):
+        for person in emby_details.get("People", []):
+            person_id = person.get("Id")
+            if person_id and person.get("Name"):
+                provider_ids = person.get("ProviderIds", {})
+                
+                # 为每个演员单独获取其详细信息以获得 image_tag
+                actor_image_tag = person.get('PrimaryImageTag')
+                try:
+                    # 调用您现有的 emby_handler 方法来获取演员详情
+                    fields_to_request = "People,ProviderIds,PrimaryImageAspectRatio,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines"
+    
+                    # 调用 emby_handler 的函数，并把 fields 参数传进去
+                    emby_details = emby_handler.get_emby_item_details(
+                        item_id,
+                        media_processor_instance.emby_url,
+                        media_processor_instance.emby_api_key,
+                        media_processor_instance.emby_user_id,
+                        fields=fields_to_request  # <--- 把我们需要的字段列表传给它
+                    )
+                    if not emby_details:
+                        return jsonify({"error": f"在Emby中未找到项目 {item_id}"}), 404
+                except Exception as e:
+                    logger.error(f"API: 获取Emby详情失败 for ItemID {item_id}: {e}", exc_info=True)
+                    return jsonify({"error": "获取Emby详情时发生服务器错误"}), 500
+                
+                enriched_cast_for_frontend.append({
+                    "embyPersonId": str(person_id),
+                    "name": person["Name"],
+                    "role": person.get("Role", ""),
+                    "imdbId": provider_ids.get("Imdb"),
+                    "doubanId": provider_ids.get("Douban"),
+                    "tmdbId": provider_ids.get("Tmdb"),
+                    "image_tag": actor_image_tag  # 加入演员的 image_tag
+                })
+    # ★★★ END: 3. ★★★
+
+    # 4. 生成搜索链接 (保持不变)
+    google_search_for_wiki_url = None
+    title = emby_details.get("Name")
+    year = emby_details.get("ProductionYear")
+    
+    if title:
+        logger.info(f"准备为标题 '{title}' (年份: {year}) 生成搜索链接。")
+        try:
+            google_search_for_wiki_url = utils.generate_search_url('wikipedia', title, year)
+            if google_search_for_wiki_url:
+                logger.info(f"成功生成搜索链接: {google_search_for_wiki_url}")
+            else:
+                logger.warning(f"generate_search_url 函数为标题 '{title}' 返回了一个空值或 None。")
+        except Exception as e:
+            logger.error(f"为 '{title}' 生成维基百科搜索链接时发生异常: {e}", exc_info=True)
+    else:
+        logger.warning("无法生成搜索链接，因为 Emby 详情中缺少标题 (Name)。")
+
+    # ★★★ START: 5. 组合最终的响应数据 (关键修改) ★★★
+    response_data = {
+        "item_id": item_id,
+        "item_name": emby_details.get("Name"),
+        "item_type": emby_details.get("Type"),
+        
+        # 加入媒体海报的 image_tag
+        "image_tag": emby_details.get('ImageTags', {}).get('Primary'),
+        
+        "original_score": failed_log_info.get("score"),
+        "review_reason": failed_log_info.get("error_message"),
+        
+        # 使用我们新生成的、包含 image_tag 的演员列表
+        "current_emby_cast": enriched_cast_for_frontend,
+        
+        "search_links": {
+            "google_search_wiki": google_search_for_wiki_url
+        }
+    }
+    # ★★★ END: 5. ★★★
+    
+    logger.info(f"API: 成功为项目 {item_id} 构建编辑详情，准备返回。")
+    return jsonify(response_data)
 
 # ✨✨✨   生成外部搜索链接 ✨✨✨
 @app.route('/api/parse_cast_from_url', methods=['POST'])
@@ -1945,9 +2088,10 @@ def api_parse_cast_from_url():
     except Exception as e:
         logger.error(f"解析 URL '{url_to_parse}' 时发生未知错误: {e}", exc_info=True)
         return jsonify({"error": "解析时发生未知的服务器错误"}), 500
-# ✨✨✨ 一键翻译 ✨✨✨
-@app.route('/api/actions/translate_cast', methods=['POST'])
-def api_translate_cast():
+# ✨✨✨ 神医一键翻译 ✨✨✨
+@app.route('/api/actions/translate_cast_sa', methods=['POST']) # 注意路径不同
+@login_required
+def api_translate_cast_sa():
     if not media_processor_instance:
         return jsonify({"error": "核心处理器未就绪"}), 503
         
@@ -1963,7 +2107,85 @@ def api_translate_cast():
     except Exception as e:
         logger.error(f"一键翻译演员列表时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在翻译时发生内部错误。"}), 500
-    
+# ✨✨✨ 普通一键翻译 ✨✨✨
+@app.route('/api/actions/translate_cast_api', methods=['POST']) # 注意路径不同
+@login_required
+def api_translate_cast_api():
+    if not media_processor_instance:
+        return jsonify({"error": "核心处理器未就绪"}), 503
+        
+    data = request.json
+    current_cast = data.get('cast')
+
+    if not isinstance(current_cast, list):
+        return jsonify({"error": "请求体必须包含 'cast' 列表。"}), 400
+
+    try:
+        # 调用新的、功能更全的翻译方法
+        translated_list = media_processor_instance.translate_cast_list(current_cast)
+        return jsonify(translated_list)
+        
+    except Exception as e:
+        logger.error(f"一键翻译演员列表时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在翻译时发生内部错误。"}), 500
+# ✨✨✨ 预览处理后的演员表 ✨✨✨
+@app.route('/api/preview_processed_cast/<item_id>', methods=['POST'])
+def api_preview_processed_cast(item_id):
+    """
+    一个轻量级的API，用于预览单个媒体项经过核心处理器处理后的演员列表。
+    它只返回处理结果，不执行任何数据库更新或Emby更新。
+    """
+    if not media_processor_instance:
+        return jsonify({"error": "核心处理器未就绪"}), 503
+
+    logger.info(f"API: 收到为 ItemID {item_id} 预览处理后演员的请求。")
+
+    # 步骤 1: 获取当前媒体的 Emby 详情
+    try:
+        item_details = emby_handler.get_emby_item_details(
+            item_id,
+            media_processor_instance.emby_url,
+            media_processor_instance.emby_api_key,
+            media_processor_instance.emby_user_id
+        )
+        if not item_details:
+            return jsonify({"error": "无法获取当前媒体的Emby详情"}), 404
+    except Exception as e:
+        logger.error(f"API /preview_processed_cast: 获取Emby详情失败 for ID {item_id}: {e}", exc_info=True)
+        return jsonify({"error": f"获取Emby详情时发生错误: {e}"}), 500
+
+    # 步骤 2: 调用核心处理方法
+    try:
+        current_emby_cast_raw = item_details.get("People", [])
+        
+        # 直接调用 MediaProcessor 的核心方法
+        processed_cast_result = media_processor_instance._process_cast_list(
+            current_emby_cast_people=current_emby_cast_raw,
+            media_info=item_details
+        )
+        
+        # 步骤 3: 将处理结果转换为前端友好的格式
+        # processed_cast_result 的格式是内部格式，我们需要转换为前端期望的格式
+        # (embyPersonId, name, role, imdbId, doubanId, tmdbId)
+        
+        cast_for_frontend = []
+        for actor_data in processed_cast_result:
+            cast_for_frontend.append({
+                "embyPersonId": actor_data.get("EmbyPersonId"),
+                "name": actor_data.get("Name"),
+                "role": actor_data.get("Role"),
+                "imdbId": actor_data.get("ImdbId"),
+                "doubanId": actor_data.get("DoubanCelebrityId"),
+                "tmdbId": actor_data.get("TmdbPersonId"),
+                "matchStatus": "已刷新" # 可以根据 actor_data['_source_comment'] 提供更详细的状态
+            })
+
+        logger.info(f"API: 成功为 ItemID {item_id} 预览了处理后的演员列表，返回 {len(cast_for_frontend)} 位演员。")
+        return jsonify(cast_for_frontend)
+
+    except Exception as e:
+        logger.error(f"API /preview_processed_cast: 调用 _process_cast_list 时发生错误 for ID {item_id}: {e}", exc_info=True)
+        return jsonify({"error": "在服务器端处理演员列表时发生内部错误"}), 500    
 # ★★★ START: Emby 图片代理路由 ★★★
 @app.route('/image_proxy/<path:image_path>')
 def proxy_emby_image(image_path):

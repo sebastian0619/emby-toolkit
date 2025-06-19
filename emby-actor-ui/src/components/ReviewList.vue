@@ -1,5 +1,5 @@
+<!-- src/components/ReviewList.vue -->
 <template>
-  <!-- ★★★ 1. 将 beautified-card 应用到最外层的 n-card ★★★ -->
   <n-card title="媒体库浏览器" class="beautified-card" :bordered="false" size="small">
     <n-alert 
       v-if="taskStatus.is_running" 
@@ -11,7 +11,6 @@
       后台任务正在运行，此时“手动处理”等操作可能会失败。
     </n-alert>
     
-    <!-- ★★★ 2. 将搜索框和表格内容包裹在一个 div 中，方便控制 ★★★ -->
     <div>
       <n-input
         v-model:value="searchQuery"
@@ -77,8 +76,15 @@ import {
 } from 'naive-ui';
 import { HeartOutline as AddToWatchlistIcon } from '@vicons/ionicons5';
 import { SearchOutline as SearchIcon, PlayForwardOutline as ReprocessIcon, CheckmarkCircleOutline as MarkDoneIcon, TrashOutline as TrashIcon } from '@vicons/ionicons5';
+
+// ✨✨✨ [新增] 1. 引入 useConfig 以获取全局配置 ✨✨✨
+import { useConfig } from '../composables/useConfig';
+
 const router = useRouter();
 const message = useMessage();
+
+// ✨✨✨ [新增] 2. 调用 useConfig 获取响应式的配置模型 ✨✨✨
+const { configModel } = useConfig();
 
 const tableData = ref([]);
 const loading = ref(true);
@@ -90,37 +96,31 @@ const searchQuery = ref('');
 const loadingAction = ref({});
 const currentRowId = ref(null);
 const isShowingSearchResults = ref(false);
-// ★★★ 新增：调用后端API将剧集添加到追剧列表的函数 ★★★
+
 const addToWatchlist = async (rowData) => {
-  // 再次确认是剧集类型
   if (rowData.item_type !== 'Series') {
     message.warning('只有剧集类型才能添加到追剧列表。');
     return;
   }
-  
-  // 从 ProviderIds 中提取 tmdb_id
-  // 注意：搜索结果里的 ProviderIds 可能不存在，需要做安全检查
   const tmdbId = rowData.provider_ids?.Tmdb;
   if (!tmdbId) {
       message.error('无法添加到追剧列表：此项目缺少TMDb ID。');
       return;
   }
-
   try {
-    // 准备发送给后端的数据
     const payload = {
       item_id: rowData.item_id,
       tmdb_id: tmdbId,
       item_name: rowData.item_name,
       item_type: rowData.item_type,
     };
-    
     const response = await axios.post('/api/watchlist/add', payload);
     message.success(response.data.message || '添加成功！');
   } catch (error) {
     message.error(error.response?.data?.error || '添加到追剧列表失败，可能已存在。');
   }
 };
+
 const formatDate = (timestamp) => {
   if (!timestamp) return 'N/A';
   try {
@@ -135,26 +135,41 @@ const formatDate = (timestamp) => {
     return '日期格式化错误';
   }
 };
+
 const clearAllReviewItems = async () => {
-  loading.value = true; // 开始时显示加载状态
+  loading.value = true;
   try {
     const response = await axios.post('/api/actions/clear_review_items');
     message.success(response.data.message);
-    // 清空成功后，重新获取列表（此时列表应该为空）
     fetchReviewItems(); 
   } catch (err) {
     console.error("清空待复核列表失败:", err);
     message.error(`操作失败: ${err.response?.data?.error || err.message}`);
-    loading.value = false; // 失败时也要取消加载状态
+    loading.value = false;
   }
-  // fetchReviewItems 内部会设置 loading.value = false，所以这里不用重复设置
 };
+
+// ✨✨✨ [修改] 3. 修改跳转函数，使其根据模式动态导航 ✨✨✨
 const goToEditPage = (row) => {
-  if (row && row.item_id) {
-    router.push({ name: 'MediaEditPage', params: { itemId: row.item_id } });
-  } else {
+  if (!row || !row.item_id) {
     message.error("无效的媒体项，无法跳转到编辑页面！");
+    return;
   }
+  
+  // 检查配置是否已加载，防止在页面初始化时出错
+  if (!configModel.value) {
+    message.error("配置尚未加载，请稍后再试。");
+    return;
+  }
+
+  // 根据 use_sa_mode 的值决定要跳转的路由名称
+  const routeName = configModel.value.use_sa_mode ? 'MediaEditSA' : 'MediaEditAPI';
+
+  // 执行跳转
+  router.push({
+    name: routeName, // 使用动态计算出的路由名称
+    params: { itemId: row.item_id } // 传递 item ID
+  });
 };
 
 const handleMarkAsProcessed = async (row) => {
@@ -173,6 +188,7 @@ const handleMarkAsProcessed = async (row) => {
   }
 };
 
+// 表格列定义 columns 和其他函数保持不变，因为它们的逻辑是正确的
 const columns = computed(() => [
   {
     title: '媒体名称 (ID)',
@@ -181,7 +197,7 @@ const columns = computed(() => [
     render(row) {
       return h('div', { 
         style: 'cursor: pointer; padding: 5px 0;',
-        onClick: () => goToEditPage(row) 
+        onClick: () => goToEditPage(row) // 这里的点击事件会调用我们修改后的 goToEditPage 函数
       }, [
         h(NText, { strong: true }, { default: () => row.item_name || '未知名称' }),
         h(NText, { depth: 3, style: 'font-size: 0.8em; display: block; margin-top: 2px;' }, { default: () => `(ID: ${row.item_id || 'N/A'})` })
@@ -222,19 +238,14 @@ const columns = computed(() => [
     align: 'center',
     fixed: 'right',
     render(row) {
-      // ★★★ 核心修改：动态构建按钮列表 ★★★
       const actionButtons = [];
-
-      // 按钮1: 手动编辑 (对所有行都显示)
       actionButtons.push(
         h(NButton, {
           size: 'small',
           type: 'primary',
-          onClick: () => goToEditPage(row)
+          onClick: () => goToEditPage(row) // 这里的点击事件也会调用我们修改后的 goToEditPage 函数
         }, { default: () => '手动编辑' })
       );
-
-      // 按钮2: 标记已处理 (只对待复核列表显示)
       if (!isShowingSearchResults.value) {
         actionButtons.push(
           h(NPopconfirm, { onPositiveClick: () => handleMarkAsProcessed(row) }, {
@@ -246,21 +257,19 @@ const columns = computed(() => [
               disabled: loadingAction.value[row.item_id]
             }, {
               icon: () => h(NIcon, { component: MarkDoneIcon }),
-              default: () => '标记完成' // 文本改短一点
+              default: () => '标记完成'
             }),
             default: () => `确定要将 "${row.item_name}" 标记为已处理吗？`
           })
         );
       }
-
-      // 按钮3: 添加到追剧列表 (只对剧集类型显示)
       if (row.item_type === 'Series') {
         actionButtons.push(
           h(NButton, {
             size: 'small',
             circle: true,
             ghost: true,
-            type: 'info', // 用 info 颜色
+            type: 'info',
             title: '添加到追剧列表',
             onClick: () => addToWatchlist(row)
           }, {
@@ -268,7 +277,6 @@ const columns = computed(() => [
           })
         );
       }
-      
       return h(NSpace, { justify: 'center' }, { default: () => actionButtons });
     }
   }

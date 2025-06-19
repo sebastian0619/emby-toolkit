@@ -75,7 +75,7 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
     
     # ✨✨✨ 新增：告诉 Emby 返回的 People 对象里要包含哪些字段 ✨✨✨
     # 这是一个更可靠的方法
-    params["PersonFields"] = "ImageTags"
+    params["PersonFields"] = "ImageTags,ProviderIds"
     
     # --- 函数的其余部分保持不变 ---
     logger.debug(

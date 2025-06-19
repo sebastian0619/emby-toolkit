@@ -1,4 +1,4 @@
-# core_processor_api.py
+# core_processor.py
 import time
 import re
 import os
@@ -36,23 +36,23 @@ except ImportError:
         def _save_translation_to_db(*args, **kwargs): pass
 
  
-class MediaProcessorAPI:
+class MediaProcessor:
     # ✨✨✨初始化✨✨✨
     def __init__(self, config: Dict[str, Any]):
         # config 这个参数，是已经从 load_config() 加载好的、一个标准的 Python 字典
         self.config = config
         self.db_path = config.get('db_path')
         if not self.db_path:
-            logger.error("MediaProcessorAPI 初始化失败：未在配置中找到 'db_path'。")
-            raise ValueError("数据库路径 (db_path) 未在配置中提供给 MediaProcessorAPI。")
+            logger.error("MediaProcessor 初始化失败：未在配置中找到 'db_path'。")
+            raise ValueError("数据库路径 (db_path) 未在配置中提供给 MediaProcessor。")
 
         self.douban_api = None
         if getattr(constants, 'DOUBAN_API_AVAILABLE', False):
             try:
                 self.douban_api = DoubanApi(db_path=self.db_path)
-                logger.info("DoubanApi 实例已在 MediaProcessorAPI 中创建。")
+                logger.info("DoubanApi 实例已在 MediaProcessor 中创建。")
             except Exception as e:
-                logger.error(f"MediaProcessorAPI 初始化 DoubanApi 失败: {e}", exc_info=True)
+                logger.error(f"MediaProcessor 初始化 DoubanApi 失败: {e}", exc_info=True)
         else:
             logger.warning("DoubanApi 常量指示不可用，将不使用豆瓣功能。")
 
@@ -85,7 +85,7 @@ class MediaProcessorAPI:
         else:
             logger.info("AI翻译功能未启用。")
 
-        logger.info(f"MediaProcessorAPI 初始化完成。Emby URL: {self.emby_url}, UserID: {self.emby_user_id}")
+        logger.info(f"MediaProcessor 初始化完成。Emby URL: {self.emby_url}, UserID: {self.emby_user_id}")
         logger.info(f"  TMDb API Key: {'已配置' if self.tmdb_api_key else '未配置'}")
         logger.info(f"  数据源处理模式: {self.data_source_mode}")
         logger.info(f"  本地数据源路径: '{self.local_data_path if self.local_data_path else '未配置'}'")
@@ -106,12 +106,12 @@ class MediaProcessorAPI:
         return conn
     # ✨✨✨设置停止信号，用于在多线程环境中优雅地中止长时间运行的任务✨✨✨
     def signal_stop(self):
-        logger.info("MediaProcessorAPI 收到停止信号。")
+        logger.info("MediaProcessor 收到停止信号。")
         self._stop_event.set()
     # ✨✨✨清除停止信号，以便开始新的任务✨✨✨
     def clear_stop_signal(self):
         self._stop_event.clear()
-        logger.debug("MediaProcessorAPI 停止信号已清除。")
+        logger.debug("MediaProcessor 停止信号已清除。")
     # ✨✨✨检查是否已请求停止当前任务✨✨✨
     def is_stop_requested(self) -> bool:
         return self._stop_event.is_set()
@@ -352,6 +352,62 @@ class MediaProcessorAPI:
         final_score_rounded = round(average_media_score, 1)
         logger.info(f"  媒体项演员处理质量评估完成，最终评分: {final_score_rounded:.1f} (基于 {total_actors_in_final_list} 位演员的平均分)")
         return final_score_rounded
+    # ✨✨✨内部辅助函数✨✨✨
+    def _update_person_map_entry_in_processor(self, cursor: sqlite3.Cursor, 
+                                              emby_pid: str, 
+                                              emby_name: str, 
+                                              tmdb_id: Optional[str] = None, 
+                                              tmdb_name_override: Optional[str] = None,
+                                              douban_id: Optional[str] = None, 
+                                              douban_name_override: Optional[str] = None,
+                                              imdb_id: Optional[str] = None) -> bool:
+        """
+        辅助函数：在 MediaProcessor 内部更新或插入单条 person_identity_map 记录。
+        返回 True 如果操作影响了行，否则 False。
+        """
+        if not emby_pid:
+            logger.warning("MediaProcessor._update_person_map_entry: emby_pid 为空，无法更新映射表。")
+            return False
+
+        # 准备名字字段
+        final_tmdb_name = tmdb_name_override if tmdb_name_override is not None else (emby_name if tmdb_id else None)
+        final_douban_name = douban_name_override if douban_name_override is not None else (emby_name if douban_id else None)
+
+        sql_upsert = """
+            INSERT INTO person_identity_map (
+                emby_person_id, emby_person_name, 
+                imdb_id, tmdb_person_id, douban_celebrity_id, 
+                tmdb_name, douban_name, 
+                last_updated_at, last_synced_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(emby_person_id) DO UPDATE SET
+                emby_person_name = COALESCE(excluded.emby_person_name, person_identity_map.emby_person_name),
+                imdb_id = COALESCE(excluded.imdb_id, person_identity_map.imdb_id),
+                tmdb_person_id = COALESCE(excluded.tmdb_person_id, person_identity_map.tmdb_person_id),
+                douban_celebrity_id = COALESCE(excluded.douban_celebrity_id, person_identity_map.douban_celebrity_id),
+                tmdb_name = COALESCE(excluded.tmdb_name, person_identity_map.tmdb_name),
+                douban_name = COALESCE(excluded.douban_name, person_identity_map.douban_name),
+                last_updated_at = CURRENT_TIMESTAMP,
+                last_synced_at = CURRENT_TIMESTAMP; 
+        """
+        params = (
+            emby_pid, emby_name,
+            imdb_id, tmdb_id, douban_id,
+            final_tmdb_name, final_douban_name
+        )
+
+        try:
+            logger.debug(f"    MediaProcessor: Executing UPSERT for EmbyPID {emby_pid} with PARAMS: {params}")
+            cursor.execute(sql_upsert, params)
+            if cursor.rowcount > 0:
+                logger.debug(f"    MediaProcessor: EmbyPID {emby_pid} UPSERTED/UPDATED in person_identity_map. Rowcount: {cursor.rowcount}")
+                return True
+            else:
+                logger.debug(f"    MediaProcessor: EmbyPID {emby_pid} UPSERT executed but rowcount is 0 (no change or no operation).")
+                return False 
+        except sqlite3.Error as e_upsert:
+            logger.error(f"    MediaProcessor: UPSERT for EmbyPID '{emby_pid}' in person_identity_map 失败: {e_upsert}", exc_info=True)
+            return False
     # ✨✨✨优先级：有意义的候选角色 > 现有角色 > "演员" > 空✨✨✨    
     def _select_best_role(self, current_role: str, candidate_role: str) -> str:
         """
@@ -488,10 +544,10 @@ class MediaProcessorAPI:
                     "DoubanCelebrityId": str(provider_ids.get("Douban", "")).strip() or None,
                     "ImdbId": str(provider_ids.get("Imdb", "")).strip() or None,
                     "ProviderIds": provider_ids.copy(),
-                    "Order": person_emby.get("Order"),
                     "_source_comment": "from_emby_initial"
                 }
                 final_cast_list.append(actor_internal_format)
+
                 # 使用 Emby 的原始数据更新映射表
                 self._update_person_map_entry_in_processor(
                     cursor,
@@ -501,18 +557,18 @@ class MediaProcessorAPI:
                     douban_id=actor_internal_format["DoubanCelebrityId"],
                     imdb_id=actor_internal_format["ImdbId"]
                 )
-
             logger.info(f"步骤 1: 基准列表创建完成，包含 {len(final_cast_list)} 位演员。")
             if self.is_stop_requested():
                 conn.commit()
                 return final_cast_list
 
             # ======================================================================
-            # 步骤 2: 从豆瓣获取数据并与基准列表比对 (丰富现有演员)
+            # 步骤 2: 从豆瓣获取数据并与基准列表比对
             # ======================================================================
             logger.info("步骤 2: 获取豆瓣演员并与基准列表比对...")
             formatted_douban_candidates = []
             if media_type_for_log in ["Movie", "Series"]:
+                logger.info(f"步骤 2: 获取豆瓣演员并与基准列表比对 (因为类型是 {media_type_for_log})...")
                 douban_api_actors_raw = self._fetch_douban_cast(media_info)
                 formatted_douban_candidates = self._format_douban_cast(douban_api_actors_raw)
                 logger.info(f"从豆瓣 API 格式化后得到 {len(formatted_douban_candidates)} 位候选演员。")
@@ -532,19 +588,18 @@ class MediaProcessorAPI:
                         if dc_douban_id and dc_douban_id == emby_actor_to_update.get("DoubanCelebrityId"):
                             is_match, match_reason = True, f"Douban ID ({dc_douban_id})"
                         
-                        # 【错误修复】修正此处的逻辑
                         if not is_match:
-                            # 直接在 if 条件中使用 utils.are_names_match，因为它返回布尔值
-                            if utils.are_names_match(
-                                douban_candidate.get("Name"), douban_candidate.get("OriginalName"),
-                                emby_actor_to_update.get("Name"), emby_actor_to_update.get("OriginalName")
-                            ):
-                                # 如果匹配成功，再设置 is_match 和 match_reason
-                                is_match = True
-                                match_reason = f"名字匹配 ('{douban_candidate.get('Name')}' vs '{emby_actor_to_update.get('Name')}')"
+                            dc_name_lower = douban_candidate.get("Name", "").lower().strip()
+                            dc_orig_name_lower = douban_candidate.get("OriginalName", "").lower().strip()
+                            emby_name_lower = emby_actor_to_update.get("Name", "").lower().strip()
+                            emby_orig_name_lower = emby_actor_to_update.get("OriginalName", "").lower().strip()
+                            if dc_name_lower and (dc_name_lower == emby_name_lower or dc_name_lower == emby_orig_name_lower):
+                                is_match, match_reason = True, f"名字匹配 (豆瓣中文名: '{douban_candidate.get('Name')}')"
+                            elif dc_orig_name_lower and (dc_orig_name_lower == emby_name_lower or dc_orig_name_lower == emby_orig_name_lower):
+                                is_match, match_reason = True, f"名字匹配 (豆瓣外文名: '{douban_candidate.get('OriginalName')}')"
 
                         if is_match:
-                            logger.info(f"  匹配成功: 豆瓣候选 '{douban_candidate.get('Name')}' 通过 [{match_reason}] 关联到 Emby 演员 '{emby_actor_to_update.get('Name')}'")
+                            logger.info(f"  匹配成功: 豆瓣候选 '{douban_candidate.get('Name')}' 通过 [{match_reason}] 关联到 Emby 演员 '{emby_actor_to_update.get('Name')}' (PID: {emby_actor_to_update.get('EmbyPersonId')})")
                             
                             if dc_douban_id and not emby_actor_to_update.get("DoubanCelebrityId"):
                                 emby_actor_to_update["DoubanCelebrityId"] = dc_douban_id
@@ -557,8 +612,7 @@ class MediaProcessorAPI:
                             if best_role != original_role:
                                 emby_actor_to_update["Role"] = best_role
                                 logger.info(f"    -> 角色名已更新: '{original_role}' -> '{best_role}'")
-                                                        
-                            # 更新映射表
+                            
                             self._update_person_map_entry_in_processor(
                                 cursor,
                                 emby_pid=emby_actor_to_update["EmbyPersonId"],
@@ -566,84 +620,89 @@ class MediaProcessorAPI:
                                 douban_id=emby_actor_to_update.get("DoubanCelebrityId"),
                                 douban_name_override=douban_candidate.get("Name")
                             )
-
+                            
                             matched_douban_indices.add(i)
                             match_found = True
                             break
                     
                     if not match_found:
                         unmatched_douban_candidates.append(douban_candidate)
-            
-            logger.info(f"步骤 2: 完成。{len(matched_douban_indices) if formatted_douban_candidates else 0} 位豆瓣演员已匹配，{len(unmatched_douban_candidates)} 位溢出。")
+
+            logger.info(f"步骤 2: 完成。{len(matched_douban_indices) if formatted_douban_candidates else 0} 位豆瓣演员已匹配，{len(unmatched_douban_candidates)} 位溢出进入下一步。")
             if self.is_stop_requested():
                 conn.commit()
                 return final_cast_list
 
             # ======================================================================
-            # 步骤 3: 条件化处理流程 (核心逻辑分叉点)
+            # 步骤 3: 处理溢出的豆瓣演员
             # ======================================================================
-            limit = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
-            try:
-                limit = int(limit)
-                if limit <= 0: limit = 30
-            except (ValueError, TypeError):
-                limit = 30
-            
-            current_actor_count = len(final_cast_list)
+            logger.info(f"步骤 3: 处理 {len(unmatched_douban_candidates)} 位溢出的豆瓣演员 (TMDb/IMDb 交叉匹配)...")
+            if self.tmdb_api_key and unmatched_douban_candidates:
+                for douban_candidate in unmatched_douban_candidates:
+                    if self.is_stop_requested(): break
+                    
+                    tmdb_id, imdb_id, tmdb_name = self._fetch_external_ids_for_person(douban_candidate, media_info)
+                    
+                    match_found = False
+                    if tmdb_id or imdb_id:
+                        for emby_actor_to_update in final_cast_list:
+                            is_match, match_reason = False, ""
+                            if imdb_id and imdb_id == emby_actor_to_update.get("ImdbId"):
+                                is_match, match_reason = True, f"IMDb ID ({imdb_id})"
+                            elif tmdb_id and tmdb_id == emby_actor_to_update.get("TmdbPersonId"):
+                                is_match, match_reason = True, f"TMDb ID ({tmdb_id})"
 
-            if current_actor_count >= limit:
-                logger.info(f"当前演员数 ({current_actor_count}) 已达上限 ({limit})，将跳过所有新增演员的流程。")
-                if unmatched_douban_candidates:
-                    discarded_names = [d.get('Name') for d in unmatched_douban_candidates]
-                    logger.info(f"--- 因此，将丢弃 {len(discarded_names)} 位未能匹配的豆瓣演员: {', '.join(discarded_names[:5])}{'...' if len(discarded_names) > 5 else ''} ---")
-            else:
-                logger.info(f"当前演员数 ({current_actor_count}) 低于上限 ({limit})，进入补充模式，继续处理 {len(unmatched_douban_candidates)} 位溢出的豆瓣演员。")
-                
-                if self.tmdb_api_key and unmatched_douban_candidates:
-                    # ... (这部分逻辑保持不变) ...
-                    for douban_candidate in unmatched_douban_candidates:
-                        if self.is_stop_requested(): break
-                        
-                        tmdb_id, imdb_id, _ = self._fetch_external_ids_for_person(douban_candidate, media_info)
-                        
-                        match_found = False
-                        if tmdb_id or imdb_id:
-                            for emby_actor_to_update in final_cast_list:
-                                is_match, match_reason = False, ""
-                                if imdb_id and imdb_id == emby_actor_to_update.get("ImdbId"):
-                                    is_match, match_reason = True, f"IMDb ID ({imdb_id})"
-                                elif tmdb_id and tmdb_id == emby_actor_to_update.get("TmdbPersonId"):
-                                    is_match, match_reason = True, f"TMDb ID ({tmdb_id})"
+                            if is_match:
+                                logger.info(f"  交叉匹配成功: 豆瓣候选 '{douban_candidate.get('Name')}' 通过 [{match_reason}] 关联到 Emby 演员 '{emby_actor_to_update.get('Name')}' (PID: {emby_actor_to_update.get('EmbyPersonId')})")
+                                
+                                updated_ids = {}
+                                if douban_candidate.get("DoubanCelebrityId") and not emby_actor_to_update.get("DoubanCelebrityId"):
+                                    emby_actor_to_update["DoubanCelebrityId"] = douban_candidate["DoubanCelebrityId"]
+                                    emby_actor_to_update["ProviderIds"]["Douban"] = douban_candidate["DoubanCelebrityId"]
+                                    updated_ids['Douban'] = douban_candidate["DoubanCelebrityId"]
+                                if tmdb_id and not emby_actor_to_update.get("TmdbPersonId"):
+                                    emby_actor_to_update["TmdbPersonId"] = tmdb_id
+                                    emby_actor_to_update["ProviderIds"]["Tmdb"] = tmdb_id
+                                    updated_ids['TMDb'] = tmdb_id
+                                if imdb_id and not emby_actor_to_update.get("ImdbId"):
+                                    emby_actor_to_update["ImdbId"] = imdb_id
+                                    emby_actor_to_update["ProviderIds"]["Imdb"] = imdb_id
+                                    updated_ids['IMDb'] = imdb_id
+                                if updated_ids: logger.info(f"    -> 已为该演员补充 IDs: {updated_ids}")
 
-                                if is_match:
-                                    logger.info(f"  交叉匹配成功: 豆瓣候选 '{douban_candidate.get('Name')}' 通过 [{match_reason}] 再次关联到 Emby 演员 '{emby_actor_to_update.get('Name')}'")
-                                    # ... (此处是补充ID和角色的逻辑) ...
-                                    
-                                    match_found = True
-                                    break
-                        
-                        if not match_found:
-                            logger.info(f"  丢弃: 豆瓣候选 '{douban_candidate.get('Name')}' (D:{douban_candidate.get('DoubanCelebrityId')}, T:{tmdb_id}, I:{imdb_id}) 未能匹配任何基准演员，将被丢弃。")
+                                original_role = emby_actor_to_update.get("Role")
+                                candidate_role = utils.clean_character_name_static(douban_candidate.get("Role"))
+                                best_role = self._select_best_role(original_role, candidate_role)
+                                if best_role != original_role:
+                                    emby_actor_to_update["Role"] = best_role
+                                    logger.info(f"    -> 角色名已更新: '{original_role}' -> '{best_role}'")
 
-            logger.info("步骤 3: 条件化处理完成。")
+                                self._update_person_map_entry_in_processor(
+                                    cursor,
+                                    emby_pid=emby_actor_to_update["EmbyPersonId"],
+                                    emby_name=emby_actor_to_update["Name"],
+                                    douban_id=emby_actor_to_update.get("DoubanCelebrityId"),
+                                    tmdb_id=emby_actor_to_update.get("TmdbPersonId"),
+                                    imdb_id=emby_actor_to_update.get("ImdbId"),
+                                    douban_name_override=douban_candidate.get("Name"),
+                                    tmdb_name_override=tmdb_name
+                                )
+                                
+                                match_found = True
+                                break
+                    
+                    if not match_found:
+                        logger.info(f"  丢弃: 豆瓣候选 '{douban_candidate.get('Name')}' (D:{douban_candidate.get('DoubanCelebrityId')}, T:{tmdb_id}, I:{imdb_id}) 未能匹配任何基准演员，将被丢弃。")
+
+            logger.info("步骤 3: 完成。")
             if self.is_stop_requested():
                 conn.commit()
                 return final_cast_list
-            
-            # ======================================================================
-            # 步骤 4: 最终截断
-            # ======================================================================
-            original_count = len(final_cast_list)
-            if original_count > limit:
-                logger.info(f"演员列表总数 ({original_count}) 超过上限 ({limit})，将在翻译前进行截断。")
-                final_cast_list.sort(key=lambda x: x.get('Order') if x.get('Order') is not None and x.get('Order') >= 0 else 999)
-                final_cast_list = final_cast_list[:limit]
-                logger.info(f"截断后，剩余 {len(final_cast_list)} 位演员进入最终处理。")
 
             # ======================================================================
-            # 步骤 5: 对最终演员表进行翻译和格式化
+            # 步骤 4: 对最终演员表进行翻译和格式化
             # ======================================================================
-            logger.info(f"步骤 5: 对最终 {len(final_cast_list)} 位演员进行翻译和格式化...")
+            logger.info(f"步骤 4: 对最终 {len(final_cast_list)} 位演员进行翻译和格式化...")
             is_animation = "Animation" in media_info.get("Genres", []) or "动画" in media_info.get("Genres", [])
             
             for actor_data in final_cast_list:
@@ -671,7 +730,7 @@ class MediaProcessorAPI:
                     logger.debug(f"  角色名格式化: '{actor_data.get('Role')}' -> '{final_role}' (演员: {actor_data.get('Name')})")
                     actor_data["Role"] = final_role
 
-            logger.info("步骤 5: 完成。")
+            logger.info("步骤 4: 完成。")
             
             logger.info(f"处理完影片 '{media_name_for_log}' 的所有演员，提交数据库更改...")
             conn.commit()
@@ -1025,14 +1084,14 @@ class MediaProcessorAPI:
             logger.info("全量处理Emby媒体库结束。")
             if update_status_callback:
                 update_status_callback(100, "全量处理完成。")
-    # ✨✨✨关闭 MediaProcessorAPI 实例，释放其占用的所有资源（如数据库连接、API会话等）✨✨✨
+    # ✨✨✨关闭 MediaProcessor 实例，释放其占用的所有资源（如数据库连接、API会话等）✨✨✨
     def close(self):
-        """关闭 MediaProcessorAPI 实例，例如关闭数据库连接池或释放其他资源。"""
+        """关闭 MediaProcessor 实例，例如关闭数据库连接池或释放其他资源。"""
         if self.douban_api and hasattr(self.douban_api, 'close'):
-            logger.debug("正在关闭 MediaProcessorAPI 中的 DoubanApi session...")
+            logger.debug("正在关闭 MediaProcessor 中的 DoubanApi session...")
             self.douban_api.close()
         # 如果有其他需要关闭的资源，例如数据库连接池（如果使用的话），在这里关闭
-        logger.debug("MediaProcessorAPI close 方法执行完毕。")
+        logger.debug("MediaProcessor close 方法执行完毕。")
     # ✨✨✨使用从网页提取的新演员列表来“丰富”当前演员列表✨✨✨
     def enrich_cast_list(self, current_cast: List[Dict[str, Any]], new_cast_from_web: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -1113,62 +1172,6 @@ class MediaProcessorAPI:
 
         logger.info(f"“仅丰富”模式完成，返回 {len(enriched_cast)} 位演员。")
         return enriched_cast
-    # ✨✨✨辅助函数更新演员映射表✨✨✨
-    def _update_person_map_entry_in_processor(self, cursor: sqlite3.Cursor, 
-                                              emby_pid: str, 
-                                              emby_name: str, 
-                                              tmdb_id: Optional[str] = None, 
-                                              tmdb_name_override: Optional[str] = None,
-                                              douban_id: Optional[str] = None, 
-                                              douban_name_override: Optional[str] = None,
-                                              imdb_id: Optional[str] = None) -> bool:
-        """
-        辅助函数：在 MediaProcessorAPI 内部更新或插入单条 emby_actor_map 记录。
-        返回 True 如果操作影响了行，否则 False。
-        """
-        if not emby_pid:
-            logger.warning("MediaProcessorAPI._update_person_map_entry: emby_pid 为空，无法更新映射表。")
-            return False
-
-        # 准备名字字段
-        final_tmdb_name = tmdb_name_override if tmdb_name_override is not None else (emby_name if tmdb_id else None)
-        final_douban_name = douban_name_override if douban_name_override is not None else (emby_name if douban_id else None)
-
-        sql_upsert = """
-            INSERT INTO emby_actor_map (
-                emby_person_id, emby_person_name, 
-                imdb_id, tmdb_person_id, douban_celebrity_id, 
-                tmdb_name, douban_name, 
-                last_updated_at, last_synced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            ON CONFLICT(emby_person_id) DO UPDATE SET
-                emby_person_name = COALESCE(excluded.emby_person_name, emby_actor_map.emby_person_name),
-                imdb_id = COALESCE(excluded.imdb_id, emby_actor_map.imdb_id),
-                tmdb_person_id = COALESCE(excluded.tmdb_person_id, emby_actor_map.tmdb_person_id),
-                douban_celebrity_id = COALESCE(excluded.douban_celebrity_id, emby_actor_map.douban_celebrity_id),
-                tmdb_name = COALESCE(excluded.tmdb_name, emby_actor_map.tmdb_name),
-                douban_name = COALESCE(excluded.douban_name, emby_actor_map.douban_name),
-                last_updated_at = CURRENT_TIMESTAMP,
-                last_synced_at = CURRENT_TIMESTAMP; 
-        """
-        params = (
-            emby_pid, emby_name,
-            imdb_id, tmdb_id, douban_id,
-            final_tmdb_name, final_douban_name
-        )
-
-        try:
-            logger.debug(f"    MediaProcessorAPI: Executing UPSERT for EmbyPID {emby_pid} with PARAMS: {params}")
-            cursor.execute(sql_upsert, params)
-            if cursor.rowcount > 0:
-                logger.debug(f"    MediaProcessorAPI: EmbyPID {emby_pid} UPSERTED/UPDATED in emby_actor_map. Rowcount: {cursor.rowcount}")
-                return True
-            else:
-                logger.debug(f"    MediaProcessorAPI: EmbyPID {emby_pid} UPSERT executed but rowcount is 0 (no change or no operation).")
-                return False 
-        except sqlite3.Error as e_upsert:
-            logger.error(f"    MediaProcessorAPI: UPSERT for EmbyPID '{emby_pid}' in emby_actor_map 失败: {e_upsert}", exc_info=True)
-            return False
     # ✨✨✨一键翻译演员列表✨✨✨
     def translate_cast_list(self, cast_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -1226,7 +1229,7 @@ class MediaProcessorAPI:
 
         logger.info("“纯翻译”模式完成。")
         return translated_cast
-class SyncHandlerAPI:
+class SyncHandler:
     def __init__(self, db_path: str, emby_url: str, emby_api_key: str, emby_user_id: Optional[str]):
         self.db_path = db_path
         self.emby_url = emby_url
@@ -1319,7 +1322,7 @@ class SyncHandlerAPI:
                 if sql_select_parts:
                     query_condition = " OR ".join(sql_select_parts)
                     # 从数据库中多获取一些字段，用于更新时的比较或保留旧值
-                    cursor.execute(f"SELECT map_id, emby_person_id, emby_person_name, imdb_id, tmdb_person_id, tmdb_name, douban_celebrity_id, douban_name FROM emby_actor_map WHERE {query_condition}", tuple(select_params))
+                    cursor.execute(f"SELECT map_id, emby_person_id, emby_person_name, imdb_id, tmdb_person_id, tmdb_name, douban_celebrity_id, douban_name FROM person_identity_map WHERE {query_condition}", tuple(select_params))
                     found_entry_for_update = cursor.fetchone() 
                 
                 # --- 数据库操作开始 ---
@@ -1357,7 +1360,7 @@ class SyncHandlerAPI:
                         # 添加时间戳更新
                         set_clauses.extend(["last_synced_at = CURRENT_TIMESTAMP", "last_updated_at = CURRENT_TIMESTAMP"])
                         
-                        sql_update = f"UPDATE emby_actor_map SET {', '.join(set_clauses)} WHERE map_id = ?"
+                        sql_update = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = ?"
                         update_values.append(existing_map_id) # map_id 作为最后一个参数
                         
                         logger.debug(f"    Executing UPDATE for map_id: {existing_map_id} with SQL: {sql_update} and PARAMS: {tuple(update_values)}")
@@ -1393,7 +1396,7 @@ class SyncHandlerAPI:
                         final_insert_cols.extend(["last_synced_at", "last_updated_at"])
                         placeholders = ["?" for _ in final_insert_vals] + ["CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP"]
                         
-                        sql_insert = f"INSERT INTO emby_actor_map ({', '.join(final_insert_cols)}) VALUES ({', '.join(placeholders)})"
+                        sql_insert = f"INSERT INTO person_identity_map ({', '.join(final_insert_cols)}) VALUES ({', '.join(placeholders)})"
                         
                         logger.debug(f"    Executing INSERT for EmbyPID: {emby_pid} with SQL: {sql_insert} and PARAMS: {tuple(final_insert_vals)}")
                         cursor.execute(sql_insert, tuple(final_insert_vals))
