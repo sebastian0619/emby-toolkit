@@ -984,7 +984,6 @@ class MediaProcessor:
 
     def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False, process_episodes: bool = True):
         self.clear_stop_signal()
-        if force_reprocess_all: self.clear_processed_log()
         
         libs_to_process_ids = self.config.get("libraries_to_process", [])
         if not libs_to_process_ids:
@@ -1028,19 +1027,19 @@ class MediaProcessor:
             item_id = item.get('Id')
             item_name = item.get('Name', f"ID:{item_id}")
 
-            # ★★★ 在这里添加跳过逻辑和日志 ★★★
-            if not force_reprocess_all and item_id in self.processed_items_cache:
+            # ★★★ 核心修改：这里的跳过逻辑现在对所有情况都生效 ★★★
+            # 不再需要 if not force_reprocess_all ...
+            if item_id in self.processed_items_cache:
                 logger.info(f"正在跳过已处理的项目: {item_name}")
-                # 同时更新前端进度条，避免卡住
                 if update_status_callback:
                     update_status_callback(int(((i + 1) / total) * 100), f"跳过: {item_name}")
-                continue # 使用 continue 跳到下一个项目
+                continue
 
-            # 如果不跳过，才执行处理
             if update_status_callback:
                 update_status_callback(int(((i + 1) / total) * 100), f"处理中 ({i+1}/{total}): {item_name}")
             
-            self.process_single_item(item_id, force_reprocess_all, process_episodes)
+            # ★★★ 核心修改：调用时不再需要传递 force_reprocess_all ★★★
+            self.process_single_item(item_id, process_episodes=process_episodes)
             
             time.sleep(float(self.config.get("delay_between_items_sec", 0.5)))
         

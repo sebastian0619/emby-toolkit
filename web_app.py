@@ -971,12 +971,10 @@ def api_specific_sync_map_task(api_task_name: str): # <--- API 专属的，接�
     else:
         logger.error(f"'{api_task_name}' (API) 无法执行：MediaProcessor 未初始化或 Emby 配置不完整。")
         update_status_from_thread(-1, "错误：核心处理器或Emby配置未就绪")
-
-def task_process_full_library(processor: MediaProcessor, force_reprocess: bool, process_episodes: bool):
-    """任务：执行全量媒体库扫描"""
+# --- 执行全量媒体库扫描 ---
+def task_process_full_library(processor: MediaProcessor, process_episodes: bool):
     processor.process_full_library(
         update_status_callback=update_status_from_thread,
-        force_reprocess_all=force_reprocess,
         process_episodes=process_episodes
     )
 
@@ -1150,24 +1148,52 @@ def emby_webhook():
     return jsonify({"status": "task_queued", "item_id": id_to_process}), 202
 
 
-@app.route('/trigger_full_scan', methods=['POST'])
-def trigger_full_scan():
-    force_reprocess = request.form.get('force_reprocess_all') == 'on'
-    action_message = "全量媒体库扫描"
-    if force_reprocess: action_message += " (强制重处理所有)"
+# @app.route('/trigger_full_scan', methods=['POST'])
+# def trigger_full_scan():
+#     # 检查是否有其他任务正在运行，防止冲突
+#     if task_lock.locked():
+#         flash("后台有任务正在运行，请稍后再试。", "error")
+#         # ★★★ 核心修改：直接重定向到根目录 '/' ★★★
+#         return redirect('/') 
 
-    config, _ = load_config()
-    process_episodes = config.get('process_episodes', True)
+#     if not media_processor_instance:
+#         flash("核心处理器未就绪，无法启动任务。", "error")
+#         # ★★★ 核心修改：直接重定向到根目录 '/' ★★★
+#         return redirect('/')
+
+#     # 从表单获取“强制重处理”复选框的状态
+#     force_reprocess = request.form.get('force_reprocess_all') == 'on'
     
-    submit_task_to_queue(
-        task_process_full_library,
-        action_message,
-        force_reprocess,
-        process_episodes
-    )
+#     if force_reprocess:
+#         logger.info("检测到“强制重处理”选项，将在任务开始前清空已处理日志。")
+#         try:
+#             media_processor_instance.clear_processed_log()
+#             flash("已处理日志已成功清除。", "success")
+#             logger.info("已处理日志已成功清除。")
+#         except Exception as e:
+#             logger.error(f"清空已处理日志时发生错误: {e}")
+#             flash(f"清空已处理日志时发生错误: {e}", "error")
+#             # ★★★ 核心修改：直接重定向到根目录 '/' ★★★
+#             return redirect('/')
+
+#     # 准备任务参数
+#     action_message = "全量媒体库扫描"
+#     if force_reprocess:
+#         action_message += " (已清空日志)"
+
+#     # 从全局配置获取处理深度
+#     process_episodes = APP_CONFIG.get('process_episodes', True)
     
-    flash(f"{action_message}任务已在后台启动。", "info")
-    return redirect(url_for('settings_page'))
+#     # 提交一个纯粹的扫描任务到队列
+#     submit_task_to_queue(
+#         task_process_full_library,
+#         action_message,
+#         process_episodes
+#     )
+    
+#     flash(f"{action_message} 任务已在后台启动。", "info")
+#     # ★★★ 核心修改：直接重定向到根目录 '/' ★★★
+#     return redirect('/')
 
 @app.route('/trigger_sync_person_map', methods=['POST'])
 def trigger_sync_person_map(): # WebUI 用的
@@ -1594,32 +1620,48 @@ def api_mark_item_processed(item_id):
     except Exception as e:
         logger.error(f"标记项目 {item_id} 为已处理时失败: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
-    
+# --- 前端全量扫描接口 ---   
 @app.route('/api/trigger_full_scan', methods=['POST'])
 def api_handle_trigger_full_scan():
     logger.info("API Endpoint: Received request to trigger full scan.")
-    try:
-        force_reprocess = request.form.get('force_reprocess_all') == 'on'
-        action_message = "全量媒体库扫描"
-        if force_reprocess: action_message += " (强制)"
+    
+    # 检查任务锁
+    if task_lock.locked():
+        return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
 
-        # 在提交任务时，才去读取配置来决定处理深度
-        config, _ = load_config()
-        process_episodes = config.get('process_episodes', True)
-        logger.info(f"全量扫描任务提交：根据配置，处理分集开关为: {process_episodes}")
+    if not media_processor_instance:
+        return jsonify({"error": "核心处理器未就绪"}), 503
 
-        submit_task_to_queue(
-            task_process_full_library, # 传递包装函数
-            action_message,
-            # --- 后面是传递给 task_process_full_library 的参数 ---
-            force_reprocess,
-            process_episodes
-        )
-        
-        return jsonify({"message": f"{action_message} 任务已提交启动。"}), 202
-    except Exception as e:
-        logger.error(f"API /api/trigger_full_scan error: {e}", exc_info=True)
-        return jsonify({"error": "启动全量扫描时发生服务器内部错误"}), 500
+    # 从 FormData 获取数据
+    # 注意：前端发送的是 FormData，所以我们用 request.form
+    force_reprocess = request.form.get('force_reprocess_all') == 'on'
+    
+    # ★★★ 您的完美逻辑在这里实现 ★★★
+    if force_reprocess:
+        logger.info("API: 检测到“强制重处理”选项，将在任务开始前清空已处理日志。")
+        try:
+            media_processor_instance.clear_processed_log()
+            logger.info("API: 已处理日志已成功清除。")
+        except Exception as e:
+            logger.error(f"API: 清空已处理日志时发生错误: {e}")
+            return jsonify({"error": f"清空日志失败: {e}"}), 500
+
+    # 准备任务参数
+    action_message = "全量媒体库扫描"
+    if force_reprocess:
+        action_message += " (已清空日志)"
+
+    # 从全局配置获取处理深度
+    process_episodes = APP_CONFIG.get('process_episodes', True)
+    
+    # 提交纯粹的扫描任务
+    submit_task_to_queue(
+        task_process_full_library, # 调用简化后的任务函数
+        action_message,
+        process_episodes # 不再需要传递 force_reprocess
+    )
+    
+    return jsonify({"message": f"{action_message} 任务已提交启动。"}), 202
 
 @app.route('/api/trigger_sync_person_map', methods=['POST'])
 def api_handle_trigger_sync_map():
