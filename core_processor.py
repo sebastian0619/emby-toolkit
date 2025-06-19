@@ -727,11 +727,16 @@ class MediaProcessor:
         
         logger.info(f"【API轨道】为 '{item_name_for_log}' 的演员中文化处理完成。")
 
-    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool = False) -> bool:
+    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool = False, is_part_of_full_scan: bool = False) -> bool:
         """
         【V-Final 双轨串行版】
         首先执行独立的、绝对安全的API轨道，仅中文化演员名。
         然后，执行现有的、完整的JSON轨道，处理并生成本地元数据。
+        
+        Args:
+            item_details_from_emby: 从Emby获取的完整项目详情。
+            force_reprocess_this_item: 是否强制重新处理。
+            is_part_of_full_scan: (新增) 标记本次调用是否来自全量扫描，用于跳过某些操作。
         """
         item_id = item_details_from_emby.get("Id")
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
@@ -757,9 +762,9 @@ class MediaProcessor:
             return False
         
         try:
-            # ★★★ 先进行智能追剧判断 ★★★
-            if item_type == "Series":
-                logger.debug(f"项目 '{item_name_for_log}' 是剧集，开始进行追剧状态判断...")
+            # ★★★ 核心修改：仅在单项处理时进行追剧判断 ★★★
+            if item_type == "Series" and not is_part_of_full_scan:
+                logger.debug(f"项目 '{item_name_for_log}' 是剧集，且为单项处理，开始进行追剧状态判断...")
                 try:
                     # 我们需要一个 WatchlistProcessor 的实例来调用它的方法。
                     # 理想的架构是依赖注入，但为了快速实现，我们在这里临时创建一个。
@@ -768,6 +773,8 @@ class MediaProcessor:
                     watchlist_proc.add_series_to_watchlist(item_details_from_emby)
                 except Exception as e_watchlist:
                     logger.error(f"在自动添加 '{item_name_for_log}' 到追剧列表时发生错误: {e_watchlist}", exc_info=True)
+            elif item_type == "Series" and is_part_of_full_scan:
+                logger.debug(f"项目 '{item_name_for_log}' 是剧集，但当前为全量扫描模式，跳过追剧判断。")
             # --- 阶段1: 演员处理、翻译、数据库反哺 (在一个事务中完成) ---
             final_cast_perfect = []
             initial_actor_count = 0
@@ -780,11 +787,7 @@ class MediaProcessor:
             os.makedirs(image_override_dir, exist_ok=True)
             base_json_filename = "all.json" if item_type == "Movie" else "series.json"
             base_json_data_original = _read_local_json(os.path.join(base_cache_dir, base_json_filename))
-            if item_details_from_emby.get("Type") == "Series":
-                # 创建一个临时的 WatchlistProcessor 实例来执行添加操作
-                # 理想情况下，这个实例应该由 web_app 传递进来
-                temp_watchlist_proc = WatchlistProcessor(self.config)
-                temp_watchlist_proc.add_series_to_watchlist(item_details_from_emby)
+            # 注意：这里的追剧判断逻辑已被移到上面
             if not base_json_data_original:
                 raise ValueError(f"无法读取基础JSON文件: {os.path.join(base_cache_dir, base_json_filename)}")
             
@@ -961,7 +964,7 @@ class MediaProcessor:
         except sqlite3.Error as e:
             logger.error(f"  -> 更新映射表失败 for TMDb ID {tmdb_id}: {e}")
 
-    def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False, process_episodes: bool = True) -> bool:
+    def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False, process_episodes: bool = True, is_part_of_full_scan: bool = False) -> bool:
         if self.is_stop_requested(): return False
         #if not force_reprocess_this_item and emby_item_id in self.processed_items_cache: return True
 
@@ -972,7 +975,8 @@ class MediaProcessor:
         
         self.config[constants.CONFIG_OPTION_PROCESS_EPISODES] = process_episodes
         
-        return self._process_item_core_logic(item_details, force_reprocess_this_item)
+        # ★★★ 核心修改：将 is_part_of_full_scan 标志位传递下去 ★★★
+        return self._process_item_core_logic(item_details, force_reprocess_this_item, is_part_of_full_scan=is_part_of_full_scan)
 
     def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False, process_episodes: bool = True):
         self.clear_stop_signal()
@@ -1032,7 +1036,8 @@ class MediaProcessor:
             if update_status_callback:
                 update_status_callback(int(((i + 1) / total) * 100), f"处理中 ({i+1}/{total}): {item_name}")
             
-            self.process_single_item(item_id, force_reprocess_all, process_episodes)
+            # ★★★ 核心修改：在调用时，明确告知这是全量扫描的一部分 ★★★
+            self.process_single_item(item_id, force_reprocess_all, process_episodes, is_part_of_full_scan=True)
             
             time.sleep(float(self.config.get("delay_between_items_sec", 0.5)))
         
