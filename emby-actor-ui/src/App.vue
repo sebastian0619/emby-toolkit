@@ -1,3 +1,4 @@
+<!-- src/App.vue -->
 <template>
   <div :class="isDarkTheme ? 'dark-mode' : 'light-mode'">
     <n-config-provider :theme="isDarkTheme ? darkTheme : undefined" :theme-overrides="themeOverridesComputed" :locale="zhCN" :date-locale="dateZhCN">
@@ -97,8 +98,6 @@
             :bordered="false"
             size="huge"
           >
-            <!-- 当密码修改成功后，ChangePassword 组件应该 emit 一个事件来关闭弹窗 -->
-            <!-- 如果 ChangePassword 组件没有这个功能，弹窗依然可以通过点击遮罩层关闭 -->
             <ChangePassword @password-changed="showPasswordModal = false" />
           </n-modal>
 
@@ -118,6 +117,8 @@ import {
 } from 'naive-ui';
 import axios from 'axios';
 import { useAuthStore } from './stores/auth';
+// [新增] 引入 useConfig 以获取全局配置
+import { useConfig } from './composables/useConfig';
 import Login from './components/Login.vue';
 import ChangePassword from './components/settings/ChangePassword.vue';
 import {
@@ -135,6 +136,8 @@ import { Password24Regular as PasswordIcon } from '@vicons/fluent'
 const router = useRouter(); 
 const route = useRoute(); 
 const authStore = useAuthStore();
+// [新增] 调用 useConfig 获取配置模型
+const { configModel } = useConfig();
 
 // --- 状态定义 (Refs) ---
 const showPasswordModal = ref(false);
@@ -153,7 +156,7 @@ const renderIcon = (iconComponent) => {
   return () => h(NIcon, null, { default: () => h(iconComponent) });
 };
 
-// --- [修正] 用户下拉菜单的逻辑应该放在这里 ---
+// --- 用户下拉菜单的逻辑 ---
 const userOptions = computed(() => [
   {
     label: '修改密码',
@@ -176,21 +179,36 @@ const handleUserSelect = async (key) => {
   }
 };
 
-// --- [修正] 侧边栏菜单的定义 ---
-const menuOptions = computed(() => [
-  { label: 'Emby 配置', key: 'settings-emby', icon: renderIcon(EmbyIcon) },
-  { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
-  { type: 'divider', key: 'd1' },
-  { label: '任务中心', key: 'actions-status', icon: renderIcon(ActionsIcon) },
-  { label: '追剧列表', key: 'Watchlist', icon: renderIcon(WatchlistIcon) },
-  { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
-  { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
-  // [修正] 退出登录已移至顶部下拉菜单，此处删除
-]);
+// --- [修改] 侧边栏菜单的定义，使其动态化 ---
+const menuOptions = computed(() => {
+  // 基础菜单项，始终显示
+  const options = [
+    { label: 'Emby 配置', key: 'settings-emby', icon: renderIcon(EmbyIcon) },
+    { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
+    { type: 'divider', key: 'd1' },
+    { label: '任务中心', key: 'actions-status', icon: renderIcon(ActionsIcon) },
+  ];
 
-// --- [修正] 菜单点击事件处理 ---
+  // 仅当配置加载完成且神医Pro模式开启时，才显示相关菜单
+  // 我们需要检查 configModel.value 是否存在，以避免在初始加载时出错
+  if (configModel.value && configModel.value.use_sa_mode) {
+    options.push(
+      { label: '追剧列表', key: 'Watchlist', icon: renderIcon(WatchlistIcon) },
+      { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) }
+    );
+  }
+
+  // 添加剩余的固定菜单项
+  options.push(
+    { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) }
+  );
+
+  return options;
+});
+
+
+// --- 菜单点击事件处理 ---
 async function handleMenuUpdate(key) {
-  // 旧的退出登录逻辑已移除
   router.push({ name: key });
 }
 
