@@ -15,7 +15,7 @@
         <n-space vertical :size="24">
           <!-- 卡片: 基础设置 -->
           <n-card title="基础设置" size="small" class="beautified-card">
-            <n-form-item-grid-item label="启用神医Pro模式 (文件 I/O)">
+            <n-form-item-grid-item label="启用神医Pro模式">
                 <n-switch v-model:value="configModel.use_sa_mode" />
                 <template #feedback>
                   <n-text depth="3" style="font-size:0.8em;">
