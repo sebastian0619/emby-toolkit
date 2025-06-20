@@ -1,14 +1,11 @@
 <!-- src/components/ActionsPage.vue -->
 
 <template>
-  <!-- 1. 使用一个普通的 div 作为根元素，就像 MediaEditPage.vue 一样 -->
   <div class="actions-page-container">
     
-    <!-- 2. 在这个 div 内部使用 n-grid 来进行布局 -->
     <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
       
-      <!-- 3. 左侧列：任务操作区 -->
-      <!-- 在大屏幕(l)及以上占 2 列，在小屏幕占满 1 列 -->
+      <!-- 左侧列：任务操作区 -->
       <n-gi span="1">
         <n-space vertical :size="24">
           <n-alert 
@@ -93,17 +90,27 @@
         </n-space>
       </n-gi>
 
-      <!-- 4. 右侧列：实时日志区 -->
-      <!-- 在大屏幕(l)及以上占 1 列，在小屏幕占满 1 列 -->
+      <!-- 右侧列：实时日志区 -->
       <n-gi span="1">
         <n-card title="实时日志" class="beautified-card" :bordered="false" content-style="padding: 0;">
           <template #header-extra>
-            <n-button text @click="clearLogs" style="font-size: 14px;">
-              <template #icon><n-icon :component="TrashIcon" /></template>
-              清空日志
-            </n-button>
+            <!-- ★★★ START: 新增自动刷新开关 ★★★ -->
+            <n-space align="center">
+              <n-switch v-model:value="autoScrollEnabled" size="small">
+                <template #checked>
+                  自动滚动
+                </template>
+                <template #unchecked>
+                  停止滚动
+                </template>
+              </n-switch>
+              <n-button text @click="clearLogs" style="font-size: 14px; margin-left: 12px;">
+                <template #icon><n-icon :component="TrashIcon" /></template>
+                清空日志
+              </n-button>
+            </n-space>
+            <!-- ★★★ END: 新增自动刷新开关 ★★★ -->
           </template>
-          <!-- 这里的 n-log 不需要额外处理高度，因为它会在卡片内自然撑开 -->
           <n-log
             ref="logRef"
             :log="logContent"
@@ -119,12 +126,11 @@
 </template>
 
 <script setup>
-// 确保导入了 NGrid 和 NGi
 import { ref, computed, watch, nextTick } from 'vue';
 import axios from 'axios';
 import { 
   NCard, NButton, NCheckbox, NSpace, NAlert, NLog, NIcon, useMessage, 
-  NUpload, NGrid, NGi
+  NUpload, NGrid, NGi, NSwitch // ★★★ 1. 导入 NSwitch ★★★
 } from 'naive-ui';
 
 import { 
@@ -132,6 +138,7 @@ import {
   DownloadOutline as ExportIcon, 
   CloudUploadOutline as ImportIcon 
 } from '@vicons/ionicons5';
+
 const logRef = ref(null);
 const message = useMessage();
 
@@ -154,9 +161,11 @@ const forceFullSyncMap = ref(false);
 const isExporting = ref(false);
 const isImporting = ref(false);
 
+// ★★★ 2. 定义开关的状态，默认为开启 ★★★
+const autoScrollEnabled = ref(true);
+
 const logContent = computed(() => {
   if (props.taskStatus && Array.isArray(props.taskStatus.logs)) {
-    // 不再使用 reverse()，保持日志的原始时间顺序
     return props.taskStatus.logs.join('\n');
   }
   return '等待日志...';
@@ -169,12 +178,14 @@ const currentActionIncludesSyncMap = computed(() =>
   props.taskStatus.current_action && props.taskStatus.current_action.toLowerCase().includes('sync')
 );
 
+// ★★★ 3. 修改 watch 监听器 ★★★
 watch(() => props.taskStatus.logs, async () => {
-  // 等待 DOM 更新完成
-  await nextTick();
-  // 调用 n-log 组件的 scrollTo 方法
-  if (logRef.value) {
-    logRef.value.scrollTo({ position: 'bottom', slient: true });
+  // 只有当开关开启时，才执行自动滚动
+  if (autoScrollEnabled.value) {
+    await nextTick();
+    if (logRef.value) {
+      logRef.value.scrollTo({ position: 'bottom', slient: true });
+    }
   }
 }, { deep: true });
 
@@ -284,4 +295,3 @@ const errorImport = ({ event }) => {
   }
 };
 </script>
-
