@@ -1326,7 +1326,7 @@ class SyncHandlerSA:
         logger.info(f"SyncHandlerSA initialized for local cache sync.")
 
     def _get_db_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         return conn
 
