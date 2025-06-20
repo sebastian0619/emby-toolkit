@@ -138,25 +138,45 @@ class MediaProcessorAPI:
         if not update_success:
             raise RuntimeError(f"API模式更新项目 '{item_name_for_log}' 演员列表失败")
 
-        # d. 新增逻辑：如果当前是剧集，则将这份演员表注入所有分集
-        if item_type == "Series" and process_episodes:
-            logger.info(f"【API模式-批量注入】准备将处理好的演员表注入到 '{item_name_for_log}' 的所有分集中...")
+        # d. 新增逻辑：如果当前是剧集，则将这份演员表注入所有“季”和“分集”
+        if item_type == "Series":
+            logger.info(f"【API模式-批量注入】准备将处理好的演员表注入到 '{item_name_for_log}' 的所有子项中...")
             children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, item_name_for_log)
+            
             if children:
-                episodes = [child for child in children if child.get("Type") == "Episode"]
-                total_episodes = len(episodes)
-                logger.info(f"共找到 {total_episodes} 个分集需要更新。")
+                # <<< --- 核心修改：新增季演员表注入逻辑 --- >>>
+                seasons = [child for child in children if child.get("Type") == "Season"]
+                if seasons:
+                    total_seasons = len(seasons)
+                    logger.info(f"【API模式-批量注入】找到 {total_seasons} 个季，将为其注入演员表...")
+                    for i, season in enumerate(seasons):
+                        if self.is_stop_requested(): raise InterruptedError("任务中止")
+                        season_id = season.get("Id")
+                        season_name = season.get("Name")
+                        logger.debug(f"  ({i+1}/{total_seasons}) 正在为季 '{season_name}' 更新演员表...")
+                        
+                        emby_handler.update_emby_item_cast(season_id, cast_for_handler, self.emby_url, self.emby_api_key, self.emby_user_id)
+                        
+                        self.save_to_processed_log(season_id, f"{item_name_for_log} - {season_name}")
+                        time.sleep(float(self.config.get("delay_between_items_sec", 0.2)))
+                # <<< --- 核心修改结束 --- >>>
 
-                for i, episode in enumerate(episodes):
-                    if self.is_stop_requested(): raise InterruptedError("任务中止")
-                    episode_id = episode.get("Id")
-                    episode_name = episode.get("Name")
-                    logger.debug(f"  ({i+1}/{total_episodes}) 正在为分集 '{episode_name}' 更新演员表...")
-                    
-                    emby_handler.update_emby_item_cast(episode_id, cast_for_handler, self.emby_url, self.emby_api_key, self.emby_user_id)
-                    
-                    self.save_to_processed_log(episode_id, f"{item_name_for_log} - {episode_name}")
-                    time.sleep(float(self.config.get("delay_between_items_sec", 0.2)))
+                if process_episodes:
+                    episodes = [child for child in children if child.get("Type") == "Episode"]
+                    if episodes:
+                        total_episodes = len(episodes)
+                        logger.info(f"【API模式-批量注入】找到 {total_episodes} 个分集需要更新。")
+
+                        for i, episode in enumerate(episodes):
+                            if self.is_stop_requested(): raise InterruptedError("任务中止")
+                            episode_id = episode.get("Id")
+                            episode_name = episode.get("Name")
+                            logger.debug(f"  ({i+1}/{total_episodes}) 正在为分集 '{episode_name}' 更新演员表...")
+                            
+                            emby_handler.update_emby_item_cast(episode_id, cast_for_handler, self.emby_url, self.emby_api_key, self.emby_user_id)
+                            
+                            self.save_to_processed_log(episode_id, f"{item_name_for_log} - {episode_name}")
+                            time.sleep(float(self.config.get("delay_between_items_sec", 0.2)))
         
         # ★★★ 在这里，记录主项目日志之前，添加刷新操作 ★★★
         logger.info(f"【API模式】所有演员信息更新完成，准备为项目 '{item_name_for_log}' 触发元数据刷新...")
