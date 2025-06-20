@@ -98,7 +98,73 @@ class MediaProcessorAPI:
         logger.debug(f"  INIT - self.douban_api is None: {self.douban_api is None}")
         if self.douban_api:
             logger.debug(f"  INIT - self.douban_api type: {type(self.douban_api)}")
+    # ✨✨✨占位符✨✨✨
+    def check_and_add_to_watchlist(self, item_details: Dict[str, Any]):
+        """
+        API模式下，此功能被禁用。定义一个空方法以保证接口统一，避免报错。
+        """
+        logger.debug("【API模式】跳过追剧判断（功能禁用）。")
+        pass # 什么也不做，直接返回
+    # ✨✨✨新处理单个媒体项（电影、剧集或单集）的核心业务逻辑✨✨✨
+    def _process_item_api_mode(self, item_details: Dict[str, Any], process_episodes: bool):
+        item_id = item_details.get("Id")
+        item_name_for_log = item_details.get("Name")
+        item_type = item_details.get("Type")
 
+        logger.info(f"--- 【API模式】开始处理: '{item_name_for_log}' (类型: {item_type}) ---")
+        
+        # a. 获取并处理当前项目的演员表
+        current_emby_cast_raw = item_details.get("People", [])
+        original_emby_cast_count = len(current_emby_cast_raw)
+        
+        final_cast_for_item = self._process_cast_list(current_emby_cast_raw, item_details)
+        
+        # b. 评分
+        processing_score = self._evaluate_cast_processing_quality(final_cast_for_item, original_emby_cast_count)
+
+        # c. 持久化当前项目的演员表 (两步更新)
+        logger.info("【API模式】开始前置步骤：检查并更新被翻译的演员名字...")
+        original_names_map = {p.get("Id"): p.get("Name") for p in current_emby_cast_raw if p.get("Id")}
+        for actor in final_cast_for_item:
+            if self.is_stop_requested(): raise InterruptedError("任务中止")
+            actor_id = actor.get("EmbyPersonId")
+            new_name = actor.get("Name")
+            original_name = original_names_map.get(actor_id)
+            if actor_id and new_name and original_name and new_name != original_name:
+                emby_handler.update_person_details(actor_id, {"Name": new_name}, self.emby_url, self.emby_api_key, self.emby_user_id)
+        
+        cast_for_handler = [{"name": a.get("Name"), "character": a.get("Role"), "emby_person_id": a.get("EmbyPersonId")} for a in final_cast_for_item]
+        update_success = emby_handler.update_emby_item_cast(item_id, cast_for_handler, self.emby_url, self.emby_api_key, self.emby_user_id)
+        if not update_success:
+            raise RuntimeError(f"API模式更新项目 '{item_name_for_log}' 演员列表失败")
+
+        # d. 新增逻辑：如果当前是剧集，则将这份演员表注入所有分集
+        if item_type == "Series" and process_episodes:
+            logger.info(f"【API模式-批量注入】准备将处理好的演员表注入到 '{item_name_for_log}' 的所有分集中...")
+            children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, item_name_for_log)
+            if children:
+                episodes = [child for child in children if child.get("Type") == "Episode"]
+                total_episodes = len(episodes)
+                logger.info(f"共找到 {total_episodes} 个分集需要更新。")
+
+                for i, episode in enumerate(episodes):
+                    if self.is_stop_requested(): raise InterruptedError("任务中止")
+                    episode_id = episode.get("Id")
+                    episode_name = episode.get("Name")
+                    logger.debug(f"  ({i+1}/{total_episodes}) 正在为分集 '{episode_name}' 更新演员表...")
+                    
+                    emby_handler.update_emby_item_cast(episode_id, cast_for_handler, self.emby_url, self.emby_api_key, self.emby_user_id)
+                    
+                    self.save_to_processed_log(episode_id, f"{item_name_for_log} - {episode_name}")
+                    time.sleep(float(self.config.get("delay_between_items_sec", 0.2)))
+
+        # e. 记录主项目的日志
+        min_score_for_review = float(self.config.get("min_score_for_review", 6.0))
+        if processing_score < min_score_for_review:
+            self.save_to_failed_log(item_id, item_name_for_log, f"处理评分过低 ({processing_score:.1f})", item_type, score=processing_score)
+        else:
+            self.save_to_processed_log(item_id, item_name_for_log, score=processing_score)
+            self._remove_from_failed_log_if_exists(item_id)
     # ✨✨✨获取数据库连接的辅助方法✨✨✨
     def _get_db_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -692,70 +758,39 @@ class MediaProcessorAPI:
                 except Exception as close_err: logger.error(f"数据库连接关闭失败: {close_err}")
     # ✨✨✨处理单个媒体项目（电影或剧集）的入口方法✨✨✨
     def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False, process_episodes: bool = True) -> bool:
-        """
-        最终版：处理单个媒体项目，逻辑清晰，性能最优。
-        """
         if self.is_stop_requested():
             return False
 
-        # ✨ 核心优化：在所有操作之前，先检查顶层ID是否需要跳过 ✨
         if not force_reprocess_this_item and emby_item_id in self.processed_items_cache:
-            # 从缓存字典中获取片名，如果找不到则提供一个默认值
-            item_name_from_cache = self.processed_items_cache.get(emby_item_id, f"ID:{emby_item_id}")
-            logger.info(f"媒体 '{item_name_from_cache}' 已处理过，跳过整个处理流程。")
+            logger.info(f"媒体 '{self.processed_items_cache.get(emby_item_id, emby_item_id)}' 已处理过，跳过。")
             return True
 
         try:
             item_details = emby_handler.get_emby_item_details(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
             if not item_details:
-                logger.error(f"无法获取Emby项目 {emby_item_id} 的详情，处理中止。")
                 self.save_to_failed_log(emby_item_id, f"未知项目(ID:{emby_item_id})", "无法获取Emby项目详情")
                 return False
         except Exception as e:
-            logger.error(f"获取Emby项目 {emby_item_id} 详情时发生异常: {e}", exc_info=True)
             self.save_to_failed_log(emby_item_id, f"未知项目(ID:{emby_item_id})", f"获取Emby详情异常: {e}")
             return False
 
-        item_type = item_details.get("Type")
         item_name_for_log = item_details.get("Name", f"ID:{emby_item_id}")
-
-        if item_type == "Series":
-            logger.info(f"检测到项目 '{item_name_for_log}' (ID: {emby_item_id}) 是一个剧集...")
-            
-            self._process_item_core_logic(item_details, force_reprocess_this_item)
-            
-            if process_episodes:
-                logger.info("“深度模式”已启用，将递归处理其所有分集...")
-                episodes = emby_handler.get_episodes_for_series(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
-                if episodes:
-                    for i, episode in enumerate(episodes):
-                        if self.is_stop_requested(): return False
-                        logger.info(f"--- 正在处理第 {i+1}/{len(episodes)} 集: {episode.get('Name')} ---")
-                        self._process_item_core_logic(episode, force_reprocess_this_item)
-                        delay = float(self.config.get("delay_between_items_sec", 0.5))
-                        if delay > 0 and i < len(episodes) - 1: time.sleep(delay)
-            else:
-                logger.info("“快速模式”已启用，跳过处理分集。")
-            
-            return True
-
-        elif item_type == "Movie":
-            return self._process_item_core_logic(item_details, force_reprocess_this_item)
-            
-        elif item_type == "Episode":
-            series_id = item_details.get("SeriesId")
-            if series_id:
-                logger.info(f"单集 '{item_name_for_log}' 属于剧集 (ID: {series_id})。将重定向任务以处理整部剧集。")
-                return self.process_single_item(series_id, force_reprocess_this_item, process_episodes=process_episodes)
-            else:
-                logger.warning(f"单集 '{item_name_for_log}' 缺少所属的 SeriesId，将仅处理该单集本身。")
-                return self._process_item_core_logic(item_details, force_reprocess_this_item)
         
-        else:
-            logger.warning(f"项目 '{item_name_for_log}' (ID: {emby_item_id}) 的类型为 '{item_type}'，已跳过。")
+        try:
+            # ★★★ 核心：直接调用我们新的、统一的流程函数 ★★★
+            # 并将 process_episodes 参数传递下去
+            self._process_item_api_mode(item_details, process_episodes)
+            
             return True
-    # ✨✨✨处理单个媒体项（电影、剧集或单集）的核心业务逻辑✨✨✨
-    def _process_item_core_logic(self, item_details: Dict[str, Any], force_reprocess_this_item: bool = False) -> bool:
+        except InterruptedError:
+            logger.info(f"处理 '{item_name_for_log}' 的过程中被用户中止。")
+            return False
+        except Exception as e:
+            logger.error(f"处理 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
+            self.save_to_failed_log(emby_item_id, item_name_for_log, f"核心处理异常: {str(e)}", item_details.get("Type"))
+            return False
+    # # ✨✨✨处理单个媒体项（电影、剧集或单集）的核心业务逻辑✨✨✨
+    # def _process_item_core_logic(self, item_details: Dict[str, Any], force_reprocess_this_item: bool = False) -> bool:
         """
         最终版：只负责处理，不再关心是否跳过。
         """
