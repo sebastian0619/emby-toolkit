@@ -1786,79 +1786,92 @@ def api_update_edited_cast_api(item_id):
     except Exception as e:
         logger.error(f"API /api/update_media_cast CRITICAL Error for {item_id}: {e}", exc_info=True)
         return jsonify({"error": "保存演员信息时发生服务器内部错误"}), 500
-    
+# ✨✨✨ 导出演员映射表 ✨✨✨
 @app.route('/api/export_person_map', methods=['GET'])
 def api_export_person_map():
     """
-    导出 person_identity_map 表为 CSV 文件。
+    【后端模式感知版】根据当前处理器实例的类型，导出对应的映射表。
+    - 神医模式 (MediaProcessorSA): 导出 person_identity_map
+    - API模式 (MediaProcessorAPI): 导出 emby_actor_map
     """
-    logger.info("API: 收到导出演员映射表的请求。")
+    global media_processor_instance # 声明我们要使用全局实例
     
-    def generate_csv():
-        # 使用 StringIO 作为内存中的文件缓冲区
-        string_io = StringIO()
+    if media_processor_instance is None:
+        return jsonify({"error": "后端处理器实例未初始化，无法确定模式。"}), 503
+
+    # 1. 根据实例类型确定模式
+    if isinstance(media_processor_instance, MediaProcessorSA):
+        mode = 'tmdb' # 神医模式
+        table_name = 'person_identity_map'
+        headers = ['tmdb_person_id', 'emby_person_id', 'imdb_id', 'douban_celebrity_id', 'tmdb_name', 'douban_name']
+    else: # 默认或 MediaProcessorAPI 实例
+        mode = 'emby' # API模式
+        table_name = 'emby_actor_map'
+        headers = ['emby_person_id', 'emby_person_name', 'imdb_id', 'tmdb_person_id', 'douban_celebrity_id', 'tmdb_name', 'douban_name']
         
-        # 获取数据库连接
+    logger.info(f"API: 收到导出演员映射表的请求，当前模式: {'神医模式' if mode == 'tmdb' else 'API模式'} (操作表: {table_name})")
+
+    def generate_csv():
+        string_io = StringIO()
         conn = None
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
             
-            # 定义CSV文件的表头
-            # 我们只导出核心ID，名字可以由程序自动关联，减少文件大小和复杂性
-            headers = [
-                'emby_person_id', 
-                'imdb_id', 
-                'tmdb_person_id', 
-                'douban_celebrity_id',
-                'emby_person_name' # 包含名字方便用户查看
-            ]
-            
-            # 创建CSV写入器
             writer = csv.DictWriter(string_io, fieldnames=headers)
             
-            # 写入表头
             writer.writeheader()
-            yield string_io.getvalue() # 流式返回表头
+            yield string_io.getvalue()
             string_io.seek(0)
             string_io.truncate(0)
 
-            # 查询所有映射数据
-            cursor.execute(f"SELECT {', '.join(headers)} FROM person_identity_map")
+            cursor.execute(f"SELECT {', '.join(headers)} FROM {table_name}")
             
-            # 逐行写入CSV
             for row in cursor:
                 writer.writerow(dict(row))
-                yield string_io.getvalue() # 流式返回每一行
+                yield string_io.getvalue()
                 string_io.seek(0)
                 string_io.truncate(0)
 
         except Exception as e:
-            logger.error(f"导出映射表时发生错误: {e}", exc_info=True)
-            # 如果出错，可以考虑返回一个错误信息的文本
+            logger.error(f"导出映射表 (模式: {mode}) 时发生错误: {e}", exc_info=True)
             yield f"Error exporting data: {e}"
         finally:
             if conn:
                 conn.close()
 
-    # 创建一个文件名，包含日期
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    filename = f"person_identity_map_backup_{timestamp}.csv"
+    filename = f"{table_name}_backup_{timestamp}.csv"
     
-    # 使用 Response 对象来设置HTTP头，告诉浏览器这是一个需要下载的文件
     response = Response(stream_with_context(generate_csv()), mimetype='text/csv')
     response.headers.set("Content-Disposition", "attachment", filename=filename)
     
     return response
-
-
+# ✨✨✨ 导入演员映射表 ✨✨✨
 @app.route('/api/import_person_map', methods=['POST'])
 def api_import_person_map():
     """
-    【TMDb为核心版】从上传的 CSV 文件导入数据到 person_identity_map 表。
+    【后端模式感知版 + 智能指纹验证】根据当前处理器实例的类型，导入数据到对应的映射表，并验证CSV文件类型。
     """
-    logger.info("API: 收到导入演员映射表的请求。")
-    
+    global media_processor_instance
+
+    if media_processor_instance is None:
+        return jsonify({"error": "后端处理器实例未初始化，无法确定模式。"}), 503
+
+    # 1. 根据实例类型确定模式和配置
+    if isinstance(media_processor_instance, MediaProcessorSA):
+        mode_name = '神医模式'
+        table_name = 'person_identity_map'
+        conflict_target = 'tmdb_person_id'
+        all_columns = ['tmdb_person_id', 'emby_person_id', 'imdb_id', 'douban_celebrity_id', 'tmdb_name', 'douban_name']
+    else:
+        mode_name = 'API模式'
+        table_name = 'emby_actor_map'
+        conflict_target = 'emby_person_id'
+        all_columns = ['emby_person_id', 'emby_person_name', 'imdb_id', 'tmdb_person_id', 'douban_celebrity_id', 'tmdb_name', 'douban_name']
+
+    logger.info(f"API: 收到导入演员映射表的请求，当前为【{mode_name}】，将操作表: {table_name}")
+
     if 'file' not in request.files:
         return jsonify({"error": "请求中未找到文件部分"}), 400
     
@@ -1868,10 +1881,35 @@ def api_import_person_map():
         return jsonify({"error": "未选择文件或文件类型不正确 (需要 .csv)"}), 400
 
     try:
-        stream = StringIO(file.stream.read().decode("utf-8"), newline=None)
-        # 使用 DictReader 可以方便地通过列名访问数据
-        csv_reader = csv.DictReader(stream)
+        # 先读取文件内容，以便可以重复使用 stream
+        file_content = file.stream.read().decode("utf-8")
+        stream = StringIO(file_content, newline=None)
         
+        # 使用一个临时的 DictReader 来获取头部信息
+        header_reader = csv.DictReader(StringIO(file_content, newline=None))
+        file_headers = header_reader.fieldnames
+        
+        # <<< --- 核心修改：使用“指纹列”进行智能验证 --- >>>
+        if not file_headers:
+             return jsonify({"error": "文件验证失败：CSV文件为空或没有表头。"}), 400
+
+        if mode_name == '神医模式':
+            # 神医模式的备份文件不应该有 emby_person_name 列
+            if 'emby_person_name' in file_headers:
+                error_message = "文件验证失败：当前为【神医模式】，但您上传的似乎是【API模式】的备份文件（因为它包含了 'emby_person_name' 列）。请切换到API模式再导入此文件，或上传正确的【神医模式】备份文件。"
+                logger.warning(f"API: {error_message}")
+                return jsonify({"error": error_message}), 400
+        elif mode_name == 'API模式':
+            # API模式的备份文件必须有 emby_person_name 列
+            if 'emby_person_name' not in file_headers:
+                error_message = "文件验证失败：当前为【API模式】，但您上传的似乎是【神医模式】的备份文件（因为它缺少 'emby_person_name' 列）。请切换到神医模式再导入此文件，或上传正确的【API模式】备份文件。"
+                logger.warning(f"API: {error_message}")
+                return jsonify({"error": error_message}), 400
+        
+        # 验证通过后，才正式创建用于处理的 reader
+        csv_reader = csv.DictReader(stream)
+        # <<< --- 验证结束 --- >>>
+
         stats = {"total": 0, "processed": 0, "skipped": 0, "errors": 0}
         
         conn = get_db_connection()
@@ -1880,57 +1918,59 @@ def api_import_person_map():
         for row in csv_reader:
             stats["total"] += 1
             
-            # ✨ 1. 以 tmdb_person_id 为核心 ✨
-            tmdb_id = row.get('tmdb_person_id')
-            
-            if not tmdb_id:
-                logger.warning(f"导入跳过：行 {row} 缺少核心的 tmdb_person_id。")
+            core_id = row.get(conflict_target)
+            if not core_id or not str(core_id).strip():
+                logger.warning(f"导入跳过 (模式: {mode_name}): 行 {row} 缺少或核心ID为空 ({conflict_target})。")
                 stats["skipped"] += 1
                 continue
             
-            # 2. 准备要写入的数据，并清理空字符串
-            data_to_write = {
-                "tmdb_person_id": tmdb_id,
-                "emby_person_id": row.get('emby_person_id') or None,
-                "emby_person_name": row.get('emby_person_name') or None,
-                "imdb_id": row.get('imdb_id') or None,
-                "douban_celebrity_id": row.get('douban_celebrity_id') or None,
-                "tmdb_name": row.get('tmdb_name') or None,
-                "douban_name": row.get('douban_name') or None,
-            }
-            clean_data = {k: v for k, v in data_to_write.items() if v is not None and v != ''}
+            data_to_write = {}
+            for col in all_columns:
+                if col in file_headers:
+                    data_to_write[col] = row.get(col) or None
+            
+            clean_data = {k: v for k, v in data_to_write.items() if v is not None and str(v).strip() != ''}
+            
+            if not clean_data or conflict_target not in clean_data:
+                stats["skipped"] += 1
+                continue
 
-            # 3. 构建并执行 UPSERT 语句
             cols = list(clean_data.keys())
             vals = list(clean_data.values())
             
-            update_clauses = [f"{col} = COALESCE(excluded.{col}, person_identity_map.{col})" for col in cols if col != "tmdb_person_id"]
+            update_clauses = [f"{col} = COALESCE(excluded.{col}, {table_name}.{col})" for col in cols if col != conflict_target]
             
-            sql = f"""
-                INSERT INTO person_identity_map ({', '.join(cols)}, last_updated_at)
-                VALUES ({', '.join(['?'] * len(cols))}, CURRENT_TIMESTAMP)
-                ON CONFLICT(tmdb_person_id) DO UPDATE SET
-                    {', '.join(update_clauses)},
-                    last_updated_at = CURRENT_TIMESTAMP;
-            """
+            if not update_clauses:
+                sql = f"""
+                    INSERT OR IGNORE INTO {table_name} ({', '.join(cols)}, last_updated_at)
+                    VALUES ({', '.join(['?'] * len(cols))}, CURRENT_TIMESTAMP);
+                """
+            else:
+                sql = f"""
+                    INSERT INTO {table_name} ({', '.join(cols)}, last_updated_at)
+                    VALUES ({', '.join(['?'] * len(cols))}, CURRENT_TIMESTAMP)
+                    ON CONFLICT({conflict_target}) DO UPDATE SET
+                        {', '.join(update_clauses)},
+                        last_updated_at = CURRENT_TIMESTAMP;
+                """
             
             try:
                 cursor.execute(sql, tuple(vals))
                 stats["processed"] += 1
             except sqlite3.Error as e_row:
                 stats["errors"] += 1
-                logger.error(f"导入行 {row} 时数据库出错: {e_row}")
+                logger.error(f"导入行 {row} (模式: {mode_name}) 时数据库出错: {e_row}")
 
         conn.commit()
         conn.close()
         
-        message = f"导入完成。总行数: {stats['total']}, 成功处理: {stats['processed']}, 跳过: {stats['skipped']}, 错误: {stats['errors']}."
+        message = f"导入完成 (模式: {mode_name})。总行数: {stats['total']}, 成功处理: {stats['processed']}, 跳过: {stats['skipped']}, 错误: {stats['errors']}."
         logger.info(f"API: {message}")
         return jsonify({"message": message}), 200
 
     except Exception as e:
-        logger.error(f"导入文件时发生严重错误: {e}", exc_info=True)
-        return jsonify({"error": f"处理文件时发生错误: {e}"}), 500 
+        logger.error(f"导入文件 (模式: {mode_name}) 时发生严重错误: {e}", exc_info=True)
+        return jsonify({"error": f"处理文件时发生错误: {e}"}), 500
 # ✨✨✨ 神医编辑页面的API接口 ✨✨✨
 @app.route('/api/media_for_editing_sa/<item_id>', methods=['GET'])
 @login_required
