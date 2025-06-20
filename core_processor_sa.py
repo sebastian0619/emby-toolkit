@@ -656,28 +656,33 @@ class MediaProcessorSA:
         except Exception as e:
             logger.error(f"在 _process_cast_list_from_local 中发生未知错误: {e}", exc_info=True)
             return []
-
+    # ✨✨✨格式化演员表✨✨✨
     def _format_and_complete_cast_list(self, cast_list: List[Dict[str, Any]], is_animation: bool) -> List[Dict[str, Any]]:
-        """
-        【已移除头像补全】只负责格式化角色名和排序。
-        """
         perfect_cast = []
-        logger.info("格式化演员列表：开始处理角色名和排序。") # 增加一条日志说明
-        
+        logger.info("格式化演员列表：开始处理角色名和排序。")
+
         for idx, actor in enumerate(cast_list):
-            # 步骤 1: 补全演员信息 (头像等)  <--- 这整个部分都被删除了
+            
+            # 1. 获取并初步清理角色名
+            final_role = actor.get("character", "").strip()
 
-            # 步骤 2: 格式化角色名 (这部分保留)
-            current_role = actor.get("character", "").strip()
+            # 2. ★★★ 核心修改：如果角色名包含中文，则移除所有内部空格 ★★★
+            # 这可以修正 "龙 五" -> "龙五"，同时不影响 "The Night King"
+            # 假设 utils 模块已在文件顶部导入
+            if utils.contains_chinese(final_role):
+                final_role = final_role.replace(" ", "").replace("　", "")
+
+            # 3. 根据是否为动画和角色名是否为空，进行最终格式化
             if is_animation:
-                if current_role and not current_role.endswith("(配音)"):
-                    actor["character"] = f"{current_role} (配音)"
-                elif not current_role:
-                    actor["character"] = "配音"
-            elif not current_role: # 如果不是动画且角色名为空
-                actor["character"] = "演员"
+                if final_role and not final_role.endswith("(配音)"):
+                    final_role = f"{final_role} (配音)"
+                elif not final_role:
+                    final_role = "配音"
+            elif not final_role: # 如果不是动画且角色名为空
+                final_role = "演员"
 
-            # 步骤 3: 添加到最终列表 (这部分保留)
+            # 4. 将最终处理好的角色名和顺序赋值回去
+            actor["character"] = final_role
             actor["order"] = idx
             perfect_cast.append(actor)
                 

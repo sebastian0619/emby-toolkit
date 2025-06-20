@@ -741,6 +741,12 @@ class MediaProcessorAPI:
                     translated_role = self._translate_actor_field(role_cleaned, "角色名", actor_data.get("Name"), db_cursor_for_cache=cursor)
                     if translated_role and translated_role.strip() and translated_role.strip() != role_cleaned:
                         final_role = translated_role.strip()
+
+                # <<< --- 核心修正：移除中文角色名中的所有空格 --- >>>
+                # 这个修正只针对包含中文字符的角色名，以避免错误地修改英文角色名（如 "The Night King"）
+                if final_role and utils.contains_chinese(final_role):
+                    final_role = final_role.replace(" ", "").replace("　", "")
+                # <<< --- 修正结束 --- >>>
                 
                 if is_animation:
                     final_role = f"{final_role} (配音)" if final_role and not final_role.endswith("(配音)") else "配音"
