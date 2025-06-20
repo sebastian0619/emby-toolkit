@@ -157,6 +157,20 @@ class MediaProcessorAPI:
                     
                     self.save_to_processed_log(episode_id, f"{item_name_for_log} - {episode_name}")
                     time.sleep(float(self.config.get("delay_between_items_sec", 0.2)))
+        
+        # ★★★ 在这里，记录主项目日志之前，添加刷新操作 ★★★
+        logger.info(f"【API模式】所有演员信息更新完成，准备为项目 '{item_name_for_log}' 触发元数据刷新...")
+        refresh_success = emby_handler.refresh_emby_item_metadata(
+            item_emby_id=item_id,
+            emby_server_url=self.emby_url,
+            emby_api_key=self.emby_api_key,
+            replace_all_metadata_param=False, # <-- API模式使用“补充缺失”模式
+            item_name_for_log=item_name_for_log
+        )
+        
+        if not refresh_success:
+            # 即使刷新失败，前面的操作也成功了，所以我们只记录一个警告，不中断流程
+            logger.warning(f"【API模式】为 '{item_name_for_log}' 触发刷新失败，您可能需要稍后在Emby中手动刷新。")
 
         # e. 记录主项目的日志
         min_score_for_review = float(self.config.get("min_score_for_review", 6.0))
