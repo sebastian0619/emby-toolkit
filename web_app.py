@@ -1851,7 +1851,7 @@ def api_export_person_map():
 @app.route('/api/import_person_map', methods=['POST'])
 def api_import_person_map():
     """
-    【后端模式感知版 + 智能指纹验证】根据当前处理器实例的类型，导入数据到对应的映射表，并验证CSV文件类型。
+    【后端模式感知版 + 首行数据验证】根据当前模式，通过验证首行数据的核心ID来确保文件类型正确。
     """
     global media_processor_instance
 
@@ -1881,35 +1881,34 @@ def api_import_person_map():
         return jsonify({"error": "未选择文件或文件类型不正确 (需要 .csv)"}), 400
 
     try:
-        # 先读取文件内容，以便可以重复使用 stream
+        # 将文件内容读入内存，以便我们可以多次读取它（一次用于验证，一次用于处理）
         file_content = file.stream.read().decode("utf-8")
+        
+        # --- 核心修改：使用首行数据进行智能验证 ---
+        # 创建一个临时的 reader 用于验证
+        validation_reader = csv.DictReader(StringIO(file_content, newline=None))
+        
+        # 检查表头是否存在
+        if not validation_reader.fieldnames:
+            return jsonify({"error": "文件验证失败：CSV文件为空或没有表头。"}), 400
+        
+        # 获取第一行数据
+        first_row = next(validation_reader, None)
+        
+        # 如果文件只有表头，没有数据，也算有效（可以导入一个空文件来清空）
+        if first_row:
+            # 检查核心ID列是否有值
+            core_id_value = first_row.get(conflict_target)
+            if not core_id_value or not core_id_value.strip():
+                error_message = f"文件验证失败：当前为【{mode_name}】，需要一个每行都包含有效 '{conflict_target}' 的文件。您上传的文件似乎是为另一种模式设计的备份。请检查文件或切换模式。"
+                logger.warning(f"API: {error_message}")
+                return jsonify({"error": error_message}), 400
+        # --- 验证结束 ---
+
+        # 验证通过，现在创建用于正式处理的 reader
         stream = StringIO(file_content, newline=None)
-        
-        # 使用一个临时的 DictReader 来获取头部信息
-        header_reader = csv.DictReader(StringIO(file_content, newline=None))
-        file_headers = header_reader.fieldnames
-        
-        # <<< --- 核心修改：使用“指纹列”进行智能验证 --- >>>
-        if not file_headers:
-             return jsonify({"error": "文件验证失败：CSV文件为空或没有表头。"}), 400
-
-        if mode_name == '神医模式':
-            # 神医模式的备份文件不应该有 emby_person_name 列
-            if 'emby_person_name' in file_headers:
-                error_message = "文件验证失败：当前为【神医模式】，但您上传的似乎是【API模式】的备份文件（因为它包含了 'emby_person_name' 列）。请切换到API模式再导入此文件，或上传正确的【神医模式】备份文件。"
-                logger.warning(f"API: {error_message}")
-                return jsonify({"error": error_message}), 400
-        elif mode_name == 'API模式':
-            # API模式的备份文件必须有 emby_person_name 列
-            if 'emby_person_name' not in file_headers:
-                error_message = "文件验证失败：当前为【API模式】，但您上传的似乎是【神医模式】的备份文件（因为它缺少 'emby_person_name' 列）。请切换到神医模式再导入此文件，或上传正确的【API模式】备份文件。"
-                logger.warning(f"API: {error_message}")
-                return jsonify({"error": error_message}), 400
-        
-        # 验证通过后，才正式创建用于处理的 reader
         csv_reader = csv.DictReader(stream)
-        # <<< --- 验证结束 --- >>>
-
+        
         stats = {"total": 0, "processed": 0, "skipped": 0, "errors": 0}
         
         conn = get_db_connection()
@@ -1920,13 +1919,12 @@ def api_import_person_map():
             
             core_id = row.get(conflict_target)
             if not core_id or not str(core_id).strip():
-                logger.warning(f"导入跳过 (模式: {mode_name}): 行 {row} 缺少或核心ID为空 ({conflict_target})。")
                 stats["skipped"] += 1
                 continue
             
             data_to_write = {}
             for col in all_columns:
-                if col in file_headers:
+                if col in csv_reader.fieldnames:
                     data_to_write[col] = row.get(col) or None
             
             clean_data = {k: v for k, v in data_to_write.items() if v is not None and str(v).strip() != ''}
