@@ -688,7 +688,7 @@ class MediaProcessorSA:
                 
         return perfect_cast
     
-    # ★★★ V-Final 新增：API轨道处理函数 ★★★
+    # ✨✨✨API中文化演员表✨✨✨
     def _process_api_track_person_names_only(self, item_details: Dict[str, Any]):
         """
         【API轨道 - 绝对安全版】
@@ -1088,7 +1088,7 @@ class MediaProcessorSA:
 
         logger.info("手动编辑-翻译完成。")
         return translated_cast
-    # --- 手动处理 ---
+    # ✨✨✨手动处理✨✨✨
     def process_item_with_manual_cast(self, item_id: str, manual_cast_list: List[Dict[str, Any]], item_name: str) -> bool:
         """
         【V4 - 后端缓存最终版】使用前端提交的轻量级修改，与内存中的完整数据合并。
