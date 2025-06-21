@@ -120,7 +120,7 @@ class AITranslator:
                 logger.error(f"OpenAI 批量翻译未返回有效的JSON对象，而是返回了: {type(translated_dict)}")
                 return {}
             
-            logger.info(f"(OpenAI) 批量翻译成功，返回 {len(translated_dict)} 个结果。")
+            logger.debug(f"(OpenAI) 批量翻译成功，返回 {len(translated_dict)} 个结果。")
             return translated_dict
             
         except APIError as e:
@@ -178,7 +178,7 @@ class AITranslator:
                     logger.error(f"智谱AI 批量翻译未返回有效的JSON对象，而是返回了: {type(translated_dict)}")
                     return {}
                 
-                logger.info(f"(智谱AI) 批量翻译成功，返回 {len(translated_dict)} 个结果。")
+                logger.debug(f"(智谱AI) 批量翻译成功，返回 {len(translated_dict)} 个结果。")
                 return translated_dict
             else:
                 logger.error("智谱AI 未按预期调用 'translation_output' 工具。")
