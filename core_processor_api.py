@@ -744,29 +744,94 @@ class MediaProcessorAPI:
             # 步骤 5: 对最终演员表进行翻译和格式化
             # ======================================================================
             logger.info(f"步骤 5: 对最终 {len(final_cast_list)} 位演员进行翻译和格式化...")
-            is_animation = "Animation" in media_info.get("Genres", []) or "动画" in media_info.get("Genres", [])
             
-            for actor_data in final_cast_list:
-                if self.is_stop_requested(): break
+            ai_translation_succeeded = False
+
+            if self.ai_translation_enabled and self.ai_translator:
+                logger.info("AI翻译已启用，优先尝试批量翻译模式。")
+                texts_to_translate = set()
+                translation_cache = {} # 用于存储从数据库或API获取的翻译结果
+
+                # 1. 收集所有需要翻译的文本，并优先使用数据库缓存
+                for actor in final_cast_list:
+                    for field_key in ["Name", "Role"]:
+                        original_text = actor.get(field_key)
+                        if field_key == 'Role':
+                            original_text = utils.clean_character_name_static(original_text)
+                        
+                        if not original_text or not original_text.strip() or utils.contains_chinese(original_text):
+                            continue
+
+                        cached_entry = DoubanApi._get_translation_from_db(original_text, cursor=cursor)
+                        if cached_entry and cached_entry.get("translated_text"):
+                            translation_cache[original_text] = cached_entry.get("translated_text")
+                        else:
+                            texts_to_translate.add(original_text)
                 
-                current_name = actor_data.get("Name")
-                if current_name and not utils.contains_chinese(current_name):
-                    translated_name = self._translate_actor_field(current_name, "演员名", current_name, db_cursor_for_cache=cursor)
-                    if translated_name and current_name != translated_name:
-                        actor_data["Name"] = translated_name
+                # 2. 如果有需要翻译的文本，则调用批量API
+                if texts_to_translate:
+                    logger.info(f"共收集到 {len(texts_to_translate)} 个独立词条需要通过AI翻译。")
+                    try:
+                        translation_map = self.ai_translator.batch_translate(list(texts_to_translate))
+                        
+                        if translation_map:
+                            logger.info(f"AI批量翻译成功，返回 {len(translation_map)} 个结果。")
+                            translation_cache.update(translation_map)
+                            
+                            # 将新翻译的结果存入数据库缓存
+                            for original, translated in translation_map.items():
+                                DoubanApi._save_translation_to_db(original, translated, self.ai_translator.provider, cursor=cursor)
+                            
+                            ai_translation_succeeded = True
+                        else:
+                            logger.warning("AI批量翻译调用成功，但未返回任何翻译结果。可能是API内部错误（如余额不足）。将降级到传统翻译引擎。")
 
-                role_cleaned = utils.clean_character_name_static(actor_data.get("Role"))
-                final_role = role_cleaned
-                if role_cleaned and not utils.contains_chinese(role_cleaned):
-                    translated_role = self._translate_actor_field(role_cleaned, "角色名", actor_data.get("Name"), db_cursor_for_cache=cursor)
-                    if translated_role and translated_role.strip() and translated_role.strip() != role_cleaned:
-                        final_role = translated_role.strip()
+                    except Exception as e:
+                        logger.error(f"调用AI批量翻译时发生严重错误: {e}。将降级到传统翻译引擎。", exc_info=True)
+                else:
+                    logger.info("所有词条均在缓存中找到，无需AI翻译。")
+                    ai_translation_succeeded = True
 
-                # <<< --- 核心修正：移除中文角色名中的所有空格 --- >>>
-                # 这个修正只针对包含中文字符的角色名，以避免错误地修改英文角色名（如 "The Night King"）
+                # 3. 如果AI成功（无论通过API还是缓存），则回填结果
+                if ai_translation_succeeded:
+                    for actor_data in final_cast_list:
+                        # 更新名字
+                        original_name = actor_data.get("Name")
+                        if original_name in translation_cache:
+                            actor_data["Name"] = translation_cache[original_name]
+                        
+                        # 更新角色
+                        original_role = utils.clean_character_name_static(actor_data.get("Role"))
+                        if original_role in translation_cache:
+                            actor_data["Role"] = translation_cache[original_role]
+                        else:
+                            actor_data["Role"] = original_role
+
+            # ★★★ 降级逻辑 ★★★
+            if not ai_translation_succeeded:
+                if self.config.get("ai_translation_enabled", False):
+                    logger.info("AI翻译失败，正在启动降级程序，使用传统翻译引擎...")
+                else:
+                    logger.info("AI翻译未启用，使用传统翻译引擎（如果配置了）。")
+                
+                # 使用健壮的逐个翻译逻辑作为回退
+                for actor_data in final_cast_list:
+                    if self.is_stop_requested(): break
+                    
+                    current_name = actor_data.get("Name")
+                    actor_data["Name"] = self._translate_actor_field(current_name, "演员名", current_name, db_cursor_for_cache=cursor)
+
+                    role_cleaned = utils.clean_character_name_static(actor_data.get("Role"))
+                    actor_data["Role"] = self._translate_actor_field(role_cleaned, "角色名", actor_data.get("Name"), db_cursor_for_cache=cursor)
+
+            # 翻译完成后，进行统一的格式化处理
+            is_animation = "Animation" in media_info.get("Genres", []) or "动画" in media_info.get("Genres", [])
+            for actor_data in final_cast_list:
+                final_role = actor_data.get("Role", "")
+
+                # 移除中文角色名中的所有空格
                 if final_role and utils.contains_chinese(final_role):
                     final_role = final_role.replace(" ", "").replace("　", "")
-                # <<< --- 修正结束 --- >>>
                 
                 if is_animation:
                     final_role = f"{final_role} (配音)" if final_role and not final_role.endswith("(配音)") else "配音"
@@ -1301,6 +1366,81 @@ class MediaProcessorAPI:
 
         logger.info("“纯翻译”模式完成。")
         return translated_cast
+    # ✨✨✨批量翻译辅助方法✨✨✨
+def _batch_translate_actor_fields_ai(self, cast_list: List[Dict[str, Any]], db_cursor: sqlite3.Cursor) -> List[Dict[str, Any]]:
+    """
+    使用AI批量翻译演员列表中的姓名和角色。
+    """
+    logger.info("  (AI批量模式) 开始收集需要翻译的字段...")
+    
+    texts_to_translate = set()
+    translation_cache = {} # 用于存储从数据库或API获取的翻译结果
+
+    # 步骤 1: 收集所有需要翻译的文本，并优先使用数据库缓存
+    for actor in cast_list:
+        for field in ["Name", "Role"]:
+            original_text = actor.get(field)
+            if not original_text or not original_text.strip() or utils.contains_chinese(original_text):
+                continue
+
+            # 检查数据库缓存
+            cached_entry = DoubanApi._get_translation_from_db(original_text)
+            if cached_entry and cached_entry.get("translated_text"):
+                cached_translation = cached_entry.get("translated_text")
+                engine_used = cached_entry.get("engine_used")
+                logger.debug(f"    数据库翻译缓存命中 for '{original_text}' -> '{cached_translation}' (引擎: {engine_used})")
+                translation_cache[original_text] = cached_translation
+            else:
+                # 如果缓存未命中，则加入待翻译集合
+                texts_to_translate.add(original_text)
+
+    # 步骤 2: 如果有需要翻译的文本，则进行一次性批量API调用
+    if texts_to_translate:
+        logger.info(f"  (AI批量模式) 收集到 {len(texts_to_translate)} 个独立词条需要通过API翻译。")
+        
+        # 调用AITranslator的批量翻译方法
+        # 注意：你需要确保你的 AITranslator 类有 batch_translate 方法
+        try:
+            # 将 set 转换为 list
+            api_results = self.ai_translator.batch_translate(list(texts_to_translate))
+            
+            # 更新我们的翻译缓存，并存入数据库
+            if api_results:
+                logger.info(f"  (AI批量模式) API成功返回 {len(api_results)} 个翻译结果。")
+                translation_cache.update(api_results)
+                
+                # 将新翻译的结果存入数据库缓存
+                for original, translated in api_results.items():
+                    DoubanApi._save_translation_to_db(
+                        original, 
+                        translated, 
+                        self.ai_translator.provider, 
+                        cursor=db_cursor
+                    )
+            else:
+                logger.warning("  (AI批量模式) AI批量翻译API没有返回有效结果。")
+
+        except Exception as e:
+            logger.error(f"  (AI批量模式) 调用AI批量翻译API时发生错误: {e}", exc_info=True)
+    else:
+        logger.info("  (AI批量模式) 所有需要翻译的字段均在数据库缓存中找到，无需调用API。")
+
+    # 步骤 3: 映射回填，使用完整的 translation_cache 更新演员列表
+    logger.info("  (AI批量模式) 开始将翻译结果回填到演员列表...")
+    for actor in cast_list:
+        # 翻译名字
+        original_name = actor.get("Name")
+        if original_name in translation_cache:
+            actor["Name"] = translation_cache[original_name]
+        
+        # 翻译角色 (先清理)
+        original_role = utils.clean_character_name_static(actor.get("Role"))
+        if original_role in translation_cache:
+            actor["Role"] = translation_cache[original_role] # 更新时使用已翻译的结果
+        else:
+            actor["Role"] = original_role # 即使没翻译，也要用清理后的结果
+
+    return cast_list
 class SyncHandlerAPI:
     def __init__(self, db_path: str, emby_url: str, emby_api_key: str, emby_user_id: Optional[str]):
         self.db_path = db_path
