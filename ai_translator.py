@@ -5,7 +5,7 @@ from logger_setup import logger
 
 # 动态导入，哪个需要用哪个
 try:
-    from openai import OpenAI, APIError
+    from openai import OpenAI, APIError, APITimeoutError
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
@@ -23,7 +23,6 @@ class AITranslator:
         self.model = config.get("ai_model_name")
         self.base_url = config.get("ai_base_url")
         # 这个prompt现在只用于单文本翻译，作为向后兼容
-        self.single_translation_prompt = config.get("ai_translation_prompt", "Translate the following text to Chinese:")
         
         if not self.api_key:
             raise ValueError("AI Translator: API Key 未配置。")
@@ -95,40 +94,101 @@ class AITranslator:
 
     def _batch_translate_with_openai(self, texts: List[str]) -> Dict[str, str]:
         if not self.client: return {}
+
+        chunk_size = 50
+        all_translated_results = {}
+        text_chunks = [texts[i:i + chunk_size] for i in range(0, len(texts), chunk_size)]
+        total_chunks = len(text_chunks)
+
+        logger.info(f"数据量过大，已自动分块。共 {len(texts)} 个词条，分为 {total_chunks} 个批次，每批最多 {chunk_size} 个。")
+
+        for i, chunk in enumerate(text_chunks):
+            logger.info(f"--- 正在处理批次 {i + 1}/{total_chunks} ---")
+            
+            # ✨✨✨ 核心修正：融合了你中文指令精华的终极提示词 ✨✨✨
+            system_prompt = """
+    You are a professional film and television translation expert, acting as a JSON-only API. Your primary goal is to translate English names and roles into Chinese, adhering to the common practices of the Chinese-speaking film community.
+
+    **Your Task & Strict Rules:**
+    1.  You will receive a JSON array of English strings as input.
+    2.  You MUST return a single, valid JSON object that maps each original English string to its Chinese translation.
+    3.  **Translation Quality:**
+        -   For famous people or characters, use the most common, official, or universally accepted Chinese names (e.g., "Peter Parker" -> "彼得·帕克").
+        -   For pinyin or romanized names (e.g., "Yoon Se-ri", "Zhang San"), translate them into standard Chinese names (e.g., "尹世理", "张三").
+        -   For mixed content (e.g., "Maj. Sophie E. Jean"), translate correctly while preserving context like titles ("苏菲·E·让少校").
+    4.  **Crucially:** If a string cannot or should not be translated, use the original English string as its value in the output JSON.
+    5.  **Output Format:** DO NOT add any explanations, introductory text, markdown formatting, or any text outside of the final JSON object. Your response MUST be only the JSON object itself.
+
+    **Example:**
+    User Input:
+    ["Peter Parker", "The Night King", "Maj. Sophie E. Jean"]
+
+    Your Output (MUST be in this exact format):
+    {
+    "Peter Parker": "彼得·帕克",
+    "The Night King": "夜王",
+    "Maj. Sophie E. Jean": "苏菲·E·让少校"
+    }
+    """
+            user_prompt = json.dumps(chunk, ensure_ascii=False)
+            try:
+                chat_completion = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.0,
+                    timeout=300, 
+                )
+
+                # ✨✨✨ 核心侦测逻辑 ✨✨✨
+                if not chat_completion.choices:
+                    logger.error(f"批次 {i + 1} 返回了空的 choices 列表，跳过此批次。")
+                    continue
+
+                choice = chat_completion.choices[0]
+                response_content = choice.message.content
+
+                # 1. 检查是否被内容过滤器拦截
+                if choice.finish_reason == 'content_filter':
+                    logger.error(f"批次 {i + 1} 因触发内容安全策略而被拦截 (finish_reason: 'content_filter')。跳过此批次。")
+                    # 打印出被拦截的批次内容，方便排查是哪个词有问题
+                    logger.warning(f"  -> 被拦截的批次内容: {chunk}")
+                    continue
+
+                # 2. 检查响应内容是否为空
+                if not response_content:
+                    logger.error(f"批次 {i + 1} 返回了空的内容 (content)，但 finish_reason 是 '{choice.finish_reason}'。跳过此批次。")
+                    continue
+
+                # 3. 如果一切正常，才尝试解析JSON
+                translated_dict = json.loads(response_content)
+
+                if not isinstance(translated_dict, dict):
+                    logger.error(f"批次 {i + 1} 翻译未返回有效的JSON对象，跳过此批次。")
+                    continue
+                
+                all_translated_results.update(translated_dict)
+                logger.info(f"批次 {i + 1} 处理成功，已翻译 {len(translated_dict)} 个词条。")
+
+            except json.JSONDecodeError as e:
+                # 单独捕获JSON解析错误，并打印原始响应
+                logger.error(f"批次 {i + 1} 发生JSON解析错误: {e}。跳过此批次。")
+                logger.warning(f"  -> 无法解析的原始响应内容: '{response_content}'")
+                continue
+            except APIError as e:
+                logger.error(f"批次 {i + 1} 发生API错误: Status {e.status_code} - {e.message}。跳过此批次。")
+                continue
+            except APITimeoutError as e:
+                logger.error(f"批次 {i + 1} 请求超时: {e}。跳过此批次。")
+                continue
+            except Exception as e:
+                logger.error(f"批次 {i + 1} 发生未知错误: {e}。跳过此批次。", exc_info=True)
+                continue
         
-        # 专门为批量翻译设计的、高效的Prompt
-        system_prompt = "You are an expert translator. Your task is to translate a list of English names and roles into Chinese. Return the result as a single, valid JSON object where keys are the original English strings and values are their Chinese translations. Follow standard translation conventions."
-        user_prompt = f"Please translate the following items:\n{json.dumps(texts, ensure_ascii=False)}"
-
-        try:
-            logger.debug(f"使用 (OpenAI) 批量翻译 {len(texts)} 个词条...")
-            chat_completion = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.0,
-                # ✨ 关键：强制模型返回JSON格式，非常稳定
-                response_format={"type": "json_object"},
-                timeout=60.0, # 批量任务可能需要更长的超时时间
-            )
-            response_content = chat_completion.choices[0].message.content
-            translated_dict = json.loads(response_content)
-
-            if not isinstance(translated_dict, dict):
-                logger.error(f"OpenAI 批量翻译未返回有效的JSON对象，而是返回了: {type(translated_dict)}")
-                return {}
-            
-            logger.debug(f"(OpenAI) 批量翻译成功，返回 {len(translated_dict)} 个结果。")
-            return translated_dict
-            
-        except APIError as e:
-            logger.error(f"OpenAI API 错误: {e.status_code} - {e.response.text}")
-            return {}
-        except Exception as e:
-            logger.error(f"调用 OpenAI API 进行批量翻译时发生未知错误: {e}", exc_info=True)
-            return {}
+        logger.info(f"所有批次处理完成，总共成功翻译 {len(all_translated_results)} 个词条。")
+        return all_translated_results
 
     def _batch_translate_with_zhipuai(self, texts: List[str]) -> Dict[str, str]:
         if not self.client: return {}
