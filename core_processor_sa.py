@@ -1555,13 +1555,13 @@ class SyncHandlerSA:
                                 person_data["douban_name"] = matched_douban_actor.get('name')
                         toys_in_basket.append(person_data)
             if toys_in_basket:
-                logger.info(f"好了！篮子里收集了 {len(toys_in_basket)} 个玩具，现在一次性放进箱子！")
+                logger.debug(f"好了！篮子里收集了 {len(toys_in_basket)} 个玩具，现在一次性放进箱子！")
                 for one_toy in toys_in_basket:
                     # 我们还是用老办法一个一个放，但因为是在一个地方操作，所以快很多
                     action = self._upsert_person_map(cursor, one_toy)
                     if action == 'added': stats['map_added'] += 1
                     elif action == 'updated': stats['map_updated'] += 1
-                logger.info("所有玩具都放进去了！")
+                logger.debug("所有玩具都放进去了！")
 
             # ★★★ 阶段二：深度在线补充 (仅在 full_sync 模式下执行) ★★★
             if full_sync and not self.stop_event.is_set():
