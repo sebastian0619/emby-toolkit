@@ -152,14 +152,6 @@
                   :disabled="!configModel.ai_translation_enabled"
                 />
               </n-form-item>
-              <n-form-item label="翻译提示词 (Prompt)" path="ai_translation_prompt">
-                <n-input 
-                  type="textarea" 
-                  v-model:value="configModel.ai_translation_prompt" 
-                  :autosize="{ minRows: 5, maxRows: 10 }" 
-                  :disabled="!configModel.ai_translation_enabled"
-                />
-              </n-form-item>
             </div>
             <!-- ✨✨✨ 核心修改区域 END ✨✨✨ -->
           </n-card>
