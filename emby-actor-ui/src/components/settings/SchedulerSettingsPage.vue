@@ -1,7 +1,6 @@
 <template>
-  <!-- ★★★ 1. 使用 n-space 作为根容器 ★★★ -->
   <n-space vertical :size="24" style="margin-top: 15px;">
-    <!-- ★★★ 2. 第一个卡片，包裹全量扫描定时任务 ★★★ -->
+    <!-- 卡片 1: 全量扫描 (保持不变) -->
     <n-card title="全量扫描定时任务" class="beautified-card" :bordered="false">
       <template #header-extra>
         <n-switch v-model:value="configModel.schedule_enabled">
@@ -23,7 +22,7 @@
       </n-form>
     </n-card>
 
-    <!-- ★★★ 3. 第二个卡片，包裹同步映射表定时任务 ★★★ -->
+    <!-- 卡片 2: 同步映射表 (保持不变) -->
     <n-card title="同步演员映射表定时任务" class="beautified-card" :bordered="false">
       <template #header-extra>
         <n-switch v-model:value="configModel.schedule_sync_map_enabled">
@@ -40,19 +39,34 @@
       </n-form>
     </n-card>
 
-    <n-card title="智能追剧更新" class="beautified-card" :bordered="false">
-      <n-form-item label="启用定时追剧更新">
-        <n-switch v-model:value="configModel.schedule_watchlist_enabled" :disabled="!configModel.use_sa_mode" />
-      </n-form-item>
-      <n-form-item label="追剧更新CRON表达式" v-if="configModel.schedule_watchlist_enabled">
-        <n-input v-model:value="configModel.schedule_watchlist_cron" placeholder="例如: 0 */6 * * * (每6小时)" />
-        <template #feedback>
-          高频率地检查追剧列表中的剧集是否有更新。
-        </template>
-      </n-form-item>
+    <!-- ✨✨✨ 卡片 3: 智能追剧 (核心修改) ✨✨✨ -->
+    <n-card title="智能追剧更新定时任务" class="beautified-card" :bordered="false">
+      <!-- 1. 将开关移到 header-extra，与其他卡片保持一致 -->
+      <template #header-extra>
+        <n-switch v-model:value="configModel.schedule_watchlist_enabled" :disabled="!configModel.use_sa_mode">
+          <template #checked>已启用</template>
+          <template #unchecked>已禁用</template>
+        </n-switch>
+      </template>
+      <!-- 2. 内部也使用 n-form 和 n-grid 统一布局 -->
+      <n-form :model="configModel" label-placement="top">
+        <n-grid :cols="1">
+          <n-form-item-grid-item label="CRON表达式" path="schedule_watchlist_cron">
+            <!-- 3. 使用 :disabled 替代 v-if，交互更平滑 -->
+            <n-input 
+              v-model:value="configModel.schedule_watchlist_cron" 
+              :disabled="!configModel.schedule_watchlist_enabled" 
+              placeholder="例如: 0 */6 * * * (每6小时)" 
+            />
+            <template #feedback>
+              高频率地检查追剧列表中的剧集是否有更新。
+            </template>
+          </n-form-item-grid-item>
+        </n-grid>
+      </n-form>
     </n-card>
 
-    <!-- ★★★ 4. 页面底部的保存按钮 ★★★ -->
+    <!-- 保存按钮 (保持不变) -->
     <n-button size="medium" type="primary" @click="savePageConfig" :loading="savingConfig" block>
       保存定时任务配置
     </n-button>

@@ -97,15 +97,22 @@ class AITranslator:
 
         chunk_size = 50
         all_translated_results = {}
-        text_chunks = [texts[i:i + chunk_size] for i in range(0, len(texts), chunk_size)]
+        
+        # 智能判断是否需要分块和打印相应日志
+        if len(texts) > chunk_size:
+            logger.info(f"数据量过大 ({len(texts)} > {chunk_size})，已自动分块。")
+            text_chunks = [texts[i:i + chunk_size] for i in range(0, len(texts), chunk_size)]
+        else:
+            text_chunks = [texts]
+        
         total_chunks = len(text_chunks)
 
-        logger.info(f"数据量过大，已自动分块。共 {len(texts)} 个词条，分为 {total_chunks} 个批次，每批最多 {chunk_size} 个。")
-
         for i, chunk in enumerate(text_chunks):
-            logger.info(f"--- 正在处理批次 {i + 1}/{total_chunks} ---")
+            # 智能判断是否需要打印批次进度日志
+            if total_chunks > 1:
+                logger.info(f"--- 正在处理批次 {i + 1}/{total_chunks} ---")
             
-            # ✨✨✨ 核心修正：融合了你中文指令精华的终极提示词 ✨✨✨
+            # ✨✨✨ 完整的、无法违抗的终极提示词 ✨✨✨
             system_prompt = """
     You are a professional film and television translation expert, acting as a JSON-only API. Your primary goal is to translate English names and roles into Chinese, adhering to the common practices of the Chinese-speaking film community.
 
@@ -131,6 +138,7 @@ class AITranslator:
     }
     """
             user_prompt = json.dumps(chunk, ensure_ascii=False)
+
             try:
                 chat_completion = self.client.chat.completions.create(
                     model=self.model,
@@ -142,7 +150,6 @@ class AITranslator:
                     timeout=300, 
                 )
 
-                # ✨✨✨ 核心侦测逻辑 ✨✨✨
                 if not chat_completion.choices:
                     logger.error(f"批次 {i + 1} 返回了空的 choices 列表，跳过此批次。")
                     continue
@@ -150,19 +157,15 @@ class AITranslator:
                 choice = chat_completion.choices[0]
                 response_content = choice.message.content
 
-                # 1. 检查是否被内容过滤器拦截
                 if choice.finish_reason == 'content_filter':
-                    logger.error(f"批次 {i + 1} 因触发内容安全策略而被拦截 (finish_reason: 'content_filter')。跳过此批次。")
-                    # 打印出被拦截的批次内容，方便排查是哪个词有问题
+                    logger.error(f"批次 {i + 1} 因触发内容安全策略而被拦截。跳过此批次。")
                     logger.warning(f"  -> 被拦截的批次内容: {chunk}")
                     continue
 
-                # 2. 检查响应内容是否为空
                 if not response_content:
-                    logger.error(f"批次 {i + 1} 返回了空的内容 (content)，但 finish_reason 是 '{choice.finish_reason}'。跳过此批次。")
+                    logger.error(f"批次 {i + 1} 返回了空的内容。跳过此批次。")
                     continue
 
-                # 3. 如果一切正常，才尝试解析JSON
                 translated_dict = json.loads(response_content)
 
                 if not isinstance(translated_dict, dict):
@@ -170,10 +173,12 @@ class AITranslator:
                     continue
                 
                 all_translated_results.update(translated_dict)
-                logger.info(f"批次 {i + 1} 处理成功，已翻译 {len(translated_dict)} 个词条。")
+                
+                # 智能成功日志
+                if total_chunks > 1:
+                    logger.info(f"批次 {i + 1} 处理成功，已翻译 {len(translated_dict)} 个词条。")
 
             except json.JSONDecodeError as e:
-                # 单独捕获JSON解析错误，并打印原始响应
                 logger.error(f"批次 {i + 1} 发生JSON解析错误: {e}。跳过此批次。")
                 logger.warning(f"  -> 无法解析的原始响应内容: '{response_content}'")
                 continue
