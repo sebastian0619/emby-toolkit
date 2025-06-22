@@ -154,7 +154,7 @@ class MediaProcessorSA:
             logger.debug(f"  质量评估：演员数量 ({total_actors}/{original_cast_count}) 正常，不进行惩罚。")
 
         final_score_rounded = round(avg_score, 1)
-        logger.info(f"  媒体项演员处理质量评估完成，最终评分: {final_score_rounded:.1f}")
+        logger.info(f"  最终评分: {final_score_rounded:.1f}")
         return final_score_rounded
 
     def _get_db_connection(self) -> sqlite3.Connection:
@@ -1001,8 +1001,8 @@ class MediaProcessorSA:
 
             # --- 阶段3: 统计、评分和最终日志记录 ---
             final_actor_count = len(final_cast_perfect)
-            logger.info(f"【处理统计】'{item_name_for_log}':")
-            logger.info(f"  - 本地演员: {initial_actor_count} 位")
+            logger.info(f"✨✨✨处理统计'{item_name_for_log}'✨✨✨")
+            logger.info(f"  - 原有演员: {initial_actor_count} 位")
             newly_added_count = final_actor_count - initial_actor_count
             if newly_added_count > 0:
                 logger.info(f"  - 新增演员: {newly_added_count} 位")
@@ -1035,7 +1035,7 @@ class MediaProcessorSA:
                 self.save_to_processed_log(item_id, item_name_for_log, score=processing_score)
                 self._remove_from_failed_log_if_exists(item_id)
             
-            logger.info(f"--- 核心处理结束: '{item_name_for_log}' ---")
+            logger.info(f"✨✨✨✅ 处理完成: '{item_name_for_log}' ✨✨✨")
             return True
 
         except InterruptedError:

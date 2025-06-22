@@ -1575,7 +1575,7 @@ def api_get_review_items():
             
     total_pages = (total_matching_items + per_page - 1) // per_page if total_matching_items > 0 else 0
     
-    logger.info(f"API /api/review_items: 返回 {len(items_to_review)} 条待复核项目 (总计: {total_matching_items}, 第 {page}/{total_pages} 页)")
+    logger.debug(f"API /api/review_items: 返回 {len(items_to_review)} 条待复核项目 (总计: {total_matching_items}, 第 {page}/{total_pages} 页)")
     return jsonify({
         "items": items_to_review,
         "total_items": total_matching_items,

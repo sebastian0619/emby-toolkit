@@ -447,7 +447,7 @@ class MediaProcessorAPI:
         #     average_media_score *= 0.8 # 惩罚性降低总分
 
         final_score_rounded = round(average_media_score, 1)
-        logger.info(f"  媒体项演员处理质量评估完成，最终评分: {final_score_rounded:.1f} (基于 {total_actors_in_final_list} 位演员的平均分)")
+        logger.info(f"  最终评分: {final_score_rounded:.1f} (基于 {total_actors_in_final_list} 位演员的平均分)")
         return final_score_rounded
     # ✨✨✨优先级：有意义的候选角色 > 现有角色 > "演员" > 空✨✨✨    
     def _select_best_role(self, current_role: str, candidate_role: str) -> str:
