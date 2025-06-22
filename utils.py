@@ -37,60 +37,36 @@ def contains_chinese(text: Optional[str]) -> bool:
 
 def clean_character_name_static(character_name: Optional[str]) -> str:
     """
-    【V3 - 终极清理版】清理和格式化角色名。
+    【V4 - 强化版】清理和格式化角色名，对空格更宽容。
     """
     if not character_name:
         return ""
     
     name = str(character_name).strip()
 
-    # --- 第一阶段：预处理，移除明确的垃圾信息 ---
-
-    # 1. 移除括号及其内容，例如 "(voice)", "(uncredited)"
+    # --- 预处理 ---
     name = re.sub(r'\(.*?\)|\[.*?\]', '', name).strip()
-    
-    # 2. 移除 "as " 前缀 (不区分大小写)
     if name.lower().startswith('as '):
         name = name[3:].strip()
         
-    # 3. 移除 "饰 " 等中文前缀
-    prefixes_to_remove = ["饰 ", "饰", "配音 ", "配音", "配 "]
-    for prefix in prefixes_to_remove:
-        if name.startswith(prefix):
-            name = name[len(prefix):].strip()
-            break # 找到一个就够了
+    # ★★★ 强化逻辑：先移除所有前导的 "饰" 或 "配音" 及紧随的空格 ★★★
+    # 使用正则表达式，\s* 可以匹配0个或多个任何类型的空白字符（空格、tab等）
+    name = re.sub(r'^(饰|配音)\s*', '', name).strip()
 
-    # 4. 处理 " / " 分隔符，只取第一个角色
+    # 处理 " / " 分隔符
     if ' / ' in name:
         name = name.split(' / ')[0].strip()
 
-    # --- 第二阶段：核心处理，分离中英文 ---
-
-    # ★★★ 核心升级：使用更强大的正则表达式来分离中英文 ★★★
-    # 这个表达式寻找以“一个或多个中文字符”开头，后面可能紧跟着（或用空格隔开）其他任何字符的模式
-    # 它会捕获开头的连续中文部分
+    # ... 后续的核心中英文分离逻辑保持不变 ...
     match = re.match(r'^([\u4e00-\u9fa5·]+)', name)
-    
     if match:
-        # 如果字符串以中文开头
         chinese_part = match.group(1).strip('· ')
-        
-        # 获取整个字符串中所有中文字符
         all_chinese_chars = re.findall(r'[\u4e00-\u9fa5]', name)
-        
-        # 如果开头的中文部分，就包含了整个字符串里几乎所有的中文字符
-        # 这可以很好地处理 "绮莉 Kiri" -> "绮莉"
-        # 以及 "洛克 Lo'ak" -> "洛克"
-        # 同时避免错误处理 "彼得·潘" 这种本身就是完整中文译名的情况
         if len(chinese_part) >= len(all_chinese_chars) * 0.8:
-             # 检查是否是像 "彼得·潘" 这样的名字，如果是，则保留
             if '·' in name and not re.search(r'[a-zA-Z]', name.split('·')[-1]):
-                 return name # 保留 "彼得·潘"
-            
-            # 否则，我们确信开头的中文就是我们想要的角色名
+                 return name
             return chinese_part
 
-    # 如果以上规则都不适用（比如纯英文名），返回清理过的原始字符串
     return name.strip()
 
 def translate_text_with_translators(

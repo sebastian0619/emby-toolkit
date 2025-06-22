@@ -27,7 +27,7 @@ class WatchlistProcessor:
         self.emby_user_id = self.config.get("emby_user_id")
         self.local_data_path = self.config.get("local_data_path", "")
         self._stop_event = threading.Event()
-        logger.info("WatchlistProcessor 初始化完成。")
+        logger.debug("WatchlistProcessor 初始化完成。")
 
     def signal_stop(self): self._stop_event.set()
     def clear_stop_signal(self): self._stop_event.clear()
@@ -153,16 +153,89 @@ class WatchlistProcessor:
                 logger.info("追剧列表更新任务被中止。")
                 break
 
-            # 从这里开始，到循环结束，您的代码一行都不用改
-            current_item_id = series['item_id']
-            # ... (您现有的、完整的循环处理逻辑) ...
-            # ...
-        
-        # 根据是否传入 item_id，调整结束日志
-        if item_id:
-            logger.info(f"--- 单项追剧更新任务结束 (ItemID: {item_id}) ---")
-        else:
-            logger.info("--- 全量追剧列表更新任务结束 ---")
+            item_id = series['item_id']
+            tmdb_id = series['tmdb_id']
+            item_name = series['item_name']
+            
+            logger.info(f"正在检查剧集: '{item_name}' (TMDb ID: {tmdb_id})")
+
+            if not self.tmdb_api_key:
+                logger.warning("未配置TMDb API Key，跳过。")
+                continue
+            
+            override_dir = os.path.join(self.local_data_path, "override", "tmdb-tv", tmdb_id)
+            os.makedirs(override_dir, exist_ok=True)
+            cache_dir = os.path.join(self.local_data_path, "cache", "tmdb-tv", tmdb_id)
+            
+            base_series_data = tmdb_handler.get_tv_details_tmdb(tmdb_id, self.tmdb_api_key, append_to_response=None)
+            if not base_series_data:
+                logger.warning(f"无法从TMDb获取 '{item_name}' 的基础详情，跳过本次更新。")
+                continue
+
+            new_status = base_series_data.get("status")
+            if new_status in ["Ended", "Canceled"]:
+                logger.info(f"剧集 '{item_name}' 的状态已变为 '{new_status}'，将自动更新追剧列表状态。")
+                with self._get_db_connection() as conn:
+                    conn.execute("UPDATE watchlist SET status = 'Ended' WHERE item_id = ?", (item_id,))
+                continue
+
+            cache_series_json = self._read_local_json(os.path.join(cache_dir, "series.json")) or {}
+            actor_cast_data = cache_series_json.get("credits", {}).get("cast", [])
+            
+            final_series_data = base_series_data
+            final_series_data.setdefault("credits", {})["cast"] = actor_cast_data
+            try:
+                with open(os.path.join(override_dir, "series.json"), 'w', encoding='utf-8') as f:
+                    json.dump(final_series_data, f, ensure_ascii=False, indent=4)
+                logger.info(f"  已为 '{item_name}' 更新总的 series.json。")
+            except Exception as e:
+                logger.error(f"  写入 series.json 时失败: {e}")
+                continue
+
+            number_of_seasons = base_series_data.get("number_of_seasons", 0)
+            logger.info(f"'{item_name}' 共有 {number_of_seasons} 季，开始生成独立的季/集元数据文件...")
+            
+            for season_num in range(0, number_of_seasons + 1):
+                season_details = tmdb_handler.get_season_details_tmdb(tmdb_id, season_num, self.tmdb_api_key)
+                if not season_details:
+                    logger.warning(f"  获取第 {season_num} 季的详情失败，跳过。")
+                    continue
+                
+                season_details.setdefault("credits", {})["cast"] = actor_cast_data
+                
+                try:
+                    with open(os.path.join(override_dir, f"season-{season_num}.json"), 'w', encoding='utf-8') as f:
+                        json.dump(season_details, f, ensure_ascii=False, indent=4)
+                    logger.debug(f"    已生成 season-{season_num}.json。")
+                except Exception as e:
+                    logger.error(f"    写入 season-{season_num}.json 时失败: {e}")
+
+                for episode_details in season_details.get("episodes", []):
+                    episode_num = episode_details.get("episode_number")
+                    if episode_num is None: continue
+                    
+                    episode_details.setdefault("credits", {})["cast"] = actor_cast_data
+                    
+                    try:
+                        with open(os.path.join(override_dir, f"season-{season_num}-episode-{episode_num}.json"), 'w', encoding='utf-8') as f:
+                            json.dump(episode_details, f, ensure_ascii=False, indent=4)
+                    except Exception as e:
+                        logger.error(f"    写入 season-{season_num}-episode-{episode_num}.json 时失败: {e}")
+
+                time.sleep(0.2)
+
+            try:
+                with self._get_db_connection() as conn:
+                    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    conn.execute("UPDATE watchlist SET last_checked_at = ? WHERE item_id = ?", (current_time, item_id))
+            except Exception as e:
+                logger.error(f"更新 '{item_name}' 的last_checked_at时间戳时失败: {e}")
+
+            emby_handler.refresh_emby_item_metadata(item_id, self.emby_url, self.emby_api_key, item_name_for_log=item_name)
+
+            time.sleep(1)
+
+        logger.info("--- 追剧列表更新任务结束 ---")
     # ★★★ 新增：处理单个追剧项目的方法 ★★★
     def process_single_watching_item(self, item_id: str):
         """

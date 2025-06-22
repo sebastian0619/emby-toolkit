@@ -63,7 +63,7 @@ class DoubanApi:
             logger.debug("DoubanApi requests.Session 已初始化。")
         if db_path:
             DoubanApi._db_path = db_path
-            logger.info(f"DoubanApi 将使用数据库路径进行缓存: {DoubanApi._db_path}")
+            logger.debug(f"DoubanApi 将使用数据库路径进行缓存: {DoubanApi._db_path}")
         elif not DoubanApi._db_path:
             logger.warning("DoubanApi 初始化：未提供数据库路径 (db_path)，翻译缓存功能将不可用或受限。")
 

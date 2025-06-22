@@ -12,7 +12,6 @@ from functools import wraps
 from watchlist_processor import WatchlistProcessor
 import threading
 import time
-from datetime import datetime
 import requests
 from douban import DoubanApi
 from typing import Optional, Dict, Any, List, Tuple, Union # 确保 List 被导入
@@ -27,8 +26,6 @@ from io import StringIO
 from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
 from flask import session
-from croniter import croniter
-import logging
 # --- 核心模块导入 ---
 import constants # 你的常量定义
 from logger_setup import logger, frontend_log_queue, add_file_handler # 日志记录器和前端日志队列
@@ -70,7 +67,7 @@ else:
     PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
     # 如果 web_app.py 在类似 src/ 的子目录，你可能需要 os.path.dirname(PROJECT_ROOT)
     PERSISTENT_DATA_PATH = os.path.join(PROJECT_ROOT, "local_data")
-    logger.debug(f"未检测到 APP_DATA_DIR 环境变量，将使用本地开发数据路径: {PERSISTENT_DATA_PATH}")
+    logger.info(f"未检测到 APP_DATA_DIR 环境变量，将使用本地开发数据路径: {PERSISTENT_DATA_PATH}")
 
 # 确保这个持久化数据目录存在 (无论是在本地还是在容器内)
 try:
@@ -90,12 +87,7 @@ DB_PATH = os.path.join(PERSISTENT_DATA_PATH, DB_NAME)
 add_file_handler(PERSISTENT_DATA_PATH)
 logger.info(f"配置文件路径 (CONFIG_FILE_PATH) 设置为: {CONFIG_FILE_PATH}")
 logger.info(f"数据库文件路径 (DB_PATH) 设置为: {DB_PATH}")
-logging.basicConfig(
-    level=logging.INFO,
-    # ✨ 关键在这里：设置你想要的格式 ✨
-    format='[%(asctime)s] %(message)s',
-    datefmt='%H:%M:%S'
-)
+
 
 # --- 全局变量 ---
 media_processor_instance: Optional[Union[MediaProcessorSA, MediaProcessorAPI]] = None
@@ -118,7 +110,6 @@ task_worker_lock = threading.Lock()
 scheduler = BackgroundScheduler(timezone=str(pytz.timezone(constants.TIMEZONE)))
 JOB_ID_FULL_SCAN = "scheduled_full_scan"
 JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
-JOB_ID_PROCESS_WATCHLIST = "scheduled_process_watchlist"
 # --- 全局变量结束 ---
 
 # --- 数据库辅助函数 ---
@@ -151,7 +142,7 @@ def init_db():
             cursor.execute("PRAGMA journal_mode=WAL;")
             result = cursor.fetchone()
             if result and result[0].lower() == 'wal':
-                logger.debug("数据库已成功启用 WAL (Write-Ahead Logging) 模式，提高并发性能。")
+                logger.info("数据库已成功启用 WAL (Write-Ahead Logging) 模式，提高并发性能。")
             else:
                 logger.warning(f"尝试启用 WAL 模式，但当前模式为: {result[0] if result else '未知'}。")
         except Exception as e_wal:
@@ -170,7 +161,7 @@ def init_db():
         """)
         # **重要：如果表已存在但没有 score 列，你需要手动或通过一次性脚本添加它**
         # 例如： self._add_column_if_not_exists(cursor, "processed_log", "score", "REAL")
-        logger.debug("Table 'processed_log' schema confirmed/created if not exists.")
+        logger.info("Table 'processed_log' schema confirmed/created if not exists.")
 
         # --- failed_log 表 ---
         cursor.execute("""
@@ -185,7 +176,7 @@ def init_db():
         """)
         # **同上，如果表已存在但没有 score 列，需要手动或脚本添加**
         # self._add_column_if_not_exists(cursor, "failed_log", "score", "REAL")
-        logger.debug("Table 'failed_log' schema confirmed/created if not exists.")
+        logger.info("Table 'failed_log' schema confirmed/created if not exists.")
 
         # --- translation_cache 表 ---
         cursor.execute("""
@@ -197,7 +188,7 @@ def init_db():
             )
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_translation_cache_original_text ON translation_cache (original_text)")
-        logger.debug("Table 'translation_cache' and index schema confirmed/created if not exists.")
+        logger.info("Table 'translation_cache' and index schema confirmed/created if not exists.")
 
         # --- person_identity_map 表 ---
         cursor.execute("""
@@ -237,7 +228,7 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_person_id ON person_identity_map (emby_person_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_person_id ON emby_actor_map (emby_person_id)")
         # ... (其他 person_identity_map 的索引) ...
-        logger.debug("Table 'person_identity_map' and indexes schema confirmed/created if not exists.")
+        logger.info("Table 'person_identity_map' and indexes schema confirmed/created if not exists.")
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -247,10 +238,10 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        logger.debug("Table 'users' schema confirmed/created if not exists.")
+        logger.info("Table 'users' schema confirmed/created if not exists.")
 
         # ★★★ 今天的新增内容：创建 watchlist 表 ★★★
-        logger.debug("正在检查/创建 'watchlist' 表...")
+        logger.info("正在检查/创建 'watchlist' 表...")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS watchlist (
                 item_id TEXT PRIMARY KEY,
@@ -265,11 +256,11 @@ def init_db():
         # 为新表创建索引，提高查询效率
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_tmdb_id ON watchlist (tmdb_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
-        logger.debug("表 'watchlist' 和其索引已确认/创建。")
+        logger.info("表 'watchlist' 和其索引已确认/创建。")
         # ★★★ 新增结束 ★★★
 
         conn.commit()
-        logger.debug(f"数据库表结构已在 '{DB_PATH}' 检查/创建完毕 (如果不存在)。")
+        logger.info(f"数据库表结构已在 '{DB_PATH}' 检查/创建完毕 (如果不存在)。")
         
 
     except sqlite3.Error as e_sqlite: # 更具体地捕获 SQLite 错误
@@ -317,7 +308,7 @@ def init_auth():
         logger.info(f"检测到 AUTH_USERNAME 环境变量，将使用用户名: '{username}'")
     else:
         username = APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_USERNAME, constants.DEFAULT_USERNAME).strip()
-        logger.debug(f"未检测到 AUTH_USERNAME 环境变量，将使用配置文件中的用户名: '{username}'")
+        logger.info(f"未检测到 AUTH_USERNAME 环境变量，将使用配置文件中的用户名: '{username}'")
 
     if not auth_enabled:
         logger.info("用户认证功能未启用。")
@@ -350,14 +341,14 @@ def init_auth():
             logger.critical("请立即使用此密码登录，并在设置页面修改为您自己的密码。")
             logger.critical("=" * 60)
         else:
-            logger.debug(f"[AUTH DIAGNOSTIC] User '{username}' found in DB. No action needed.")
+            logger.info(f"[AUTH DIAGNOSTIC] User '{username}' found in DB. No action needed.")
 
     except Exception as e:
         logger.error(f"初始化认证系统时发生错误: {e}", exc_info=True)
     finally:
         if conn:
             conn.close()
-        logger.info("="*21 + " [基础配置加载完毕] " + "="*21)
+        logger.info("="*21 + " [AUTH DIAGNOSTIC END] " + "="*21)
 # --- 配置加载与保存 ---
 def load_config() -> Tuple[Dict[str, Any], bool]:
     """
@@ -383,7 +374,7 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
     expected_sections = [
         constants.CONFIG_SECTION_EMBY, constants.CONFIG_SECTION_TMDB,
         constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_SECTION_TRANSLATION,
-        # constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_SECTION_LOCAL_DATA,
+        constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_SECTION_LOCAL_DATA,
         "General", "Scheduler", "Network", "AITranslation",
         constants.CONFIG_SECTION_AUTH
     ]
@@ -437,7 +428,7 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
     app_cfg[constants.CONFIG_OPTION_AI_API_KEY] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_API_KEY, fallback="")
     app_cfg[constants.CONFIG_OPTION_AI_MODEL_NAME] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_MODEL_NAME, fallback="gpt-3.5-turbo")
     app_cfg[constants.CONFIG_OPTION_AI_BASE_URL] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_BASE_URL, fallback="")
-    # app_cfg[constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT, fallback=constants.DEFAULT_AI_TRANSLATION_PROMPT)
+    app_cfg[constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT, fallback=constants.DEFAULT_AI_TRANSLATION_PROMPT)
 
     # Scheduler Section
     app_cfg["schedule_enabled"] = config_parser.getboolean("Scheduler", "schedule_enabled", fallback=False)
@@ -485,7 +476,7 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
     )
     # ...
     APP_CONFIG = app_cfg.copy() # ✨✨✨ 将加载到的配置存入全局变量 ✨✨✨
-    logger.debug("全局配置变量 APP_CONFIG 已更新。")
+    logger.info("全局配置变量 APP_CONFIG 已更新。")
 
     return app_cfg, is_first_run_creating_config # 返回两个值
 
@@ -502,7 +493,7 @@ def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，�
         constants.CONFIG_SECTION_TMDB,
         constants.CONFIG_SECTION_API_DOUBAN,
         constants.CONFIG_SECTION_TRANSLATION,
-        # constants.CONFIG_SECTION_DOMESTIC_SOURCE,
+        constants.CONFIG_SECTION_DOMESTIC_SOURCE,
         constants.CONFIG_SECTION_LOCAL_DATA,
         "General",
         "Scheduler",
@@ -569,7 +560,7 @@ def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，�
     config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_API_KEY, str(new_config.get(constants.CONFIG_OPTION_AI_API_KEY, "")))
     config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_MODEL_NAME, str(new_config.get(constants.CONFIG_OPTION_AI_MODEL_NAME, "gpt-3.5-turbo")))
     config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_BASE_URL, str(new_config.get(constants.CONFIG_OPTION_AI_BASE_URL, "")))
-    # config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT, str(new_config.get(constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT, "")))
+    config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT, str(new_config.get(constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT, "")))
 
     # Scheduler Section
     config.set("Scheduler", "schedule_enabled", str(new_config.get("schedule_enabled", False)).lower())
@@ -620,9 +611,9 @@ def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，�
         logger.info(f"配置已成功写入到 {CONFIG_FILE_PATH}。")
         # ✨✨✨ 保存成功后，立即更新全局配置变量 ✨✨✨
         APP_CONFIG = new_config.copy()
-        logger.debug("全局配置变量 APP_CONFIG 已更新。")
+        logger.info("全局配置变量 APP_CONFIG 已更新。")
         
-        logger.debug("配置已保存，正在重新初始化所有相关组件...")
+        logger.info("配置已保存，正在重新初始化所有相关组件...")
         initialize_processors() # 使用新配置创建新的 MediaProcessor 实例
         init_auth()                  # 重新检查认证设置
         setup_scheduled_tasks()      # 根据新配置重新设置定时任务
@@ -654,13 +645,13 @@ def initialize_processors():
     
     try:
         if use_sa_mode:
-            logger.info("【模式切换】当前为：神医Pro模式")
+            logger.info("【模式切换】正在创建【神医模式】的处理器实例 (MediaProcessorSA)...")
             media_processor_instance = MediaProcessorSA(config=current_config)
         else:
-            logger.info("【模式切换】当前为：普通模式")
+            logger.info("【模式切换】正在创建【API模式】的处理器实例 (MediaProcessorAPI)...")
             media_processor_instance = MediaProcessorAPI(config=current_config)
         
-        logger.debug("处理器实例已成功创建/更新。")
+        logger.info("处理器实例已成功创建/更新。")
     except Exception as e:
         logger.error(f"创建处理器实例失败: {e}", exc_info=True)
         media_processor_instance = None
@@ -758,7 +749,7 @@ def task_worker_function():
     """
     通用工人线程，从队列中获取并处理各种后台任务。
     """
-    logger.info("通用任务线程已启动，等待任务...")
+    logger.info("通用任务工人线程已启动，等待任务...")
     while True:
         try:
             # 从队列中获取任务元组
@@ -797,11 +788,11 @@ def start_task_worker_if_not_running():
     global task_worker_thread
     with task_worker_lock:
         if task_worker_thread is None or not task_worker_thread.is_alive():
-            logger.debug("通用任务线程未运行，正在启动...")
+            logger.info("通用任务工人线程未运行，正在启动...")
             task_worker_thread = threading.Thread(target=task_worker_function, daemon=True)
             task_worker_thread.start()
         else:
-            logger.debug("通用任务线程已在运行。")
+            logger.debug("通用任务工人线程已在运行。")
 #--- 为通用队列添加任务 ---
 def submit_task_to_queue(task_function, task_name: str, *args, **kwargs):
     """
@@ -813,28 +804,6 @@ def submit_task_to_queue(task_function, task_name: str, *args, **kwargs):
     task_queue.put(task_info)
     start_task_worker_if_not_running()
 
-def _get_next_run_time_str(cron_expression: str) -> str:
-    """
-    将 CRON 表达式转换为人类可读的执行计划字符串。
-    """
-    try:
-        tz = pytz.timezone(constants.TIMEZONE)
-        now = datetime.now(tz)
-        
-        # 特殊处理常见的分钟级周期任务
-        parts = cron_expression.split()
-        if parts[0].startswith('*/') and parts[1:] == ['*', '*', '*', '*']:
-            minutes = parts[0][2:]
-            # ✨ 优化点：返回一个完整的短语，加上“执行” ✨
-            return f"每隔 {minutes} 分钟执行"
-
-        iterator = croniter(cron_expression, now)
-        next_run = iterator.get_next(datetime)
-        return f"在 {next_run.strftime('%H:%M')} 执行"
-    except Exception as e:
-        logger.warning(f"无法解析CRON表达式 '{cron_expression}': {e}")
-        return f"按计划 '{cron_expression}' 执行"
-
 def setup_scheduled_tasks():
     config = APP_CONFIG
 
@@ -845,25 +814,30 @@ def setup_scheduled_tasks():
 
     if scheduler.get_job(JOB_ID_FULL_SCAN):
         scheduler.remove_job(JOB_ID_FULL_SCAN)
-        # logger.info("已移除旧的定时全量扫描任务。") # 可以选择性保留或移除此日志
-
+        logger.info("已移除旧的定时全量扫描任务。")
+        
     if schedule_scan_enabled:
         try:
             def submit_scheduled_scan_to_queue():
-                # ... (内部逻辑保持不变)
                 logger.info(f"定时任务触发：准备提交全量扫描到任务队列 (强制={force_reprocess_scheduled_scan})。")
+                
+                # ★★★ 核心修正：在这里实现和 API 路由一样的逻辑 ★★★
                 if force_reprocess_scheduled_scan:
                     logger.info("定时任务：检测到“强制重处理”选项，将在任务开始前清空已处理日志。")
                     if media_processor_instance:
                         media_processor_instance.clear_processed_log()
                     else:
                         logger.error("定时任务：无法清空日志，因为处理器未初始化。")
+
+                # 读取最新的处理深度配置
                 current_config, _ = load_config()
                 process_episodes = current_config.get('process_episodes', True)
+                
+                # ★★★ 核心修正：提交任务时，不再传递 force_reprocess ★★★
                 submit_task_to_queue(
                     task_process_full_library,
                     "定时全量扫描",
-                    process_episodes=process_episodes
+                    process_episodes=process_episodes # 只传递这一个参数
                 )
 
             scheduler.add_job(
@@ -873,11 +847,7 @@ def setup_scheduled_tasks():
                 name="定时全量媒体库扫描",
                 replace_existing=True,
             )
-            # ✨ 日志优化 ✨
-            next_run_str = _get_next_run_time_str(scan_cron_expression)
-            force_str = " (强制重处理)" if force_reprocess_scheduled_scan else ""
-            logger.info(f"已设置定时任务：全量扫描，将{next_run_str}{force_str}")
-
+            logger.info(f"已设置定时全量扫描任务: CRON='{scan_cron_expression}', 强制={force_reprocess_scheduled_scan}")
         except Exception as e:
             logger.error(f"设置定时全量扫描任务失败: {e}", exc_info=True)
     else:
@@ -889,16 +859,17 @@ def setup_scheduled_tasks():
 
     if scheduler.get_job(JOB_ID_SYNC_PERSON_MAP):
         scheduler.remove_job(JOB_ID_SYNC_PERSON_MAP)
-
+    
+    # ★★★ 核心修正：不再检查 use_sa_mode ★★★
     if schedule_sync_map_enabled:
         try:
             def scheduled_sync_map_task():
-                # ... (内部逻辑保持不变)
                 logger.info("定时任务触发：演员映射表同步。")
+                # 提交任务，让 task_worker_function 去动态判断使用哪个处理器
                 submit_task_to_queue(
-                    task_sync_person_map,
+                    task_sync_person_map, 
                     "定时同步演员映射表",
-                    is_full_sync=False
+                    is_full_sync=False # 定时任务通常执行快速同步
                 )
 
             scheduler.add_job(
@@ -906,51 +877,16 @@ def setup_scheduled_tasks():
                 trigger=CronTrigger.from_crontab(sync_map_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
                 id=JOB_ID_SYNC_PERSON_MAP, name="定时同步Emby演员映射表", replace_existing=True
             )
-            # ✨ 日志优化 ✨
-            next_run_str = _get_next_run_time_str(sync_map_cron_expression)
-            logger.info(f"已设置定时任务：同步演员映射表，将{next_run_str}")
-
+            logger.info(f"已设置定时同步演员映射表任务: CRON='{sync_map_cron_expression}'")
         except Exception as e:
             logger.error(f"设置定时同步演员映射表任务失败: {e}", exc_info=True)
     else:
         logger.info("定时同步演员映射表任务未启用。")
 
-    # --- 对智能追剧任务也做类似修改 ---
-    if scheduler.get_job(JOB_ID_PROCESS_WATCHLIST):
-        scheduler.remove_job(JOB_ID_PROCESS_WATCHLIST)
-
-    if config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False):
-        if config.get(constants.CONFIG_OPTION_USE_SA_MODE, False):
-            cron_expression = config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON)
-            if cron_expression:
-                try:
-                    def scheduled_watchlist_task():
-                        # ... (内部逻辑保持不变)
-                        logger.info("定时任务触发：智能追剧更新。")
-                        submit_task_to_queue(task_process_watchlist, "定时智能追剧更新")
-
-                    scheduler.add_job(
-                        func=scheduled_watchlist_task,
-                        trigger=CronTrigger.from_crontab(cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                        id=JOB_ID_PROCESS_WATCHLIST,
-                        name="定时智能追剧更新",
-                        replace_existing=True,
-                    )
-                    # ✨ 日志优化 ✨
-                    next_run_str = _get_next_run_time_str(cron_expression)
-                    logger.info(f"已设置定时任务：智能追剧更新，将{next_run_str}")
-
-                except Exception as e:
-                    logger.error(f"设置定时智能追剧更新任务失败: {e}", exc_info=True)
-    else:
-        logger.info("定时智能追剧更新任务未启用。")
-
-    # --- 启动调度器逻辑保持不变 ---
-    scan_enabled = config.get("schedule_enabled", False)
-    sync_enabled = config.get("schedule_sync_map_enabled", False)
-    watchlist_enabled = config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False)
-
-    if not scheduler.running and (scan_enabled or sync_enabled or watchlist_enabled):
+    if scheduler.running:
+        try: scheduler.print_jobs()
+        except Exception as e_print_jobs: logger.warning(f"打印 APScheduler 任务列表时出错: {e_print_jobs}")
+    if not scheduler.running and (schedule_scan_enabled or schedule_sync_map_enabled): # 修正这里的条件
         try:
             scheduler.start()
             logger.info("APScheduler 已根据任务需求启动。")
@@ -1498,7 +1434,7 @@ def api_save_config():
         # 校验通过后，才调用保存函数
         save_config(new_config_data) 
         
-        logger.debug("API /api/config (POST): 配置已成功传递给 save_config 函数。")
+        logger.info("API /api/config (POST): 配置已成功传递给 save_config 函数。")
         return jsonify({"message": "配置已成功保存并已触发重新加载。"})
         
     except Exception as e:
@@ -1650,7 +1586,7 @@ def api_mark_item_processed(item_id):
 # --- 前端全量扫描接口 ---   
 @app.route('/api/trigger_full_scan', methods=['POST'])
 def api_handle_trigger_full_scan():
-    logger.debug("API Endpoint: Received request to trigger full scan.")
+    logger.info("API Endpoint: Received request to trigger full scan.")
     
     # 检查任务锁
     if task_lock.locked():
@@ -1693,7 +1629,7 @@ def api_handle_trigger_full_scan():
 @app.route('/api/trigger_sync_person_map', methods=['POST'])
 @login_required # 假设需要登录
 def api_handle_trigger_sync_map():
-    logger.debug("API Endpoint: Received request to trigger sync person map.")
+    logger.info("API Endpoint: Received request to trigger sync person map.")
     try:
         data = request.json or {}
         full_sync_flag = data.get('full_sync', False)
@@ -1714,10 +1650,10 @@ def api_handle_trigger_sync_map():
 
 @app.route('/api/trigger_stop_task', methods=['POST'])
 def api_handle_trigger_stop_task():
-    logger.debug("API Endpoint: Received request to stop current task.")
+    logger.info("API Endpoint: Received request to stop current task.")
     if media_processor_instance:
         media_processor_instance.signal_stop()
-        logger.info("已发送停止信号给当前正在运行的任务。")
+        logger.info("API: 已发送停止信号给当前正在运行的任务。")
         return jsonify({"message": "已发送停止任务请求。"}), 200
     else:
         logger.warning("API: MediaProcessor 未初始化，无法发送停止信号。")
@@ -2500,7 +2436,7 @@ def serve(path):
         return send_from_directory(static_folder_path, 'index.html')
     
 if __name__ == '__main__':
-    logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}")
+    logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
     
     # 1. 加载配置到全局变量
     load_config()
@@ -2523,6 +2459,73 @@ if __name__ == '__main__':
     setup_scheduled_tasks()
     
     # 7. 运行 Flask 应用
-    app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=True, use_reloader=True)
+    app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=True, use_reloader=False)
 
+# if __name__ == '__main__':
+#     RUN_MANUAL_TESTS = False  # <--- 在这里控制是否运行测试代码
+
+#     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}, 调试模式: {constants.DEBUG_MODE}")
+#     init_db()
+#     initialize_media_processor() # 确保 media_processor_instance 被创建并配置好
+#     # ... (scheduler setup) ...
+
+#     # --- !!! 测试 _process_cast_list 方法 !!! ---
+#     if RUN_MANUAL_TESTS and media_processor_instance and media_processor_instance.emby_url:
+#         TEST_MEDIA_ID_TO_PROCESS = "464188" # 测试电视剧《白蛇传》
+        
+#         logger.info(f"--- 开始手动测试 _process_cast_list for MEDIA ID: {TEST_MEDIA_ID_TO_PROCESS} ---")
+
+#         raw_media_item_details = None # <--- 修改变量名
+#         try:
+#             raw_media_item_details = emby_handler.get_emby_item_details( # <--- 修改变量名
+#                 TEST_MEDIA_ID_TO_PROCESS,
+#                 media_processor_instance.emby_url,
+#                 media_processor_instance.emby_api_key,
+#                 media_processor_instance.emby_user_id
+#             )
+#         except Exception as e_get_raw:
+#             logger.error(f"测试：获取原始 MEDIA 详情失败 (ID: {TEST_MEDIA_ID_TO_PROCESS}): {e_get_raw}", exc_info=True)
+        
+#         # 打印获取到的原始详情，用于调试
+#         if raw_media_item_details:
+#             logger.info(f"DEBUG_DETAILS: 原始获取到的 raw_media_item_details 内容 (部分键): {{'Name': '{raw_media_item_details.get('Name')}', 'Type': '{raw_media_item_details.get('Type')}', 'Id': '{raw_media_item_details.get('Id')}', 'HasPeopleField': {'People' in raw_media_item_details}, 'PeopleFieldType': {type(raw_media_item_details.get('People')).__name__ if 'People' in raw_media_item_details else 'N/A'} }}")
+#             # 如果想看完整内容，取消下面这行的注释，但可能会很长
+#             # logger.info(f"DEBUG_DETAILS_FULL: {raw_media_item_details}")
+#         else:
+#             logger.error("DEBUG_DETAILS: raw_media_item_details 为 None，获取失败。")
+
+#         # --- 核心判断逻辑 ---
+#         # 检查 raw_media_item_details 是否有效，并且 People 字段是否存在且是一个列表
+#         if raw_media_item_details and isinstance(raw_media_item_details.get("People"), list):
+#             original_emby_people = raw_media_item_details.get("People", []) # 如果People键不存在，默认为空列表
+            
+#             # 即使 People 列表存在但为空，也应该继续，让 _process_cast_list 尝试从豆瓣补充
+#             logger.info(f"测试：获取到 MEDIA '{raw_media_item_details.get('Name')}' 的原始 People 列表，数量: {len(original_emby_people)}")
+#             if original_emby_people: # 只在列表非空时打印前3条
+#                 logger.debug(f"测试：原始 People (前3条): {original_emby_people[:3]}")
+
+#             logger.info(f"测试：准备调用 media_processor_instance._process_cast_list...")
+#             try:
+#                 final_cast_list = media_processor_instance._process_cast_list(
+#                     original_emby_people,
+#                     raw_media_item_details # <--- 修改变量名
+#                 )
+#                 # ... (打印 final_cast_list) ...
+#             except Exception as e_proc_cast:
+#                 logger.error(f"测试：调用 _process_cast_list 时发生错误: {e_proc_cast}", exc_info=True)
+        
+#         else: # raw_media_item_details 无效，或者 People 字段不存在/不是列表
+#             logger.error(f"测试：未能获取 MEDIA {TEST_MEDIA_ID_TO_PROCESS} 的原始详情，或详情中无有效People列表，无法继续测试 _process_cast_list。")
+
+#         logger.info(f"--- 手动测试 _process_cast_list 结束 ---")
+#     # # --- 测试代码结束 --- #
+
+#     # app.run(...) # 你可以暂时注释掉 app.run，这样脚本执行完测试就结束了，方便看日志
+#     # 或者保留它，测试完后再通过浏览器访问应用
+
+#     app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=constants.DEBUG_MODE, use_reloader=not constants.DEBUG_MODE)
+#     # 注意: debug=True 配合 use_reloader=True (Flask默认) 会导致 atexit 执行两次或行为异常。
+#     # 在生产中，use_reloader 应为 False。为了开发方便，可以暂时接受 atexit 的一些小问题。
+#     # 或者在 debug 模式下，考虑不依赖 atexit，而是通过其他方式（如信号处理）来触发清理。
+#     # 最简单的是，开发时接受它，部署时确保 use_reloader=False。
 # # --- 主程序入口结束 ---

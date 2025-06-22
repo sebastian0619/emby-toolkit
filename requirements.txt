@@ -14,6 +14,7 @@ pypinyin         # 用于处理人名拼音
 # --- 定时任务 ---
 APScheduler
 pytz             # APScheduler 的时区依赖
+croniter
 
 # --- AI 翻译功能 ---
 openai           # 用于 OpenAI 及兼容的API (如硅基流动)

@@ -1,17 +1,14 @@
 <template>
   <n-space vertical :size="24" style="margin-top: 15px;">
-    <!-- 卡片 1: 全量扫描 (保持不变) -->
+    <!-- 卡片 1: 全量扫描 -->
     <n-card title="全量扫描定时任务" class="beautified-card" :bordered="false">
       <template #header-extra>
-        <n-switch v-model:value="configModel.schedule_enabled">
-          <template #checked>已启用</template>
-          <template #unchecked>已禁用</template>
-        </n-switch>
+        <n-switch v-model:value="configModel.schedule_enabled" />
       </template>
       <n-form :model="configModel" label-placement="top">
         <n-grid :cols="1" :y-gap="18">
           <n-form-item-grid-item label="CRON表达式" path="schedule_cron">
-            <n-input v-model:value="configModel.schedule_cron" :disabled="!configModel.schedule_enabled" placeholder="例如: 0 3 * * * (每天凌晨3点)" />
+            <n-input v-model:value="configModel.schedule_cron" :disabled="!configModel.schedule_enabled" placeholder="例如: 0 3 * * *" />
           </n-form-item-grid-item>
           <n-form-item-grid-item>
             <n-checkbox v-model:checked="configModel.schedule_force_reprocess" :disabled="!configModel.schedule_enabled">
@@ -22,13 +19,10 @@
       </n-form>
     </n-card>
 
-    <!-- 卡片 2: 同步映射表 (保持不变) -->
+    <!-- 卡片 2: 同步映射表 -->
     <n-card title="同步演员映射表定时任务" class="beautified-card" :bordered="false">
       <template #header-extra>
-        <n-switch v-model:value="configModel.schedule_sync_map_enabled">
-          <template #checked>已启用</template>
-          <template #unchecked>已禁用</template>
-        </n-switch>
+        <n-switch v-model:value="configModel.schedule_sync_map_enabled" />
       </template>
       <n-form :model="configModel" label-placement="top">
         <n-grid :cols="1">
@@ -39,20 +33,24 @@
       </n-form>
     </n-card>
 
-    <!-- ✨✨✨ 卡片 3: 智能追剧 (核心修改) ✨✨✨ -->
+    <!-- 卡片 3: 智能追剧 -->
     <n-card title="智能追剧更新定时任务" class="beautified-card" :bordered="false">
-      <!-- 1. 将开关移到 header-extra，与其他卡片保持一致 -->
       <template #header-extra>
-        <n-switch v-model:value="configModel.schedule_watchlist_enabled" :disabled="!configModel.use_sa_mode">
-          <template #checked>已启用</template>
-          <template #unchecked>已禁用</template>
-        </n-switch>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-switch v-model:value="configModel.schedule_watchlist_enabled" :disabled="!configModel.use_sa_mode" />
+          </template>
+          <span v-if="!configModel.use_sa_mode">
+            此功能仅在“神医模式”下可用。请先在“基础设置”中启用。
+          </span>
+          <span v-else>
+            启用/禁用智能追剧更新定时任务
+          </span>
+        </n-tooltip>
       </template>
-      <!-- 2. 内部也使用 n-form 和 n-grid 统一布局 -->
       <n-form :model="configModel" label-placement="top">
         <n-grid :cols="1">
           <n-form-item-grid-item label="CRON表达式" path="schedule_watchlist_cron">
-            <!-- 3. 使用 :disabled 替代 v-if，交互更平滑 -->
             <n-input 
               v-model:value="configModel.schedule_watchlist_cron" 
               :disabled="!configModel.schedule_watchlist_enabled" 
@@ -66,7 +64,7 @@
       </n-form>
     </n-card>
 
-    <!-- 保存按钮 (保持不变) -->
+    <!-- 保存按钮 -->
     <n-button size="medium" type="primary" @click="savePageConfig" :loading="savingConfig" block>
       保存定时任务配置
     </n-button>
@@ -74,11 +72,10 @@
 </template>
 
 <script setup>
-// ... 你的 <script setup> 部分完全不需要任何修改 ...
-// ★★★ 只需要确保从 naive-ui 导入了 NCard, NSpace, NSwitch 等组件 ★★★
+import { watch } from 'vue';
 import {
   NForm, NFormItemGridItem, NInput, NCheckbox, NGrid,
-  NButton, NCard, NSpace, NSwitch,
+  NButton, NCard, NSpace, NSwitch, NTooltip,
   useMessage
 } from 'naive-ui';
 import { useConfig } from '../../composables/useConfig.js';
@@ -91,6 +88,24 @@ const {
     savingConfig,
     configError
 } = useConfig();
+
+// 【重构版】为所有任务的CRON输入框添加自动清理逻辑
+const tasksToWatch = [
+  { enabledKey: 'schedule_enabled', cronKey: 'schedule_cron' },
+  { enabledKey: 'schedule_sync_map_enabled', cronKey: 'schedule_sync_map_cron' },
+  { enabledKey: 'schedule_watchlist_enabled', cronKey: 'schedule_watchlist_cron' }
+];
+
+tasksToWatch.forEach(({ enabledKey, cronKey }) => {
+  watch(
+    () => configModel.value[enabledKey],
+    (newValue) => {
+      if (newValue === false) {
+        configModel.value[cronKey] = '';
+      }
+    }
+  );
+});
 
 const savePageConfig = async () => {
   const success = await handleSaveConfig();

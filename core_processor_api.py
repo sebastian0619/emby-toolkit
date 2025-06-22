@@ -15,12 +15,11 @@ import utils # 导入我们上面修改的 utils.py
 from logger_setup import logger
 import constants
 from ai_translator import AITranslator # ✨✨✨ 导入新的AI翻译器 ✨✨✨
-
 # DoubanApi 的导入和可用性检查
 try:
     from douban import DoubanApi # douban.py 现在也使用数据库
     DOUBAN_API_AVAILABLE = True
-    logger.info("DoubanApi 模块已成功导入到 core_processor。")
+    logger.debug("DoubanApi 模块已成功导入到 core_processor。")
 except ImportError:
     logger.error("错误: douban.py 文件未找到或 DoubanApi 类无法导入 (core_processor)。")
     DOUBAN_API_AVAILABLE = False
@@ -50,7 +49,7 @@ class MediaProcessorAPI:
         if getattr(constants, 'DOUBAN_API_AVAILABLE', False):
             try:
                 self.douban_api = DoubanApi(db_path=self.db_path)
-                logger.info("DoubanApi 实例已在 MediaProcessorAPI 中创建。")
+                logger.debug("DoubanApi 实例已在 MediaProcessorAPI 中创建。")
             except Exception as e:
                 logger.error(f"MediaProcessorAPI 初始化 DoubanApi 失败: {e}", exc_info=True)
         else:
@@ -62,7 +61,7 @@ class MediaProcessorAPI:
         self.emby_user_id = self.config.get("emby_user_id")
         self.tmdb_api_key = self.config.get("tmdb_api_key", "")
         self.translator_engines = self.config.get("translator_engines_order", constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
-        self.data_source_mode = self.config.get("data_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE)
+        # self.data_source_mode = self.config.get("data_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE)
         self.local_data_path = self.config.get("local_data_path", "").strip()
         self.libraries_to_process = self.config.get("libraries_to_process", [])
 
@@ -85,14 +84,12 @@ class MediaProcessorAPI:
         else:
             logger.info("AI翻译功能未启用。")
 
-        logger.info(f"MediaProcessorAPI 初始化完成。Emby URL: {self.emby_url}, UserID: {self.emby_user_id}")
+        logger.debug(f"MediaProcessorAPI 初始化完成。Emby URL: {self.emby_url}, UserID: {self.emby_user_id}")
         logger.info(f"  TMDb API Key: {'已配置' if self.tmdb_api_key else '未配置'}")
-        logger.info(f"  数据源处理模式: {self.data_source_mode}")
-        logger.info(f"  本地数据源路径: '{self.local_data_path if self.local_data_path else '未配置'}'")
-        logger.info(f"  将处理的媒体库ID: {self.libraries_to_process if self.libraries_to_process else '未指定特定库'}")
+        logger.debug(f"  本地数据源路径: '{self.local_data_path if self.local_data_path else '未配置'}'")
+        logger.debug(f"  将处理的媒体库ID: {self.libraries_to_process if self.libraries_to_process else '未指定特定库'}")
         logger.info(f"  已从数据库加载 {len(self.processed_items_cache)} 个已处理媒体记录到内存缓存。")
         logger.debug(f"  INIT - self.local_data_path: '{self.local_data_path}'")
-        logger.debug(f"  INIT - self.data_source_mode: '{self.data_source_mode}'")
         logger.debug(f"  INIT - self.tmdb_api_key (len): {len(self.tmdb_api_key) if self.tmdb_api_key else 0}")
         logger.debug(f"  INIT - DOUBAN_API_AVAILABLE (from top level): {DOUBAN_API_AVAILABLE}") # 打印顶层导入状态
         logger.debug(f"  INIT - self.douban_api is None: {self.douban_api is None}")
@@ -111,7 +108,7 @@ class MediaProcessorAPI:
         item_name_for_log = item_details.get("Name")
         item_type = item_details.get("Type")
 
-        logger.info(f"--- 【API模式】开始处理: '{item_name_for_log}' (类型: {item_type}) ---")
+        logger.debug(f"开始处理: '{item_name_for_log}' (类型: {item_type}) ---")
         
         # a. 获取并处理当前项目的演员表
         current_emby_cast_raw = item_details.get("People", [])
@@ -123,7 +120,7 @@ class MediaProcessorAPI:
         processing_score = self._evaluate_cast_processing_quality(final_cast_for_item, original_emby_cast_count)
 
         # c. 持久化当前项目的演员表 (两步更新)
-        logger.info("【API模式】开始前置步骤：检查并更新被翻译的演员名字...")
+        logger.info("开始前置步骤：检查并更新被翻译的演员名字...")
         original_names_map = {p.get("Id"): p.get("Name") for p in current_emby_cast_raw if p.get("Id")}
         for actor in final_cast_for_item:
             if self.is_stop_requested(): raise InterruptedError("任务中止")
@@ -179,7 +176,7 @@ class MediaProcessorAPI:
                             time.sleep(float(self.config.get("delay_between_items_sec", 0.2)))
         
         # ★★★ 在这里，记录主项目日志之前，添加刷新操作 ★★★
-        logger.info(f"【API模式】所有演员信息更新完成，准备为项目 '{item_name_for_log}' 触发元数据刷新...")
+        logger.info(f"所有演员信息更新完成，准备为项目 '{item_name_for_log}' 触发元数据刷新...")
         refresh_success = emby_handler.refresh_emby_item_metadata(
             item_emby_id=item_id,
             emby_server_url=self.emby_url,
@@ -456,23 +453,94 @@ class MediaProcessorAPI:
     def _select_best_role(self, current_role: str, candidate_role: str) -> str:
         """
         根据优先级选择最佳角色名。
-        优先级: 有内容的候选角色名 > 现有角色名 > '演员' > 空字符串
+        【最终修正版】确保有价值的中文名不会被英文名覆盖。
+
+        优先级顺序:
+        1. 有内容的豆瓣中文角色名
+        2. 有内容的本地中文角色名  <-- 这是保护您本地数据的关键
+        3. 有内容的英文角色名 (候选来源优先)
+        4. '演员' (或其他占位符)
+        5. 空字符串
         """
+        # --- 步骤 1: 清理和规范化输入 ---
+        original_current = current_role # 保存原始值用于日志
+        original_candidate = candidate_role # 保存原始值用于日志
+        
         current_role = str(current_role or '').strip()
         candidate_role = str(candidate_role or '').strip()
 
-        if candidate_role and candidate_role != "演员":
+        # --- 步骤 2: 准备日志和判断标志 ---
+        # 使用 self.logger，如果您的类中是这样命名的
+        # 如果不是，请替换为正确的 logger 对象名
+        logger.debug(f"--- [角色选择开始] ---")
+        logger.debug(f"  输入: current='{original_current}', candidate='{original_candidate}'")
+        logger.debug(f"  清理后: current='{current_role}', candidate='{candidate_role}'")
+
+        current_is_chinese = utils.contains_chinese(current_role)
+        candidate_is_chinese = utils.contains_chinese(candidate_role)
+        
+        # 定义一个更广泛的占位符列表
+        placeholders = {"actor", "actress", "演员", "配音"}
+        current_is_placeholder = current_role.lower() in placeholders
+        candidate_is_placeholder = candidate_role.lower() in placeholders
+
+        logger.debug(f"  分析: current_is_chinese={current_is_chinese}, current_is_placeholder={current_is_placeholder}")
+        logger.debug(f"  分析: candidate_is_chinese={candidate_is_chinese}, candidate_is_placeholder={candidate_is_placeholder}")
+
+        # --- 步骤 3: 应用优先级规则并记录决策 ---
+
+        # 优先级 1: 候选角色是有效的中文名
+        if candidate_is_chinese and not candidate_is_placeholder:
+            logger.debug(f"  决策: [优先级1] 候选角色是有效中文名。选择候选角色。")
+            logger.debug(f"  选择: '{candidate_role}'")
+            logger.debug(f"--- [角色选择结束] ---")
             return candidate_role
-        if not candidate_role and current_role:
+
+        # 优先级 2: 当前角色是有效的中文名，而候选角色不是。必须保留当前角色！
+        if current_is_chinese and not current_is_placeholder and not candidate_is_chinese:
+            logger.debug(f"  决策: [优先级2] 当前角色是有效中文名，而候选不是。保留当前角色。")
+            logger.debug(f"  选择: '{current_role}'")
+            logger.debug(f"--- [角色选择结束] ---")
             return current_role
-        return current_role
+
+        # 优先级 3: 两者都不是有效的中文名（或都是）。选择一个非占位符的，候选者优先。
+        if candidate_role and not candidate_is_placeholder:
+            logger.debug(f"  决策: [优先级3a] 候选角色是有效的非中文名/占位符。选择候选角色。")
+            logger.debug(f"  选择: '{candidate_role}'")
+            logger.debug(f"--- [角色选择结束] ---")
+            return candidate_role
+        
+        if current_role and not current_is_placeholder:
+            logger.debug(f"  决策: [优先级3b] 当前角色是有效的非中文名/占位符，而候选是无效的。保留当前角色。")
+            logger.debug(f"  选择: '{current_role}'")
+            logger.debug(f"--- [角色选择结束] ---")
+            return current_role
+
+        # 优先级 4: 处理占位符。如果两者之一是占位符，则返回一个（候选优先）。
+        if candidate_role: # 如果候选有内容（此时只能是占位符）
+            logger.debug(f"  决策: [优先级4a] 候选角色是占位符。选择候选角色。")
+            logger.debug(f"  选择: '{candidate_role}'")
+            logger.debug(f"--- [角色选择结束] ---")
+            return candidate_role
+            
+        if current_role: # 如果当前有内容（此时只能是占位符）
+            logger.debug(f"  决策: [优先级4b] 当前角色是占位符，候选为空。保留当前角色。")
+            logger.debug(f"  选择: '{current_role}'")
+            logger.debug(f"--- [角色选择结束] ---")
+            return current_role
+
+        # 优先级 5: 所有情况都处理完，只剩下两者都为空。
+        logger.debug(f"  决策: [优先级5] 所有输入均为空或无效。返回空字符串。")
+        logger.debug(f"  选择: ''")
+        logger.debug(f"--- [角色选择结束] ---")
+        return ""
     # ✨✨✨从豆瓣API获取指定媒体的演员原始数据列表✨✨✨
     def _fetch_douban_cast(self, media_info: Dict[str, Any]) -> List[Dict[str, Any]]:
         """从豆瓣API获取演员原始数据。"""
         # 假设 constants 和 self.douban_api 已经存在
-        if not (getattr(constants, 'DOUBAN_API_AVAILABLE', False) and self.douban_api and \
-                self.data_source_mode in [constants.DOMESTIC_SOURCE_MODE_LOCAL_THEN_ONLINE, constants.DOMESTIC_SOURCE_MODE_ONLINE_ONLY]):
-            return []
+        # if not (getattr(constants, 'DOUBAN_API_AVAILABLE', False) and self.douban_api and \
+        #         self.data_source_mode in [constants.DOMESTIC_SOURCE_MODE_LOCAL_THEN_ONLINE, constants.DOMESTIC_SOURCE_MODE_ONLINE_ONLY]):
+        #     return []
         
         logger.debug("调用豆瓣 API get_acting...")
         douban_data = self.douban_api.get_acting(
@@ -1404,80 +1472,80 @@ class MediaProcessorAPI:
         logger.info("一键翻译完成。")
         return translated_cast
     # ✨✨✨批量翻译辅助方法✨✨✨
-def _batch_translate_actor_fields_ai(self, cast_list: List[Dict[str, Any]], db_cursor: sqlite3.Cursor) -> List[Dict[str, Any]]:
-    """
-    使用AI批量翻译演员列表中的姓名和角色。
-    """
-    logger.info("  (AI批量模式) 开始收集需要翻译的字段...")
-    
-    texts_to_translate = set()
-    translation_cache = {} # 用于存储从数据库或API获取的翻译结果
-
-    # 步骤 1: 收集所有需要翻译的文本，并优先使用数据库缓存
-    for actor in cast_list:
-        for field in ["Name", "Role"]:
-            original_text = actor.get(field)
-            if not original_text or not original_text.strip() or utils.contains_chinese(original_text):
-                continue
-
-            # 检查数据库缓存
-            cached_entry = DoubanApi._get_translation_from_db(original_text)
-            if cached_entry and cached_entry.get("translated_text"):
-                cached_translation = cached_entry.get("translated_text")
-                engine_used = cached_entry.get("engine_used")
-                logger.debug(f"    数据库翻译缓存命中 for '{original_text}' -> '{cached_translation}' (引擎: {engine_used})")
-                translation_cache[original_text] = cached_translation
-            else:
-                # 如果缓存未命中，则加入待翻译集合
-                texts_to_translate.add(original_text)
-
-    # 步骤 2: 如果有需要翻译的文本，则进行一次性批量API调用
-    if texts_to_translate:
-        logger.info(f"  (AI批量模式) 收集到 {len(texts_to_translate)} 个独立词条需要通过API翻译。")
+    def _batch_translate_actor_fields_ai(self, cast_list: List[Dict[str, Any]], db_cursor: sqlite3.Cursor) -> List[Dict[str, Any]]:
+        """
+        使用AI批量翻译演员列表中的姓名和角色。
+        """
+        logger.info("  (AI批量模式) 开始收集需要翻译的字段...")
         
-        # 调用AITranslator的批量翻译方法
-        # 注意：你需要确保你的 AITranslator 类有 batch_translate 方法
-        try:
-            # 将 set 转换为 list
-            api_results = self.ai_translator.batch_translate(list(texts_to_translate))
+        texts_to_translate = set()
+        translation_cache = {} # 用于存储从数据库或API获取的翻译结果
+
+        # 步骤 1: 收集所有需要翻译的文本，并优先使用数据库缓存
+        for actor in cast_list:
+            for field in ["Name", "Role"]:
+                original_text = actor.get(field)
+                if not original_text or not original_text.strip() or utils.contains_chinese(original_text):
+                    continue
+
+                # 检查数据库缓存
+                cached_entry = DoubanApi._get_translation_from_db(original_text)
+                if cached_entry and cached_entry.get("translated_text"):
+                    cached_translation = cached_entry.get("translated_text")
+                    engine_used = cached_entry.get("engine_used")
+                    logger.debug(f"    数据库翻译缓存命中 for '{original_text}' -> '{cached_translation}' (引擎: {engine_used})")
+                    translation_cache[original_text] = cached_translation
+                else:
+                    # 如果缓存未命中，则加入待翻译集合
+                    texts_to_translate.add(original_text)
+
+        # 步骤 2: 如果有需要翻译的文本，则进行一次性批量API调用
+        if texts_to_translate:
+            logger.info(f"  (AI批量模式) 收集到 {len(texts_to_translate)} 个独立词条需要通过API翻译。")
             
-            # 更新我们的翻译缓存，并存入数据库
-            if api_results:
-                logger.info(f"  (AI批量模式) API成功返回 {len(api_results)} 个翻译结果。")
-                translation_cache.update(api_results)
+            # 调用AITranslator的批量翻译方法
+            # 注意：你需要确保你的 AITranslator 类有 batch_translate 方法
+            try:
+                # 将 set 转换为 list
+                api_results = self.ai_translator.batch_translate(list(texts_to_translate))
                 
-                # 将新翻译的结果存入数据库缓存
-                for original, translated in api_results.items():
-                    DoubanApi._save_translation_to_db(
-                        original, 
-                        translated, 
-                        self.ai_translator.provider, 
-                        cursor=db_cursor
-                    )
-            else:
-                logger.warning("  (AI批量模式) AI批量翻译API没有返回有效结果。")
+                # 更新我们的翻译缓存，并存入数据库
+                if api_results:
+                    logger.info(f"  (AI批量模式) API成功返回 {len(api_results)} 个翻译结果。")
+                    translation_cache.update(api_results)
+                    
+                    # 将新翻译的结果存入数据库缓存
+                    for original, translated in api_results.items():
+                        DoubanApi._save_translation_to_db(
+                            original, 
+                            translated, 
+                            self.ai_translator.provider, 
+                            cursor=db_cursor
+                        )
+                else:
+                    logger.warning("  (AI批量模式) AI批量翻译API没有返回有效结果。")
 
-        except Exception as e:
-            logger.error(f"  (AI批量模式) 调用AI批量翻译API时发生错误: {e}", exc_info=True)
-    else:
-        logger.info("  (AI批量模式) 所有需要翻译的字段均在数据库缓存中找到，无需调用API。")
-
-    # 步骤 3: 映射回填，使用完整的 translation_cache 更新演员列表
-    logger.info("  (AI批量模式) 开始将翻译结果回填到演员列表...")
-    for actor in cast_list:
-        # 翻译名字
-        original_name = actor.get("Name")
-        if original_name in translation_cache:
-            actor["Name"] = translation_cache[original_name]
-        
-        # 翻译角色 (先清理)
-        original_role = utils.clean_character_name_static(actor.get("Role"))
-        if original_role in translation_cache:
-            actor["Role"] = translation_cache[original_role] # 更新时使用已翻译的结果
+            except Exception as e:
+                logger.error(f"  (AI批量模式) 调用AI批量翻译API时发生错误: {e}", exc_info=True)
         else:
-            actor["Role"] = original_role # 即使没翻译，也要用清理后的结果
+            logger.info("  (AI批量模式) 所有需要翻译的字段均在数据库缓存中找到，无需调用API。")
 
-    return cast_list
+        # 步骤 3: 映射回填，使用完整的 translation_cache 更新演员列表
+        logger.info("  (AI批量模式) 开始将翻译结果回填到演员列表...")
+        for actor in cast_list:
+            # 翻译名字
+            original_name = actor.get("Name")
+            if original_name in translation_cache:
+                actor["Name"] = translation_cache[original_name]
+            
+            # 翻译角色 (先清理)
+            original_role = utils.clean_character_name_static(actor.get("Role"))
+            if original_role in translation_cache:
+                actor["Role"] = translation_cache[original_role] # 更新时使用已翻译的结果
+            else:
+                actor["Role"] = original_role # 即使没翻译，也要用清理后的结果
+
+        return cast_list
 class SyncHandlerAPI:
     def __init__(self, db_path: str, emby_url: str, emby_api_key: str, emby_user_id: Optional[str]):
         self.db_path = db_path
