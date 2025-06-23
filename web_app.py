@@ -1,7 +1,9 @@
 # web_app.py
 import os
 import re
+import inspect
 import sqlite3
+from actor_sync_handler import UnifiedSyncHandler
 import emby_handler
 import utils
 import configparser
@@ -18,10 +20,11 @@ from douban import DoubanApi
 from typing import Optional, Dict, Any, List, Tuple, Union # 确保 List 被导入
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from actor_manager import ActorManager
 import pytz # 用于处理时区
 import atexit # 用于应用退出处理
-from core_processor_sa import MediaProcessorSA, SyncHandlerSA
-from core_processor_api import MediaProcessorAPI, SyncHandlerAPI
+from core_processor_sa import MediaProcessorSA
+from core_processor_api import MediaProcessorAPI
 import csv
 from io import StringIO
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -136,162 +139,172 @@ def get_db_connection() -> sqlite3.Connection:
     return conn
 
 def init_db():
-    """初始化数据库表结构。只在表不存在时创建它们。"""
+    """
+    【重建版】初始化数据库，创建面向未来的统一表结构。
+    此版本已移除旧的、分离的演员表，并引入了统一的身份管理体系。
+    """
     conn: Optional[sqlite3.Connection] = None
-    cursor: Optional[sqlite3.Cursor] = None
     try:
+        # --- 1. 准备工作：创建目录并获取连接 ---
         if not os.path.exists(PERSISTENT_DATA_PATH):
             os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
             logger.info(f"持久化数据目录已创建: {PERSISTENT_DATA_PATH}")
 
         conn = get_db_connection()
         cursor = conn.cursor()
-        # ✨✨✨ 在创建表之前，启用 WAL 模式 ✨✨✨
+
+        # --- 2. 性能优化：启用 WAL 模式 ---
+        # 提高并发读写性能，是现代 SQLite 应用的标配。
         try:
             cursor.execute("PRAGMA journal_mode=WAL;")
             result = cursor.fetchone()
             if result and result[0].lower() == 'wal':
-                logger.debug("数据库已成功启用 WAL (Write-Ahead Logging) 模式，提高并发性能。")
+                logger.debug("数据库已成功启用 WAL (Write-Ahead Logging) 模式。")
             else:
-                logger.warning(f"尝试启用 WAL 模式，但当前模式为: {result[0] if result else '未知'}。")
+                logger.warning(f"尝试启用 WAL 模式失败，当前模式: {result[0] if result else '未知'}。")
         except Exception as e_wal:
-            logger.error(f"启用 WAL 模式失败: {e_wal}")
-        # ✨✨✨ WAL 模式启用结束 ✨✨✨
+            logger.error(f"启用 WAL 模式时出错: {e_wal}")
 
-        # --- processed_log 表 ---
-        # 只在表不存在时创建，如果已存在则不操作
+        # --- 3. 创建基础表 (日志、缓存、用户) ---
+        logger.debug("正在确认/创建基础表...")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS processed_log (
-                item_id TEXT PRIMARY KEY,
-                item_name TEXT,
-                processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                score REAL
+                item_id TEXT PRIMARY KEY, item_name TEXT,
+                processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, score REAL
             )
         """)
-        # **重要：如果表已存在但没有 score 列，你需要手动或通过一次性脚本添加它**
-        # 例如： self._add_column_if_not_exists(cursor, "processed_log", "score", "REAL")
-        logger.debug("Table 'processed_log' schema confirmed/created if not exists.")
-
-        # --- failed_log 表 ---
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS failed_log (
-                item_id TEXT PRIMARY KEY, 
-                item_name TEXT,
+                item_id TEXT PRIMARY KEY, item_name TEXT,
                 failed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                error_message TEXT,
-                item_type TEXT,
-                score REAL
+                error_message TEXT, item_type TEXT, score REAL
             )
         """)
-        # **同上，如果表已存在但没有 score 列，需要手动或脚本添加**
-        # self._add_column_if_not_exists(cursor, "failed_log", "score", "REAL")
-        logger.debug("Table 'failed_log' schema confirmed/created if not exists.")
-
-        # --- translation_cache 表 ---
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS translation_cache (
-                original_text TEXT PRIMARY KEY,
-                translated_text TEXT,
-                engine_used TEXT,
-                last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP 
+                original_text TEXT PRIMARY KEY, translated_text TEXT,
+                engine_used TEXT, last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_translation_cache_original_text ON translation_cache (original_text)")
-        logger.debug("Table 'translation_cache' and index schema confirmed/created if not exists.")
-
-        # --- person_identity_map 表 ---
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS person_identity_map (
-                map_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                emby_person_id TEXT UNIQUE,          -- ✨ 允许为 NULL，但如果存在则必须唯一
-                emby_person_name TEXT,
-                tmdb_person_id INTEGER UNIQUE NOT NULL, -- ✨✨✨ 设为 UNIQUE NOT NULL，成为新的核心 ✨✨✨
-                tmdb_name TEXT,
-                imdb_id TEXT UNIQUE,                 -- ✨ IMDb ID 也应该是唯一的，允许为 NULL
-                douban_celebrity_id TEXT UNIQUE,     -- ✨ 豆瓣 ID 也应该是唯一的，允许为 NULL
-                douban_name TEXT,
-                last_synced_at TIMESTAMP,
-                last_updated_at TIMESTAMP
-            )
-        """)
-        # --- emby_actor_map 表 ---
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS emby_actor_map (
-                map_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                emby_person_id TEXT UNIQUE NOT NULL,
-                emby_person_name TEXT,
-                tmdb_person_id TEXT, 
-                tmdb_name TEXT,
-                imdb_id TEXT,
-                douban_celebrity_id TEXT,
-                douban_name TEXT,
-                last_synced_at TIMESTAMP,
-                last_updated_at TIMESTAMP
-            )
-        """)
-        # 创建索引以加速查询
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_person_id ON person_identity_map (emby_person_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_tmdb_person_id ON person_identity_map (tmdb_person_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_imdb_id ON person_identity_map (imdb_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_celebrity_id ON person_identity_map (douban_celebrity_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_person_id ON person_identity_map (emby_person_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_person_id ON emby_actor_map (emby_person_id)")
-        # ... (其他 person_identity_map 的索引) ...
-        logger.debug("Table 'person_identity_map' and indexes schema confirmed/created if not exists.")
-
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        logger.debug("Table 'users' schema confirmed/created if not exists.")
+        logger.debug("基础表结构已确认。")
 
-        # ★★★ 今天的新增内容：创建 watchlist 表 ★★★
-        logger.debug("正在检查/创建 'watchlist' 表...")
+        # --- 4. 创建核心功能表 (追剧列表) ---
+        logger.debug("正在确认/创建 'watchlist' 表...")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS watchlist (
                 item_id TEXT PRIMARY KEY,
                 tmdb_id TEXT NOT NULL,
                 item_name TEXT,
                 item_type TEXT DEFAULT 'Series',
-                status TEXT DEFAULT 'Watching',
+                status TEXT DEFAULT 'Watching', -- 'Watching', 'Paused', 'Completed'
                 added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_checked_at TIMESTAMP
             )
         """)
-        # 为新表创建索引，提高查询效率
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_tmdb_id ON watchlist (tmdb_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
-        logger.debug("表 'watchlist' 和其索引已确认/创建。")
-        # ★★★ 新增结束 ★★★
+        logger.debug("表 'watchlist' 结构已确认。")
 
-        conn.commit()
-        logger.debug(f"数据库表结构已在 '{DB_PATH}' 检查/创建完毕 (如果不存在)。")
+        # --- 5. 创建全新的、统一的演员身份管理体系 ---
+        logger.debug("正在构建统一的演员身份管理体系...")
+
+        # 核心表：person_identity_map (单一事实来源)
+        # 职责：存储每个演员的唯一身份和跨平台ID映射。
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS person_identity_map (
+                -- 中立的内部主键，我们的地盘我们做主！
+                map_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                
+                -- 权威的、用户友好的名字
+                primary_name TEXT NOT NULL,
+                -- (可选) 使用JSON存储其他平台的名字，如 {"tmdb": "Yan Ni", "douban": "闫妮"}
+                other_names TEXT,
+
+                -- 所有外部ID，都应该是 UNIQUE 且允许为 NULL
+                emby_person_id TEXT UNIQUE,
+                tmdb_person_id INTEGER UNIQUE,
+                imdb_id TEXT UNIQUE,
+                douban_celebrity_id TEXT UNIQUE,
+
+                -- 时间戳
+                last_synced_at TIMESTAMP,
+                last_updated_at TIMESTAMP
+            )
+        """)
+        # 为所有外部ID创建索引，加速查找和冲突检测
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_id ON person_identity_map (emby_person_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_tmdb_id ON person_identity_map (tmdb_person_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_imdb_id ON person_identity_map (imdb_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_id ON person_identity_map (douban_celebrity_id)")
+        logger.debug("  -> [核心] 'person_identity_map' 表已创建。")
+
+        # 辅助表：actor_aliases (别名仓库)
+        # 职责：记录重复的TMDb ID，并将它们指向一个权威的“主”ID。
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS actor_aliases (
+                alias_tmdb_id TEXT PRIMARY KEY,      -- 重复的/别名的 TMDb ID
+                master_tmdb_id TEXT NOT NULL,        -- 指向的权威的/主 TMDb ID
+                merge_reason TEXT,
+                merged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_aliases_master_id ON actor_aliases (master_tmdb_id)")
+        logger.debug("  -> [辅助] 'actor_aliases' 表已创建。")
+
+        # 辅助表：actor_conflicts (冲突事件记录本)
+        # 职责：作为“法院收案登记处”，记录所有需要人工审核的数据冲突。
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS actor_conflicts (
+                conflict_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conflict_type TEXT NOT NULL,
+                
+                new_tmdb_id TEXT, -- ★★★ 改为允许 NULL ★★★
+                new_actor_name TEXT,
+                new_actor_image_path TEXT,
+
+                conflicting_value TEXT, -- ★★★ 改为允许 NULL ★★★
+                
+                existing_tmdb_id TEXT, -- ★★★ 改为允许 NULL ★★★
+                existing_actor_name TEXT,
+                existing_actor_image_path TEXT,
+
+                status TEXT DEFAULT 'pending',
+                detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                resolved_at TIMESTAMP,
+                resolution_type TEXT,
+                
+                -- ★★★ 新增 UNIQUE 约束，防止重复立案 ★★★
+                UNIQUE(new_tmdb_id, existing_tmdb_id, conflict_type)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_conflicts_status ON actor_conflicts (status)")
+        logger.debug("  -> [辅助] 'actor_conflicts' 表已创建。")
         
+        logger.debug("演员身份管理体系构建完成。")
 
-    except sqlite3.Error as e_sqlite: # 更具体地捕获 SQLite 错误
+        # --- 6. 提交事务 ---
+        conn.commit()
+        logger.info(f"数据库重建完成！所有表结构已在 '{DB_PATH}' 中创建。")
+
+    except sqlite3.Error as e_sqlite:
         logger.error(f"数据库初始化时发生 SQLite 错误: {e_sqlite}", exc_info=True)
         if conn:
             try: conn.rollback()
             except Exception as e_rb: logger.error(f"SQLite 错误后回滚失败: {e_rb}")
-    except OSError as e_os: # 捕获目录创建等OS错误
-        logger.error(f"数据库初始化时发生文件/目录操作错误: {e_os}", exc_info=True)
     except Exception as e_global:
         logger.error(f"数据库初始化时发生未知错误: {e_global}", exc_info=True)
-        if conn: # 如果连接存在但发生了其他未知错误，也尝试回滚
+        if conn:
             try: conn.rollback()
             except Exception as e_rb: logger.error(f"未知错误后回滚失败: {e_rb}")
     finally:
-        if cursor: # 先关闭 cursor
-            try: cursor.close()
-            except Exception as e_cur_close: logger.debug(f"关闭 cursor 时出错: {e_cur_close}")
         if conn:
-            try: conn.close()
-            except Exception as e_conn_close: logger.debug(f"关闭 conn 时出错: {e_conn_close}")
-            else: logger.debug("数据库连接已在 init_db 的 finally 块中关闭。")# --- 数据库辅助函数结束 ---
+            conn.close()
+            logger.debug("数据库连接已在 init_db 的 finally 块中安全关闭。")
 
 def login_required(f):
     @wraps(f)
@@ -635,9 +648,6 @@ def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，�
 def initialize_processors():
     global media_processor_instance
     
-    # ★★★ 3. 这是最核心的修改：根据配置创建不同的实例 ★★★
-    
-    # 确保 APP_CONFIG 已经加载
     if not APP_CONFIG:
         logger.error("无法初始化处理器：全局配置 APP_CONFIG 为空。")
         return
@@ -645,40 +655,48 @@ def initialize_processors():
     current_config = APP_CONFIG.copy()
     current_config['db_path'] = DB_PATH
 
-    # 先关闭旧的实例（如果存在）
     if media_processor_instance:
         media_processor_instance.close()
 
-    # 根据模式开关，决定实例化哪个类
     use_sa_mode = current_config.get(constants.CONFIG_OPTION_USE_SA_MODE, True)
     
     try:
         if use_sa_mode:
             logger.info("【模式切换】当前为：神医Pro模式")
+            
+            # ★★★ X光诊断开始 ★★★
+            logger.info("--- 开始诊断 MediaProcessorSA ---")
+            try:
+                # 打印它所在的模块文件路径
+                module_path = inspect.getfile(MediaProcessorSA)
+                logger.info(f"  - MediaProcessorSA 来自文件: {module_path}")
+                
+                # 打印它的 __init__ 方法的签名
+                init_signature = inspect.signature(MediaProcessorSA.__init__)
+                logger.info(f"  - MediaProcessorSA.__init__ 的签名是: {init_signature}")
+                
+            except Exception as e_inspect:
+                logger.error(f"  - 诊断时发生错误: {e_inspect}")
+            logger.info("--- 诊断结束，准备创建实例 ---")
+            # ★★★ X光诊断结束 ★★★
+
             media_processor_instance = MediaProcessorSA(config=current_config)
         else:
             logger.info("【模式切换】当前为：普通模式")
+            # (对 MediaProcessorAPI 也做同样的事，如果需要的话)
             media_processor_instance = MediaProcessorAPI(config=current_config)
         
         logger.debug("处理器实例已成功创建/更新。")
+
     except Exception as e:
         logger.error(f"创建处理器实例失败: {e}", exc_info=True)
         media_processor_instance = None
-
-    # ★★★ 4. 禁用/启用相关功能 ★★★
-    # 追剧功能
-    global watchlist_processor_instance
-    if use_sa_mode:
-        watchlist_processor_instance = WatchlistProcessor(config=current_config)
-    else:
-        watchlist_processor_instance = None # API模式下禁用
 # --- 后台任务回调 ---
 def update_status_from_thread(progress: int, message: str):
     global background_task_status
     if progress >= 0:
         background_task_status["progress"] = progress
     background_task_status["message"] = message
-    # logger.debug(f"状态更新回调: Progress={progress}%, Message='{message}'") # 这条日志太频繁，可以注释掉
 # --- 后台任务封装 ---
 def _execute_task_with_lock(task_function, task_name: str, processor: Union[MediaProcessorSA, MediaProcessorAPI, WatchlistProcessor], *args, **kwargs):
     """
@@ -982,37 +1000,6 @@ def enrich_and_match_douban_cast_to_emby(
     logger.info(f"enrich_and_match_douban_cast_to_emby: 处理完成，返回 {len(results)} 个匹配/增强的演员信息。")
     return results
 
-def api_specific_sync_map_task(api_task_name: str, is_full_sync: bool): # 增加 is_full_sync 参数
-    logger.info(f"'{api_task_name}': API专属同步任务开始执行。")
-    # 确保神医版的处理器实例存在
-    if not isinstance(media_processor_instance, MediaProcessorSA):
-        logger.error(f"'{api_task_name}' 无法执行：当前处理器实例不是神医版 (MediaProcessorSA)。")
-        update_status_from_thread(-1, "错误：核心处理器模式不匹配。")
-        return
-
-    try:
-        # SyncHandlerSA 是神医模式的一部分，所以它的参数应该从 MediaProcessorSA 实例获取
-        sync_handler_instance = SyncHandlerSA(
-            db_path=DB_PATH,
-            emby_url=media_processor_instance.emby_url,
-            emby_api_key=media_processor_instance.emby_api_key,
-            emby_user_id=media_processor_instance.emby_user_id,
-            stop_event=media_processor_instance._stop_event, # 从实例获取 stop_event
-            tmdb_api_key=media_processor_instance.tmdb_api_key,
-            local_data_path=media_processor_instance.local_data_path # SyncHandlerSA 需要这个
-        )
-        logger.info(f"'{api_task_name}': SyncHandlerSA 实例已创建。")
-        
-        # 调用同步方法，并传递 is_full_sync 参数
-        sync_handler_instance.sync_emby_person_map_to_db(
-            full_sync=is_full_sync,
-            update_status_callback=update_status_from_thread
-        )
-        logger.info(f"'{api_task_name}': 同步操作完成。")
-        
-    except Exception as e_sync:
-        logger.error(f"'{api_task_name}' 执行过程中发生严重错误: {e_sync}", exc_info=True)
-        update_status_from_thread(-1, f"错误：同步失败 ({str(e_sync)[:50]}...)")
 # --- 执行全量媒体库扫描 ---
 def task_process_full_library(processor: MediaProcessorSA, process_episodes: bool):
     processor.process_full_library(
@@ -1020,59 +1007,31 @@ def task_process_full_library(processor: MediaProcessorSA, process_episodes: boo
         process_episodes=process_episodes
     )
 
-def task_sync_person_map(processor, is_full_sync: bool):
+def task_sync_person_map(processor):
     """
-    任务：同步演员映射表。
-    根据传入的处理器类型，调用不同的 SyncHandler。
+    任务：同步演员映射表（已简化为单一模式）。
     """
-    task_name = "同步演员映射表"
-    if is_full_sync: task_name += " [全量模式]"
+    task_name = "统一演员映射表同步"
+    # 移除了 if is_full_sync 的判断逻辑
+    
+    logger.info(f"开始执行 '{task_name}'...")
     
     try:
-        # ★★★ 核心：根据处理器类型，执行不同的同步逻辑 ★★★
+        config = processor.config
+        sync_handler = UnifiedSyncHandler(
+            db_path=DB_PATH,
+            emby_url=config.get("emby_server_url"),
+            emby_api_key=config.get("emby_api_key"),
+            emby_user_id=config.get("emby_user_id"),
+            tmdb_api_key=config.get("tmdb_api_key", "")
+        )
         
-        if isinstance(processor, MediaProcessorSA):
-            logger.info(f"'{task_name}' 检测到神医模式，准备执行 SA 版同步...")
-            from core_processor_sa import SyncHandlerSA
+        sync_handler.sync_emby_person_map_to_db(
+            update_status_callback=update_status_from_thread
+        )
+        
+        logger.info(f"'{task_name}' 成功完成。")
 
-            sync_handler = SyncHandlerSA(
-                db_path=DB_PATH,
-                emby_url=processor.emby_url,
-                emby_api_key=processor.emby_api_key,
-                emby_user_id=processor.emby_user_id,
-                stop_event=processor._stop_event,
-                tmdb_api_key=processor.tmdb_api_key,
-                local_data_path=processor.local_data_path
-            )
-            # 神医版的同步方法可能叫 sync_emby_person_map_to_db
-            sync_handler.sync_emby_person_map_to_db(
-                full_sync=is_full_sync,
-                update_status_callback=update_status_from_thread
-            )
-
-        elif isinstance(processor, MediaProcessorAPI):
-            logger.info(f"'{task_name}' 检测到API模式，准备执行 API 版同步...")
-            from core_processor_api import SyncHandlerAPI
-
-            sync_handler = SyncHandlerAPI(
-                db_path=DB_PATH,
-                emby_url=processor.emby_url,
-                emby_api_key=processor.emby_api_key,
-                emby_user_id=processor.emby_user_id,
-                # API版的 SyncHandler 可能不需要 stop_event 等参数，根据您的实现调整
-            )
-            # API版的同步方法可能叫 sync_emby_person_map_to_db
-            sync_handler.sync_emby_person_map_to_db(
-                update_status_callback=update_status_from_thread
-            )
-            
-        else:
-            logger.error(f"'{task_name}' 无法执行，未知的处理器类型: {type(processor)}")
-            update_status_from_thread(-1, "错误：未知的处理器类型")
-
-    except ImportError as e:
-        logger.error(f"'{task_name}' 无法执行：无法导入所需的 SyncHandler。错误: {e}")
-        update_status_from_thread(-1, "错误：同步组件未找到")
     except Exception as e:
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
         update_status_from_thread(-1, f"错误：同步失败 ({str(e)[:50]}...)")
@@ -1131,6 +1090,17 @@ def task_process_single_watchlist_item(processor: WatchlistProcessor, item_id: s
     """任务：只更新追剧列表中的一个特定项目"""
     # 传递 item_id，执行单项更新
     processor.process_watching_list(item_id=item_id)
+# ★★★ 扫描并记录重复演员 ★★★
+def task_find_duplicates(processor): # <--- 加上 processor 参数
+    """任务：扫描并记录重复演员。"""
+    # 即使函数内部用不到 processor，也需要在这里声明接收它，以匹配工人的调用方式。
+    logger.info("开始执行扫描重复演员任务...") # 加个日志，方便调试
+    try:
+        # 假设 actor_manager_instance 是一个全局或可访问的实例
+        actor_manager_instance.find_and_record_duplicates()
+        logger.info("扫描重复演员任务成功完成。")
+    except Exception as e:
+        logger.error(f"扫描重复演员任务失败: {e}", exc_info=True)
 # --- 路由区 ---
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
@@ -1689,22 +1659,19 @@ def api_handle_trigger_full_scan():
     )
     
     return jsonify({"message": f"{action_message} 任务已提交启动。"}), 202
-
+# --- 同步演员映射表 ---
 @app.route('/api/trigger_sync_person_map', methods=['POST'])
-@login_required # 假设需要登录
+@login_required
 def api_handle_trigger_sync_map():
     logger.debug("API Endpoint: Received request to trigger sync person map.")
     try:
-        data = request.json or {}
-        full_sync_flag = data.get('full_sync', False)
+        # 移除了所有 full_sync_flag 相关的逻辑
         task_name_for_api = "同步Emby演员映射表 (API)"
-        if full_sync_flag: task_name_for_api += " [全量模式]"
 
+        # 调用任务时，只传递 processor 实例
         submit_task_to_queue(
-            task_sync_person_map, # 传递包装函数
-            task_name_for_api,
-            # --- 后面是传递给 task_sync_person_map 的参数 ---
-            full_sync_flag
+            task_sync_person_map,
+            task_name_for_api
         )
 
         return jsonify({"message": f"'{task_name_for_api}' 任务已提交启动。"}), 202
@@ -2487,6 +2454,53 @@ def api_trigger_single_watchlist_update(item_id):
     )
     
     return jsonify({"message": f"项目 {item_id} 的更新任务已在后台启动！"}), 202
+# ★★★ 演员冲突管理 ★★★
+@app.route('/api/actors/conflicts', methods=['GET'])
+@login_required
+def api_get_actor_conflicts():
+    """API: 获取待处理的演员冲突列表。"""
+    try:
+        pending_conflicts = actor_manager_instance.get_pending_conflicts()
+        return jsonify(pending_conflicts)
+    except Exception as e:
+        logger.error(f"API /api/actors/conflicts GET error: {e}", exc_info=True)
+        return jsonify({"error": "获取冲突列表失败"}), 500
+# ★★★ 解决一个指定的演员冲突 ★★★
+@app.route('/api/actors/resolve_conflict/<int:conflict_id>', methods=['POST'])
+@login_required
+def api_resolve_actor_conflict(conflict_id):
+    """API: 解决一个指定的演员冲突。"""
+    try:
+        resolution_data = request.json
+        if not resolution_data or not resolution_data.get("action"):
+            return jsonify({"error": "请求体中缺少裁决动作 'action'"}), 400
+            
+        result = actor_manager_instance.resolve_conflict(conflict_id, resolution_data)
+        
+        if result.get("success"):
+            return jsonify({"message": result.get("message")})
+        else:
+            return jsonify({"error": result.get("message")}), 500
+            
+    except Exception as e:
+        logger.error(f"API /api/actors/resolve_conflict POST error: {e}", exc_info=True)
+        return jsonify({"error": "解决冲突时发生服务器内部错误"}), 500
+# ★★★ 触发一个后台任务来扫描潜在的重复演员 ★★★
+@app.route('/api/actors/find_duplicates', methods=['POST'])
+@login_required
+def api_find_duplicate_actors():
+    """API: 触发一个后台任务来扫描潜在的重复演员。"""
+    task_name = "扫描重复演员"
+    try:
+        # ★★★ 核心修复：只告诉工人要去干哪个活，不给他任何多余的工具 ★★★
+        submit_task_to_queue(
+            task_find_duplicates, 
+            task_name
+        )
+        return jsonify({"message": f"'{task_name}' 任务已提交到后台执行。"}), 202
+    except Exception as e:
+        logger.error(f"API /api/actors/find_duplicates error: {e}", exc_info=True)
+        return jsonify({"error": "启动扫描任务时发生服务器内部错误"}), 500
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
@@ -2510,7 +2524,11 @@ if __name__ == '__main__':
     
     # 3. 初始化认证系统 (它会依赖全局配置)
     init_auth()
-    
+
+    actor_manager_instance = ActorManager(
+        db_path=DB_PATH, 
+        tmdb_api_key=APP_CONFIG.get("tmdb_api_key", "")
+    )
     # 4. ★★★ 创建唯一的 MediaProcessor 实例 ★★★
     initialize_processors()
     

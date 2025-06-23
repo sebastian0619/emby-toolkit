@@ -15,6 +15,7 @@ import tmdb_handler
 import utils
 from logger_setup import logger
 import constants
+from actor_utils import ActorDBManager
 from ai_translator import AITranslator
 from watchlist_processor import WatchlistProcessor
 try:
@@ -44,15 +45,17 @@ def _read_local_json(file_path: str) -> Optional[Dict[str, Any]]:
 
 class MediaProcessorSA:
     def __init__(self, config: Dict[str, Any]):
+        # ★★★ 然后，从这个 config 字典里，解析出所有需要的属性 ★★★
         self.config = config
         self.db_path = config.get('db_path')
         if not self.db_path:
             raise ValueError("数据库路径 (db_path) 未在配置中提供。")
 
-        self.douban_api = None
-        if DOUBAN_API_AVAILABLE:
-            self.douban_api = DoubanApi(db_path=self.db_path)
+        # 初始化我们的数据库管理员
+        self.actor_db_manager = ActorDBManager(self.db_path)
 
+        # 从 config 中获取所有其他配置
+        self.douban_api = DoubanApi(db_path=self.db_path) if DOUBAN_API_AVAILABLE else None
         self.emby_url = self.config.get("emby_server_url")
         self.emby_api_key = self.config.get("emby_api_key")
         self.emby_user_id = self.config.get("emby_user_id")
@@ -60,17 +63,14 @@ class MediaProcessorSA:
         self.local_data_path = self.config.get("local_data_path", "").strip()
         self.sync_images_enabled = self.config.get(constants.CONFIG_OPTION_SYNC_IMAGES, False)
         self.translator_engines = self.config.get(constants.CONFIG_OPTION_TRANSLATOR_ENGINES, constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
-        self.ai_translator = None
-        if self.config.get("ai_translation_enabled", False):
-            try:
-                self.ai_translator = AITranslator(self.config)
-            except Exception as e:
-                logger.error(f"AI翻译器初始化失败: {e}")
-
+        
+        self.ai_enabled = self.config.get("ai_translation_enabled", False)
+        self.ai_translator = AITranslator(self.config) if self.ai_enabled else None
+        
         self._stop_event = threading.Event()
         self.processed_items_cache = self._load_processed_log_from_db()
         self.manual_edit_cache = {}
-        logger.debug("MediaProcessor 初始化完成。")
+        logger.debug("(神医模式)初始化完成。")
 
     # ★★★ 公开的、独立的追剧判断方法 ★★★
     def check_and_add_to_watchlist(self, item_details: Dict[str, Any]):
@@ -154,7 +154,7 @@ class MediaProcessorSA:
             logger.debug(f"  质量评估：演员数量 ({total_actors}/{original_cast_count}) 正常，不进行惩罚。")
 
         final_score_rounded = round(avg_score, 1)
-        logger.info(f"  最终评分: {final_score_rounded:.1f}")
+        logger.info(f"  - 最终评分: {final_score_rounded:.1f}")
         return final_score_rounded
 
     def _get_db_connection(self) -> sqlite3.Connection:
@@ -665,6 +665,22 @@ class MediaProcessorSA:
                     logger.info(f"--- 最终丢弃 {len(still_unmatched_final)} 位无匹配的豆瓣演员: {', '.join(discarded_names[:5])}{'...' if len(discarded_names) > 5 else ''} ---")
 
             intermediate_cast_list = list(final_cast_map.values())
+            # ★★★ 新增的步骤：在截断前进行一次全量反哺 ★★★
+            logger.debug(f"截断前：将 {len(intermediate_cast_list)} 位演员的完整映射关系反哺到数据库...")
+            for actor_data in intermediate_cast_list:
+                # ★★★ 核心修复：调用我们统一的、强大的 ActorDBManager ★★★
+                self.actor_db_manager.upsert_person(
+                    cursor,
+                    {
+                        "tmdb_id": actor_data.get("id"),
+                        "name": actor_data.get("name"),
+                        "imdb_id": actor_data.get("imdb_id"),
+                        "douban_id": actor_data.get("douban_id"),
+                    },
+                    self.tmdb_api_key # 把钥匙递过去
+                )
+            logger.info("所有演员的ID映射关系已保存。")
+            # ★★★ 新增步骤结束 ★★★
             
             max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, constants.DEFAULT_MAX_ACTORS_TO_PROCESS)
             try:
@@ -935,14 +951,6 @@ class MediaProcessorSA:
 
                 # b. 格式化角色名等
                 final_cast_perfect = self._format_and_complete_cast_list(intermediate_cast, is_animation)
-                
-                # c. ✨✨✨ 在这里进行反哺 ✨✨✨
-                logger.info("--- 开始实时更新 演员映射表 ---")
-                for actor_data in final_cast_perfect:
-                    self._update_person_map_entry(cursor, actor_data)
-                logger.debug("--- person_identity_map 映射表更新完成 ---")
-
-                # with 块结束时，conn 会被自动 commit，所有翻译缓存和映射表更新都会被保存
             
             # --- 阶段2: 文件写入 (不涉及数据库) ---
             base_json_data_for_override = copy.deepcopy(base_json_data_original)
@@ -1046,46 +1054,6 @@ class MediaProcessorSA:
             self.save_to_failed_log(item_id, item_name_for_log, f"核心处理异常: {str(e)}", item_type)
             return False
         
-    def _update_person_map_entry(self, cursor: sqlite3.Cursor, actor_data: Dict[str, Any]):
-        """
-        【TMDb为核心版】使用 UPSERT 逻辑，高效地更新或插入 person_identity_map 记录。
-        """
-        tmdb_id = actor_data.get("id")
-        # 只有存在 TMDb ID 时，才进行操作
-        if not tmdb_id:
-            return
-
-        # 准备要写入的数据
-        data_to_write = {
-            "tmdb_person_id": tmdb_id,
-            "imdb_id": actor_data.get("imdb_id"),
-            "douban_celebrity_id": actor_data.get("douban_id"),
-            "emby_person_name": actor_data.get("name"), # 使用处理后的中文名
-            "tmdb_name": actor_data.get("original_name") or actor_data.get("name"),
-            "douban_name": actor_data.get("name"),
-        }
-        # 清理掉值为 None 的键
-        clean_data = {k: v for k, v in data_to_write.items() if v is not None}
-        
-        cols = list(clean_data.keys())
-        vals = list(clean_data.values())
-        
-        # 构建 UPSERT 语句，当 tmdb_person_id 冲突时，执行更新
-        update_clauses = [f"{col} = COALESCE(excluded.{col}, person_identity_map.{col})" for col in cols if col != "tmdb_person_id"]
-        
-        sql = f"""
-            INSERT INTO person_identity_map ({', '.join(cols)}, last_updated_at)
-            VALUES ({', '.join(['?'] * len(cols))}, CURRENT_TIMESTAMP)
-            ON CONFLICT(tmdb_person_id) DO UPDATE SET
-                {', '.join(update_clauses)},
-                last_updated_at = CURRENT_TIMESTAMP;
-        """
-        
-        try:
-            cursor.execute(sql, tuple(vals))
-            logger.debug(f"  -> 成功 UPSERT 映射表 for TMDb ID: {tmdb_id}")
-        except sqlite3.Error as e:
-            logger.error(f"  -> 更新映射表失败 for TMDb ID {tmdb_id}: {e}")
 
     def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False, process_episodes: bool = True) -> bool:
         if self.is_stop_requested(): return False
@@ -1474,229 +1442,3 @@ class MediaProcessorSA:
     def close(self):
         if self.douban_api: self.douban_api.close()
         logger.debug("MediaProcessor closed.")
-
-
-
-class SyncHandlerSA:
-    def __init__(self, db_path: str, emby_url: str, emby_api_key: str, emby_user_id: Optional[str], stop_event: threading.Event, tmdb_api_key: str, local_data_path: str):
-        self.db_path = db_path
-        self.emby_url = emby_url
-        self.emby_api_key = emby_api_key
-        self.emby_user_id = emby_user_id
-        self.stop_event = stop_event
-        self.tmdb_api_key = tmdb_api_key
-        self.local_data_path = local_data_path
-        logger.info(f"SyncHandlerSA initialized for local cache sync.")
-
-    def _get_db_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _find_douban_json(self, tmdb_data: Dict[str, Any], douban_cache_dir: str) -> Optional[str]:
-        if not os.path.exists(douban_cache_dir): return None
-        imdb_id = tmdb_data.get('imdb_id')
-        if imdb_id:
-            for douban_dir_name in os.listdir(douban_cache_dir):
-                if douban_dir_name.startswith('0_'): continue
-                if imdb_id in douban_dir_name:
-                    douban_dir_path = os.path.join(douban_cache_dir, douban_dir_name)
-                    for filename in os.listdir(douban_dir_path):
-                        if filename.endswith('.json'): return os.path.join(douban_dir_path, filename)
-        douban_id_from_tmdb = tmdb_data.get("ProviderIds", {}).get("Douban")
-        if douban_id_from_tmdb:
-            for douban_dir_name in os.listdir(douban_cache_dir):
-                if douban_dir_name.startswith(f"{douban_id_from_tmdb}_"):
-                    douban_dir_path = os.path.join(douban_cache_dir, douban_dir_name)
-                    for filename in os.listdir(douban_dir_path):
-                        if filename.endswith('.json'): return os.path.join(douban_dir_path, filename)
-        return None
-
-    def _upsert_person_map(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any]) -> str:
-        """
-        【V4 用户友好日志版】使用 UPSERT 逻辑，并能优雅处理和清晰报告 UNIQUE 字段的冲突。
-        """
-        tmdb_id = person_data.get("tmdb_person_id")
-        if not tmdb_id: return 'skipped'
-
-        cursor.execute("SELECT tmdb_person_id FROM person_identity_map WHERE tmdb_person_id = ?", (tmdb_id,))
-        action_type = 'updated' if cursor.fetchone() else 'added'
-
-        def attempt_upsert(data_to_write: Dict[str, Any], is_degraded: bool = False) -> bool:
-            clean_data = {k: v for k, v in data_to_write.items() if v is not None and str(v).strip() != ''}
-            if len(clean_data) <= 1 and "tmdb_person_id" in clean_data: return True
-
-            cols = list(clean_data.keys())
-            vals = list(clean_data.values())
-            update_clauses = [f"{col} = COALESCE(excluded.{col}, person_identity_map.{col})" for col in cols if col != "tmdb_person_id"]
-            
-            if not update_clauses: return True
-
-            sql = f"INSERT INTO person_identity_map ({', '.join(cols)}) VALUES ({', '.join(['?'] * len(cols))}) ON CONFLICT(tmdb_person_id) DO UPDATE SET {', '.join(update_clauses)}, last_updated_at = CURRENT_TIMESTAMP;"
-            
-            try:
-                cursor.execute(sql, tuple(vals))
-                if is_degraded:
-                    logger.info(f"  -> [降级写入成功] for TMDb ID {tmdb_id} (已更新非唯一信息)")
-                else:
-                    # 为了避免刷屏，常规成功的日志保持 DEBUG 级别
-                    logger.debug(f"  -> [UPSERT成功] for TMDb ID {tmdb_id}")
-                return True
-            except sqlite3.IntegrityError as e:
-                # ★★★ 核心修改：在这里进行详细的冲突分析和日志记录 ★★★
-                conflicting_douban_id = data_to_write.get("douban_celebrity_id")
-                if conflicting_douban_id and "douban_celebrity_id" in str(e):
-                    # 确定是豆瓣 ID 冲突，反查数据库找出占用者
-                    cursor.execute("SELECT tmdb_person_id, tmdb_name, douban_name FROM person_identity_map WHERE douban_celebrity_id = ?", (conflicting_douban_id,))
-                    occupant = cursor.fetchone()
-                    if occupant:
-                        logger.warning(
-                            f"  -> [数据冲突] 演员 '{data_to_write.get('tmdb_name', tmdb_id)}' (TMDb ID: {tmdb_id}) "
-                            f"尝试关联的豆瓣ID '{conflicting_douban_id}' 已被 "
-                            f"'{occupant['douban_name'] or occupant['tmdb_name']}' (TMDb ID: {occupant['tmdb_person_id']}) 占用。"
-                        )
-                    else:
-                        # 理论上不应该发生，但以防万一
-                        logger.warning(f"  -> [数据冲突] 演员 (TMDb ID: {tmdb_id}) 尝试关联的豆瓣ID '{conflicting_douban_id}' 已被占用，但无法找到占用者。")
-                else:
-                    # 其他类型的 UNIQUE 冲突
-                    logger.warning(f"  -> [数据冲突] UPSERT for TMDb ID {tmdb_id} 遇到 UNIQUE 约束失败: {e}.")
-                
-                logger.info("    -> [应对策略] 将放弃本次关联，只尝试更新该演员的名字等非冲突信息。")
-                return False
-            except sqlite3.Error as e:
-                logger.error(f"  -> UPSERT 映射表失败 for TMDb ID {tmdb_id}: {e}")
-                return False
-
-        # 第一次尝试：is_degraded 默认为 False
-        if attempt_upsert(person_data):
-            return action_type
-        else:
-            # 第二次尝试：降级写入
-            degraded_data = person_data.copy()
-            degraded_data.pop("douban_celebrity_id", None)
-            degraded_data.pop("imdb_id", None)
-            
-            # ★★★ 2. 在调用时，明确传递 is_degraded=True ★★★
-            if attempt_upsert(degraded_data, is_degraded=True):
-                return 'updated'
-            else:
-                logger.error(f"  -> 降级写入 for TMDb ID {tmdb_id} 仍然失败。")
-                return 'error'
-
-    def sync_emby_person_map_to_db(self, full_sync: bool = False, update_status_callback: Optional[callable] = None):
-        mode_text = "深度补充模式 (耗时)" if full_sync else "快速本地模式"
-        logger.info(f"--- 开始演员映射表同步任务 ({mode_text}) ---")
-        if update_status_callback: update_status_callback(0, f"准备中... ({mode_text})")
-
-        stats = {"tmdb_items_scanned": 0, "douban_items_found": 0, "actors_processed": 0, "map_added": 0, "map_updated": 0, "online_lookups": 0, "online_success": 0, "imdb_added": 0}
-
-        with self._get_db_conn() as conn:
-            cursor = conn.cursor()
-            douban_api = DoubanApi(db_path=self.db_path)
-            toys_in_basket = []
-
-            # --- 阶段一：快速本地同步 (所有模式下都会执行) ---
-            logger.info("--- [阶段 1] 开始执行快速本地文件扫描 ---")
-            tmdb_movies_path = os.path.join(self.local_data_path, "cache", "tmdb-movies2")
-            tmdb_tv_path = os.path.join(self.local_data_path, "cache", "tmdb-tv")
-            douban_movies_path = os.path.join(self.local_data_path, "cache", "douban-movies")
-            douban_tv_path = os.path.join(self.local_data_path, "cache", "douban-tv")
-
-            if os.path.exists(tmdb_movies_path) and os.path.exists(tmdb_tv_path):
-                tmdb_dirs = [os.path.join(tmdb_movies_path, d) for d in os.listdir(tmdb_movies_path) if os.path.isdir(os.path.join(tmdb_movies_path, d))]
-                tmdb_dirs += [os.path.join(tmdb_tv_path, d) for d in os.listdir(tmdb_tv_path) if os.path.isdir(os.path.join(tmdb_tv_path, d))]
-                total_items = len(tmdb_dirs)
-
-                for i, tmdb_item_dir in enumerate(tmdb_dirs):
-                    if self.stop_event.is_set(): break
-                    stats["tmdb_items_scanned"] += 1
-                    progress = int(((i + 1) / total_items) * 100) if total_items > 0 else 100
-                    if update_status_callback: update_status_callback(progress, f"快速扫描 ({i+1}/{total_items}): {os.path.basename(tmdb_item_dir)}")
-                    
-                    # ... (此处是完整的本地文件处理和名字匹配逻辑，与你之前的代码完全相同) ...
-                    json_filename = "all.json" if "tmdb-movies2" in tmdb_item_dir else "series.json"
-                    tmdb_json_path = os.path.join(tmdb_item_dir, json_filename)
-                    tmdb_data = _read_local_json(tmdb_json_path)
-                    if not tmdb_data: continue
-                    douban_cache_dir = douban_movies_path if "tmdb-movies2" in tmdb_item_dir else douban_tv_path
-                    douban_json_path = self._find_douban_json(tmdb_data, douban_cache_dir)
-                    douban_data = _read_local_json(douban_json_path) if douban_json_path else None
-                    douban_cast = douban_data.get('actors', []) if douban_data else []
-                    if douban_json_path: stats["douban_items_found"] += 1
-                    tmdb_cast = tmdb_data.get('casts', {}).get('cast', tmdb_data.get('credits', {}).get('cast', []))
-                    for tmdb_actor in tmdb_cast:
-                        if self.stop_event.is_set(): break
-                        stats["actors_processed"] += 1
-                        tmdb_person_id = tmdb_actor.get('id')
-                        if not tmdb_person_id: continue
-                        person_data = {"tmdb_person_id": str(tmdb_person_id), "tmdb_name": tmdb_actor.get('name') or tmdb_actor.get('original_name')}
-                        matched_douban_actor = next((da for da in douban_cast if utils.are_names_match(tmdb_actor.get('name'), tmdb_actor.get('original_name'), da.get('name'), da.get('latin_name'))), None)
-                        if matched_douban_actor:
-                            douban_id = matched_douban_actor.get('id')
-                            if douban_id:
-                                person_data["douban_celebrity_id"] = str(douban_id)
-                                person_data["douban_name"] = matched_douban_actor.get('name')
-                        toys_in_basket.append(person_data)
-            if toys_in_basket:
-                logger.debug(f"好了！篮子里收集了 {len(toys_in_basket)} 个玩具，现在一次性放进箱子！")
-                for one_toy in toys_in_basket:
-                    # 我们还是用老办法一个一个放，但因为是在一个地方操作，所以快很多
-                    action = self._upsert_person_map(cursor, one_toy)
-                    if action == 'added': stats['map_added'] += 1
-                    elif action == 'updated': stats['map_updated'] += 1
-                logger.debug("所有玩具都放进去了！")
-
-            # ★★★ 阶段二：深度在线补充 (仅在 full_sync 模式下执行) ★★★
-            if full_sync and not self.stop_event.is_set():
-                logger.info("--- [阶段 2] 开始执行深度在线补充 (耗时) ---")
-                
-                # 1. 补充豆瓣独有演员
-                # (这个逻辑比较复杂，我们先简化，直接补充 IMDb ID)
-
-                # 2. 补充 IMDb ID
-                cursor.execute("SELECT tmdb_person_id, tmdb_name FROM person_identity_map WHERE imdb_id IS NULL OR imdb_id = ''")
-                records_to_enrich = cursor.fetchall()
-                total_to_enrich = len(records_to_enrich)
-                
-                if total_to_enrich > 0:
-                    logger.info(f"发现 {total_to_enrich} 条记录需要在线补充 IMDb ID。")
-                    for i, record in enumerate(records_to_enrich):
-                        if self.stop_event.is_set(): break
-                        progress = int(((i + 1) / total_to_enrich) * 100) if total_to_enrich > 0 else 100
-                        if update_status_callback: update_status_callback(progress, f"深度补充 ({i+1}/{total_to_enrich}): {record['tmdb_name']}")
-                        
-                        # ★★★ 核心修复：使用文件中实际存在的函数名 ★★★
-                        details = tmdb_handler.get_person_details_tmdb(record["tmdb_person_id"], self.tmdb_api_key)
-                        
-                        time.sleep(0.2)
-                        if details and details.get("imdb_id"):
-                            stats["imdb_added"] += 1
-                            cursor.execute("UPDATE person_identity_map SET imdb_id = ? WHERE tmdb_person_id = ?", (details.get("imdb_id"), record["tmdb_person_id"]))
-            
-            conn.commit()
-            douban_api.close()
-
-        # ... (最终的详细统计日志报告) ...
-        final_message = "演员映射表同步完成。"
-        if self.stop_event.is_set(): final_message = "同步任务已中断。"
-        
-        # ★★★ 增加醒目的边框 ★★★
-        logger.info("=" * 60)
-        logger.info(f"--- {final_message} 统计报告 ({mode_text}) ---")
-        logger.info(f"  - 扫描的 TMDb 项目数: {stats['tmdb_items_scanned']}")
-        logger.info(f"  - 成功关联的豆瓣项目数: {stats['douban_items_found']}")
-        logger.info(f"  - 处理的总演员人次: {stats['actors_processed']}")
-        logger.info(f"  - 新增的映射记录: {stats['map_added']}")
-        logger.info(f"  - 更新的映射记录: {stats['map_updated']}")
-        if full_sync:
-            logger.info(f"  - 在线补充的 IMDb ID 数量: {stats['imdb_added']}")
-        #logger.info(f"  - 尝试在线查找的豆瓣独有演员: {stats['online_lookups']}")
-        #logger.info(f"  - 在线查找成功并建立关联: {stats['online_success']}")
-        logger.info("=" * 60)
-        
-        if update_status_callback:
-            summary = f"完成！新增 {stats['map_added']}, 更新 {stats['map_updated']}。"
-            if full_sync:
-                summary += f" IMDb补充 {stats['imdb_added']}。"
-            update_status_callback(100, summary)

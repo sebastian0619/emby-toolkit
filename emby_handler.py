@@ -6,7 +6,7 @@ import shutil
 import json
 import time
 import threading
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Generator
 
 # (SimpleLogger 和 logger 的导入保持不变)
 
@@ -33,6 +33,41 @@ _emby_id_cache = {}
 _emby_season_cache = {}
 _emby_episode_cache = {}
 
+def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_type: str) -> Optional[int]:
+    """
+    【新】快速获取指定类型的项目总数，不获取项目本身。
+    """
+    if not all([base_url, api_key, user_id, item_type]):
+        logger.error(f"get_item_count: 缺少必要的参数 (需要 user_id)。")
+        return None
+    
+    # Emby API 获取项目列表的端点
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    params = {
+        "api_key": api_key,
+        "IncludeItemTypes": item_type,
+        "Recursive": "true",
+        "Limit": 0 # ★★★ 核心：Limit=0 只返回元数据（包括总数），不返回任何项目，速度极快
+    }
+    
+    logger.debug(f"正在获取 {item_type} 的总数...")
+    try:
+        response = requests.get(api_url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        
+        # TotalRecordCount 是 Emby API 返回的总记录数字段
+        total_count = data.get("TotalRecordCount")
+        if total_count is not None:
+            logger.info(f"成功获取到 {item_type} 总数: {total_count}")
+            return int(total_count)
+        else:
+            logger.warning(f"Emby API 响应中未找到 'TotalRecordCount' 字段。")
+            return None
+            
+    except Exception as e:
+        logger.error(f"通过 API 获取 {item_type} 总数时失败: {e}")
+        return None
 def get_person_image_tag(person_id: str, base_url: str, api_key: str, user_id: Optional[str]) -> Optional[str]:
     """
     【新】专门用于高效获取单个 Person 的主图片 Tag。
@@ -503,49 +538,56 @@ def refresh_emby_item_metadata(item_emby_id: str,
         logger.error(f"  - 刷新请求时发生未知错误: {e}\n{traceback.format_exc()}")
         return False
 
-def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str] = None, stop_event: Optional[threading.Event] = None) -> Optional[List[Dict[str, Any]]]:
-    """获取 Emby 中所有的 Person 条目及其 ProviderIds。"""
-    api_url = f"{base_url.rstrip('/')}/Persons" # 通常是这个端点
+def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str], stop_event: Optional[threading.Event] = None) -> Generator[List[Dict[str, Any]], None, None]:
+    """
+    【生成器版】分批次地从 Emby 获取 Person 条目。
+    每次只 'yield' 一批数据，而不是一次性返回所有。
+    """
+    api_url = f"{base_url.rstrip('/')}/Persons"
     params = {
         "api_key": api_key,
-        "Fields": "ProviderIds,Name", # 我们需要 ProviderIds 和 Name
-        "Recursive": "true", # 通常 Person 是顶层对象，但以防万一
-        "IncludeItemTypes": "Person", # 明确只要 Person
-        "Limit": 50000 # 获取足够多的数量，或者需要实现分页获取
+        "Fields": "ProviderIds,Name",
+        "Recursive": "true",
+        "IncludeItemTypes": "Person",
     }
-    if user_id: params["UserId"] = user_id # 根据API是否支持
+    if user_id: params["UserId"] = user_id
 
-    all_persons = []
     start_index = 0
-    batch_size = 500 # Emby API 可能对返回数量有限制，需要分页
+    batch_size = 500 # 每次获取500个
 
-    logger.info("开始从 Emby 获取所有 Person 数据...")
+    logger.info("开始从 Emby 分批次获取所有演员数据...")
     while True:
         if stop_event and stop_event.is_set():
             logger.info("Emby Person 获取任务被中止。")
-            # 返回已经获取到的部分数据，或者直接返回 None/[]
-            return all_persons 
+            return # 生成器直接用 return 结束
+
         params["StartIndex"] = start_index
         params["Limit"] = batch_size
         logger.debug(f"  获取 Person 批次: StartIndex={start_index}, Limit={batch_size}")
+        
         try:
             response = requests.get(api_url, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
             items = data.get("Items", [])
-            if not items: break # 没有更多数据了
-            all_persons.extend(items)
-            if len(items) < batch_size: break # 这是最后一页了
+            
+            if not items:
+                logger.info("已获取所有 Person 批次。")
+                break # 没有更多数据了，正常结束循环
+
+            # ★★★ 核心改造：使用 yield 返回这一批数据 ★★★
+            yield items
+            
+            if len(items) < batch_size:
+                logger.info("已到达最后一页。")
+                break # 这是最后一页了
+            
             start_index += len(items)
-            time.sleep(0.2) # 批次间稍作停顿，避免请求过快
-        except requests.exceptions.RequestException as e:
+            time.sleep(0.2)
+        except Exception as e:
             logger.error(f"获取 Emby Person 列表失败 (批次 StartIndex={start_index}): {e}", exc_info=True)
-            return None # 或者可以返回部分已获取的数据
-        except json.JSONDecodeError as e:
-            logger.error(f"解析 Emby Person 列表响应失败 (批次 StartIndex={start_index}): {e}", exc_info=True)
-            return None
-    logger.info(f"成功从 Emby 获取到 {len(all_persons)} 个 Person 条目。")
-    return all_persons
+            # 遇到错误，直接中断生成
+            return
 
 # ✨✨✨ 新增：获取剧集下所有剧集的函数 ✨✨✨
 def get_series_children(series_id: str, base_url: str, api_key: str, user_id: str, series_name_for_log: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:

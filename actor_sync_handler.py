@@ -1,0 +1,107 @@
+# actor_sync_handler.py (最终版)
+
+import sqlite3
+import time
+from typing import Optional, List, Dict, Any
+import threading
+# 导入必要的模块
+import emby_handler
+from logger_setup import logger
+from actor_utils import ActorDBManager # ★★★ 导入我们专业的数据库管理员 ★★★
+
+class UnifiedSyncHandler:
+    def __init__(self, db_path: str, emby_url: str, emby_api_key: str, emby_user_id: Optional[str], tmdb_api_key: str):
+        self.db_path = db_path
+        self.emby_url = emby_url
+        self.emby_api_key = emby_api_key
+        self.emby_user_id = emby_user_id
+        self.tmdb_api_key = tmdb_api_key # ★★★ 存储TMDb Key，用于记录冲突时获取头像 ★★★
+        
+        # ★★★ 核心：创建并持有一个 ActorDBManager 实例 ★★★
+        self.actor_db_manager = ActorDBManager(self.db_path)
+        
+        logger.info(f"UnifiedSyncHandler 初始化完成。")
+
+    # ★★★ _get_db_conn 和 _upsert_from_emby_sync 已被彻底删除 ★★★
+
+    def sync_emby_person_map_to_db(self, update_status_callback: Optional[callable] = None, stop_event: Optional[threading.Event] = None):
+        """
+        【流式处理版】分批次地获取、处理和汇报进度。
+        """
+        logger.info("开始统一的演员映射表同步任务 (流式处理)...")
+        if update_status_callback: update_status_callback(0, "正在计算演员总数...")
+
+        # 1. 先获取总数，用于计算进度百分比
+        total_from_emby = emby_handler.get_item_count(self.emby_url, self.emby_api_key, self.emby_user_id, "Person")
+        if total_from_emby is None:
+            logger.error("无法获取Emby中的演员总数，中止同步。")
+            if update_status_callback: update_status_callback(-1, "获取演员总数失败")
+            return
+        if total_from_emby == 0:
+            logger.info("Emby 中没有找到任何演员条目。")
+            if update_status_callback: update_status_callback(100, "Emby中无人物信息")
+            return
+
+        stats = {"total": total_from_emby, "processed": 0, "success": 0, "skipped": 0, "errors": 0}
+        logger.info(f"Emby中共有约 {total_from_emby} 个演员条目，开始同步...")
+        if update_status_callback: update_status_callback(0, f"开始同步 {total_from_emby} 位演员...")
+
+        with self.actor_db_manager._get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # 2. 使用 for 循环来消费生成器
+            for person_batch in emby_handler.get_all_persons_from_emby(self.emby_url, self.emby_api_key, self.emby_user_id, stop_event):
+                
+                for person_emby in person_batch:
+                    if stop_event and stop_event.is_set():
+                        logger.info("同步任务在处理批次时被中止。")
+                        conn.commit()
+                        if update_status_callback: update_status_callback(stats['processed'] / stats['total'] * 100, "任务已中断")
+                        return
+
+                    stats["processed"] += 1
+                    
+                    emby_pid = str(person_emby.get("Id", "")).strip()
+                    if not emby_pid:
+                        stats["skipped"] += 1
+                        continue
+                    
+                    provider_ids = person_emby.get("ProviderIds", {})
+                    provider_ids_lower = {k.lower(): v for k, v in provider_ids.items()}
+                    
+                    person_data_for_db = {
+                        "emby_id": emby_pid,
+                        "name": str(person_emby.get("Name", "")).strip(),
+                        "tmdb_id": provider_ids_lower.get("tmdb"),
+                        "imdb_id": provider_ids_lower.get("imdb"),
+                        "douban_id": provider_ids_lower.get("douban"),
+                    }
+                    
+                    try:
+                        map_id = self.actor_db_manager.upsert_person(cursor, person_data_for_db, self.tmdb_api_key)
+                        if map_id > 0: stats['success'] += 1
+                    except sqlite3.IntegrityError as e:
+                        self.actor_db_manager.record_conflict(cursor, person_data_for_db, str(e), self.tmdb_api_key)
+                        stats['errors'] += 1
+                    except Exception as e_upsert:
+                        logger.error(f"同步时写入数据库失败 for EmbyPID {emby_pid}: {e_upsert}")
+                        stats['errors'] += 1
+
+                # 3. 在处理完每一批后，立刻汇报进度！
+                if update_status_callback and total_from_emby > 0:
+                    progress = int((stats["processed"] / total_from_emby) * 100)
+                    message = f"正在同步演员... ({stats['processed']}/{total_from_emby})"
+                    update_status_callback(progress, message)
+                
+                conn.commit() # 每处理完一批就提交一次事务
+
+        # ... (最终的统计日志) ...
+        logger.info("--- 演员映射表同步完成 ---")
+        logger.info(f"从 Emby API 共获取: {stats['total']} 条")
+        logger.info(f"已处理: {stats['processed']} 条")
+        logger.info(f"成功写入/更新: {stats['success']} 条")
+        logger.info(f"跳过/错误/冲突: {stats['skipped'] + stats['errors']} 条")
+        logger.info("-------------------------")
+
+        if update_status_callback:
+            update_status_callback(100, f"同步完成！共处理 {stats['total']} 条记录。")

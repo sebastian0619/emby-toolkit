@@ -98,9 +98,9 @@ class MediaProcessorAPI:
     # ✨✨✨占位符✨✨✨
     def check_and_add_to_watchlist(self, item_details: Dict[str, Any]):
         """
-        API模式下，此功能被禁用。定义一个空方法以保证接口统一，避免报错。
+        普通模式下，此功能被禁用。定义一个空方法以保证接口统一，避免报错。
         """
-        logger.debug("【API模式】跳过追剧判断（功能禁用）。")
+        logger.debug("【普通模式】跳过追剧判断（功能禁用）。")
         pass # 什么也不做，直接返回
     # ✨✨✨新处理单个媒体项（电影、剧集或单集）的核心业务逻辑✨✨✨
     def _process_item_api_mode(self, item_details: Dict[str, Any], process_episodes: bool):
@@ -133,11 +133,11 @@ class MediaProcessorAPI:
         cast_for_handler = [{"name": a.get("Name"), "character": a.get("Role"), "emby_person_id": a.get("EmbyPersonId")} for a in final_cast_for_item]
         update_success = emby_handler.update_emby_item_cast(item_id, cast_for_handler, self.emby_url, self.emby_api_key, self.emby_user_id)
         if not update_success:
-            raise RuntimeError(f"API模式更新项目 '{item_name_for_log}' 演员列表失败")
+            raise RuntimeError(f"普通模式更新项目 '{item_name_for_log}' 演员列表失败")
 
         # d. 新增逻辑：如果当前是剧集，则将这份演员表注入所有“季”和“分集”
         if item_type == "Series":
-            logger.info(f"【API模式-批量注入】准备将处理好的演员表注入到 '{item_name_for_log}' 的所有子项中...")
+            logger.info(f"【普通模式-批量注入】准备将处理好的演员表注入到 '{item_name_for_log}' 的所有子项中...")
             children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, item_name_for_log)
             
             if children:
@@ -145,7 +145,7 @@ class MediaProcessorAPI:
                 seasons = [child for child in children if child.get("Type") == "Season"]
                 if seasons:
                     total_seasons = len(seasons)
-                    logger.info(f"【API模式-批量注入】找到 {total_seasons} 个季，将为其注入演员表...")
+                    logger.info(f"【普通模式-批量注入】找到 {total_seasons} 个季，将为其注入演员表...")
                     for i, season in enumerate(seasons):
                         if self.is_stop_requested(): raise InterruptedError("任务中止")
                         season_id = season.get("Id")
@@ -154,7 +154,6 @@ class MediaProcessorAPI:
                         
                         emby_handler.update_emby_item_cast(season_id, cast_for_handler, self.emby_url, self.emby_api_key, self.emby_user_id)
                         
-                        self.save_to_processed_log(season_id, f"{item_name_for_log} - {season_name}")
                         time.sleep(float(self.config.get("delay_between_items_sec", 0.2)))
                 # <<< --- 核心修改结束 --- >>>
 
@@ -162,7 +161,7 @@ class MediaProcessorAPI:
                     episodes = [child for child in children if child.get("Type") == "Episode"]
                     if episodes:
                         total_episodes = len(episodes)
-                        logger.info(f"【API模式-批量注入】找到 {total_episodes} 个分集需要更新。")
+                        logger.info(f"【普通模式-批量注入】找到 {total_episodes} 个分集需要更新。")
 
                         for i, episode in enumerate(episodes):
                             if self.is_stop_requested(): raise InterruptedError("任务中止")
@@ -172,7 +171,6 @@ class MediaProcessorAPI:
                             
                             emby_handler.update_emby_item_cast(episode_id, cast_for_handler, self.emby_url, self.emby_api_key, self.emby_user_id)
                             
-                            self.save_to_processed_log(episode_id, f"{item_name_for_log} - {episode_name}")
                             time.sleep(float(self.config.get("delay_between_items_sec", 0.2)))
         
         # ★★★ 在这里，记录主项目日志之前，添加刷新操作 ★★★
@@ -181,21 +179,26 @@ class MediaProcessorAPI:
             item_emby_id=item_id,
             emby_server_url=self.emby_url,
             emby_api_key=self.emby_api_key,
-            replace_all_metadata_param=False, # <-- API模式使用“补充缺失”模式
+            replace_all_metadata_param=False, # <-- 普通模式使用“补充缺失”模式
             item_name_for_log=item_name_for_log
         )
         
         if not refresh_success:
             # 即使刷新失败，前面的操作也成功了，所以我们只记录一个警告，不中断流程
-            logger.warning(f"【API模式】为 '{item_name_for_log}' 触发刷新失败，您可能需要稍后在Emby中手动刷新。")
+            logger.warning(f"【普通模式】为 '{item_name_for_log}' 触发刷新失败，您可能需要稍后在Emby中手动刷新。")
 
         # e. 记录主项目的日志
         min_score_for_review = float(self.config.get("min_score_for_review", 6.0))
-        if processing_score < min_score_for_review:
-            self.save_to_failed_log(item_id, item_name_for_log, f"处理评分过低 ({processing_score:.1f})", item_type, score=processing_score)
+        if item_type in ["Movie", "Series"]:
+            if processing_score < min_score_for_review:
+                self.save_to_failed_log(item_id, item_name_for_log, f"处理评分过低 ({processing_score:.1f})", item_type, score=processing_score)
+            else:
+                self.save_to_processed_log(item_id, item_name_for_log, score=processing_score)
+                self._remove_from_failed_log_if_exists(item_id)
         else:
-            self.save_to_processed_log(item_id, item_name_for_log, score=processing_score)
-            self._remove_from_failed_log_if_exists(item_id)
+            # 对于分集(Episode)和季(Season)，我们不进行评分和独立的完成记录
+            # 因为它们的处理是附属于剧集的
+            logger.debug(f"项目 '{item_name_for_log}' (类型: {item_type}) 处理完成，不计入独立处理日志。")
     # ✨✨✨获取数据库连接的辅助方法✨✨✨
     def _get_db_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -646,28 +649,53 @@ class MediaProcessorAPI:
                     continue
 
                 provider_ids = person_emby.get("ProviderIds", {})
+                provider_ids_lower = {k.lower(): v for k, v in provider_ids.items()}
+
+                # ★★★ 新增的“身份补全”逻辑从这里开始 ★★★
+                tmdb_id = provider_ids_lower.get("tmdb")
+                if not tmdb_id:
+                    logger.debug(f"演员 '{emby_name}' (EmbyID: {emby_pid}) 缺少TMDb ID，尝试通过API补全...")
+                    details = emby_handler.get_emby_item_details(
+                        item_id=emby_pid, # ★★★ 精准修正 ★★★
+                        emby_server_url=self.emby_url,
+                        emby_api_key=self.emby_api_key,
+                        user_id=self.emby_user_id
+                    )
+                    if details:
+                        full_provider_ids = details.get("ProviderIds", {})
+                        full_provider_ids_lower = {k.lower(): v for k, v in full_provider_ids.items()}
+                        tmdb_id = full_provider_ids_lower.get("tmdb")
+                        if tmdb_id:
+                            logger.info(f"  -> 成功为 '{emby_name}' 补全了TMDb ID: {tmdb_id}")
+                            # 把补全的ID更新回 provider_ids，以便后续使用
+                            provider_ids['Tmdb'] = tmdb_id 
+                # ★★★ “身份补全”逻辑结束 ★★★
                 actor_internal_format = {
                     "Name": emby_name,
                     "OriginalName": person_emby.get("OriginalName", emby_name),
                     "Role": str(person_emby.get("Role", "")).strip(),
                     "Type": "Actor",
                     "EmbyPersonId": emby_pid,
-                    "TmdbPersonId": str(provider_ids.get("Tmdb", "")).strip() or None,
-                    "DoubanCelebrityId": str(provider_ids.get("Douban", "")).strip() or None,
-                    "ImdbId": str(provider_ids.get("Imdb", "")).strip() or None,
+                    # ★★★ 使用我们补全后的 provider_ids ★★★
+                    "TmdbPersonId": str(provider_ids.get("Tmdb", "") or provider_ids.get("tmdb", "")).strip() or None,
+                    "DoubanCelebrityId": str(provider_ids.get("Douban", "") or provider_ids.get("douban", "")).strip() or None,
+                    "ImdbId": str(provider_ids.get("Imdb", "") or provider_ids.get("imdb", "")).strip() or None,
                     "ProviderIds": provider_ids.copy(),
                     "Order": person_emby.get("Order"),
                     "_source_comment": "from_emby_initial"
                 }
                 final_cast_list.append(actor_internal_format)
                 # 使用 Emby 的原始数据更新映射表
-                self._update_person_map_entry_in_processor(
+                self.actor_db_manager.upsert_person(
                     cursor,
-                    emby_pid=actor_internal_format["EmbyPersonId"],
-                    emby_name=actor_internal_format["Name"],
-                    tmdb_id=actor_internal_format["TmdbPersonId"],
-                    douban_id=actor_internal_format["DoubanCelebrityId"],
-                    imdb_id=actor_internal_format["ImdbId"]
+                    {
+                        "emby_id": actor_internal_format["EmbyPersonId"],
+                        "name": actor_internal_format["Name"],
+                        "tmdb_id": actor_internal_format["TmdbPersonId"],
+                        "douban_id": actor_internal_format["DoubanCelebrityId"],
+                        "imdb_id": actor_internal_format["ImdbId"]
+                    },
+                    self.tmdb_api_key # 把钥匙递过去
                 )
 
             logger.info(f"步骤 1: 基准列表创建完成，包含 {len(final_cast_list)} 位演员。")
@@ -727,12 +755,15 @@ class MediaProcessorAPI:
                                 logger.info(f"    -> 角色名已更新: '{original_role}' -> '{best_role}'")
                                                         
                             # 更新映射表
-                            self._update_person_map_entry_in_processor(
+                            self.actor_db_manager.upsert_person(
                                 cursor,
-                                emby_pid=emby_actor_to_update["EmbyPersonId"],
-                                emby_name=emby_actor_to_update["Name"],
-                                douban_id=emby_actor_to_update.get("DoubanCelebrityId"),
-                                douban_name_override=douban_candidate.get("Name")
+                                {
+                                    "emby_id": emby_actor_to_update["EmbyPersonId"],
+                                    "name": emby_actor_to_update["Name"], # 使用更新后的名字
+                                    "douban_id": emby_actor_to_update.get("DoubanCelebrityId"),
+                                    # douban_name_override 的逻辑被简化，因为 upsert 会处理
+                                },
+                                self.tmdb_api_key # 把钥匙递过去
                             )
 
                             matched_douban_indices.add(i)
@@ -785,8 +816,28 @@ class MediaProcessorAPI:
 
                                 if is_match:
                                     logger.info(f"  交叉匹配成功: 豆瓣候选 '{douban_candidate.get('Name')}' 通过 [{match_reason}] 再次关联到 Emby 演员 '{emby_actor_to_update.get('Name')}'")
-                                    # ... (此处是补充ID和角色的逻辑) ...
+                                    # ★★★ 核心修复：在更新数据库前，先把所有新ID都补充到 emby_actor_to_update 字典里 ★★★
+                                    if tmdb_id:
+                                        emby_actor_to_update["TmdbPersonId"] = tmdb_id
+                                    if imdb_id:
+                                        emby_actor_to_update["ImdbId"] = imdb_id
+                                    if douban_candidate.get("DoubanCelebrityId"):
+                                        emby_actor_to_update["DoubanCelebrityId"] = douban_candidate.get("DoubanCelebrityId")
                                     
+                                    # 现在，emby_actor_to_update 身上带齐了所有证件！
+                                    
+                                    # ★★★ 更新映射表 ★★★
+                                    self.actor_db_manager.upsert_person(
+                                        cursor,
+                                        {
+                                            "emby_id": emby_actor_to_update["EmbyPersonId"],
+                                            "name": emby_actor_to_update["Name"],
+                                            "tmdb_id": emby_actor_to_update.get("TmdbPersonId"),
+                                            "imdb_id": emby_actor_to_update.get("ImdbId"),
+                                            "douban_id": emby_actor_to_update.get("DoubanCelebrityId"),
+                                        },
+                                        self.tmdb_api_key
+                                    )
                                     match_found = True
                                     break
                         
@@ -797,6 +848,7 @@ class MediaProcessorAPI:
             if self.is_stop_requested():
                 conn.commit()
                 return final_cast_list
+            
             
             # ======================================================================
             # 步骤 4: 最终截断
@@ -963,7 +1015,7 @@ class MediaProcessorAPI:
             self.save_to_failed_log(emby_item_id, item_name_for_log, f"核心处理异常: {str(e)}", item_details.get("Type"))
             return False
     # # ✨✨✨处理单个媒体项（电影、剧集或单集）的核心业务逻辑✨✨✨
-    # def _process_item_core_logic(self, item_details: Dict[str, Any], force_reprocess_this_item: bool = False) -> bool:
+    def _process_item_core_logic(self, item_details: Dict[str, Any], force_reprocess_this_item: bool = False) -> bool:
         """
         最终版：只负责处理，不再关心是否跳过。
         """
@@ -1322,61 +1374,6 @@ class MediaProcessorAPI:
         logger.info(f"“仅丰富”模式完成，返回 {len(enriched_cast)} 位演员。")
         return enriched_cast
     # ✨✨✨辅助函数更新演员映射表✨✨✨
-    def _update_person_map_entry_in_processor(self, cursor: sqlite3.Cursor, 
-                                              emby_pid: str, 
-                                              emby_name: str, 
-                                              tmdb_id: Optional[str] = None, 
-                                              tmdb_name_override: Optional[str] = None,
-                                              douban_id: Optional[str] = None, 
-                                              douban_name_override: Optional[str] = None,
-                                              imdb_id: Optional[str] = None) -> bool:
-        """
-        辅助函数：在 MediaProcessorAPI 内部更新或插入单条 emby_actor_map 记录。
-        返回 True 如果操作影响了行，否则 False。
-        """
-        if not emby_pid:
-            logger.warning("MediaProcessorAPI._update_person_map_entry: emby_pid 为空，无法更新映射表。")
-            return False
-
-        # 准备名字字段
-        final_tmdb_name = tmdb_name_override if tmdb_name_override is not None else (emby_name if tmdb_id else None)
-        final_douban_name = douban_name_override if douban_name_override is not None else (emby_name if douban_id else None)
-
-        sql_upsert = """
-            INSERT INTO emby_actor_map (
-                emby_person_id, emby_person_name, 
-                imdb_id, tmdb_person_id, douban_celebrity_id, 
-                tmdb_name, douban_name, 
-                last_updated_at, last_synced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            ON CONFLICT(emby_person_id) DO UPDATE SET
-                emby_person_name = COALESCE(excluded.emby_person_name, emby_actor_map.emby_person_name),
-                imdb_id = COALESCE(excluded.imdb_id, emby_actor_map.imdb_id),
-                tmdb_person_id = COALESCE(excluded.tmdb_person_id, emby_actor_map.tmdb_person_id),
-                douban_celebrity_id = COALESCE(excluded.douban_celebrity_id, emby_actor_map.douban_celebrity_id),
-                tmdb_name = COALESCE(excluded.tmdb_name, emby_actor_map.tmdb_name),
-                douban_name = COALESCE(excluded.douban_name, emby_actor_map.douban_name),
-                last_updated_at = CURRENT_TIMESTAMP,
-                last_synced_at = CURRENT_TIMESTAMP; 
-        """
-        params = (
-            emby_pid, emby_name,
-            imdb_id, tmdb_id, douban_id,
-            final_tmdb_name, final_douban_name
-        )
-
-        try:
-            logger.debug(f"    MediaProcessorAPI: Executing UPSERT for EmbyPID {emby_pid} with PARAMS: {params}")
-            cursor.execute(sql_upsert, params)
-            if cursor.rowcount > 0:
-                logger.debug(f"    MediaProcessorAPI: EmbyPID {emby_pid} UPSERTED/UPDATED in emby_actor_map. Rowcount: {cursor.rowcount}")
-                return True
-            else:
-                logger.debug(f"    MediaProcessorAPI: EmbyPID {emby_pid} UPSERT executed but rowcount is 0 (no change or no operation).")
-                return False 
-        except sqlite3.Error as e_upsert:
-            logger.error(f"    MediaProcessorAPI: UPSERT for EmbyPID '{emby_pid}' in emby_actor_map 失败: {e_upsert}", exc_info=True)
-            return False
     # ✨✨✨一键翻译演员列表✨✨✨
     def translate_cast_list(self, cast_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -1546,227 +1543,3 @@ class MediaProcessorAPI:
                 actor["Role"] = original_role # 即使没翻译，也要用清理后的结果
 
         return cast_list
-class SyncHandlerAPI:
-    def __init__(self, db_path: str, emby_url: str, emby_api_key: str, emby_user_id: Optional[str]):
-        self.db_path = db_path
-        self.emby_url = emby_url
-        self.emby_api_key = emby_api_key
-        self.emby_user_id = emby_user_id
-        logger.info(f"SyncHandler initialized. DB: {db_path}, Emby: {emby_url}")
-
-    def _get_db_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def sync_emby_person_map_to_db(self, update_status_callback: Optional[callable] = None):
-        logger.info("开始同步 Emby Person 映射表到本地数据库...")
-        if update_status_callback: update_status_callback(0, "正在从Emby获取所有人物信息...")
-
-        persons_from_emby = emby_handler.get_all_persons_from_emby(
-            self.emby_url, self.emby_api_key, self.emby_user_id
-        )
-        
-        if persons_from_emby is None:
-            logger.error("同步映射表失败：无法从 Emby 获取 Person 列表。")
-            if update_status_callback: update_status_callback(-1, "从Emby获取人物信息失败")
-            return
-        if not persons_from_emby:
-            logger.info("Emby 中没有找到任何 Person 条目。")
-            if update_status_callback: update_status_callback(100, "Emby中无人物信息")
-            return
-
-        conn = self._get_db_conn()
-        
-        stats = {
-            "total_from_emby_api": len(persons_from_emby),
-            "processed": 0,
-            "inserted": 0,
-            "updated": 0,
-            "skipped_no_emby_id": 0,
-            "db_errors": 0
-        }
-
-        logger.info(f"从Emby API获取到 {stats['total_from_emby_api']} 个 Person 条目，开始处理并同步...")
-
-        try:
-            cursor = conn.cursor()
-
-            for idx, person_emby in enumerate(persons_from_emby):
-                stats["processed"] += 1
-                if update_status_callback and idx > 0 and idx % 100 == 0:
-                    progress = int(((idx + 1) / stats['total_from_emby_api']) * 100)
-                    update_status_callback(progress, f"正在处理第 {idx+1}/{stats['total_from_emby_api']} 个人物...")
-
-                emby_pid = str(person_emby.get("Id", "")).strip()
-                emby_name = str(person_emby.get("Name", "")).strip()
-                
-                if not emby_pid: 
-                    logger.debug(f"跳过Emby Person (Name: '{emby_name}')，缺少 Emby Person ID。")
-                    stats["skipped_no_emby_id"] += 1
-                    continue
-                
-                provider_ids = person_emby.get("ProviderIds", {})
-                tmdb_pid = str(provider_ids.get("Tmdb", "")).strip() or None
-                douban_pid = str(provider_ids.get("Douban", "")).strip() or None
-                imdb_pid = str(provider_ids.get("Imdb", "")).strip() or None
-                
-                # 为 tmdb_name 和 douban_name 准备值 (保持你原来的逻辑)
-                current_tmdb_name = emby_name if tmdb_pid else None
-                current_douban_name = emby_name if douban_pid else None
-
-                logger.debug(f"处理 Emby Person: EmbyPID='{emby_pid}', Name='{emby_name}', TMDb='{tmdb_pid}', IMDb='{imdb_pid}', Douban='{douban_pid}'")
-                
-                # --- 查询现有记录的逻辑保持不变 ---
-                existing_map_id = None
-                sql_select_parts = []
-                select_params = []
-                if emby_pid:
-                    sql_select_parts.append("emby_person_id = ?")
-                    select_params.append(emby_pid)
-                # ... (其他 ID 的 select 条件不变) ...
-                if imdb_pid:
-                    sql_select_parts.append("imdb_id = ?")
-                    select_params.append(imdb_pid)
-                if tmdb_pid:
-                    sql_select_parts.append("tmdb_person_id = ?")
-                    select_params.append(tmdb_pid)
-                if douban_pid:
-                    sql_select_parts.append("douban_celebrity_id = ?")
-                    select_params.append(douban_pid)
-
-                found_entry_for_update = None
-                if sql_select_parts:
-                    query_condition = " OR ".join(sql_select_parts)
-                    # 从数据库中多获取一些字段，用于更新时的比较或保留旧值
-                    cursor.execute(f"SELECT map_id, emby_person_id, emby_person_name, imdb_id, tmdb_person_id, tmdb_name, douban_celebrity_id, douban_name FROM emby_actor_map WHERE {query_condition}", tuple(select_params))
-                    found_entry_for_update = cursor.fetchone() 
-                
-                # --- 数据库操作开始 ---
-                try: # 包裹单条记录的数据库操作
-                    if found_entry_for_update:
-                        existing_map_id = found_entry_for_update["map_id"]
-                        logger.debug(f"  找到映射表记录 (map_id: {existing_map_id}) for EmbyPID '{emby_pid}' (或其关联ID)。准备更新。")
-                        
-                        update_data_map = {}
-
-                        # 总是更新这些
-                        update_data_map["emby_person_id"] = emby_pid
-                        update_data_map["emby_person_name"] = emby_name
-                        
-                        # 条件性更新其他ID，如果新ID存在，则使用新ID；否则，保留旧ID
-                        update_data_map["imdb_id"] = imdb_pid if imdb_pid is not None else found_entry_for_update["imdb_id"]
-                        update_data_map["tmdb_person_id"] = tmdb_pid if tmdb_pid is not None else found_entry_for_update["tmdb_person_id"]
-                        update_data_map["douban_celebrity_id"] = douban_pid if douban_pid is not None else found_entry_for_update["douban_celebrity_id"]
-                        
-                        # 更新对应的名字 (如果对应的ID存在，则用emby_name，否则保留旧名字)
-                        update_data_map["tmdb_name"] = current_tmdb_name if tmdb_pid is not None else found_entry_for_update["tmdb_name"]
-                        update_data_map["douban_name"] = current_douban_name if douban_pid is not None else found_entry_for_update["douban_name"]
-
-                        # 定义更新列的固定顺序 (不包括时间戳，它们由SQL处理)
-                        update_columns_ordered = [
-                            "emby_person_id", "emby_person_name", 
-                            "imdb_id", "tmdb_person_id", "douban_celebrity_id",
-                            "tmdb_name", "douban_name"
-                        ]
-                        
-                        set_clauses = [f"{col} = ?" for col in update_columns_ordered]
-                        # 注意：这里的 .get(col) 是正确的，因为 update_data_map 是一个标准的 Python 字典！
-                        update_values = [update_data_map.get(col) for col in update_columns_ordered] 
-
-                        # 添加时间戳更新
-                        set_clauses.extend(["last_synced_at = CURRENT_TIMESTAMP", "last_updated_at = CURRENT_TIMESTAMP"])
-                        
-                        sql_update = f"UPDATE emby_actor_map SET {', '.join(set_clauses)} WHERE map_id = ?"
-                        update_values.append(existing_map_id) # map_id 作为最后一个参数
-                        
-                        logger.debug(f"    Executing UPDATE for map_id: {existing_map_id} with SQL: {sql_update} and PARAMS: {tuple(update_values)}")
-                        cursor.execute(sql_update, tuple(update_values))
-                        if cursor.rowcount > 0: stats["updated"] += 1
-                        logger.debug(f"    映射表记录 (map_id: {existing_map_id}) 已更新。Rowcount: {cursor.rowcount}")
-
-                    else: # INSERT
-                        logger.debug(f"  未找到EmbyPID '{emby_pid}' (或其关联ID) 的映射表记录，准备插入。")
-                        
-                        # 定义插入列的固定顺序和对应的值
-                        insert_data_map = {
-                            "emby_person_id": emby_pid,
-                            "emby_person_name": emby_name,
-                            "imdb_id": imdb_pid,
-                            "tmdb_person_id": tmdb_pid,
-                            "douban_celebrity_id": douban_pid,
-                            "tmdb_name": current_tmdb_name,
-                            "douban_name": current_douban_name
-                            # 时间戳由SQL处理
-                        }
-                        
-                        # 固定的列顺序 (不包括时间戳)
-                        insert_columns_ordered = [
-                            "emby_person_id", "emby_person_name",
-                            "imdb_id", "tmdb_person_id", "douban_celebrity_id",
-                            "tmdb_name", "douban_name"
-                        ]
-                        
-                        final_insert_cols = list(insert_columns_ordered) # 复制一份用于添加时间戳列名
-                        final_insert_vals = [insert_data_map.get(col) for col in insert_columns_ordered] # 按固定顺序提取值
-                        
-                        final_insert_cols.extend(["last_synced_at", "last_updated_at"])
-                        placeholders = ["?" for _ in final_insert_vals] + ["CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP"]
-                        
-                        sql_insert = f"INSERT INTO emby_actor_map ({', '.join(final_insert_cols)}) VALUES ({', '.join(placeholders)})"
-                        
-                        logger.debug(f"    Executing INSERT for EmbyPID: {emby_pid} with SQL: {sql_insert} and PARAMS: {tuple(final_insert_vals)}")
-                        cursor.execute(sql_insert, tuple(final_insert_vals))
-                        if cursor.rowcount > 0: stats["inserted"] += 1
-                        logger.info(f"    新增映射到表: EmbyPID='{emby_pid}', Name='{emby_name}', TMDb='{tmdb_pid}', IMDb='{imdb_pid}', Douban='{douban_pid}'. Rowcount: {cursor.rowcount}")
-
-                except sqlite3.IntegrityError as e_int:
-                    logger.warning(f"    处理EmbyPID '{emby_pid}' 时发生完整性冲突: {e_int}。可能是emby_person_id已存在但查询逻辑未完全匹配。")
-                    stats["db_errors"] += 1
-                    # 不在这里 rollback，让事务继续，错误已被记录
-                except sqlite3.Error as e_db_op:
-                    logger.error(f"    处理EmbyPID '{emby_pid}' 时数据库操作失败: {e_db_op}", exc_info=True)
-                    stats["db_errors"] += 1
-                    # 不在这里 rollback
-                # --- 数据库操作结束 ---
-                
-                if idx > 0 and idx % 500 == 0: # 每500条Emby Person记录处理后提交一次
-                    logger.info(f"已处理 {idx+1} 条Emby Person记录，准备提交数据库更改...")
-                    conn.commit()
-                    logger.info(f"数据库已提交。")
-
-            # 循环结束后，提交所有剩余的更改
-            logger.info("所有Emby Person记录处理完毕，准备进行最终数据库提交...")
-            conn.commit() 
-            logger.info("最终数据库提交完成。")
-
-        except Exception as e_outer:
-            logger.error(f"同步映射表主循环发生错误: {e_outer}", exc_info=True)
-            if conn:
-                try:
-                    logger.warning("主循环错误，尝试回滚当前未提交的事务...")
-                    conn.rollback()
-                    logger.info("当前未提交的事务已回滚。")
-                except Exception as rb_err:
-                    logger.error(f"主循环错误后回滚失败: {rb_err}")
-            stats["db_errors"] +=1 # 确保错误计数，或根据情况调整
-        finally:
-            if conn:
-                try: conn.close()
-                except Exception as close_e: logger.error(f"SyncHandler: 关闭数据库连接失败: {close_e}")
-        
-        # ... (后续的统计日志和 update_status_callback 不变) ...
-        logger.info("--- Emby Person 映射表同步统计 ---")
-        logger.info(f"从 Emby API 共获取 Person 条目数: {stats['total_from_emby_api']}")
-        logger.info(f"实际处理的 Emby Person 条目数: {stats['processed']}")
-        logger.info(f"因缺少 Emby Person ID 而跳过: {stats['skipped_no_emby_id']}")
-        logger.info(f"本次同步新增到映射表的条目数: {stats['inserted']}")
-        logger.info(f"本次同步更新映射表中已有条目的数量: {stats['updated']}")
-        logger.info(f"数据库操作错误数: {stats['db_errors']}")
-        logger.info("------------------------------------")
-
-        if update_status_callback:
-            if stats["db_errors"] > 0:
-                update_status_callback(-1, f"映射表同步部分完成但有{stats['db_errors']}个错误。新增{stats['inserted']}, 更新{stats['updated']}。")
-            else:
-                update_status_callback(100, f"映射表同步完成。新增{stats['inserted']}, 更新{stats['updated']}。")

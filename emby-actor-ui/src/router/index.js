@@ -55,6 +55,13 @@ const routes = [
     component: GeneralSettingsPage,
     meta: { requiresAuth: true },
   },
+  //小法庭
+  {
+  path: '/actor-conflicts',
+  name: 'ActorConflicts',
+  component: () => import('../components/ActorConflicts.vue'),
+  meta: { requiresAuth: true },
+  },
   {
     path: '/watchlist',
     name: 'Watchlist',

@@ -51,9 +51,7 @@
           <!-- 卡片2: 同步映射表 -->
           <n-card title="同步Emby演员映射表" class="beautified-card" :bordered="false">
             <n-space vertical>
-              <n-checkbox v-model:checked="forceFullSyncMap" :disabled="taskStatus.is_running">
-                全量同步 (会尝试在线补全演员外部ID，耗时较长)
-              </n-checkbox>
+              <!-- 复选框已被删除 -->
               <n-space align="center">
                 <n-button
                   type="primary"
@@ -61,7 +59,7 @@
                   :loading="taskStatus.is_running && currentActionIncludesSyncMap"
                   :disabled="taskStatus.is_running && !currentActionIncludesSyncMap"
                 >
-                  {{ forceFullSyncMap ? '启动全量同步' : '启动快速同步' }}
+                  启动同步 <!-- 按钮文本已固定 -->
                 </n-button>
                 <n-button @click="exportMap" :loading="isExporting">
                   <template #icon><n-icon :component="ExportIcon" /></template>
@@ -157,7 +155,6 @@ const props = defineProps({
 });
 
 const forceReprocessAll = ref(false);
-const forceFullSyncMap = ref(false);
 const isExporting = ref(false);
 const isImporting = ref(false);
 
@@ -205,13 +202,11 @@ const triggerFullScan = async () => {
 
 const triggerSyncMap = async () => {
   try {
-    const payload = {
-      full_sync: forceFullSyncMap.value
-    };
-    await axios.post('/api/trigger_sync_person_map', payload);
+    // 不再需要构建 payload，发送一个空对象或不发送 body 即可
+    await axios.post('/api/trigger_sync_person_map', {});
     
-    const messageText = forceFullSyncMap.value ? '全量同步任务已启动！' : '增量同步任务已启动！';
-    message.success(messageText);
+    // 消息文本已固定
+    message.success('同步任务已启动！');
   } catch (error) {
     console.error('启动同步映射表失败:', error);
     message.error(error.response?.data?.error || '启动同步映射表失败，请查看日志。');
