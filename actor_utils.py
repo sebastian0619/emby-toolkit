@@ -32,8 +32,7 @@ class ActorDBManager:
     # --- 核心查询引擎 ---
     def find_person_by_any_id(self, cursor: sqlite3.Cursor, **kwargs) -> Optional[sqlite3.Row]:
         """
-        【通用查询引擎】根据提供的任何外部ID查找演员。
-        kwargs: tmdb_id, emby_id, imdb_id, douban_id
+        【最终简化版】根据提供的任何一种外部ID，在 person_identity_map 中查找演员。
         """
         search_criteria = [
             ("tmdb_person_id", kwargs.get("tmdb_id")),
@@ -47,14 +46,14 @@ class ActorDBManager:
                 continue
             
             try:
-                # 内置别名翻译
-                if column == "tmdb_person_id":
-                    value = self.get_authoritative_tmdb_id(cursor, value)
+                # ★★★ 核心修复：彻底删除所有关于别名翻译的逻辑 ★★★
+                # if column == "tmdb_person_id":
+                #     value = self.get_authoritative_tmdb_id(cursor, value)
 
                 cursor.execute(f"SELECT * FROM person_identity_map WHERE {column} = ?", (value,))
                 result = cursor.fetchone()
                 if result:
-                    logger.debug(f"通过 {column}='{value}' 找到演员 (map_id: {result['map_id']})")
+                    logger.debug(f"通过 {column}='{value}' 找到了演员记录 (map_id: {result['map_id']})。")
                     return result
             except sqlite3.Error as e:
                 logger.error(f"查询 person_identity_map 时出错 ({column}={value}): {e}")
