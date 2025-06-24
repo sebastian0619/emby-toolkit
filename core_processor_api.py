@@ -700,7 +700,6 @@ class MediaProcessorAPI:
                         "douban_id": actor_internal_format["DoubanCelebrityId"],
                         "imdb_id": actor_internal_format["ImdbId"]
                     },
-                    self.tmdb_api_key # 把钥匙递过去
                 )
 
             logger.info(f"步骤 1: 基准列表创建完成，包含 {len(final_cast_list)} 位演员。")
@@ -768,7 +767,6 @@ class MediaProcessorAPI:
                                     "douban_id": emby_actor_to_update.get("DoubanCelebrityId"),
                                     # douban_name_override 的逻辑被简化，因为 upsert 会处理
                                 },
-                                self.tmdb_api_key # 把钥匙递过去
                             )
 
                             matched_douban_indices.add(i)
@@ -841,7 +839,6 @@ class MediaProcessorAPI:
                                             "imdb_id": emby_actor_to_update.get("ImdbId"),
                                             "douban_id": emby_actor_to_update.get("DoubanCelebrityId"),
                                         },
-                                        self.tmdb_api_key
                                     )
                                     match_found = True
                                     break

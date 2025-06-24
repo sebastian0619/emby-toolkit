@@ -24,9 +24,6 @@ class UnifiedSyncHandler:
         self.actor_db_manager = ActorDBManager(self.db_path)
         
         logger.info(f"UnifiedSyncHandler 初始化完成。")
-
-    # ★★★ _get_db_conn 和 _upsert_from_emby_sync 已被彻底删除 ★★★
-
     def sync_emby_person_map_to_db(self, update_status_callback: Optional[callable] = None, stop_event: Optional[threading.Event] = None):
         """
         【流式处理版】分批次地获取、处理和汇报进度。

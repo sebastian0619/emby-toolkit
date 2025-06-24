@@ -679,7 +679,6 @@ class MediaProcessorSA:
                         "imdb_id": actor_data.get("imdb_id"),
                         "douban_id": actor_data.get("douban_id"),
                     },
-                    self.tmdb_api_key # 把钥匙递过去
                 )
             logger.info("所有演员的ID映射关系已保存。")
             # ★★★ 新增步骤结束 ★★★

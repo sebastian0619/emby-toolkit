@@ -42,6 +42,7 @@ import utils       # 例如，用于 /api/search_media
 # from douban import DoubanApi # 通常不需要在 web_app.py 直接导入 DoubanApi，由 MediaProcessor 管理
 # --- 核心模块导入结束 ---
 logger = logging.getLogger(__name__)
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
 static_folder='static'
 app = Flask(__name__)
 # CORS(app) # 最简单的全局启用 CORS，允许所有源
@@ -344,7 +345,7 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
     else:
         try:
             config_parser.read(CONFIG_FILE_PATH, encoding='utf-8')
-            logger.info(f"配置已从 '{CONFIG_FILE_PATH}' 加载。")
+            logger.debug(f"配置已从 '{CONFIG_FILE_PATH}' 加载。")
         except Exception as e:
             logger.error(f"解析配置文件 '{CONFIG_FILE_PATH}' 时发生错误: {e}", exc_info=True)
 

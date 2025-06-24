@@ -76,8 +76,10 @@ class ActorDBManager:
             "douban_celebrity_id": str(person_data.get("douban_id") or '').strip() or None,
         }
 
-        if not new_data["emby_person_id"] or not new_data["primary_name"]:
-            logger.warning(f"尝试写入演员信息，但缺少 emby_id 或 primary_name，操作中止。数据: {person_data}")
+        has_primary_id = new_data["emby_person_id"] or new_data["tmdb_person_id"] or new_data["imdb_id"]
+
+        if not has_primary_id or not new_data["primary_name"]:
+            logger.warning(f"尝试写入演员信息，但缺少名字或任何主要ID，操作中止。数据: {person_data}")
             return -1
 
         # 2. 查找数据库中是否已存在关联记录
