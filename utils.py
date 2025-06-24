@@ -37,38 +37,36 @@ def contains_chinese(text: Optional[str]) -> bool:
 
 def clean_character_name_static(character_name: Optional[str]) -> str:
     """
-    【V4 - 强化版】清理和格式化角色名，对空格更宽容。
+    统一格式化角色名：
+    - 去除括号内容、前后缀如“饰、配、配音、as”
+    - 中外对照时仅保留中文部分
+    - 如果仅为“饰 Kevin”这种格式，清理前缀后保留英文，待后续翻译
     """
     if not character_name:
         return ""
-    
+
     name = str(character_name).strip()
 
-    # --- 预处理 ---
+    # 移除括号和中括号的内容
     name = re.sub(r'\(.*?\)|\[.*?\]', '', name).strip()
-    if name.lower().startswith('as '):
-        name = name[3:].strip()
-        
-    # ★★★ 强化逻辑：先移除所有前导的 "饰" 或 "配音" 及紧随的空格 ★★★
-    # 使用正则表达式，\s* 可以匹配0个或多个任何类型的空白字符（空格、tab等）
-    name = re.sub(r'^(饰|配音)\s*', '', name).strip()
 
-    # 处理 " / " 分隔符
-    if ' / ' in name:
-        name = name.split(' / ')[0].strip()
+    # 移除 as 前缀（如 "as Kevin"）
+    name = re.sub(r'^(as\s+)', '', name, flags=re.IGNORECASE).strip()
 
-    # ... 后续的核心中英文分离逻辑保持不变 ...
-    match = re.match(r'^([\u4e00-\u9fa5·]+)', name)
+    # 清理前缀中的“饰演/饰/配音/配”（不加判断，直接清理）
+    name = re.sub(r'^(饰演|饰|配音|配)\s*', '', name).strip()
+
+    # 清理后缀中的“饰演/饰/配音/配”
+    name = re.sub(r'\s*(饰演|饰|配音|配)$', '', name).strip()
+
+    # 处理中外对照：“中文 + 英文”形式，只保留中文部分
+    match = re.match(r'^([\u4e00-\u9fa5·]{1,})([^a-zA-Z]*)[a-zA-Z]+.*$', name)
     if match:
-        chinese_part = match.group(1).strip('· ')
-        all_chinese_chars = re.findall(r'[\u4e00-\u9fa5]', name)
-        if len(chinese_part) >= len(all_chinese_chars) * 0.8:
-            if '·' in name and not re.search(r'[a-zA-Z]', name.split('·')[-1]):
-                 return name
-            return chinese_part
+        chinese_part = match.group(1).strip()
+        return chinese_part
 
+    # 如果只有外文，或清理后是英文，保留原值，等待后续翻译流程
     return name.strip()
-
 def translate_text_with_translators(
     query_text: str,
     to_language: str = 'zh',

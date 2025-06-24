@@ -792,32 +792,37 @@ class MediaProcessorSA:
         logger.info("格式化演员列表：开始处理角色名和排序。")
 
         for idx, actor in enumerate(cast_list):
-            
-            # 1. 获取并初步清理角色名
-            final_role = actor.get("character", "").strip()
+            # 1. 获取原始角色名
+            raw_role = actor.get("character", "").strip()
 
-            # 2. ★★★ 核心修改：如果角色名包含中文，则移除所有内部空格 ★★★
-            # 这可以修正 "龙 五" -> "龙五"，同时不影响 "The Night King"
-            # 假设 utils 模块已在文件顶部导入
-            if utils.contains_chinese(final_role):
-                final_role = final_role.replace(" ", "").replace("　", "")
+            # 2. ★★★ 预处理：调用 utils.clean_character_name_static ★★★
+            cleaned_role = utils.clean_character_name_static(raw_role)
+            logger.debug(f"[角色名清洗] 原始: {repr(raw_role)} → 清洗后: {repr(cleaned_role)}")
 
-            # 3. 根据是否为动画和角色名是否为空，进行最终格式化
+            # 3. 如果包含中文，移除所有空格（包括全角空格）
+            if utils.contains_chinese(cleaned_role):
+                cleaned_role = cleaned_role.replace(" ", "").replace("　", "")
+                logger.debug(f"[移除中文空格] → {repr(cleaned_role)}")
+
+            # 4. 根据是否为动画，处理“配音”或默认“演员”
             if is_animation:
-                if final_role and not final_role.endswith("(配音)"):
-                    final_role = f"{final_role} (配音)"
-                elif not final_role:
+                if cleaned_role and not cleaned_role.endswith("(配音)"):
+                    final_role = f"{cleaned_role} (配音)"
+                elif not cleaned_role:
                     final_role = "配音"
-            elif not final_role: # 如果不是动画且角色名为空
-                final_role = "演员"
+                else:
+                    final_role = cleaned_role
+            else:
+                final_role = cleaned_role if cleaned_role else "演员"
 
-            # 4. 将最终处理好的角色名和顺序赋值回去
+            # 5. 写入角色和排序
             actor["character"] = final_role
             actor["order"] = idx
             perfect_cast.append(actor)
-                
+
+            logger.debug(f"[最终角色名] {repr(final_role)}")
+
         return perfect_cast
-    
     # ✨✨✨API中文化演员表✨✨✨
     def _process_api_track_person_names_only(self, item_details: Dict[str, Any]):
         """
@@ -945,7 +950,11 @@ class MediaProcessorSA:
                 if self.is_stop_requested(): raise InterruptedError("任务被中止")
 
                 # b. 格式化角色名等
+                for actor in intermediate_cast:
+                    logger.debug(f"[原始角色名] {repr(actor.get('character'))}")
                 final_cast_perfect = self._format_and_complete_cast_list(intermediate_cast, is_animation)
+                for actor in final_cast_perfect:
+                    logger.debug(f"[最终角色名] {repr(actor.get('character'))}")
             
             # --- 阶段2: 文件写入 (不涉及数据库) ---
             base_json_data_for_override = copy.deepcopy(base_json_data_original)
@@ -1004,7 +1013,7 @@ class MediaProcessorSA:
 
             # --- 阶段3: 统计、评分和最终日志记录 ---
             final_actor_count = len(final_cast_perfect)
-            logger.info(f"✨✨✨处理统计'{item_name_for_log}'✨✨✨")
+            logger.info(f"✨✨✨处理统计 '{item_name_for_log}'✨✨✨")
             logger.info(f"  - 原有演员: {initial_actor_count} 位")
             newly_added_count = final_actor_count - initial_actor_count
             if newly_added_count > 0:
@@ -1038,7 +1047,7 @@ class MediaProcessorSA:
                 self.save_to_processed_log(item_id, item_name_for_log, score=processing_score)
                 self._remove_from_failed_log_if_exists(item_id)
             
-            logger.info(f"✨✨✨✅ 处理完成: '{item_name_for_log}' ✨✨✨")
+            logger.info(f"✨✨✨✅ 处理完成 '{item_name_for_log}' ✨✨✨")
             return True
 
         except InterruptedError:

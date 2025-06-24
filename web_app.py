@@ -662,28 +662,10 @@ def initialize_processors():
     
     try:
         if use_sa_mode:
-            logger.info("【模式切换】当前为：神医Pro模式")
-            
-            # ★★★ X光诊断开始 ★★★
-            logger.info("--- 开始诊断 MediaProcessorSA ---")
-            try:
-                # 打印它所在的模块文件路径
-                module_path = inspect.getfile(MediaProcessorSA)
-                logger.info(f"  - MediaProcessorSA 来自文件: {module_path}")
-                
-                # 打印它的 __init__ 方法的签名
-                init_signature = inspect.signature(MediaProcessorSA.__init__)
-                logger.info(f"  - MediaProcessorSA.__init__ 的签名是: {init_signature}")
-                
-            except Exception as e_inspect:
-                logger.error(f"  - 诊断时发生错误: {e_inspect}")
-            logger.info("--- 诊断结束，准备创建实例 ---")
-            # ★★★ X光诊断结束 ★★★
-
+            logger.info("【模式切换】当前为：神医模式")
             media_processor_instance = MediaProcessorSA(config=current_config)
         else:
             logger.info("【模式切换】当前为：普通模式")
-            # (对 MediaProcessorAPI 也做同样的事，如果需要的话)
             media_processor_instance = MediaProcessorAPI(config=current_config)
         
         logger.debug("处理器实例已成功创建/更新。")
