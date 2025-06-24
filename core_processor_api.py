@@ -15,6 +15,7 @@ import utils # 导入我们上面修改的 utils.py
 from logger_setup import logger
 import constants
 from ai_translator import AITranslator # ✨✨✨ 导入新的AI翻译器 ✨✨✨
+from actor_utils import ActorDBManager
 # DoubanApi 的导入和可用性检查
 try:
     from douban import DoubanApi # douban.py 现在也使用数据库
@@ -44,6 +45,9 @@ class MediaProcessorAPI:
         if not self.db_path:
             logger.error("MediaProcessorAPI 初始化失败：未在配置中找到 'db_path'。")
             raise ValueError("数据库路径 (db_path) 未在配置中提供给 MediaProcessorAPI。")
+        # 初始化我们的数据库管理员
+        self.actor_db_manager = ActorDBManager(self.db_path)
+        logger.debug("ActorDBManager 实例已在 MediaProcessorAPI 中创建。")
 
         self.douban_api = None
         if getattr(constants, 'DOUBAN_API_AVAILABLE', False):
@@ -1160,7 +1164,7 @@ class MediaProcessorAPI:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM failed_log WHERE item_id = ?", (item_id,))
             if cursor.rowcount > 0:
-                logger.info(f"Item ID '{item_id}' 已从 failed_log 中移除 (因本次处理评分达标)。")
+                logger.info(f"Item ID '{item_id}' 已从【待复核列表】中移除。")
             conn.commit()
             conn.close()
         except Exception as e:

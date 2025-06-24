@@ -29,6 +29,7 @@ class FrontendQueueHandler(logging.Handler):
 # --- 初始化基础 Logger (不包含文件 Handler) ---
 logger = logging.getLogger("app_logger")
 logger.setLevel(logging.DEBUG if constants.DEBUG_MODE else logging.INFO)
+logger.propagate = False
 
 if not logger.handlers:
     # 1. 控制台 Handler

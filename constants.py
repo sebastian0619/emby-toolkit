@@ -1,8 +1,8 @@
 # constants.py
 
 # --- Web Application Settings ---
-APP_VERSION = "2.2.4"  # 或者你的实际版本号
-DEBUG_MODE = False      # 开发时设为 True，部署到生产环境时应设为 False
+APP_VERSION = "2.2.5"  # 或者你的实际版本号
+DEBUG_MODE = True      # 开发时设为 True，部署到生产环境时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 
 # --- 功能模式切换开关 ---
@@ -79,17 +79,6 @@ CONFIG_OPTION_AI_PROVIDER = "ai_provider"
 CONFIG_OPTION_AI_API_KEY = "ai_api_key"
 CONFIG_OPTION_AI_MODEL_NAME = "ai_model_name"
 CONFIG_OPTION_AI_BASE_URL = "ai_base_url"
-# CONFIG_OPTION_AI_TRANSLATION_PROMPT = "ai_translation_prompt"
-# DEFAULT_AI_TRANSLATION_PROMPT = """你是一位专业的影视剧翻译专家，尤其擅长将英文或拼音格式的人名和角色名，翻译成符合中文影视圈习惯的、最常见的官方或通用译名。
-
-# 你的任务是：
-# 1.  **只返回翻译后的中文文本**。不要包含任何解释、标签或标点符号，例如不要说“翻译结果是：”或返回带引号的文本。
-# 2.  **识别并翻译人名**：如果输入是 `Yoon Se-ri` 或 `Zhang San` 这样的拼音/罗马音，请尽力翻译成最通用的中文人名，例如“尹世理”或“张三”。
-# 3.  **处理混合内容**：如果输入是 `Maj. Sophie E. Jean`，请翻译成“苏菲·E·让少校”，保留军衔等上下文。
-# 4.  **保持原文**：如果输入的内容已经是中文，或者是一个你无法识别为有效人名/角色名的无意义词汇，请直接返回原文。
-# 5.  **力求精准**：翻译结果必须追求“信、达、雅”，优先使用官方译名。
-# 6.  **对于一些中国耳熟能详的如“MJ、DJ、M、Q”等超短大写英文名缩写，直接返回原文。"""
-# --- 演员状态文本映射 (用于 /api/search_media) ---
 ACTOR_STATUS_TEXT_MAP = {
     "ok": "已处理",
     "name_untranslated": "演员名未翻译",

@@ -6,20 +6,42 @@ import itertools
 from logger_setup import logger
 from actor_utils import ActorDBManager # 它会使用我们底层的数据库工具
 import tmdb_handler # 需要用它来获取最新的头像信息
+import emby_handler
 
 class ActorManager:
-    def __init__(self, db_path: str, tmdb_api_key: str):
+    def __init__(self, db_path: str, tmdb_api_key: str, emby_url: str, emby_api_key: str, emby_user_id: str):
         self.db_manager = ActorDBManager(db_path)
         self.tmdb_api_key = tmdb_api_key
-        logger.info("ActorManager 初始化完成。")
+        # ★★★ 把Emby配置存起来 ★★★
+        self.emby_url = emby_url
+        self.emby_api_key = emby_api_key
+        self.emby_user_id = emby_user_id
+        logger.info("ActorManager 初始化完成 (已配备Emby工具)。")
 
-    def get_pending_conflicts(self) -> List[Dict[str, Any]]:
-        """
-        获取所有待处理的演员冲突事件，并为前端补充头像URL。
-        """
+    def get_pending_conflicts(self, page: int = 1, page_size: int = 20, search_query: str = "") -> Dict[str, Any]:
+        """【分页搜索版】获取待处理的演员冲突事件。"""
         with self.db_manager._get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM actor_conflicts WHERE status = 'pending' ORDER BY detected_at DESC")
+            
+            where_clauses = ["status = 'pending'"]
+            params = []
+            
+            if search_query:
+                where_clauses.append("(new_actor_name LIKE ? OR existing_actor_name LIKE ?)")
+                params.extend([f"%{search_query}%", f"%{search_query}%"])
+
+            where_sql = " WHERE " + " AND ".join(where_clauses)
+            
+            # 1. 获取总数
+            cursor.execute(f"SELECT COUNT(*) FROM actor_conflicts{where_sql}", tuple(params))
+            total_items = cursor.fetchone()[0]
+            
+            # 2. 查询分页数据
+            params.extend([page_size, (page - 1) * page_size])
+            cursor.execute(
+                f"SELECT * FROM actor_conflicts{where_sql} ORDER BY detected_at DESC LIMIT ? OFFSET ?",
+                tuple(params)
+            )
             conflicts = [dict(row) for row in cursor.fetchall()]
             
             # 为前端补充完整的头像URL
@@ -29,66 +51,94 @@ class ActorManager:
                 if conflict.get('existing_actor_image_path'):
                     conflict['existing_actor_image_url'] = f"https://image.tmdb.org/t/p/w185{conflict['existing_actor_image_path']}"
             
-            return conflicts
+            return {
+                "items": conflicts,
+                "total_items": total_items,
+                "total_pages": (total_items + page_size - 1) // page_size,
+                "current_page": page,
+                "per_page": page_size,
+            }
 
     def resolve_conflict(self, conflict_id: int, resolution: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        根据用户的裁决，解决一个冲突。
-        """
         action = resolution.get("action")
-        if not action:
-            return {"success": False, "message": "未提供裁决动作 (action)。"}
+        updated_names = resolution.get("updated_names", {})
+        
+        if not action: return {"success": False, "message": "未提供裁决动作。"}
 
         logger.info(f"开始解决冲突 (ID: {conflict_id}), 裁决动作: {action}")
 
         with self.db_manager._get_db_connection() as conn:
             cursor = conn.cursor()
-            
-            # 先获取冲突案件的详细信息
-            cursor.execute("SELECT * FROM actor_conflicts WHERE conflict_id = ?", (conflict_id,))
-            conflict = cursor.fetchone()
-            if not conflict:
-                return {"success": False, "message": f"找不到冲突ID: {conflict_id}"}
-
             try:
+                cursor.execute("SELECT * FROM actor_conflicts WHERE conflict_id = ?", (conflict_id,))
+                conflict = cursor.fetchone()
+                if not conflict: return {"success": False, "message": f"找不到冲突ID: {conflict_id}"}
+
+                # --- 步骤 1: 如果名字被修改，先更新 Emby 和本地数据库 ---
+                if updated_names:
+                    # 更新“原告”的名字
+                    new_name = updated_names.get('new_actor_name')
+                    if new_name and conflict['new_tmdb_id']:
+                        # 先找到这个演员在Emby里的ID
+                        cursor.execute("SELECT emby_person_id FROM person_identity_map WHERE tmdb_person_id = ?", (conflict['new_tmdb_id'],))
+                        person_row = cursor.fetchone()
+                        if person_row and person_row['emby_person_id']:
+                            logger.info(f"准备更新Emby中演员 '{person_row['emby_person_id']}' 的名字为 '{new_name}'")
+                            emby_handler.update_person_details(person_row['emby_person_id'], {"Name": new_name}, self.emby_url, self.emby_api_key, self.emby_user_id)
+                        # 无论Emby是否更新成功，都更新本地数据库
+                        cursor.execute("UPDATE person_identity_map SET primary_name = ? WHERE tmdb_person_id = ?", (new_name, conflict['new_tmdb_id']))
+
+                    # 更新“被告”的名字 (逻辑同上)
+                    existing_name = updated_names.get('existing_actor_name')
+                    if existing_name and conflict['existing_tmdb_id']:
+                        cursor.execute("SELECT emby_person_id FROM person_identity_map WHERE tmdb_person_id = ?", (conflict['existing_tmdb_id'],))
+                        person_row = cursor.fetchone()
+                        if person_row and person_row['emby_person_id']:
+                            logger.info(f"准备更新Emby中演员 '{person_row['emby_person_id']}' 的名字为 '{existing_name}'")
+                            emby_handler.update_person_details(person_row['emby_person_id'], {"Name": existing_name}, self.emby_url, self.emby_api_key, self.emby_user_id)
+                        cursor.execute("UPDATE person_identity_map SET primary_name = ? WHERE tmdb_person_id = ?", (existing_name, conflict['existing_tmdb_id']))
+
+                # 3. 根据 action 执行核心裁决逻辑
                 if action == "merge_new_to_existing":
-                    # 合并：将“原告”设为“被告”的别名
                     master_id = conflict['existing_tmdb_id']
                     alias_id = conflict['new_tmdb_id']
-                    cursor.execute(
-                        "INSERT OR REPLACE INTO actor_aliases (alias_tmdb_id, master_tmdb_id, merge_reason) VALUES (?, ?, ?)",
-                        (alias_id, master_id, f"manual_merge_conflict_{conflict_id}")
-                    )
-                    # (可选) 删除被合并的记录
-                    cursor.execute("DELETE FROM person_identity_map WHERE tmdb_person_id = ?", (alias_id,))
-                    logger.info(f"合并裁决：已将 {alias_id} 设为 {master_id} 的别名。")
+                    if master_id and alias_id:
+                        cursor.execute(
+                            "INSERT OR REPLACE INTO actor_aliases (alias_tmdb_id, master_tmdb_id, merge_reason) VALUES (?, ?, ?)",
+                            (alias_id, master_id, f"manual_merge_conflict_{conflict_id}")
+                        )
+                        cursor.execute("DELETE FROM person_identity_map WHERE tmdb_person_id = ?", (alias_id,))
+                        logger.info(f"合并裁决：已将 {alias_id} 设为 {master_id} 的别名。")
 
                 elif action == "unbind_existing":
-                    # 解绑：将“被告”的冲突字段设为NULL
-                    column = conflict['conflict_type'].replace('_OCCUPIED', '').lower()
-                    cursor.execute(
-                        f"UPDATE person_identity_map SET {column} = NULL WHERE tmdb_person_id = ?",
-                        (conflict['existing_tmdb_id'],)
-                    )
-                    logger.info(f"解绑裁决：已将 {conflict['existing_tmdb_id']} 的 {column} 字段清空。")
+                    column = str(conflict['conflict_type']).replace('_OCCUPIED', '').lower()
+                    # 增加一个安全检查，防止SQL注入（虽然这里是内部逻辑，但好习惯很重要）
+                    if column in ['douban_celebrity_id', 'imdb_id', 'emby_person_id']:
+                        cursor.execute(
+                            f"UPDATE person_identity_map SET {column} = NULL WHERE tmdb_person_id = ?",
+                            (conflict['existing_tmdb_id'],)
+                        )
+                        logger.info(f"解绑裁决：已将 {conflict['existing_tmdb_id']} 的 {column} 字段清空。")
+                    else:
+                        raise ValueError(f"不安全的解绑字段: {column}")
 
                 elif action == "ignore":
-                    # 忽略：只更新状态，不做任何数据操作
                     logger.info(f"忽略裁决：将忽略冲突ID {conflict_id}。")
                 
                 else:
                     raise ValueError(f"未知的裁决动作: {action}")
 
-                # 最后，更新冲突事件的状态
+                # 4. 最后，更新冲突事件的状态
                 cursor.execute(
                     "UPDATE actor_conflicts SET status = 'resolved', resolution_type = ?, resolved_at = CURRENT_TIMESTAMP WHERE conflict_id = ?",
                     (action, conflict_id)
                 )
-                conn.commit()
+                
+                # conn.commit() # with 语句会自动处理 commit
                 return {"success": True, "message": f"冲突 {conflict_id} 已成功解决。"}
 
             except Exception as e:
-                conn.rollback()
+                # conn.rollback() # with 语句在发生异常时会自动处理 rollback
                 logger.error(f"解决冲突 {conflict_id} 时发生错误: {e}", exc_info=True)
                 return {"success": False, "message": f"服务器内部错误: {e}"}
     # ★★★ “立案侦探” ★★★
@@ -162,7 +212,7 @@ class ActorManager:
         vals = list(conflict_record.values())
         sql = f"INSERT INTO actor_conflicts ({', '.join(cols)}) VALUES ({', '.join(['?'] * len(cols))})"
         cursor.execute(sql, tuple(vals))
-        logger.info(f"  -> 成功立案 [潜在重复]: '{conflict_record['new_actor_name']}'")
+        logger.info(f"  -> 记录在案 [潜在重复]: '{conflict_record['new_actor_name']}'")
     def _get_person_image_path(self, tmdb_id: Optional[str]) -> Optional[str]:
         """辅助函数：根据TMDb ID获取头像路径。"""
         if not tmdb_id or not self.tmdb_api_key:

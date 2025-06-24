@@ -59,7 +59,7 @@ def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_typ
         # TotalRecordCount 是 Emby API 返回的总记录数字段
         total_count = data.get("TotalRecordCount")
         if total_count is not None:
-            logger.info(f"成功获取到 {item_type} 总数: {total_count}")
+            logger.debug(f"成功获取到 {item_type} 总数: {total_count}")
             return int(total_count)
         else:
             logger.warning(f"Emby API 响应中未找到 'TotalRecordCount' 字段。")
@@ -701,7 +701,7 @@ def download_emby_image(
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             with open(save_path, 'wb') as f:
                 shutil.copyfileobj(r.raw, f)
-        logger.info(f"成功下载图片并保存到: {save_path}")
+        logger.debug(f"成功下载图片并保存到: {save_path}")
         return True
     except requests.exceptions.RequestException as e:
         if hasattr(e, 'response') and e.response is not None and e.response.status_code == 404:

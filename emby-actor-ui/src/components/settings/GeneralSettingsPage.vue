@@ -118,7 +118,17 @@
           <!-- 卡片: AI 翻译设置 -->
           <n-card title="AI 翻译设置" size="small" class="beautified-card">
             <template #header-extra>
-              <n-switch v-model:value="configModel.ai_translation_enabled" />
+              <n-space align="center">
+                <n-switch v-model:value="configModel.ai_translation_enabled" />
+                <!-- 新增跳转链接 -->
+                <a
+                  href="https://cloud.siliconflow.cn/i/GXIrubbL"
+                  target="_blank"
+                  style="font-size: 0.85em; margin-left: 8px; color: var(--n-primary-color); text-decoration: underline;"
+                >
+                  注册硅基流动，新人送2000万tokens
+                </a>
+              </n-space>
             </template>
             <!-- ✨✨✨ 核心修改区域 START ✨✨✨ -->
             <div class="ai-settings-wrapper" :class="{ 'content-disabled': !configModel.ai_translation_enabled }">
@@ -134,7 +144,7 @@
                   type="password" 
                   show-password-on="mousedown" 
                   v-model:value="configModel.ai_api_key" 
-                  placeholder="输入 AI 服务的 API Key" 
+                  placeholder="sk-" 
                   :disabled="!configModel.ai_translation_enabled"
                 />
               </n-form-item>

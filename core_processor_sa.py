@@ -221,7 +221,7 @@ class MediaProcessorSA:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM failed_log WHERE item_id = ?", (item_id,))
             if cursor.rowcount > 0:
-                logger.info(f"Item ID '{item_id}' 已从 failed_log 中移除。")
+                logger.info(f"Item ID '{item_id}' 已从【待复核列表】中移除。")
             conn.commit()
             conn.close()
         except Exception as e:
@@ -922,11 +922,6 @@ class MediaProcessorSA:
             os.makedirs(image_override_dir, exist_ok=True)
             base_json_filename = "all.json" if item_type == "Movie" else "series.json"
             base_json_data_original = _read_local_json(os.path.join(base_cache_dir, base_json_filename))
-            if item_details_from_emby.get("Type") == "Series":
-                # 创建一个临时的 WatchlistProcessor 实例来执行添加操作
-                # 理想情况下，这个实例应该由 web_app 传递进来
-                temp_watchlist_proc = WatchlistProcessor(self.config)
-                temp_watchlist_proc.add_series_to_watchlist(item_details_from_emby)
             if not base_json_data_original:
                 raise ValueError(f"无法读取基础JSON文件: {os.path.join(base_cache_dir, base_json_filename)}")
             

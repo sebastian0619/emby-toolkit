@@ -3,8 +3,8 @@ name: Docker Image CI & CD for Emby Actor Processor
 on:
   push:
     branches:
-      - main      # 监听 main 分支
-      - sa        # 监听 sa 分支
+      - main      # 监听 主 分支
+      - dev        # 监听 开发 分支
     tags:
       - 'v*.*.*'
   workflow_dispatch:

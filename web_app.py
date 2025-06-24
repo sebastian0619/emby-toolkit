@@ -448,8 +448,8 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
     app_cfg[constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED] = config_parser.getboolean(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, fallback=False)
     app_cfg[constants.CONFIG_OPTION_AI_PROVIDER] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_PROVIDER, fallback="openai")
     app_cfg[constants.CONFIG_OPTION_AI_API_KEY] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_API_KEY, fallback="")
-    app_cfg[constants.CONFIG_OPTION_AI_MODEL_NAME] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_MODEL_NAME, fallback="gpt-3.5-turbo")
-    app_cfg[constants.CONFIG_OPTION_AI_BASE_URL] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_BASE_URL, fallback="")
+    app_cfg[constants.CONFIG_OPTION_AI_MODEL_NAME] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_MODEL_NAME, fallback="deepseek-ai/DeepSeek-V2.5")
+    app_cfg[constants.CONFIG_OPTION_AI_BASE_URL] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_BASE_URL, fallback="https://api.siliconflow.cn/v1")
     # app_cfg[constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT, fallback=constants.DEFAULT_AI_TRANSLATION_PROMPT)
 
     # Scheduler Section
@@ -1011,7 +1011,7 @@ def task_sync_person_map(processor):
     """
     任务：同步演员映射表（已简化为单一模式）。
     """
-    task_name = "统一演员映射表同步"
+    task_name = "演员映射表同步"
     # 移除了 if is_full_sync 的判断逻辑
     
     logger.info(f"开始执行 '{task_name}'...")
@@ -1043,7 +1043,7 @@ def task_manual_update(processor: MediaProcessorSA, item_id: str, manual_cast_li
         manual_cast_list=manual_cast_list,
         item_name=item_name
     )
-# ★★★ 1. 定义一个新的、用于编排任务的函数 ★★★
+# ★★★ 1. 定义一个webhoo专用追剧、用于编排任务的函数 ★★★
 # 这个函数将作为提交到任务队列的目标
 def webhook_processing_task(processor: MediaProcessorSA, item_id: str, force_reprocess: bool, process_episodes: bool):
     """
@@ -1092,15 +1092,20 @@ def task_process_single_watchlist_item(processor: WatchlistProcessor, item_id: s
     processor.process_watching_list(item_id=item_id)
 # ★★★ 扫描并记录重复演员 ★★★
 def task_find_duplicates(processor): # <--- 加上 processor 参数
-    """任务：扫描并记录重复演员。"""
-    # 即使函数内部用不到 processor，也需要在这里声明接收它，以匹配工人的调用方式。
-    logger.info("开始执行扫描重复演员任务...") # 加个日志，方便调试
+    """【带状态汇报版】任务：扫描并记录重复演员。"""
     try:
-        # 假设 actor_manager_instance 是一个全局或可访问的实例
-        actor_manager_instance.find_and_record_duplicates()
-        logger.info("扫描重复演员任务成功完成。")
+        # ★★★ 在任务开始时，汇报状态 ★★★
+        update_status_from_thread(0, "开始扫描数据库查找同名演员...")
+        
+        # 调用大法官的方法，并获取返回的消息
+        result = actor_manager_instance.find_and_record_duplicates()
+        
+        # ★★★ 任务结束时，用返回的消息汇报最终状态 ★★★
+        update_status_from_thread(100, result.get("message", "扫描完成。"))
+        
     except Exception as e:
         logger.error(f"扫描重复演员任务失败: {e}", exc_info=True)
+        update_status_from_thread(-1, "扫描任务失败！")
 # --- 路由区 ---
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
@@ -1768,188 +1773,116 @@ def api_update_edited_cast_api(item_id):
     except Exception as e:
         logger.error(f"API /api/update_media_cast CRITICAL Error for {item_id}: {e}", exc_info=True)
         return jsonify({"error": "保存演员信息时发生服务器内部错误"}), 500
-# ✨✨✨ 导出演员映射表 ✨✨✨
-@app.route('/api/export_person_map', methods=['GET'])
+# ★★★ 导出演员映射表 ★★★
+@app.route('/api/actors/export', methods=['GET'])
+@login_required
 def api_export_person_map():
     """
-    【后端模式感知版】根据当前处理器实例的类型，导出对应的映射表。
-    - 神医模式 (MediaProcessorSA): 导出 person_identity_map
-    - API模式 (MediaProcessorAPI): 导出 emby_actor_map
+    【统一版】导出演员身份映射表 (person_identity_map)。
     """
-    global media_processor_instance # 声明我们要使用全局实例
-    
-    if media_processor_instance is None:
-        return jsonify({"error": "后端处理器实例未初始化，无法确定模式。"}), 503
-
-    # 1. 根据实例类型确定模式
-    if isinstance(media_processor_instance, MediaProcessorSA):
-        mode = 'tmdb' # 神医模式
-        table_name = 'person_identity_map'
-        headers = ['tmdb_person_id', 'emby_person_id', 'imdb_id', 'douban_celebrity_id', 'tmdb_name', 'douban_name']
-    else: # 默认或 MediaProcessorAPI 实例
-        mode = 'emby' # API模式
-        table_name = 'emby_actor_map'
-        headers = ['emby_person_id', 'emby_person_name', 'imdb_id', 'tmdb_person_id', 'douban_celebrity_id', 'tmdb_name', 'douban_name']
-        
-    logger.info(f"API: 收到导出演员映射表的请求，当前模式: {'神医模式' if mode == 'tmdb' else 'API模式'} (操作表: {table_name})")
+    table_name = 'person_identity_map'
+    # 定义统一的、最完整的表头顺序
+    headers = [
+        'map_id', 'primary_name', 'emby_person_id', 
+        'tmdb_person_id', 'imdb_id', 'douban_celebrity_id'
+    ]
+    logger.info(f"API: 收到导出演员映射表 '{table_name}' 的请求。")
 
     def generate_csv():
         string_io = StringIO()
-        conn = None
         try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            writer = csv.DictWriter(string_io, fieldnames=headers)
-            
-            writer.writeheader()
-            yield string_io.getvalue()
-            string_io.seek(0)
-            string_io.truncate(0)
-
-            cursor.execute(f"SELECT {', '.join(headers)} FROM {table_name}")
-            
-            for row in cursor:
-                writer.writerow(dict(row))
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                writer = csv.DictWriter(string_io, fieldnames=headers, extrasaction='ignore')
+                
+                writer.writeheader()
                 yield string_io.getvalue()
-                string_io.seek(0)
-                string_io.truncate(0)
+                string_io.seek(0); string_io.truncate(0)
 
+                cursor.execute(f"SELECT {', '.join(headers)} FROM {table_name}")
+                
+                for row in cursor:
+                    writer.writerow(dict(row))
+                    yield string_io.getvalue()
+                    string_io.seek(0); string_io.truncate(0)
         except Exception as e:
-            logger.error(f"导出映射表 (模式: {mode}) 时发生错误: {e}", exc_info=True)
-            yield f"Error exporting data: {e}"
-        finally:
-            if conn:
-                conn.close()
+            logger.error(f"导出映射表时发生错误: {e}", exc_info=True)
+            yield f"Error: {e}"
 
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    filename = f"{table_name}_backup_{timestamp}.csv"
+    filename = f"person_identity_map_backup_{timestamp}.csv"
     
-    response = Response(stream_with_context(generate_csv()), mimetype='text/csv')
+    response = Response(stream_with_context(generate_csv()), mimetype='text/csv; charset=utf-8')
     response.headers.set("Content-Disposition", "attachment", filename=filename)
-    
     return response
-# ✨✨✨ 导入演员映射表 ✨✨✨
-@app.route('/api/import_person_map', methods=['POST'])
+# ★★★ 导入演员映射表 ★★★
+@app.route('/api/actors/import', methods=['POST'])
+@login_required
 def api_import_person_map():
     """
-    【后端模式感知版 + 首行数据验证】根据当前模式，通过验证首行数据的核心ID来确保文件类型正确。
+    【统一版】导入演员身份映射表，并智能地更新或插入到 person_identity_map。
     """
-    global media_processor_instance
-
-    if media_processor_instance is None:
-        return jsonify({"error": "后端处理器实例未初始化，无法确定模式。"}), 503
-
-    # 1. 根据实例类型确定模式和配置
-    if isinstance(media_processor_instance, MediaProcessorSA):
-        mode_name = '神医模式'
-        table_name = 'person_identity_map'
-        conflict_target = 'tmdb_person_id'
-        all_columns = ['tmdb_person_id', 'emby_person_id', 'imdb_id', 'douban_celebrity_id', 'tmdb_name', 'douban_name']
-    else:
-        mode_name = 'API模式'
-        table_name = 'emby_actor_map'
-        conflict_target = 'emby_person_id'
-        all_columns = ['emby_person_id', 'emby_person_name', 'imdb_id', 'tmdb_person_id', 'douban_celebrity_id', 'tmdb_name', 'douban_name']
-
-    logger.info(f"API: 收到导入演员映射表的请求，当前为【{mode_name}】，将操作表: {table_name}")
+    logger.info("API: 收到导入演员映射表的请求，将操作统一的 'person_identity_map' 表。")
 
     if 'file' not in request.files:
         return jsonify({"error": "请求中未找到文件部分"}), 400
     
     file = request.files['file']
-    
     if file.filename == '' or not file.filename.endswith('.csv'):
         return jsonify({"error": "未选择文件或文件类型不正确 (需要 .csv)"}), 400
 
     try:
-        # 将文件内容读入内存，以便我们可以多次读取它（一次用于验证，一次用于处理）
-        file_content = file.stream.read().decode("utf-8")
-        
-        # --- 核心修改：使用首行数据进行智能验证 ---
-        # 创建一个临时的 reader 用于验证
-        validation_reader = csv.DictReader(StringIO(file_content, newline=None))
-        
-        # 检查表头是否存在
-        if not validation_reader.fieldnames:
-            return jsonify({"error": "文件验证失败：CSV文件为空或没有表头。"}), 400
-        
-        # 获取第一行数据
-        first_row = next(validation_reader, None)
-        
-        # 如果文件只有表头，没有数据，也算有效（可以导入一个空文件来清空）
-        if first_row:
-            # 检查核心ID列是否有值
-            core_id_value = first_row.get(conflict_target)
-            if not core_id_value or not core_id_value.strip():
-                error_message = f"文件验证失败：当前为【{mode_name}】，需要一个每行都包含有效 '{conflict_target}' 的文件。您上传的文件似乎是为另一种模式设计的备份。请检查文件或切换模式。"
-                logger.warning(f"API: {error_message}")
-                return jsonify({"error": error_message}), 400
-        # --- 验证结束 ---
-
-        # 验证通过，现在创建用于正式处理的 reader
+        file_content = file.stream.read().decode("utf-8-sig") # 使用 utf-8-sig 兼容带BOM的CSV
         stream = StringIO(file_content, newline=None)
         csv_reader = csv.DictReader(stream)
         
+        # 验证表头是否基本正确
+        expected_headers = ['tmdb_person_id', 'emby_person_id']
+        if not all(h in csv_reader.fieldnames for h in expected_headers):
+            return jsonify({"error": "文件格式不正确，表头必须至少包含 'tmdb_person_id' 和 'emby_person_id'。"}), 400
+
         stats = {"total": 0, "processed": 0, "skipped": 0, "errors": 0}
         
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        # ★★★ 使用我们强大的 ActorDBManager 来处理每一行数据 ★★★
+        # actor_manager_instance 是在应用启动时创建的全局实例
+        with actor_manager_instance.db_manager._get_db_connection() as conn:
+            cursor = conn.cursor()
+            for row in csv_reader:
+                stats["total"] += 1
+                
+                # 准备要传递给 upsert_person 的数据
+                person_data = {
+                    "tmdb_id": row.get('tmdb_person_id'),
+                    "emby_id": row.get('emby_person_id'),
+                    "imdb_id": row.get('imdb_id'),
+                    "douban_id": row.get('douban_celebrity_id'),
+                    "name": row.get('primary_name'),
+                }
+                
+                # 清理一下空值
+                clean_person_data = {k: v for k, v in person_data.items() if v}
+                if not clean_person_data.get('name'):
+                    stats['skipped'] += 1
+                    continue
+                
+                try:
+                    # 调用我们统一的、健壮的写入函数
+                    actor_manager_instance.db_manager.upsert_person(
+                        cursor, 
+                        clean_person_data,
+                        app.config.get("tmdb_api_key", "") # 传递API Key用于记录冲突
+                    )
+                    stats["processed"] += 1
+                except Exception as e_row:
+                    stats["errors"] += 1
+                    logger.error(f"导入行 {row} 时数据库出错: {e_row}")
 
-        for row in csv_reader:
-            stats["total"] += 1
-            
-            core_id = row.get(conflict_target)
-            if not core_id or not str(core_id).strip():
-                stats["skipped"] += 1
-                continue
-            
-            data_to_write = {}
-            for col in all_columns:
-                if col in csv_reader.fieldnames:
-                    data_to_write[col] = row.get(col) or None
-            
-            clean_data = {k: v for k, v in data_to_write.items() if v is not None and str(v).strip() != ''}
-            
-            if not clean_data or conflict_target not in clean_data:
-                stats["skipped"] += 1
-                continue
-
-            cols = list(clean_data.keys())
-            vals = list(clean_data.values())
-            
-            update_clauses = [f"{col} = COALESCE(excluded.{col}, {table_name}.{col})" for col in cols if col != conflict_target]
-            
-            if not update_clauses:
-                sql = f"""
-                    INSERT OR IGNORE INTO {table_name} ({', '.join(cols)}, last_updated_at)
-                    VALUES ({', '.join(['?'] * len(cols))}, CURRENT_TIMESTAMP);
-                """
-            else:
-                sql = f"""
-                    INSERT INTO {table_name} ({', '.join(cols)}, last_updated_at)
-                    VALUES ({', '.join(['?'] * len(cols))}, CURRENT_TIMESTAMP)
-                    ON CONFLICT({conflict_target}) DO UPDATE SET
-                        {', '.join(update_clauses)},
-                        last_updated_at = CURRENT_TIMESTAMP;
-                """
-            
-            try:
-                cursor.execute(sql, tuple(vals))
-                stats["processed"] += 1
-            except sqlite3.Error as e_row:
-                stats["errors"] += 1
-                logger.error(f"导入行 {row} (模式: {mode_name}) 时数据库出错: {e_row}")
-
-        conn.commit()
-        conn.close()
-        
-        message = f"导入完成 (模式: {mode_name})。总行数: {stats['total']}, 成功处理: {stats['processed']}, 跳过: {stats['skipped']}, 错误: {stats['errors']}."
+        message = f"导入完成。总行数: {stats['total']}, 成功处理: {stats['processed']}, 跳过: {stats['skipped']}, 错误: {stats['errors']}."
         logger.info(f"API: {message}")
         return jsonify({"message": message}), 200
 
     except Exception as e:
-        logger.error(f"导入文件 (模式: {mode_name}) 时发生严重错误: {e}", exc_info=True)
+        logger.error(f"导入文件时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": f"处理文件时发生错误: {e}"}), 500
 # ✨✨✨ 神医编辑页面的API接口 ✨✨✨
 @app.route('/api/media_for_editing_sa/<item_id>', methods=['GET'])
@@ -2458,10 +2391,24 @@ def api_trigger_single_watchlist_update(item_id):
 @app.route('/api/actors/conflicts', methods=['GET'])
 @login_required
 def api_get_actor_conflicts():
-    """API: 获取待处理的演员冲突列表。"""
+    """API: 获取待处理的演员冲突列表 (支持分页和搜索)。"""
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 15, type=int)
+    query_filter = request.args.get('query', '', type=str).strip()
+
+    # ... (分页参数校验) ...
+    offset = (page - 1) * per_page
+    
     try:
-        pending_conflicts = actor_manager_instance.get_pending_conflicts()
-        return jsonify(pending_conflicts)
+        # ★★★ 直接调用我们大法官的方法 ★★★
+        # 我们需要改造 ActorManager 来支持分页和搜索
+        paginated_result = actor_manager_instance.get_pending_conflicts(
+            page=page, 
+            page_size=per_page,
+            search_query=query_filter
+        )
+        return jsonify(paginated_result)
+        
     except Exception as e:
         logger.error(f"API /api/actors/conflicts GET error: {e}", exc_info=True)
         return jsonify({"error": "获取冲突列表失败"}), 500
@@ -2527,7 +2474,10 @@ if __name__ == '__main__':
 
     actor_manager_instance = ActorManager(
         db_path=DB_PATH, 
-        tmdb_api_key=APP_CONFIG.get("tmdb_api_key", "")
+        tmdb_api_key=app.config.get("tmdb_api_key", ""),
+        emby_url=app.config.get("emby_server_url"),
+        emby_api_key=app.config.get("emby_api_key"),
+        emby_user_id=app.config.get("emby_user_id")
     )
     # 4. ★★★ 创建唯一的 MediaProcessor 实例 ★★★
     initialize_processors()

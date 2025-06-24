@@ -11,7 +11,7 @@ from douban import DoubanApi
 from ai_translator import AITranslator
 
 # ======================================================================
-# 模块 1: 统一的数据库管理器 (The Unified Data Access Layer)
+# 模块 1: 数据库管理器 (The Unified Data Access Layer)
 # ======================================================================
 
 class ActorDBManager:
@@ -196,7 +196,7 @@ class ActorDBManager:
         
         try:
             cursor.execute(sql, tuple(vals))
-            logger.info(f"✅ 冲突案件已成功立案：'{conflict_record['new_actor_name']}' (TMDb: {conflict_record['new_tmdb_id']}) "
+            logger.info(f"✅ 冲突演员已记录在案：'{conflict_record['new_actor_name']}' (TMDb: {conflict_record['new_tmdb_id']}) "
                         f"因 '{conflict_record['conflict_type']}' 与 "
                         f"'{conflict_record['existing_actor_name']}' (TMDb: {conflict_record['existing_tmdb_id']}) 发生冲突。")
         except Exception as e:
