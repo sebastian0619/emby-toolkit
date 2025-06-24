@@ -1191,7 +1191,6 @@ def emby_webhook():
         webhook_processing_task,  # <--- 目标函数是这个，而不是 process_single_item
         f"Webhook处理: {final_item_name}",
         # --- 传递给 webhook_processing_task 的参数 ---
-        media_processor_instance,
         id_to_process,
         force_reprocess=True, 
         process_episodes=True
