@@ -1,6 +1,7 @@
 # actor_utils.py
 import sqlite3
 import re
+import json
 from typing import Optional, Dict, Any, List, Tuple
 
 # 导入底层工具箱和日志
@@ -60,62 +61,118 @@ class ActorDBManager:
         return None
 
     # --- 核心写入/更新逻辑 ---
-    def upsert_person(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any], tmdb_api_key: str) -> int:
-        
+    def upsert_person(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any]) -> int:
         """
-        【统一写入入口】更新或插入一条演员记录，并返回其 map_id。
+        【融合升级版】更新或插入一条演员记录，并返回其 map_id。
+        此版本修复了原版可能因数据不全而导致更新失败的问题。
         """
-        # 1. 准备要写入的数据，清理空值
-        data_to_write = {
-            "primary_name": person_data.get("name"),
-            "emby_person_id": person_data.get("emby_id"),
-            "tmdb_person_id": person_data.get("tmdb_id"),
-            "imdb_id": person_data.get("imdb_id"),
-            "douban_celebrity_id": person_data.get("douban_id"),
+        # 1. 清理和准备来自 Emby 的新数据
+        new_data = {
+            "primary_name": str(person_data.get("name") or '').strip(),
+            "emby_person_id": str(person_data.get("emby_id") or '').strip() or None,
+            "tmdb_person_id": str(person_data.get("tmdb_id") or '').strip() or None,
+            "imdb_id": str(person_data.get("imdb_id") or '').strip() or None,
+            "douban_celebrity_id": str(person_data.get("douban_id") or '').strip() or None,
         }
-        clean_data = {k: v for k, v in data_to_write.items() if v is not None and str(v).strip() != ''}
-        
-        if not clean_data.get("primary_name"):
-            logger.warning("尝试写入演员信息，但缺少 primary_name，操作中止。")
+
+        if not new_data["emby_person_id"] or not new_data["primary_name"]:
+            logger.warning(f"尝试写入演员信息，但缺少 emby_id 或 primary_name，操作中止。数据: {person_data}")
             return -1
 
-        # 2. 查找现有记录
-        existing_person = self.find_person_by_any_id(cursor, **{k.replace('_person', '').replace('_celebrity', ''): v for k, v in clean_data.items()})
+        # 2. 查找数据库中是否已存在关联记录
+        # 使用 find_person_by_any_id，它会通过所有提供的ID进行查找
+        existing_person = self.find_person_by_any_id(cursor, **{
+            "emby_id": new_data["emby_person_id"],
+            "tmdb_id": new_data["tmdb_person_id"],
+            "imdb_id": new_data["imdb_id"],
+            "douban_id": new_data["douban_celebrity_id"],
+        })
 
         try:
             if existing_person:
-                # --- UPDATE 逻辑 ---
+                # --- UPDATE 逻辑 (最关键的修复) ---
                 map_id = existing_person['map_id']
-                update_clauses = []
-                update_values = []
                 
-                for key, column in clean_data.items():
-                    # 检查新值是否与旧值不同
-                    if clean_data[key] != existing_person[key]:
-                        update_clauses.append(f"{key} = ?")
-                        update_values.append(clean_data[key])
+                # 准备一个待更新数据的字典，这是我们要合并的目标
+                merged_data = dict(existing_person)
+
+                # 用新数据覆盖或补充旧数据
+                # 遍历新数据的所有字段
+                for key, value in new_data.items():
+                    if value is not None: # 只有当新数据的值有效时，才进行更新
+                        merged_data[key] = value
                 
-                if update_clauses:
-                    update_clauses.append("last_updated_at = CURRENT_TIMESTAMP")
-                    sql = f"UPDATE person_identity_map SET {', '.join(update_clauses)} WHERE map_id = ?"
-                    update_values.append(map_id)
-                    cursor.execute(sql, tuple(update_values))
+                # 特别处理 other_names JSON 字段
+                other_names = json.loads(merged_data.get("other_names") or "{}")
+                if merged_data.get("tmdb_person_id"):
+                    other_names["tmdb"] = merged_data["primary_name"]
+                if merged_data.get("douban_celebrity_id"):
+                    other_names["douban"] = merged_data["primary_name"]
+                merged_data["other_names"] = json.dumps(other_names, ensure_ascii=False)
+
+                # 构建 SQL 更新语句
+                # 我们将更新所有字段，以确保数据的一致性
+                update_columns = [
+                    "primary_name", "other_names", "emby_person_id", 
+                    "tmdb_person_id", "imdb_id", "douban_celebrity_id"
+                ]
+                set_clauses = [f"{col} = ?" for col in update_columns]
+                set_clauses.append("last_synced_at = CURRENT_TIMESTAMP")
+                set_clauses.append("last_updated_at = CURRENT_TIMESTAMP")
+
+                sql = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = ?"
+                
+                # 按固定顺序准备参数
+                params = [merged_data.get(col) for col in update_columns]
+                params.append(map_id)
+
+                cursor.execute(sql, tuple(params))
+                logger.debug(f"成功合并并更新了演员记录 (map_id: {map_id})")
                 return map_id
             else:
-                # --- INSERT 逻辑 ---
-                cols = list(clean_data.keys())
-                vals = list(clean_data.values())
-                sql = f"INSERT INTO person_identity_map ({', '.join(cols)}, last_updated_at) VALUES ({', '.join(['?'] * len(cols))}, CURRENT_TIMESTAMP)"
+                # --- INSERT 逻辑 (保持简单清晰) ---
+                
+                # 准备 other_names
+                other_names = {}
+                if new_data.get("tmdb_person_id"):
+                    other_names["tmdb"] = new_data["primary_name"]
+                if new_data.get("douban_celebrity_id"):
+                    other_names["douban"] = new_data["primary_name"]
+                
+                # 定义插入的列和值
+                cols = ["primary_name", "emby_person_id", "tmdb_person_id", "imdb_id", "douban_celebrity_id", "other_names", "last_synced_at", "last_updated_at"]
+                vals = [
+                    new_data["primary_name"],
+                    new_data["emby_person_id"],
+                    new_data["tmdb_person_id"],
+                    new_data["imdb_id"],
+                    new_data["douban_celebrity_id"],
+                    json.dumps(other_names, ensure_ascii=False) if other_names else None,
+                ]
+                
+                placeholders = ["?" for _ in vals] + ["CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP"]
+                sql = f"INSERT INTO person_identity_map ({', '.join(cols)}) VALUES ({', '.join(placeholders)})"
+
                 cursor.execute(sql, tuple(vals))
-                return cursor.lastrowid
+                new_id = cursor.lastrowid
+                logger.debug(f"成功插入了新的演员记录 (map_id: {new_id})")
+                return new_id
 
         except sqlite3.IntegrityError as e:
-            # ★★★ 现在可以放心地调用我们强大的书记员了 ★★★
-            
-            # 即使冲突，也尝试返回一个已存在的 map_id，让流程能继续下去
-            # （比如，API模式下，虽然没能关联上豆瓣，但至少把Emby和TMDb的信息更新了）
-            conflicting_person = self.find_person_by_any_id(cursor, **clean_data)
-            return conflicting_person['map_id'] if conflicting_person else -1
+            logger.warning(f"处理演员 {new_data['primary_name']} (EmbyID: {new_data['emby_person_id']}) 时发生数据库完整性冲突: {e}。这通常是并发或数据竞争导致，正在尝试恢复。")
+            # 发生冲突后，再次查询以获取正确的 map_id，确保流程可以继续
+            conflicting_person = self.find_person_by_any_id(cursor, **{
+                "emby_id": new_data["emby_person_id"],
+                "tmdb_id": new_data["tmdb_person_id"],
+                "imdb_id": new_data["imdb_id"],
+                "douban_id": new_data["douban_celebrity_id"],
+            })
+            if conflicting_person:
+                logger.info(f"已找到冲突对应的记录 (map_id: {conflicting_person['map_id']})，将使用此ID继续。")
+                return conflicting_person['map_id']
+            else:
+                logger.error("发生完整性冲突后，未能找到对应的现有记录，此条目处理失败。")
+                return -1
             
 
 # ======================================================================

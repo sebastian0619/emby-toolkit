@@ -540,53 +540,72 @@ def refresh_emby_item_metadata(item_emby_id: str,
 
 def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str], stop_event: Optional[threading.Event] = None) -> Generator[List[Dict[str, Any]], None, None]:
     """
-    【生成器版】分批次地从 Emby 获取 Person 条目。
-    每次只 'yield' 一批数据，而不是一次性返回所有。
+    【健壮修复版】分批次地从 Emby 获取所有 Person 条目。
+    - 改用更稳定的 /Users/{UserId}/Items endpoint。
+    - 移除了不可靠的 `len(items) < batch_size` 判断。
     """
-    api_url = f"{base_url.rstrip('/')}/Persons"
+    if not user_id:
+        logger.error("获取所有演员需要提供 User ID，但未提供。任务中止。")
+        return
+
+    # ★★★ 核心修复 1: 改用更稳定、官方推荐的 Endpoint ★★★
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    
+    headers = {
+        "X-Emby-Token": api_key,
+        "Accept": "application/json",
+    }
+    
     params = {
-        "api_key": api_key,
-        "Fields": "ProviderIds,Name",
         "Recursive": "true",
         "IncludeItemTypes": "Person",
+        "Fields": "ProviderIds,Name", # 确保字段正确
     }
-    if user_id: params["UserId"] = user_id
 
     start_index = 0
-    batch_size = 500 # 每次获取500个
+    batch_size = 5000 # 使用更稳定的 endpoint，可以适当调大批次大小，提高效率
 
-    logger.info("开始从 Emby 分批次获取所有演员数据...")
+    logger.info(f"开始从 Emby 分批次获取所有演员数据 (Endpoint: {api_url}, BatchSize: {batch_size})...")
+    
     while True:
         if stop_event and stop_event.is_set():
             logger.info("Emby Person 获取任务被中止。")
-            return # 生成器直接用 return 结束
+            return
 
-        params["StartIndex"] = start_index
-        params["Limit"] = batch_size
+        # 将分页参数加入请求
+        request_params = params.copy()
+        request_params["StartIndex"] = start_index
+        request_params["Limit"] = batch_size
+        
         logger.debug(f"  获取 Person 批次: StartIndex={start_index}, Limit={batch_size}")
         
         try:
-            response = requests.get(api_url, params=params, timeout=30)
+            # 注意：使用 headers 传递 token，而不是作为 URL 参数
+            response = requests.get(api_url, headers=headers, params=request_params, timeout=30)
             response.raise_for_status()
             data = response.json()
             items = data.get("Items", [])
             
+            # ★★★ 核心修复 2: 只保留这一个最可靠的退出条件 ★★★
             if not items:
-                logger.info("已获取所有 Person 批次。")
+                logger.info("API 返回空列表，已获取所有 Person 数据。")
                 break # 没有更多数据了，正常结束循环
 
-            # ★★★ 核心改造：使用 yield 返回这一批数据 ★★★
+            # 使用 yield 返回这一批数据
             yield items
             
-            if len(items) < batch_size:
-                logger.info("已到达最后一页。")
-                break # 这是最后一页了
-            
+            # ★★★ 核心修复 3: 移除不可靠的 len(items) < batch_size 判断 ★★★
+            # 无论返回多少，都用实际返回的数量来增加索引，这是最安全的方式
             start_index += len(items)
-            time.sleep(0.2)
+            
+            # 稍微延时，避免请求过于频繁
+            time.sleep(0.1) 
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"请求 Emby API 失败 (批次 StartIndex={start_index}): {e}", exc_info=True)
+            return
         except Exception as e:
-            logger.error(f"获取 Emby Person 列表失败 (批次 StartIndex={start_index}): {e}", exc_info=True)
-            # 遇到错误，直接中断生成
+            logger.error(f"处理 Emby 响应时发生未知错误 (批次 StartIndex={start_index}): {e}", exc_info=True)
             return
 
 # ✨✨✨ 新增：获取剧集下所有剧集的函数 ✨✨✨

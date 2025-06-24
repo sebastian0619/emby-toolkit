@@ -210,8 +210,6 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
         logger.debug("表 'watchlist' 结构已确认。")
 
-        # --- 5. 创建全新的、统一的演员身份管理体系 ---
-        logger.debug("正在构建统一的演员身份管理体系...")
 
         # 核心表：person_identity_map (单一事实来源)
         # 职责：存储每个演员的唯一身份和跨平台ID映射。
@@ -1654,8 +1652,7 @@ def api_handle_trigger_sync_map():
         
         submit_task_to_queue(
             task_sync_person_map,
-            task_name_for_api,
-            media_processor_instance# 只传递任务需要的 processor
+            task_name_for_api
         )
 
         return jsonify({"message": f"'{task_name_for_api}' 任务已提交启动。"}), 202
