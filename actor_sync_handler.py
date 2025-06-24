@@ -7,8 +7,10 @@ from typing import Optional, List, Dict, Any
 import threading
 # 导入必要的模块
 import emby_handler
-from logger_setup import logger
+import logging
 from actor_utils import ActorDBManager # ★★★ 导入我们专业的数据库管理员 ★★★
+
+logger = logging.getLogger(__name__)
 
 class UnifiedSyncHandler:
     def __init__(self, db_path: str, emby_url: str, emby_api_key: str, emby_user_id: Optional[str], tmdb_api_key: str):

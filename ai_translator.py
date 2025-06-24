@@ -1,8 +1,9 @@
 # ai_translator.py
 import json
 from typing import Optional, Dict, Any, List
-from logger_setup import logger
+import logging
 
+logger = logging.getLogger(__name__)
 # 动态导入，哪个需要用哪个
 try:
     from openai import OpenAI, APIError, APITimeoutError

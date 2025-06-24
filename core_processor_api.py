@@ -12,11 +12,12 @@ from douban import DoubanApi, clean_character_name_static
 # 假设 emby_handler.py, utils.py, logger_setup.py, constants.py 都在同一级别或Python路径中
 import emby_handler
 import utils # 导入我们上面修改的 utils.py
-from logger_setup import logger
 import constants
+import logging
 from ai_translator import AITranslator # ✨✨✨ 导入新的AI翻译器 ✨✨✨
 from actor_utils import ActorDBManager
 # DoubanApi 的导入和可用性检查
+logger = logging.getLogger(__name__)
 try:
     from douban import DoubanApi # douban.py 现在也使用数据库
     DOUBAN_API_AVAILABLE = True

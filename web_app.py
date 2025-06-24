@@ -33,13 +33,15 @@ from flask import session
 from croniter import croniter
 import logging
 # --- 核心模块导入 ---
-import constants # 你的常量定义
-from logger_setup import logger, frontend_log_queue, add_file_handler # 日志记录器和前端日志队列
+import constants # 你的常量定义\
+import logging
+from logger_setup import frontend_log_queue, add_file_handler # 日志记录器和前端日志队列
 # emby_handler 和 utils 会在需要的地方被 core_processor 或此文件中的函数调用
 # 如果直接在此文件中使用它们的功能，也需要在这里导入
 import utils       # 例如，用于 /api/search_media
 # from douban import DoubanApi # 通常不需要在 web_app.py 直接导入 DoubanApi，由 MediaProcessor 管理
 # --- 核心模块导入结束 ---
+logger = logging.getLogger(__name__)
 static_folder='static'
 app = Flask(__name__)
 # CORS(app) # 最简单的全局启用 CORS，允许所有源
@@ -598,9 +600,12 @@ def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，�
     except Exception as e:
         logger.error(f"保存配置文件或重新初始化组件时失败: {e}", exc_info=True)
 
-# --- MediaProcessor 初始化 ---
 def initialize_processors():
-    global media_processor_instance
+    """
+    【修复版】初始化所有需要的处理器实例，包括 MediaProcessor 和 WatchlistProcessor。
+    """
+    # ★★★ 1. 声明所有需要修改的全局变量 ★★★
+    global media_processor_instance, watchlist_processor_instance
     
     if not APP_CONFIG:
         logger.error("无法初始化处理器：全局配置 APP_CONFIG 为空。")
@@ -609,8 +614,12 @@ def initialize_processors():
     current_config = APP_CONFIG.copy()
     current_config['db_path'] = DB_PATH
 
+    # --- 初始化 MediaProcessor (您的原有逻辑) ---
     if media_processor_instance:
-        media_processor_instance.close()
+        try:
+            media_processor_instance.close()
+        except Exception as e:
+            logger.warning(f"关闭旧的 media_processor_instance 时出错: {e}")
 
     use_sa_mode = current_config.get(constants.CONFIG_OPTION_USE_SA_MODE, True)
     
@@ -622,11 +631,32 @@ def initialize_processors():
             logger.info("【模式切换】当前为：普通模式")
             media_processor_instance = MediaProcessorAPI(config=current_config)
         
-        logger.debug("处理器实例已成功创建/更新。")
+        logger.debug("MediaProcessor 实例已成功创建/更新。")
 
     except Exception as e:
-        logger.error(f"创建处理器实例失败: {e}", exc_info=True)
+        logger.error(f"创建 MediaProcessor 实例失败: {e}", exc_info=True)
         media_processor_instance = None
+
+    # --- ★★★ 2. 新增：初始化 WatchlistProcessor ★★★ ---
+    if watchlist_processor_instance:
+        try:
+            watchlist_processor_instance.close()
+        except Exception as e:
+            logger.warning(f"关闭旧的 watchlist_processor_instance 时出错: {e}")
+
+    # 追剧功能通常依赖于核心配置，我们在这里创建它，让它随时待命
+    # 假设 WatchlistProcessor 也需要 Emby URL 和 API Key
+    if current_config.get("emby_server_url") and current_config.get("emby_api_key"):
+        try:
+            # 假设 WatchlistProcessor 的构造函数和 MediaProcessor 类似，接收一个 config 字典
+            watchlist_processor_instance = WatchlistProcessor(config=current_config)
+            logger.info("WatchlistProcessor 实例已成功初始化，随时待命。")
+        except Exception as e:
+            logger.error(f"创建 WatchlistProcessor 实例失败: {e}", exc_info=True)
+            watchlist_processor_instance = None # 初始化失败，明确设为 None
+    else:
+        logger.warning("WatchlistProcessor 未初始化，因为缺少必要的 Emby 配置。")
+        watchlist_processor_instance = None
 # --- 后台任务回调 ---
 def update_status_from_thread(progress: int, message: str):
     global background_task_status

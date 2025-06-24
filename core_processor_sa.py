@@ -13,11 +13,13 @@ import random
 import emby_handler
 import tmdb_handler
 import utils
-from logger_setup import logger
 import constants
+import logging
 from actor_utils import ActorDBManager
 from ai_translator import AITranslator
 from watchlist_processor import WatchlistProcessor
+
+logger = logging.getLogger(__name__)
 try:
     from douban import DoubanApi
     DOUBAN_API_AVAILABLE = True

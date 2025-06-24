@@ -10,9 +10,11 @@ from datetime import datetime
 import threading
 
 # 导入我们需要的辅助模块
-from logger_setup import logger
 import tmdb_handler
 import emby_handler
+import logging
+
+logger = logging.getLogger(__name__)
 
 class WatchlistProcessor:
     def __init__(self, config: Dict[str, Any]):

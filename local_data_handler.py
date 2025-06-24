@@ -2,9 +2,11 @@
 import os
 import json
 import re # 用于从文件夹名称中提取 IMDb ID
+import logging
 from typing import Optional, Dict, Any, List
-from logger_setup import logger
 from utils import clean_character_name_static # 假设 utils.py 中有这个函数
+
+logger = logging.getLogger(__name__)
 
 def find_local_json_path(
     local_data_root_path: str,

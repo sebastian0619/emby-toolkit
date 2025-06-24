@@ -4,11 +4,11 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from typing import List, Dict, Optional
 import re
-
+import logging
 # 从你的项目中导入 logger 和 utils
-from logger_setup import logger
 from utils import clean_character_name_static
 
+logger = logging.getLogger(__name__)
 class ParserError(Exception):
     pass
 

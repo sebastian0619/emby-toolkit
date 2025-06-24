@@ -7,7 +7,8 @@ import json
 import time
 import threading
 from typing import Optional, List, Dict, Any, Generator
-
+import logging
+logger = logging.getLogger(__name__)
 # (SimpleLogger 和 logger 的导入保持不变)
 
 
@@ -19,11 +20,6 @@ class SimpleLogger:
     def success(self, msg): print(f"[EMBY_SUCCESS] {msg}")
 
 
-try:
-    from logger_setup import logger
-except ImportError:
-    logger = SimpleLogger()
-    logger.warning("emby_handler using SimpleLogger as fallback.")
 
 # --- 在文件顶部定义一个用于测试的用户ID占位符 ---
 # !!! 请务必在测试前替换为真实的Emby用户ID !!!

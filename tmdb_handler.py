@@ -5,9 +5,9 @@ import json
 import os
 from utils import contains_chinese
 from typing import Optional, List, Dict, Any, Union
-from logger_setup import logger # 假设你的 logger 在这里
+import logging
 # import constants # 如果直接使用 constants.TMDB_API_KEY
-
+logger = logging.getLogger(__name__)
 # TMDb API 的基础 URL
 TMDB_API_BASE_URL = "https://api.themoviedb.org/3"
 

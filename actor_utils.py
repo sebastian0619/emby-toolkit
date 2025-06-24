@@ -5,12 +5,13 @@ import json
 from typing import Optional, Dict, Any, List, Tuple
 
 # 导入底层工具箱和日志
-from logger_setup import logger
+import logging
 import utils # 你提供的 utils.py
 import tmdb_handler
 from douban import DoubanApi
 from ai_translator import AITranslator
 
+logger = logging.getLogger(__name__)
 # ======================================================================
 # 模块 1: 数据库管理器 (The Unified Data Access Layer)
 # ======================================================================

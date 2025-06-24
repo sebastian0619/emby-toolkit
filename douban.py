@@ -4,8 +4,7 @@ import sqlite3
 import os
 import requests # type: ignore
 from typing import Optional, Dict, Any, List
-from logger_setup import logger
-
+import logging
 # --- 标准库导入 ---
 import json
 import re
@@ -17,6 +16,8 @@ from datetime import datetime
 from random import choice
 import threading
 # --- 标准库导入结束 ---
+
+logger = logging.getLogger(__name__)
 
 # --- 辅助函数 ---
 def clean_character_name_static(character_name: Optional[str]) -> str:
