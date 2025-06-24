@@ -15,7 +15,7 @@ import tmdb_handler
 import utils
 import constants
 import logging
-from actor_utils import ActorDBManager
+from actor_utils import ActorDBManager, batch_translate_cast
 from ai_translator import AITranslator
 from watchlist_processor import WatchlistProcessor
 
@@ -282,7 +282,7 @@ class MediaProcessorSA:
             logger.debug(f"AI翻译已启用，优先尝试使用 '{self.ai_translator.provider}' 进行翻译...")
             try:
                 # ai_translator.translate 应该在失败时返回 None 或抛出异常
-                ai_result = self.ai_translator.translate(text_stripped)
+                ai_result = self.batch_translate_cast(text_stripped)
                 if ai_result: # 确保AI返回了有效结果
                     final_translation = ai_result
                     final_engine = self.ai_translator.provider

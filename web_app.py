@@ -36,12 +36,10 @@ import logging
 import constants # 你的常量定义\
 import logging
 from logger_setup import frontend_log_queue, add_file_handler # 日志记录器和前端日志队列
-# emby_handler 和 utils 会在需要的地方被 core_processor 或此文件中的函数调用
-# 如果直接在此文件中使用它们的功能，也需要在这里导入
 import utils       # 例如，用于 /api/search_media
-# from douban import DoubanApi # 通常不需要在 web_app.py 直接导入 DoubanApi，由 MediaProcessor 管理
 # --- 核心模块导入结束 ---
 logger = logging.getLogger(__name__)
+logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 static_folder='static'
 app = Flask(__name__)
@@ -651,7 +649,7 @@ def initialize_processors():
         try:
             # 假设 WatchlistProcessor 的构造函数和 MediaProcessor 类似，接收一个 config 字典
             watchlist_processor_instance = WatchlistProcessor(config=current_config)
-            logger.info("WatchlistProcessor 实例已成功初始化，随时待命。")
+            logger.debug("WatchlistProcessor 实例已成功初始化，随时待命。")
         except Exception as e:
             logger.error(f"创建 WatchlistProcessor 实例失败: {e}", exc_info=True)
             watchlist_processor_instance = None # 初始化失败，明确设为 None
@@ -910,7 +908,7 @@ def setup_scheduled_tasks():
                 try:
                     def scheduled_watchlist_task():
                         # ... (内部逻辑保持不变)
-                        logger.info("定时任务触发：智能追剧更新。")
+                        logger.debug("定时任务触发：智能追剧更新。")
                         submit_task_to_queue(task_process_watchlist, "定时智能追剧更新")
 
                     scheduler.add_job(
