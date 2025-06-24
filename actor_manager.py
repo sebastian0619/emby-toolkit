@@ -63,40 +63,56 @@ class ActorManager:
         action = resolution.get("action")
         updated_names = resolution.get("updated_names", {})
         
-        if not action: return {"success": False, "message": "未提供裁决动作。"}
-
-        logger.info(f"开始解决冲突 (ID: {conflict_id}), 裁决动作: {action}")
+        # 用户权限验证（使用类变量中存储的current_user）
+        if not self.current_user:
+            return {"success": False, "message": "未识别用户身份，请先登录"}
+        
+        logger.info(f"用户 {self.current_user} 开始解决冲突 (ID: {conflict_id})")
 
         with self.db_manager._get_db_connection() as conn:
             cursor = conn.cursor()
             try:
-                cursor.execute("SELECT * FROM actor_conflicts WHERE conflict_id = ?", (conflict_id,))
+                # 1. 验证用户权限（假设有user_permissions表）
+                cursor.execute("""
+                    SELECT permission_level FROM user_permissions 
+                    WHERE user_id = ? AND resource_type = 'actor_conflict'
+                    """, (self.current_user,))
+                permission = cursor.fetchone()
+                
+                if not permission or permission['permission_level'] < 2:  # 假设2是编辑权限
+                    return {"success": False, "message": "用户没有解决冲突的权限"}
+
+                # 2. 获取冲突详情
+                cursor.execute("""
+                    SELECT * FROM actor_conflicts 
+                    WHERE conflict_id = ? AND status = 'pending'
+                    """, (conflict_id,))
                 conflict = cursor.fetchone()
-                if not conflict: return {"success": False, "message": f"找不到冲突ID: {conflict_id}"}
+                
+                if not conflict: 
+                    return {"success": False, "message": f"找不到待解决的冲突ID: {conflict_id}"}
 
-                # --- 步骤 1: 如果名字被修改，先更新 Emby 和本地数据库 ---
+                # 3. 名字更新逻辑（加入用户验证）
                 if updated_names:
-                    # 更新“原告”的名字
-                    new_name = updated_names.get('new_actor_name')
-                    if new_name and conflict['new_tmdb_id']:
-                        # 先找到这个演员在Emby里的ID
-                        cursor.execute("SELECT emby_person_id FROM person_identity_map WHERE tmdb_person_id = ?", (conflict['new_tmdb_id'],))
-                        person_row = cursor.fetchone()
-                        if person_row and person_row['emby_person_id']:
-                            logger.info(f"准备更新Emby中演员 '{person_row['emby_person_id']}' 的名字为 '{new_name}'")
-                            emby_handler.update_person_details(person_row['emby_person_id'], {"Name": new_name}, self.emby_url, self.emby_api_key, self.emby_user_id)
-                        # 无论Emby是否更新成功，都更新本地数据库
-                        cursor.execute("UPDATE person_identity_map SET primary_name = ? WHERE tmdb_person_id = ?", (new_name, conflict['new_tmdb_id']))
+                    # 更新新演员名字
+                    if new_name := updated_names.get('new_actor_name'):
+                        self._update_actor_name(
+                            cursor,
+                            tmdb_id=conflict['new_tmdb_id'],
+                            new_name=new_name,
+                            old_name=conflict['new_primary_name'],
+                            user_id=self.current_user
+                        )
 
-                    # 更新“被告”的名字 (逻辑同上)
-                    existing_name = updated_names.get('existing_actor_name')
-                    if existing_name and conflict['existing_tmdb_id']:
-                        cursor.execute("SELECT emby_person_id FROM person_identity_map WHERE tmdb_person_id = ?", (conflict['existing_tmdb_id'],))
-                        person_row = cursor.fetchone()
-                        if person_row and person_row['emby_person_id']:
-                            logger.info(f"准备更新Emby中演员 '{person_row['emby_person_id']}' 的名字为 '{existing_name}'")
-                            emby_handler.update_person_details(person_row['emby_person_id'], {"Name": existing_name}, self.emby_url, self.emby_api_key, self.emby_user_id)
-                        cursor.execute("UPDATE person_identity_map SET primary_name = ? WHERE tmdb_person_id = ?", (existing_name, conflict['existing_tmdb_id']))
+                    # 更新现有演员名字
+                    if existing_name := updated_names.get('existing_actor_name'):
+                        self._update_actor_name(
+                            cursor,
+                            tmdb_id=conflict['existing_tmdb_id'],
+                            new_name=existing_name,
+                            old_name=conflict['existing_primary_name'],
+                            user_id=self.current_user
+                        )
 
                 # 3. 根据 action 执行核心裁决逻辑
                 if action == "merge_new_to_existing":
