@@ -67,7 +67,6 @@ COPY local_data_handler.py .
 COPY web_parser.py .  
 COPY ai_translator.py . 
 COPY watchlist_processor.py .
-COPY actor_manager.py .
 COPY actor_sync_handler.py .
 COPY actor_utils.py .
 

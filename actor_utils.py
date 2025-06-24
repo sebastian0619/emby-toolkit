@@ -60,17 +60,6 @@ class ActorDBManager:
                 logger.error(f"查询 person_identity_map 时出错 ({column}={value}): {e}")
         return None
 
-    # --- 别名翻译官 ---
-    def get_authoritative_tmdb_id(self, cursor: sqlite3.Cursor, tmdb_id: str) -> str:
-        """查询别名表，返回权威的 master_tmdb_id。"""
-        if not tmdb_id: return tmdb_id
-        try:
-            cursor.execute("SELECT master_tmdb_id FROM actor_aliases WHERE alias_tmdb_id = ?", (tmdb_id,))
-            result = cursor.fetchone()
-            return result['master_tmdb_id'] if result else tmdb_id
-        except sqlite3.Error:
-            return tmdb_id
-
     # --- 核心写入/更新逻辑 ---
     def upsert_person(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any], tmdb_api_key: str) -> int:
         
@@ -123,85 +112,12 @@ class ActorDBManager:
 
         except sqlite3.IntegrityError as e:
             # ★★★ 现在可以放心地调用我们强大的书记员了 ★★★
-            self.record_conflict(cursor, clean_data, str(e), tmdb_api_key)
             
             # 即使冲突，也尝试返回一个已存在的 map_id，让流程能继续下去
             # （比如，API模式下，虽然没能关联上豆瓣，但至少把Emby和TMDb的信息更新了）
             conflicting_person = self.find_person_by_any_id(cursor, **clean_data)
             return conflicting_person['map_id'] if conflicting_person else -1
             
-    # --- 冲突记录员 ---
-    def record_conflict(self, cursor: sqlite3.Cursor, conflicting_data: Dict[str, Any], error_msg: str, tmdb_api_key: str):
-        """
-        【智能书记员 V2 - 带证件照】
-        解析错误信息，获取双方头像，并将详细的数据冲突事件记录到 actor_conflicts 表。
-        """
-        logger.warning(f"检测到数据冲突，开始立案。错误信息: {error_msg}")
-
-        # --- 步骤 1: 解析错误信息 (保持不变) ---
-        match = re.search(r"UNIQUE constraint failed: \w+\.(\w+)", error_msg)
-        if not match: return
-        conflicting_column = match.group(1)
-        conflicting_value = conflicting_data.get(conflicting_column)
-        if not conflicting_value: return
-
-        # --- 步骤 2: 反查数据库找出“被告” (保持不变) ---
-        cursor.execute(f"SELECT * FROM person_identity_map WHERE {conflicting_column} = ?", (conflicting_value,))
-        occupant = cursor.fetchone()
-        if not occupant: return
-
-        # ★★★ 步骤 2.5: 获取双方的“证件照” (TMDb profile_path) ★★★
-        new_tmdb_id = conflicting_data.get("tmdb_person_id")
-        existing_tmdb_id = occupant["tmdb_person_id"]
-        
-        new_actor_image_path = None
-        existing_actor_image_path = None
-
-        if tmdb_api_key:
-            if new_tmdb_id:
-                new_details = tmdb_handler.get_person_details_tmdb(new_tmdb_id, tmdb_api_key)
-                if new_details: new_actor_image_path = new_details.get("profile_path")
-            
-            if existing_tmdb_id:
-                existing_details = tmdb_handler.get_person_details_tmdb(existing_tmdb_id, tmdb_api_key)
-                if existing_details: existing_actor_image_path = existing_details.get("profile_path")
-        else:
-            logger.warning("记录冲突时未提供TMDb API Key，无法获取演员头像。")
-
-        # --- 步骤 3: 准备完整的案卷信息 ---
-        conflict_record = {
-            "conflict_type": f"{conflicting_column.upper()}_OCCUPIED",
-            "new_tmdb_id": new_tmdb_id,
-            "new_actor_name": conflicting_data.get("primary_name"),
-            "new_actor_image_path": new_actor_image_path, # <-- 附上证件照
-            "conflicting_value": str(conflicting_value),
-            "existing_tmdb_id": existing_tmdb_id,
-            "existing_actor_name": occupant["primary_name"],
-            "existing_actor_image_path": existing_actor_image_path, # <-- 附上证件照
-            "status": "pending"
-        }
-
-        # --- 步骤 4: 将完整的冲突案件写入 actor_conflicts 表 ---
-        # 使用 INSERT OR IGNORE 避免重复记录完全相同的冲突案件
-        # 我们基于 new_tmdb_id 和 conflicting_value 来判断是否重复
-        # 注意：这需要你在 actor_conflicts 表上为 (new_tmdb_id, conflicting_value) 创建一个 UNIQUE 约束
-        # 如果不想改表结构，就去掉 OR IGNORE
-        cols = list(conflict_record.keys())
-        vals = list(conflict_record.values())
-        
-        sql = f"""
-            INSERT INTO actor_conflicts ({', '.join(cols)}, detected_at)
-            VALUES ({', '.join(['?'] * len(cols))}, CURRENT_TIMESTAMP)
-        """
-        
-        try:
-            cursor.execute(sql, tuple(vals))
-            logger.info(f"✅ 冲突演员已记录在案：'{conflict_record['new_actor_name']}' (TMDb: {conflict_record['new_tmdb_id']}) "
-                        f"因 '{conflict_record['conflict_type']}' 与 "
-                        f"'{conflict_record['existing_actor_name']}' (TMDb: {conflict_record['existing_tmdb_id']}) 发生冲突。")
-        except Exception as e:
-            logger.error(f"写入冲突记录到数据库时失败: {e}")
-
 
 # ======================================================================
 # 模块 2: 通用的业务逻辑函数 (Business Logic Helpers)

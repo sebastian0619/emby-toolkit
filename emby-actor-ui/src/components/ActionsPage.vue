@@ -66,7 +66,7 @@
                   导出
                 </n-button>
                 <n-upload
-                  action="/api/import_person_map"
+                  action="/api/actors/import"
                   :show-file-list="false"
                   @before-upload="beforeImport"
                   @finish="afterImport"
@@ -231,7 +231,7 @@ const exportMap = async () => {
   isExporting.value = true;
   try {
     const response = await axios({
-      url: '/api/export_person_map',
+      url: '/api/actors/export', // ✅ 改为统一接口
       method: 'GET',
       responseType: 'blob',
     });
@@ -239,41 +239,38 @@ const exportMap = async () => {
     const contentDisposition = response.headers['content-disposition'];
     let filename = 'person_map_backup.csv';
     if (contentDisposition) {
-      const filenameMatch = contentDisposition.match(/filename="?(.+)"?/);
-      if (filenameMatch.length === 2)
-        filename = filenameMatch[1];
+      const match = contentDisposition.match(/filename="?(.+?)"?$/);
+      if (match?.[1]) filename = match[1];
     }
 
-    const url = window.URL.createObjectURL(new Blob([response.data]));
+    const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
     const link = document.createElement('a');
-    link.href = url;
+    link.href = blobUrl;
     link.setAttribute('download', filename);
     document.body.appendChild(link);
     link.click();
-    document.body.removeChild(link);
-    window.URL.revokeObjectURL(url);
+    link.remove();
+    window.URL.revokeObjectURL(blobUrl);
 
     message.success('映射表已开始导出下载！');
-  } catch (error) {
-    console.error('导出失败:', error);
+  } catch (err) {
+    console.error('导出失败:', err);
     message.error('导出映射表失败，请查看日志。');
   } finally {
     isExporting.value = false;
   }
 };
 
-const beforeImport = () => {
-  isImporting.value = true;
-  message.loading('正在上传并导入文件，请稍候...', { duration: 0 });
-  return true;
-};
-
 const afterImport = ({ event }) => {
   isImporting.value = false;
   message.destroyAll();
   try {
-    const response = JSON.parse(event.target.response);
-    message.success(response.message || '导入成功！');
+    const response = JSON.parse(event?.target?.response ?? '{}');
+    if (response?.message) {
+      message.success(response.message);
+    } else {
+      message.error('导入完成，但响应无明确信息。');
+    }
   } catch (e) {
     message.error('导入成功，但无法解析服务器响应。');
   }
@@ -283,8 +280,8 @@ const errorImport = ({ event }) => {
   isImporting.value = false;
   message.destroyAll();
   try {
-    const response = JSON.parse(event.target.response);
-    message.error(response.error || '导入失败，未知错误。');
+    const response = JSON.parse(event?.target?.response ?? '{}');
+    message.error(response?.error || '导入失败，未知错误。');
   } catch (e) {
     message.error('导入失败，并且无法解析服务器错误响应。');
   }

@@ -20,7 +20,6 @@ from douban import DoubanApi
 from typing import Optional, Dict, Any, List, Tuple, Union # 确保 List 被导入
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from actor_manager import ActorManager
 import pytz # 用于处理时区
 import atexit # 用于应用退出处理
 from core_processor_sa import MediaProcessorSA
@@ -29,6 +28,7 @@ import csv
 from io import StringIO
 from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
+from actor_utils import ActorDBManager
 from flask import session
 from croniter import croniter
 import logging
@@ -242,50 +242,6 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_imdb_id ON person_identity_map (imdb_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_id ON person_identity_map (douban_celebrity_id)")
         logger.debug("  -> [核心] 'person_identity_map' 表已创建。")
-
-        # 辅助表：actor_aliases (别名仓库)
-        # 职责：记录重复的TMDb ID，并将它们指向一个权威的“主”ID。
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS actor_aliases (
-                alias_tmdb_id TEXT PRIMARY KEY,      -- 重复的/别名的 TMDb ID
-                master_tmdb_id TEXT NOT NULL,        -- 指向的权威的/主 TMDb ID
-                merge_reason TEXT,
-                merged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_aliases_master_id ON actor_aliases (master_tmdb_id)")
-        logger.debug("  -> [辅助] 'actor_aliases' 表已创建。")
-
-        # 辅助表：actor_conflicts (冲突事件记录本)
-        # 职责：作为“法院收案登记处”，记录所有需要人工审核的数据冲突。
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS actor_conflicts (
-                conflict_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                conflict_type TEXT NOT NULL,
-                
-                new_tmdb_id TEXT, -- ★★★ 改为允许 NULL ★★★
-                new_actor_name TEXT,
-                new_actor_image_path TEXT,
-
-                conflicting_value TEXT, -- ★★★ 改为允许 NULL ★★★
-                
-                existing_tmdb_id TEXT, -- ★★★ 改为允许 NULL ★★★
-                existing_actor_name TEXT,
-                existing_actor_image_path TEXT,
-
-                status TEXT DEFAULT 'pending',
-                detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                resolved_at TIMESTAMP,
-                resolution_type TEXT,
-                
-                -- ★★★ 新增 UNIQUE 约束，防止重复立案 ★★★
-                UNIQUE(new_tmdb_id, existing_tmdb_id, conflict_type)
-            )
-        """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_conflicts_status ON actor_conflicts (status)")
-        logger.debug("  -> [辅助] 'actor_conflicts' 表已创建。")
-        
-        logger.debug("演员身份管理体系构建完成。")
 
         # --- 6. 提交事务 ---
         conn.commit()
@@ -897,8 +853,7 @@ def setup_scheduled_tasks():
                 logger.info("定时任务触发：演员映射表同步。")
                 submit_task_to_queue(
                     task_sync_person_map,
-                    "定时同步演员映射表",
-                    is_full_sync=False
+                    "定时同步演员映射表"
                 )
 
             scheduler.add_job(
@@ -991,15 +946,19 @@ def task_process_full_library(processor: MediaProcessorSA, process_episodes: boo
 
 def task_sync_person_map(processor):
     """
-    任务：同步演员映射表（已简化为单一模式）。
+    【最终兼容版】任务：同步演员映射表。
+    接收 processor 和 is_full_sync 以匹配通用任务执行器，
+    但内部逻辑已统一，不再使用 is_full_sync。
     """
-    task_name = "演员映射表同步"
-    # 移除了 if is_full_sync 的判断逻辑
+    task_name = "统一演员映射表同步"
+    # 我们不再需要根据 is_full_sync 来改变任务名了，因为逻辑已经统一
     
     logger.info(f"开始执行 '{task_name}'...")
     
     try:
+        # ★★★ 从传入的 processor 对象中获取 config 字典 ★★★
         config = processor.config
+        
         sync_handler = UnifiedSyncHandler(
             db_path=DB_PATH,
             emby_url=config.get("emby_server_url"),
@@ -1008,6 +967,7 @@ def task_sync_person_map(processor):
             tmdb_api_key=config.get("tmdb_api_key", "")
         )
         
+        # 调用同步方法，不再需要传递 is_full_sync
         sync_handler.sync_emby_person_map_to_db(
             update_status_callback=update_status_from_thread
         )
@@ -1072,22 +1032,60 @@ def task_process_single_watchlist_item(processor: WatchlistProcessor, item_id: s
     """任务：只更新追剧列表中的一个特定项目"""
     # 传递 item_id，执行单项更新
     processor.process_watching_list(item_id=item_id)
-# ★★★ 扫描并记录重复演员 ★★★
-def task_find_duplicates(processor): # <--- 加上 processor 参数
-    """【带状态汇报版】任务：扫描并记录重复演员。"""
+# ★★★ 导入映射表 ★★★
+def task_import_person_map(file_content: str, tmdb_api_key: str):
+    """
+    【后台任务】从一个CSV文件字符串内容中，导入演员映射表。
+    """
+    task_name = "导入演员映射表"
+    logger.info(f"后台任务 '{task_name}' 开始执行...")
+    update_status_from_thread(0, "准备开始导入...")
+
     try:
-        # ★★★ 在任务开始时，汇报状态 ★★★
-        update_status_from_thread(0, "开始扫描数据库查找同名演员...")
+        stream = StringIO(file_content, newline=None)
         
-        # 调用大法官的方法，并获取返回的消息
-        result = actor_manager_instance.find_and_record_duplicates()
+        # 先计算总行数用于进度条
+        # 注意：这里我们不能消耗 stream，所以需要一种更聪明的方法
+        # 一个简单的方法是，先完整读取，再创建 stream
+        lines = file_content.splitlines()
+        total_lines = len(lines) - 1 if len(lines) > 0 else 0
         
-        # ★★★ 任务结束时，用返回的消息汇报最终状态 ★★★
-        update_status_from_thread(100, result.get("message", "扫描完成。"))
+        # 重新创建 stream 用于 DictReader
+        stream_for_reader = StringIO(file_content, newline=None)
+        csv_reader = csv.DictReader(stream_for_reader)
         
+        stats = {"total": total_lines, "processed": 0, "skipped": 0, "errors": 0}
+        db_manager = ActorDBManager(DB_PATH)
+
+        with db_manager._get_db_connection() as conn:
+            cursor = conn.cursor()
+            for i, row in enumerate(csv_reader):
+                # ... (处理每一行的逻辑，和我们之前讨论的一样) ...
+                person_data = {
+                    "tmdb_id": row.get('tmdb_person_id'),
+                    "emby_id": row.get('emby_person_id'),
+                    "name": row.get('primary_name'),
+                    # ...
+                }
+                # ...
+                try:
+                    db_manager.upsert_person(cursor, person_data, tmdb_api_key)
+                    stats["processed"] += 1
+                except Exception as e_row:
+                    stats["errors"] += 1
+                
+                # ★★★ 在循环中汇报进度 ★★★
+                if i > 0 and i % 100 == 0 and update_status_from_thread and total_lines > 0:
+                    progress = int(((i + 1) / total_lines) * 100)
+                    update_status_from_thread(progress, f"正在导入... ({i+1}/{total_lines})")
+
+        message = f"导入完成。总行数: {stats['total']}, 成功处理: {stats['processed']}..."
+        logger.info(f"导入任务完成: {message}")
+        update_status_from_thread(100, "导入完成！")
+
     except Exception as e:
-        logger.error(f"扫描重复演员任务失败: {e}", exc_info=True)
-        update_status_from_thread(-1, "扫描任务失败！")
+        logger.error(f"后台导入任务失败: {e}", exc_info=True)
+        update_status_from_thread(-1, f"导入失败: {e}")
 # --- 路由区 ---
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
@@ -1188,8 +1186,7 @@ def trigger_sync_person_map(): # WebUI 用的
 
     submit_task_to_queue(
         task_sync_person_map,
-        task_name,
-        is_full_sync=False
+        task_name
     )
 
     flash(f"'{task_name}' 任务已在后台启动。", "info")
@@ -1650,15 +1647,15 @@ def api_handle_trigger_full_scan():
 @app.route('/api/trigger_sync_person_map', methods=['POST'])
 @login_required
 def api_handle_trigger_sync_map():
-    logger.debug("API Endpoint: Received request to trigger sync person map.")
+    logger.debug("API: 收到触发统一演员映射表同步的请求。")
     try:
-        # 移除了所有 full_sync_flag 相关的逻辑
-        task_name_for_api = "同步Emby演员映射表 (API)"
-
-        # 调用任务时，只传递 processor 实例
+        # ★★★ 核心修复：不再需要 full_sync，因为同步逻辑已经统一 ★★★
+        task_name_for_api = "同步演员映射表"
+        
         submit_task_to_queue(
             task_sync_person_map,
-            task_name_for_api
+            task_name_for_api,
+            media_processor_instance# 只传递任务需要的 processor
         )
 
         return jsonify({"message": f"'{task_name_for_api}' 任务已提交启动。"}), 202
@@ -1802,70 +1799,37 @@ def api_export_person_map():
 @login_required
 def api_import_person_map():
     """
-    【统一版】导入演员身份映射表，并智能地更新或插入到 person_identity_map。
+    【队列版】接收上传的CSV文件，读取内容，并提交一个后台任务来处理它。
     """
-    logger.info("API: 收到导入演员映射表的请求，将操作统一的 'person_identity_map' 表。")
+    if task_lock.locked():
+        return jsonify({"error": "后台已有任务在运行，请稍后再试。"}), 409
 
     if 'file' not in request.files:
         return jsonify({"error": "请求中未找到文件部分"}), 400
     
     file = request.files['file']
-    if file.filename == '' or not file.filename.endswith('.csv'):
-        return jsonify({"error": "未选择文件或文件类型不正确 (需要 .csv)"}), 400
+    if not file.filename or not file.filename.endswith('.csv'):
+        return jsonify({"error": "未选择文件或文件类型不正确"}), 400
 
     try:
-        file_content = file.stream.read().decode("utf-8-sig") # 使用 utf-8-sig 兼容带BOM的CSV
-        stream = StringIO(file_content, newline=None)
-        csv_reader = csv.DictReader(stream)
-        
-        # 验证表头是否基本正确
-        expected_headers = ['tmdb_person_id', 'emby_person_id']
-        if not all(h in csv_reader.fieldnames for h in expected_headers):
-            return jsonify({"error": "文件格式不正确，表头必须至少包含 'tmdb_person_id' 和 'emby_person_id'。"}), 400
+        # 1. 直接将文件内容读入内存字符串
+        file_content = file.stream.read().decode("utf-8-sig")
+        logger.info(f"已接收上传文件 '{file.filename}'，内容长度: {len(file_content)}")
 
-        stats = {"total": 0, "processed": 0, "skipped": 0, "errors": 0}
+        # 2. 提交一个后台任务，把文件内容和需要的配置传过去
+        submit_task_to_queue(
+            task_import_person_map,
+            "导入演员映射表",
+            # ★★★ 把任务需要的所有东西，都作为关键字参数传递 ★★★
+            file_content=file_content,
+            tmdb_api_key=app.config.get("tmdb_api_key", "")
+        )
         
-        # ★★★ 使用我们强大的 ActorDBManager 来处理每一行数据 ★★★
-        # actor_manager_instance 是在应用启动时创建的全局实例
-        with actor_manager_instance.db_manager._get_db_connection() as conn:
-            cursor = conn.cursor()
-            for row in csv_reader:
-                stats["total"] += 1
-                
-                # 准备要传递给 upsert_person 的数据
-                person_data = {
-                    "tmdb_id": row.get('tmdb_person_id'),
-                    "emby_id": row.get('emby_person_id'),
-                    "imdb_id": row.get('imdb_id'),
-                    "douban_id": row.get('douban_celebrity_id'),
-                    "name": row.get('primary_name'),
-                }
-                
-                # 清理一下空值
-                clean_person_data = {k: v for k, v in person_data.items() if v}
-                if not clean_person_data.get('name'):
-                    stats['skipped'] += 1
-                    continue
-                
-                try:
-                    # 调用我们统一的、健壮的写入函数
-                    actor_manager_instance.db_manager.upsert_person(
-                        cursor, 
-                        clean_person_data,
-                        app.config.get("tmdb_api_key", "") # 传递API Key用于记录冲突
-                    )
-                    stats["processed"] += 1
-                except Exception as e_row:
-                    stats["errors"] += 1
-                    logger.error(f"导入行 {row} 时数据库出错: {e_row}")
-
-        message = f"导入完成。总行数: {stats['total']}, 成功处理: {stats['processed']}, 跳过: {stats['skipped']}, 错误: {stats['errors']}."
-        logger.info(f"API: {message}")
-        return jsonify({"message": message}), 200
+        return jsonify({"message": "文件上传成功，已提交到后台队列进行导入。"}), 202
 
     except Exception as e:
-        logger.error(f"导入文件时发生严重错误: {e}", exc_info=True)
-        return jsonify({"error": f"处理文件时发生错误: {e}"}), 500
+        logger.error(f"处理导入文件请求时发生错误: {e}", exc_info=True)
+        return jsonify({"error": f"处理上传文件时发生服务器错误"}), 500
 # ✨✨✨ 神医编辑页面的API接口 ✨✨✨
 @app.route('/api/media_for_editing_sa/<item_id>', methods=['GET'])
 @login_required
@@ -2369,67 +2333,6 @@ def api_trigger_single_watchlist_update(item_id):
     )
     
     return jsonify({"message": f"项目 {item_id} 的更新任务已在后台启动！"}), 202
-# ★★★ 演员冲突管理 ★★★
-@app.route('/api/actors/conflicts', methods=['GET'])
-@login_required
-def api_get_actor_conflicts():
-    """API: 获取待处理的演员冲突列表 (支持分页和搜索)。"""
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 15, type=int)
-    query_filter = request.args.get('query', '', type=str).strip()
-
-    # ... (分页参数校验) ...
-    offset = (page - 1) * per_page
-    
-    try:
-        # ★★★ 直接调用我们大法官的方法 ★★★
-        # 我们需要改造 ActorManager 来支持分页和搜索
-        paginated_result = actor_manager_instance.get_pending_conflicts(
-            page=page, 
-            page_size=per_page,
-            search_query=query_filter
-        )
-        return jsonify(paginated_result)
-        
-    except Exception as e:
-        logger.error(f"API /api/actors/conflicts GET error: {e}", exc_info=True)
-        return jsonify({"error": "获取冲突列表失败"}), 500
-# ★★★ 解决一个指定的演员冲突 ★★★
-@app.route('/api/actors/resolve_conflict/<int:conflict_id>', methods=['POST'])
-@login_required
-def api_resolve_actor_conflict(conflict_id):
-    """API: 解决一个指定的演员冲突。"""
-    try:
-        resolution_data = request.json
-        if not resolution_data or not resolution_data.get("action"):
-            return jsonify({"error": "请求体中缺少裁决动作 'action'"}), 400
-            
-        result = actor_manager_instance.resolve_conflict(conflict_id, resolution_data)
-        
-        if result.get("success"):
-            return jsonify({"message": result.get("message")})
-        else:
-            return jsonify({"error": result.get("message")}), 500
-            
-    except Exception as e:
-        logger.error(f"API /api/actors/resolve_conflict POST error: {e}", exc_info=True)
-        return jsonify({"error": "解决冲突时发生服务器内部错误"}), 500
-# ★★★ 触发一个后台任务来扫描潜在的重复演员 ★★★
-@app.route('/api/actors/find_duplicates', methods=['POST'])
-@login_required
-def api_find_duplicate_actors():
-    """API: 触发一个后台任务来扫描潜在的重复演员。"""
-    task_name = "扫描重复演员"
-    try:
-        # ★★★ 核心修复：只告诉工人要去干哪个活，不给他任何多余的工具 ★★★
-        submit_task_to_queue(
-            task_find_duplicates, 
-            task_name
-        )
-        return jsonify({"message": f"'{task_name}' 任务已提交到后台执行。"}), 202
-    except Exception as e:
-        logger.error(f"API /api/actors/find_duplicates error: {e}", exc_info=True)
-        return jsonify({"error": "启动扫描任务时发生服务器内部错误"}), 500
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
@@ -2454,13 +2357,6 @@ if __name__ == '__main__':
     # 3. 初始化认证系统 (它会依赖全局配置)
     init_auth()
 
-    actor_manager_instance = ActorManager(
-        db_path=DB_PATH, 
-        tmdb_api_key=app.config.get("tmdb_api_key", ""),
-        emby_url=app.config.get("emby_server_url"),
-        emby_api_key=app.config.get("emby_api_key"),
-        emby_user_id=app.config.get("emby_user_id")
-    )
     # 4. ★★★ 创建唯一的 MediaProcessor 实例 ★★★
     initialize_processors()
     

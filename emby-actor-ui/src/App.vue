@@ -187,7 +187,6 @@ const menuOptions = computed(() => {
     { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
     { type: 'divider', key: 'd1' },
     { label: '任务中心', key: 'actions-status', icon: renderIcon(ActionsIcon) },
-    { label: '演员管理', key: 'ActorConflicts', icon: renderIcon(ActionsIcon) },
     { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
   ];
 
