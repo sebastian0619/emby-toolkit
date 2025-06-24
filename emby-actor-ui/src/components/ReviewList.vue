@@ -1,8 +1,9 @@
 <!-- src/components/ReviewList.vue -->
 <template>
   <n-card title="媒体库浏览器" class="beautified-card" :bordered="false" size="small">
+    <!-- ✅ [修正] Access prop via `props.taskStatus` -->
     <n-alert 
-      v-if="taskStatus.is_running" 
+      v-if="props.taskStatus?.is_running" 
       title="后台任务运行中" 
       type="warning" 
       style="margin-bottom: 20px;"
@@ -35,6 +36,18 @@
             </n-button>
           </template>
           确定要清空所有 {{ totalItems }} 条待复核记录吗？此操作不可恢复。
+        </n-popconfirm>
+        <n-popconfirm
+            @positive-click="reprocessAllReviewItems"
+        >
+            <template #trigger>
+                <!-- ✅ [修正] Access prop via `props.taskStatus` -->
+                <n-button type="warning" ghost :disabled="tableData.length === 0 || loading || props.taskStatus?.is_running || isShowingSearchResults">
+                    <template #icon><n-icon :component="ReprocessIcon" /></template>
+                    重新处理所有
+                </n-button>
+            </template>
+            确定要重新处理所有 {{ totalItems }} 条待复核记录吗？
         </n-popconfirm>
 
       <n-spin :show="loading">
@@ -77,13 +90,20 @@ import {
 import { HeartOutline as AddToWatchlistIcon } from '@vicons/ionicons5';
 import { SearchOutline as SearchIcon, PlayForwardOutline as ReprocessIcon, CheckmarkCircleOutline as MarkDoneIcon, TrashOutline as TrashIcon } from '@vicons/ionicons5';
 
-// ✨✨✨ [新增] 1. 引入 useConfig 以获取全局配置 ✨✨✨
 import { useConfig } from '../composables/useConfig';
+
+// ✅ [修正] defineProps returns an object, which we've named `props`.
+const props = defineProps({
+  taskStatus: {
+    type: Object,
+    required: true,
+    // Providing a default is still good practice, but required: true makes it mandatory.
+    default: () => ({ is_running: false }) 
+  }
+});
 
 const router = useRouter();
 const message = useMessage();
-
-// ✨✨✨ [新增] 2. 调用 useConfig 获取响应式的配置模型 ✨✨✨
 const { configModel } = useConfig();
 
 const tableData = ref([]);
@@ -97,6 +117,7 @@ const loadingAction = ref({});
 const currentRowId = ref(null);
 const isShowingSearchResults = ref(false);
 
+// ... other functions like addToWatchlist, formatDate, etc. remain unchanged ...
 const addToWatchlist = async (rowData) => {
   if (rowData.item_type !== 'Series') {
     message.warning('只有剧集类型才能添加到追剧列表。');
@@ -141,34 +162,31 @@ const clearAllReviewItems = async () => {
   try {
     const response = await axios.post('/api/actions/clear_review_items');
     message.success(response.data.message);
-    fetchReviewItems(); 
+    await fetchReviewItems(); 
   } catch (err) {
     console.error("清空待复核列表失败:", err);
     message.error(`操作失败: ${err.response?.data?.error || err.message}`);
+  } finally {
     loading.value = false;
   }
 };
 
-// ✨✨✨ [修改] 3. 修改跳转函数，使其根据模式动态导航 ✨✨✨
 const goToEditPage = (row) => {
   if (!row || !row.item_id) {
     message.error("无效的媒体项，无法跳转到编辑页面！");
     return;
   }
   
-  // 检查配置是否已加载，防止在页面初始化时出错
   if (!configModel.value) {
     message.error("配置尚未加载，请稍后再试。");
     return;
   }
 
-  // 根据 use_sa_mode 的值决定要跳转的路由名称
   const routeName = configModel.value.use_sa_mode ? 'MediaEditSA' : 'MediaEditAPI';
 
-  // 执行跳转
   router.push({
-    name: routeName, // 使用动态计算出的路由名称
-    params: { itemId: row.item_id } // 传递 item ID
+    name: routeName,
+    params: { itemId: row.item_id }
   });
 };
 
@@ -178,7 +196,7 @@ const handleMarkAsProcessed = async (row) => {
   try {
     await axios.post(`/api/actions/mark_item_processed/${row.item_id}`);
     message.success(`项目 "${row.item_name}" 已标记为已处理。`);
-    fetchReviewItems();
+    await fetchReviewItems();
   } catch (err) {
     console.error("标记为已处理失败:", err);
     message.error(`标记项目 "${row.item_name}" 为已处理失败: ${err.response?.data?.error || err.message}`);
@@ -188,7 +206,7 @@ const handleMarkAsProcessed = async (row) => {
   }
 };
 
-// 表格列定义 columns 和其他函数保持不变，因为它们的逻辑是正确的
+
 const columns = computed(() => [
   {
     title: '媒体名称 (ID)',
@@ -197,13 +215,14 @@ const columns = computed(() => [
     render(row) {
       return h('div', { 
         style: 'cursor: pointer; padding: 5px 0;',
-        onClick: () => goToEditPage(row) // 这里的点击事件会调用我们修改后的 goToEditPage 函数
+        onClick: () => goToEditPage(row)
       }, [
         h(NText, { strong: true }, { default: () => row.item_name || '未知名称' }),
         h(NText, { depth: 3, style: 'font-size: 0.8em; display: block; margin-top: 2px;' }, { default: () => `(ID: ${row.item_id || 'N/A'})` })
       ]);
     }
   },
+  // ... other columns ...
   { 
     title: '类型', 
     key: 'item_type', 
@@ -234,18 +253,39 @@ const columns = computed(() => [
   {
     title: '操作',
     key: 'actions',
-    width: 220,
+    width: 280,
     align: 'center',
     fixed: 'right',
     render(row) {
       const actionButtons = [];
+      
+      if (!isShowingSearchResults.value) {
+        actionButtons.push(
+          h(NPopconfirm, { onPositiveClick: () => handleReprocessItem(row) }, {
+              trigger: () => h(NButton, {
+                  size: 'small',
+                  type: 'warning',
+                  ghost: true,
+                  loading: loadingAction.value[row.item_id] && currentRowId.value === row.item_id,
+                  // ✅ [修正] Access prop via `props.taskStatus`
+                  disabled: loadingAction.value[row.item_id] || props.taskStatus?.is_running
+              }, {
+                  icon: () => h(NIcon, { component: ReprocessIcon }),
+                  default: () => '重新处理'
+              }),
+              default: () => `确定要重新处理 "${row.item_name}" 吗？`
+          })
+        );
+      }
+
       actionButtons.push(
         h(NButton, {
           size: 'small',
           type: 'primary',
-          onClick: () => goToEditPage(row) // 这里的点击事件也会调用我们修改后的 goToEditPage 函数
+          onClick: () => goToEditPage(row)
         }, { default: () => '手动编辑' })
       );
+
       if (!isShowingSearchResults.value) {
         actionButtons.push(
           h(NPopconfirm, { onPositiveClick: () => handleMarkAsProcessed(row) }, {
@@ -254,27 +294,23 @@ const columns = computed(() => [
               type: 'success',
               ghost: true,
               loading: loadingAction.value[row.item_id] && currentRowId.value === row.item_id,
-              disabled: loadingAction.value[row.item_id]
+              // ✅ [修正] Access prop via `props.taskStatus`
+              disabled: loadingAction.value[row.item_id] || props.taskStatus?.is_running
             }, {
               icon: () => h(NIcon, { component: MarkDoneIcon }),
-              default: () => '标记完成'
             }),
             default: () => `确定要将 "${row.item_name}" 标记为已处理吗？`
           })
         );
       }
+      
       if (row.item_type === 'Series') {
         actionButtons.push(
           h(NButton, {
             size: 'small',
-            circle: true,
-            ghost: true,
-            type: 'info',
             title: '添加到追剧列表',
             onClick: () => addToWatchlist(row)
-          }, {
-            icon: () => h(NIcon, { component: AddToWatchlistIcon })
-          })
+          }, { icon: () => h(NIcon, { component: AddToWatchlistIcon }) })
         );
       }
       return h(NSpace, { justify: 'center' }, { default: () => actionButtons });
@@ -282,6 +318,7 @@ const columns = computed(() => [
   }
 ]);
 
+// ... other functions like paginationProps, fetchReviewItems, etc. remain unchanged ...
 const paginationProps = computed(() => ({
     disabled: isShowingSearchResults.value,
     page: currentPage.value,
@@ -341,6 +378,33 @@ const searchEmbyLibrary = async () => {
   }
 };
 
+const handleReprocessItem = async (row) => {
+  currentRowId.value = row.item_id;
+  loadingAction.value[row.item_id] = true;
+  try {
+    const response = await axios.post(`/api/actions/reprocess_item/${row.item_id}`);
+    message.success(response.data.message || `项目 "${row.item_name}" 的重新处理任务已提交。`);
+    await fetchReviewItems();
+  } catch (err) {
+    console.error("重新处理失败:", err);
+    message.error(`操作失败: ${err.response?.data?.error || err.message}`);
+  } finally {
+    loadingAction.value[row.item_id] = false;
+    currentRowId.value = null;
+  }
+};
+
+const reprocessAllReviewItems = async () => {
+  try {
+    const response = await axios.post('/api/actions/reprocess_all_review_items');
+    message.success(response.data.message || '重新处理所有待复核项的任务已成功提交！');
+  } catch (err)
+ {
+    console.error("提交重新处理所有任务失败:", err);
+    message.error(`操作失败: ${err.response?.data?.error || err.message}`);
+  }
+};
+
 const handleFetchError = (err, defaultMessage) => {
     console.error(defaultMessage, err);
     error.value = defaultMessage + (err.response?.data?.error || err.message);
@@ -356,13 +420,6 @@ const handleSearch = () => {
     fetchReviewItems();
   }
 };
-
-defineProps({
-  taskStatus: {
-    type: Object,
-    required: true
-  }
-});
 
 onMounted(() => {
   fetchReviewItems();

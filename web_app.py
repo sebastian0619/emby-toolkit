@@ -3,6 +3,7 @@ import os
 import re
 import inspect
 import sqlite3
+import shutil
 from actor_sync_handler import UnifiedSyncHandler
 import emby_handler
 import utils
@@ -1113,6 +1114,109 @@ def task_import_person_map(file_content: str, tmdb_api_key: str):
     except Exception as e:
         logger.error(f"后台导入任务失败: {e}", exc_info=True)
         update_status_from_thread(-1, f"导入失败: {e}")
+# ★★★ 获取 override 路径的辅助函数 ★★★
+def _get_override_path_for_item(item_type, tmdb_id):
+    """根据类型和ID返回 override 目录的路径"""
+    if not APP_CONFIG.get("local_data_path") or not tmdb_id:
+        return None
+        
+    base_path = os.path.join(APP_CONFIG.get("local_data_path"), "override")
+    
+    # 确保 item_type 是字符串，以防万一
+    item_type_str = str(item_type or '').lower()
+
+    if "movie" in item_type_str:
+        # 假设你的电影目录是 tmdb-movies2
+        return os.path.join(base_path, "tmdb-movies2", str(tmdb_id))
+    elif "series" in item_type_str:
+        return os.path.join(base_path, "tmdb-tv", str(tmdb_id))
+    
+    logger.warning(f"未知的媒体类型 '{item_type}'，无法确定 override 路径。")
+    return None
+# ★★★ 新任务函数 1: 重新处理单个项目 ★★★
+def task_reprocess_single_item(processor: MediaProcessorSA, item_id: str):
+    """
+    后台任务：完整地重新处理单个项目。
+    """
+    item_name_for_log = f"ItemID: {item_id}"
+    logger.info(f"--- 开始执行“重新处理单个项目”任务 ({item_name_for_log}) ---")
+    
+    try:
+        # 1. 获取详情
+        item_details = emby_handler.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+        if not item_details:
+            logger.error(f"无法获取项目 {item_id} 的详情，任务中止。")
+            update_status_from_thread(-1, f"获取 {item_id} 详情失败")
+            return
+
+        item_name_for_log = item_details.get("Name", item_name_for_log)
+        update_status_from_thread(10, f"正在处理: {item_name_for_log}")
+
+        # 2. 删除缓存
+        tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+        item_type = item_details.get("Type")
+        override_path = _get_override_path_for_item(item_type, tmdb_id)
+        if override_path and os.path.exists(override_path):
+            shutil.rmtree(override_path)
+            logger.info(f"已为 '{item_name_for_log}' 删除缓存: {override_path}")
+        update_status_from_thread(25, "缓存已清除")
+
+        # 3. 触发刷新
+        emby_handler.refresh_emby_item_metadata(item_id, processor.emby_url, processor.emby_api_key, replace_all_metadata_param=True)
+        logger.info(f"已向 Emby 发送对 '{item_name_for_log}' 的刷新请求。")
+        update_status_from_thread(40, "已触发Emby刷新，等待...")
+
+        # 4. 等待 Emby 完成刷新
+        time.sleep(60)
+        update_status_from_thread(70, "Emby刷新完成，开始神医处理...")
+
+        # 5. 调用 processor 的核心方法进行“神医”处理
+        #    process_single_item 内部已经有完整的日志和状态更新
+        processor.process_single_item(item_id, force_reprocess_this_item=True)
+
+    except Exception as e:
+        logger.error(f"重新处理 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
+        update_status_from_thread(-1, f"重新处理失败: {e}")
+
+
+# ★★★ 新任务函数 2: 重新处理所有待复核项 ★★★
+def task_reprocess_all_review_items(processor: MediaProcessorSA):
+    """
+    后台任务：遍历所有待复核项并逐一重新处理。
+    """
+    logger.info("--- 开始执行“重新处理所有待复核项”任务 ---")
+    try:
+        with processor._get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT item_id FROM failed_log")
+            all_item_ids = [row['item_id'] for row in cursor.fetchall()]
+        
+        total = len(all_item_ids)
+        if total == 0:
+            logger.info("待复核列表中没有项目，任务结束。")
+            update_status_from_thread(100, "待复核列表为空。")
+            return
+
+        logger.info(f"共找到 {total} 个待复核项需要重新处理。")
+
+        for i, item_id in enumerate(all_item_ids):
+            if processor.is_stop_requested():
+                logger.info("任务被中止。")
+                break
+            
+            # 更新总体任务进度
+            update_status_from_thread(int((i/total)*100), f"正在重新处理 {i+1}/{total}: {item_id}")
+            
+            # 直接调用单个重新处理的任务函数，复用逻辑
+            # 注意：我们传递了 processor 和 item_id
+            task_reprocess_single_item(processor, item_id)
+            
+            # 每个项目之间稍作停顿，避免请求过于频繁
+            time.sleep(2) 
+
+    except Exception as e:
+        logger.error(f"重新处理所有待复核项时发生严重错误: {e}", exc_info=True)
+        update_status_from_thread(-1, "任务失败")
 # --- 路由区 ---
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
@@ -1565,29 +1669,6 @@ def api_get_review_items():
         "per_page": per_page,
         "query": query_filter
     })
-    
-@app.route('/api/actions/reprocess_item/<item_id>', methods=['POST'])
-def api_reprocess_item(item_id):
-    if not media_processor_instance:
-        return jsonify({"error": "核心处理器未就绪"}), 503
-    
-    # 最好在一个新线程中执行，避免阻塞API请求
-    # 但 process_single_item 内部可能已经有自己的线程管理或快速返回
-    # 如果 process_single_item 是耗时的，应该用 _execute_task_with_lock
-    
-    # 假设 process_single_item 是可以同步调用的（如果它内部处理了耗时操作）
-    # 或者我们在这里只触发一个后台任务
-    logger.info(f"API: 收到重新处理项目 {item_id} 的请求。")
-    
-    submit_task_to_queue(
-        task_process_single_item, # 复用这个任务函数
-        f"重新处理项目: {item_id}",
-        item_id,
-        force_reprocess=True,
-        process_episodes=True
-    )
-    return jsonify({"message": f"项目 {item_id} 已提交重新处理。"}), 202
-
 @app.route('/api/actions/mark_item_processed/<item_id>', methods=['POST'])
 def api_mark_item_processed(item_id):
     if task_lock.locked():
@@ -2359,6 +2440,47 @@ def api_trigger_single_watchlist_update(item_id):
     )
     
     return jsonify({"message": f"项目 {item_id} 的更新任务已在后台启动！"}), 202
+# ★★★ 重新处理单个项目 ★★★
+@app.route('/api/actions/reprocess_item/<item_id>', methods=['POST'])
+@login_required
+def api_reprocess_item(item_id):
+    """
+    提交一个任务，用于重新处理单个媒体项。
+    """
+    logger.info(f"API: 收到重新处理项目 '{item_id}' 的请求。")
+    
+    if task_lock.locked():
+        return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
+
+    # 我们只提交任务，把所有复杂逻辑都交给后台
+    # 注意：我们把 item_id 作为位置参数传递
+    submit_task_to_queue(
+        task_reprocess_single_item, # ★★★ 调用新的、封装好的任务函数 ★★★
+        f"重新处理: {item_id}",
+        item_id # <--- 将 item_id 作为参数传递给任务
+    )
+    
+    return jsonify({"message": f"重新处理项目 '{item_id}' 的任务已提交。"}), 202
+
+# ★★★ 重新处理所有待复核项 ★★★
+@app.route('/api/actions/reprocess_all_review_items', methods=['POST'])
+@login_required
+def api_reprocess_all_review_items():
+    """
+    提交一个任务，用于重新处理所有待复核列表中的项目。
+    """
+    logger.info("API: 收到重新处理所有待复核项的请求。")
+    
+    if task_lock.locked():
+        return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
+
+    # 提交一个宏任务，让后台线程来做这件事
+    submit_task_to_queue(
+        task_reprocess_all_review_items, # <--- 我们需要创建这个新的任务函数
+        "重新处理所有待复核项"
+    )
+    
+    return jsonify({"message": "重新处理所有待复核项的任务已提交。"}), 202
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
