@@ -1115,7 +1115,7 @@ class MediaProcessorAPI:
             return False
 
         # 2. 前置更新：更新被手动修改了名字的 Person 条目
-        logger.info("手动处理：开始前置更新演员名字...")
+        logger.info("手动处理：开始前置翻译演员名字...")
         original_names_map = {p.get("Id"): p.get("Name") for p in current_emby_cast_raw if p.get("Id")}
         for actor in manual_cast_list:
             actor_id = actor.get("emby_person_id")
@@ -1130,7 +1130,7 @@ class MediaProcessorAPI:
                     emby_api_key=self.emby_api_key,
                     user_id=self.emby_user_id
                 )
-        logger.info("手动处理：演员名字前置更新完成。")
+        logger.info("手动处理：演员名字前置翻译完成。")
 
         # 3. 最终更新：将手动编辑的列表更新到媒体
         logger.info(f"手动处理：准备将 {len(manual_cast_list)} 位演员更新到 Emby...")

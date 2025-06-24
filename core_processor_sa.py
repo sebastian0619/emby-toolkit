@@ -827,64 +827,96 @@ class MediaProcessorSA:
     # ✨✨✨API中文化演员表✨✨✨
     def _process_api_track_person_names_only(self, item_details: Dict[str, Any]):
         """
-        【API轨道 - 绝对安全版】
-        此函数只负责一件事：将指定媒体项目中演员的英文名翻译成中文，并更新回Emby。
-        它严格遵守“指名道姓”原则，只通过 Emby Person ID 操作，只修改 Name 字段，
-        不触碰任何其他数据，确保绝对安全，不会造成“货不对板”。
+        【API轨道 - 批量翻译重构版】
+        此函数负责将指定媒体项目中演员的英文名批量翻译成中文，并更新回Emby。
         """
         item_id = item_details.get("Id")
         item_name_for_log = item_details.get("Name", f"未知媒体(ID:{item_id})")
-        logger.info(f"前置更新开始为 '{item_name_for_log}' 进行纯演员名中文化...")
+        logger.info(f"前置翻译开始为 '{item_name_for_log}' 进行演员名批量中文化...")
 
-        # 1. 从传入的 item_details 中获取原始演员列表
+        # 1. 从 Emby 获取原始演员列表
         original_cast = item_details.get("People", [])
         if not original_cast:
-            logger.info("前置更新：该媒体在Emby中没有演员信息，跳过此轨道。")
+            logger.info("前置翻译：该媒体在Emby中没有演员信息，跳过。")
             return
 
-        # 2. 使用数据库连接进行翻译（为了利用缓存）
+        # 检查 AI 翻译器和配置是否就绪
+        if not self.ai_translator or not self.config.get("ai_translation_enabled", False):
+            logger.warning("前置翻译：AI翻译器未配置或未启用，跳过演员名中文化。")
+            return
+
         try:
             with self._get_db_connection() as conn:
                 cursor = conn.cursor()
 
+                # --- ★★★ 开始移植批量翻译逻辑 ★★★ ---
+
+                # 2. 收集所有需要翻译的演员名
+                texts_to_translate = set()
+                # 同时，我们创建一个从 Emby Person ID 到原始名字的映射，方便后续更新
+                person_id_to_name_map = {} 
+
                 for person in original_cast:
-                    if self.is_stop_requested():
-                        logger.info("前置更新：任务被中止。")
-                        break
-                    
                     emby_person_id = person.get("Id")
                     current_name = person.get("Name")
 
-                    # 基本检查
                     if not emby_person_id or not current_name:
                         continue
                     
-                    # 如果名字已经是中文或无需翻译，则跳过
-                    if utils.contains_chinese(current_name):
-                        continue
+                    person_id_to_name_map[emby_person_id] = current_name
+                    
+                    # 检查数据库缓存，如果缓存未命中且需要翻译，则加入集合
+                    cached_entry = DoubanApi._get_translation_from_db(current_name, cursor=cursor)
+                    if not cached_entry and not utils.contains_chinese(current_name):
+                        texts_to_translate.add(current_name)
 
-                    # 3. 调用翻译函数
-                    translated_name = self._translate_actor_field(current_name, "演员名", current_name, cursor)
-
-                    # 4. 如果翻译成功且名字有变化，就执行更新
-                    if translated_name and translated_name != current_name:
-                        logger.info(f"  【API轨道】准备更新: '{current_name}' -> '{translated_name}' (Emby Person ID: {emby_person_id})")
+                # 3. 如果有需要翻译的文本，则调用批量API
+                if texts_to_translate:
+                    logger.info(f"前置翻译：为 '{item_name_for_log}' 收集到 {len(texts_to_translate)} 个演员名需要通过AI翻译。")
+                    try:
+                        # 调用底层的批量翻译方法
+                        translation_map = self.ai_translator.batch_translate(list(texts_to_translate))
                         
-                        # ★★★ 直接调用您现有的、安全的 update_person_details 函数 ★★★
-                        emby_handler.update_person_details(
-                            person_id=emby_person_id,
-                            new_data={"Name": translated_name}, # 只传递一个包含新名字的字典
-                            emby_server_url=self.emby_url,
-                            emby_api_key=self.emby_api_key,
-                            user_id=self.emby_user_id
-                        )
-                        # 增加微小延迟，避免请求过快
-                        time.sleep(0.2)
-        
+                        if translation_map:
+                            logger.info(f"AI批量翻译成功，返回 {len(translation_map)} 个结果。")
+                            
+                            # 将新翻译的结果存入数据库缓存
+                            for original, translated in translation_map.items():
+                                DoubanApi._save_translation_to_db(original, translated, self.ai_translator.provider, cursor=cursor)
+                            
+                            # 4. ★★★ 核心：遍历原始映射，执行Emby更新 ★★★
+                            logger.info("开始将翻译结果更新回 Emby...")
+                            for person_id, original_name in person_id_to_name_map.items():
+                                if self.is_stop_requested():
+                                    logger.info("前置翻译：更新Emby时任务被中止。")
+                                    break
+
+                                # 在翻译结果中查找这个演员的译名
+                                translated_name = translation_map.get(original_name)
+                                
+                                # 如果找到了翻译结果，就更新 Emby
+                                if translated_name:
+                                    logger.info(f"  【API轨道】准备更新: '{original_name}' -> '{translated_name}' (Emby Person ID: {person_id})")
+                                    emby_handler.update_person_details(
+                                        person_id=person_id,
+                                        new_data={"Name": translated_name},
+                                        emby_server_url=self.emby_url,
+                                        emby_api_key=self.emby_api_key,
+                                        user_id=self.emby_user_id
+                                    )
+                                    time.sleep(0.2) # 增加微小延迟
+                        else:
+                            logger.warning("AI批量翻译调用成功，但未返回任何翻译结果。可能是API内部错误。")
+
+                    except Exception as e:
+                        logger.error(f"调用AI批量翻译时发生严重错误: {e}。", exc_info=True)
+                else:
+                    logger.info("前置翻译：所有演员名均无需翻译（已是中文或缓存命中）。")
+
         except Exception as e:
-            logger.error(f"【API轨道】在为 '{item_name_for_log}' 处理演员中文化时发生错误: {e}", exc_info=True)
+            logger.error(f"前置翻译在为 '{item_name_for_log}' 处理演员中文化时发生严重错误: {e}", exc_info=True)
         
-        logger.info(f"前置更新为 '{item_name_for_log}' 的演员中文化处理完成。")
+        logger.info(f"前置翻译为 '{item_name_for_log}' 的演员中文化处理完成。")
 
     def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool = False) -> bool:
         """
