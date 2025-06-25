@@ -631,7 +631,7 @@ def get_series_children(series_id: str, base_url: str, api_key: str, user_id: st
         response.raise_for_status()
         data = response.json()
         children = data.get("Items", [])
-        logger.info(f"成功为剧集 {log_identifier} 获取到 {len(children)} 个子项目。")
+        logger.debug(f"成功为剧集 {log_identifier} 获取到 {len(children)} 个子项目。")
         return children
     except requests.exceptions.RequestException as e:
         logger.error(f"获取剧集 {log_identifier} 的子项目列表时发生错误: {e}", exc_info=True)

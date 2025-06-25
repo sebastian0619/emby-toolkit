@@ -1,10 +1,12 @@
 # utils.py (最终智能匹配版)
 
 import re
+import os
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
 import unicodedata
-
+import logging
+logger = logging.getLogger(__name__)
 # 尝试导入 pypinyin，如果失败则创建一个模拟函数
 try:
     from pypinyin import pinyin, Style
@@ -113,7 +115,7 @@ def normalize_name_for_matching(name: Optional[str]) -> str:
     ascii_name = u"".join([c for c in nfkd_form if not unicodedata.combining(c)])
     # 转小写并只保留字母和数字
     return ''.join(filter(str.isalnum, ascii_name.lower()))
-
+# ★★★ 获取 override 路径的辅助函数 ★★★
 def get_name_variants(name: Optional[str]) -> set:
     """
     根据一个名字生成所有可能的变体集合，用于匹配。
@@ -177,7 +179,36 @@ def are_names_match(name1_a: Optional[str], name1_b: Optional[str], name2_a: Opt
     # 检查两个集合是否有任何共同的元素（交集不为空）
     return not variants1.isdisjoint(variants2)
 
-# --- ★★★ 智能匹配逻辑结束 ★★★ ---
+# --- ★★★ 获取覆盖缓存路径 ★★★ ---
+def get_override_path_for_item(item_type: str, tmdb_id: str, config: dict) -> str | None:
+    """
+    【修复版】根据类型和ID返回 override 目录的路径。
+    此函数现在依赖于传入的 config 字典，而不是全局变量。
+    """
+    # 1. ★★★ 从传入的 config 中获取 local_data_path ★★★
+    local_data_path = config.get("local_data_path")
+
+    # 2. ★★★ 使用 local_data_path 进行检查 ★★★
+    if not local_data_path or not tmdb_id:
+        # 如果 local_data_path 没有在配置中提供，打印一条警告
+        if not local_data_path:
+            logger.warning("get_override_path_for_item: 配置中缺少 'local_data_path'。")
+        return None
+
+    # 3. ★★★ 使用 local_data_path 构建基础路径 ★★★
+    base_path = os.path.join(local_data_path, "override")
+
+    # 确保 item_type 是字符串，以防万一
+    item_type_str = str(item_type or '').lower()
+
+    if "movie" in item_type_str:
+        # 假设你的电影目录是 tmdb-movies2
+        return os.path.join(base_path, "tmdb-movies2", str(tmdb_id))
+    elif "series" in item_type_str:
+        return os.path.join(base_path, "tmdb-tv", str(tmdb_id))
+
+    logger.warning(f"未知的媒体类型 '{item_type}'，无法确定 override 路径。")
+    return None
 
 if __name__ == '__main__':
     # 测试新的 are_names_match
@@ -192,3 +223,6 @@ if __name__ == '__main__':
     print(f"张三 vs zhang san: {are_names_match('zhang san', None, '张三', None)}") # 应该为 True
     # 测试5: 不匹配
     print(f"Zhang San vs Li Si: {are_names_match('Zhang San', None, 'Li Si', None)}") # 应该为 False
+
+
+

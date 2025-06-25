@@ -17,6 +17,7 @@ import constants
 import logging
 from actor_utils import ActorDBManager, batch_translate_cast
 from ai_translator import AITranslator
+from utils import get_override_path_for_item
 from watchlist_processor import WatchlistProcessor
 
 logger = logging.getLogger(__name__)
@@ -1474,6 +1475,111 @@ class MediaProcessorSA:
         except Exception as e:
             logger.error(f"获取编辑数据失败 for ItemID {item_id}: {e}", exc_info=True)
             return None
+    # ★★★ 全量图片同步的核心逻辑 ★★★
+    def sync_all_images(self, update_status_callback: Optional[callable] = None):
+        """
+        【最终正确版】遍历所有已处理的媒体项，将它们在 Emby 中的当前图片下载到本地 override 目录。
+        """
+        logger.info("--- 开始执行全量海报同步任务 ---")
+        
+        try:
+            with self._get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT item_id, item_name FROM processed_log")
+                items_to_process = cursor.fetchall()
+        except Exception as e:
+            logger.error(f"获取已处理项目列表时发生数据库错误: {e}", exc_info=True)
+            if update_status_callback:
+                update_status_callback(-1, "数据库错误")
+            return
+
+        total = len(items_to_process)
+        if total == 0:
+            logger.info("没有已处理的项目，无需同步图片。")
+            if update_status_callback:
+                update_status_callback(100, "没有项目")
+            return
+
+        logger.info(f"共找到 {total} 个已处理项目需要同步图片。")
+
+        for i, db_row in enumerate(items_to_process):
+            if self.is_stop_requested():
+                logger.info("全量图片同步任务被中止。")
+                break
+
+            item_id = db_row['item_id']
+            item_name_from_db = db_row['item_name']
+            
+            if not item_id:
+                logger.warning(f"数据库中发现一条没有 item_id 的记录，跳过。Name: {item_name_from_db}")
+                continue
+
+            if update_status_callback:
+                update_status_callback(int((i / total) * 100), f"同步图片 ({i+1}/{total}): {item_name_from_db}")
+
+            try:
+                item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+                
+                if not item_details:
+                    logger.warning(f"跳过 {item_name_from_db} (ID: {item_id})，无法从 Emby 获取其详情。")
+                    continue
+
+                tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+                item_type = item_details.get("Type")
+                
+                if not tmdb_id:
+                    logger.warning(f"跳过 '{item_name_from_db}'，因为它缺少 TMDb ID。")
+                    continue
+                override_path = utils.get_override_path_for_item(item_type, tmdb_id, self.config)
+
+                if not override_path:
+                    logger.warning(f"跳过 '{item_name_from_db}'，无法为其生成有效的 override 路径 (可能是未知类型或配置问题)。")
+                    continue
+
+                image_override_dir = os.path.join(override_path, "images")
+                os.makedirs(image_override_dir, exist_ok=True)
+
+                image_map = {"Primary": "poster.jpg", "Backdrop": "fanart.jpg", "Logo": "clearlogo.png"}
+                if item_type == "Movie":
+                    image_map["Thumb"] = "landscape.jpg"
+                
+                logger.debug(f"项目 '{item_name_from_db}': 准备下载图片集到 '{image_override_dir}'")
+
+                for image_type, filename in image_map.items():
+                    emby_handler.download_emby_image(
+                        item_id, 
+                        image_type, 
+                        os.path.join(image_override_dir, filename), 
+                        self.emby_url, 
+                        self.emby_api_key
+                    )
+                
+                if item_type == "Series":
+                    logger.debug(f"开始为剧集 '{item_name_from_db}' 同步季海报...")
+                    children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id) or []
+                    
+                    for child in children:
+                        # 只处理类型为 "Season" 的子项目，完全忽略 "Episode"
+                        if child.get("Type") == "Season":
+                            season_number = child.get("IndexNumber")
+                            if season_number is not None:
+                                logger.info(f"  正在同步第 {season_number} 季的海报...")
+                                emby_handler.download_emby_image(
+                                    child.get("Id"), 
+                                    "Primary", # 季项目通常只有 Primary 图片
+                                    os.path.join(image_override_dir, f"season-{season_number}.jpg"),
+                                    self.emby_url, 
+                                    self.emby_api_key
+                                )
+                
+                logger.info(f"成功同步了 '{item_name_from_db}' 的图片。")
+
+            except Exception as e:
+                logger.error(f"同步项目 '{item_name_from_db}' (ID: {item_id}) 的图片时发生错误: {e}", exc_info=True)
+            
+            time.sleep(0.2)
+
+        logger.info("--- 全量海报同步任务结束 ---")
 
     
     def close(self):

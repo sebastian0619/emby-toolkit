@@ -85,6 +85,22 @@
               </p>
             </n-space>
           </n-card>
+          <n-card title="全量海报同步" class="beautified-card" :bordered="false">
+            <n-space vertical>
+              <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">
+                此功能会遍历所有**已处理**的媒体，将你在 Emby 中设置的最新海报、背景图等同步到 override 缓存目录。
+                当更换了喜欢的海报后，使用此功能可以确保它们被正确备份和应用。
+              </p>
+              <n-button
+                type="primary"
+                @click="triggerFullImageSync"
+                :loading="taskStatus.is_running && currentActionIncludesImageSync"
+                :disabled="taskStatus.is_running && !currentActionIncludesImageSync"
+              >
+                开始同步
+              </n-button>
+            </n-space>
+          </n-card>
         </n-space>
       </n-gi>
 
@@ -139,7 +155,10 @@ import {
 
 const logRef = ref(null);
 const message = useMessage();
-
+// ★★★ 新增：用于控制按钮加载状态的计算属性 ★★★
+const currentActionIncludesImageSync = computed(() => 
+  props.taskStatus.current_action && props.taskStatus.current_action.toLowerCase().includes('海报')
+);
 const props = defineProps({
   taskStatus: {
     type: Object,
@@ -284,6 +303,16 @@ const errorImport = ({ event }) => {
     message.error(response?.error || '导入失败，未知错误。');
   } catch (e) {
     message.error('导入失败，并且无法解析服务器错误响应。');
+  }
+};
+// ★★★ 新增：触发全量图片同步的函数 ★★★
+const triggerFullImageSync = async () => {
+  try {
+    const response = await axios.post('/api/actions/trigger_full_image_sync');
+    message.success(response.data.message || '全量海报同步任务已启动！');
+  } catch (error) {
+    console.error('启动全量海报同步失败:', error);
+    message.error(error.response?.data?.error || '启动任务失败，请查看日志。');
   }
 };
 </script>

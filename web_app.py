@@ -12,6 +12,7 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, f
 from werkzeug.utils import safe_join
 from queue import Queue
 from functools import wraps
+from utils import get_override_path_for_item
 from watchlist_processor import WatchlistProcessor
 import threading
 import time
@@ -1097,7 +1098,7 @@ def task_import_person_map(processor, file_content: str, **kwargs):
                 }
                 # ...
                 try:
-                    db_manager.upsert_person(cursor, person_data, tmdb_api_key)
+                    db_manager.upsert_person(cursor, person_data)
                     stats["processed"] += 1
                 except Exception as e_row:
                     stats["errors"] += 1
@@ -1114,25 +1115,7 @@ def task_import_person_map(processor, file_content: str, **kwargs):
     except Exception as e:
         logger.error(f"后台导入任务失败: {e}", exc_info=True)
         update_status_from_thread(-1, f"导入失败: {e}")
-# ★★★ 获取 override 路径的辅助函数 ★★★
-def _get_override_path_for_item(item_type, tmdb_id):
-    """根据类型和ID返回 override 目录的路径"""
-    if not APP_CONFIG.get("local_data_path") or not tmdb_id:
-        return None
-        
-    base_path = os.path.join(APP_CONFIG.get("local_data_path"), "override")
-    
-    # 确保 item_type 是字符串，以防万一
-    item_type_str = str(item_type or '').lower()
 
-    if "movie" in item_type_str:
-        # 假设你的电影目录是 tmdb-movies2
-        return os.path.join(base_path, "tmdb-movies2", str(tmdb_id))
-    elif "series" in item_type_str:
-        return os.path.join(base_path, "tmdb-tv", str(tmdb_id))
-    
-    logger.warning(f"未知的媒体类型 '{item_type}'，无法确定 override 路径。")
-    return None
 # ★★★ 新任务函数 1: 重新处理单个项目 ★★★
 def task_reprocess_single_item(processor: MediaProcessorSA, item_id: str):
     """
@@ -1155,7 +1138,7 @@ def task_reprocess_single_item(processor: MediaProcessorSA, item_id: str):
         # 2. 删除缓存
         tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
         item_type = item_details.get("Type")
-        override_path = _get_override_path_for_item(item_type, tmdb_id)
+        override_path = get_override_path_for_item(item_type, tmdb_id)
         if override_path and os.path.exists(override_path):
             shutil.rmtree(override_path)
             logger.info(f"已为 '{item_name_for_log}' 删除缓存: {override_path}")
@@ -1217,6 +1200,13 @@ def task_reprocess_all_review_items(processor: MediaProcessorSA):
     except Exception as e:
         logger.error(f"重新处理所有待复核项时发生严重错误: {e}", exc_info=True)
         update_status_from_thread(-1, "任务失败")
+# ★★★ 全量图片同步的任务函数 ★★★
+def task_full_image_sync(processor: MediaProcessorSA):
+    """
+    后台任务：调用 processor 的方法来同步所有图片。
+    """
+    # 直接把回调函数传进去
+    processor.sync_all_images(update_status_callback=update_status_from_thread)
 # --- 路由区 ---
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
@@ -2503,6 +2493,33 @@ def api_reprocess_all_review_items():
     )
     
     return jsonify({"message": "重新处理所有待复核项的任务已提交。"}), 202
+# ★★★ 新增：触发全量图片同步的 API 接口 ★★★
+@app.route('/api/actions/trigger_full_image_sync', methods=['POST'])
+@login_required
+def api_trigger_full_image_sync():
+    """
+    提交一个任务，用于全量同步所有已处理项目的海报。
+    """
+    # 1. 检查处理器实例是否存在
+    if not media_processor_instance:
+        return jsonify({"error": "核心处理器未就绪，请检查配置并重启。"}), 503
+
+    # 2. 检查处理器实例的类型
+    #    isinstance() 是 Python 中判断对象类型的标准方法
+    #    假设您的神医模式处理器类名叫 MediaProcessorSA
+    if not isinstance(media_processor_instance, MediaProcessorSA):
+        return jsonify({"error": "此功能仅在神医模式下可用。"}), 403
+    # 3. 开始处理
+    
+    if task_lock.locked():
+        return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
+
+    submit_task_to_queue(
+        task_full_image_sync,
+        "全量同步媒体库海报"
+    )
+    
+    return jsonify({"message": "全量海报同步任务已成功提交。"}), 202
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
