@@ -78,10 +78,10 @@ class UnifiedSyncHandler:
                     }
                     
                     try:
-                        map_id = self.actor_db_manager.upsert_person(cursor, person_data_for_db, self.tmdb_api_key)
+                        map_id = self.actor_db_manager.upsert_person(cursor, person_data_for_db)
                         if map_id > 0: stats['success'] += 1
                     except sqlite3.IntegrityError as e:
-                        self.actor_db_manager.record_conflict(cursor, person_data_for_db, str(e), self.tmdb_api_key)
+                        self.actor_db_manager.record_conflict(cursor, person_data_for_db, str(e))
                         stats['errors'] += 1
                     except Exception as e_upsert:
                         logger.error(f"同步时写入数据库失败 for EmbyPID {emby_pid}: {e_upsert}")
