@@ -675,19 +675,16 @@ def _execute_task_with_lock(task_function, task_name: str, processor: Union[Medi
     # if task_lock.locked(): ...
 
     with task_lock:
-        # processor 已经作为参数传入，不再需要全局变量
-        processor.clear_stop_signal()
-        if media_processor_instance:
-            frontend_log_queue.clear()
-        if media_processor_instance:
-            media_processor_instance.clear_stop_signal()
-        else: # 如果 media_processor_instance 未初始化成功
-            logger.error(f"任务 '{task_name}' 无法启动：MediaProcessor 未初始化。")
-            background_task_status["message"] = "错误：核心处理器未就绪"
-            background_task_status["is_running"] = False
+        # 1. 检查传入的处理器是否有效
+        if not processor:
+            logger.error(f"任务 '{task_name}' 无法启动：对应的处理器未初始化。")
+            # 可以在这里更新状态，但因为没有启动，所以只打日志可能更清晰
             return
 
+        # 2. 清理当前任务处理器的停止信号
+        processor.clear_stop_signal()
 
+        # 3. 设置任务状态，准备执行
         background_task_status["is_running"] = True
         background_task_status["current_action"] = task_name
         background_task_status["progress"] = 0
@@ -790,13 +787,26 @@ def start_task_worker_if_not_running():
 #--- 为通用队列添加任务 ---
 def submit_task_to_queue(task_function, task_name: str, *args, **kwargs):
     """
-    将一个任务提交到通用队列中。
+    【修复版】将一个任务提交到通用队列中，并在这里清空日志。
     """
-    logger.info(f"任务 '{task_name}' 已提交到队列。")
-    # 注意：这里不再传递 media_processor_instance，因为 worker 会在执行时动态获取
-    task_info = (task_function, task_name, args, kwargs)
-    task_queue.put(task_info)
-    start_task_worker_if_not_running()
+    # ★★★ 核心修改：在提交任务到队列之前，就清空旧日志 ★★★
+    # 这个操作应该在 task_lock 的保护下进行，以确保原子性
+    with task_lock:
+        # 检查是否可以启动新任务
+        if background_task_status["is_running"]:
+            # 这里可以抛出异常或返回一个状态，让调用方知道任务提交失败
+            # 为了简单起见，我们先打印日志并直接返回
+            logger.warning(f"任务 '{task_name}' 提交失败：已有任务正在运行。")
+            # 或者 raise RuntimeError("已有任务在运行")
+            return
+
+        # 如果可以启动，我们就在这里清空日志
+        frontend_log_queue.clear()
+        logger.info(f"任务 '{task_name}' 已提交到队列，并已清空前端日志。")
+        
+        task_info = (task_function, task_name, args, kwargs)
+        task_queue.put(task_info)
+        start_task_worker_if_not_running()
 
 def _get_next_run_time_str(cron_expression: str) -> str:
     """

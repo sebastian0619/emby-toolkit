@@ -1555,7 +1555,7 @@ class MediaProcessorSA:
                     )
                 
                 if item_type == "Series":
-                    logger.debug(f"开始为剧集 '{item_name_from_db}' 同步季海报...")
+                    logger.info(f"开始为剧集 '{item_name_from_db}' 同步季海报...")
                     children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id) or []
                     
                     for child in children:

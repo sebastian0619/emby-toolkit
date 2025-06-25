@@ -107,8 +107,10 @@
       <!-- 右侧列：实时日志区 -->
       <n-gi span="1">
         <n-card title="实时日志" class="beautified-card" :bordered="false" content-style="padding: 0;">
+          
+          <!-- ★★★ 1. 把 #header-extra 插槽放在正确的位置 ★★★ -->
+          <!-- 它应该是 n-card 的直接子元素 -->
           <template #header-extra>
-            <!-- ★★★ START: 新增自动刷新开关 ★★★ -->
             <n-space align="center">
               <n-switch v-model:value="autoScrollEnabled" size="small">
                 <template #checked>
@@ -123,8 +125,10 @@
                 清空日志
               </n-button>
             </n-space>
-            <!-- ★★★ END: 新增自动刷新开关 ★★★ -->
           </template>
+
+          <!-- ★★★ 2. 只保留一个 n-log 组件 ★★★ -->
+          <!-- 并且把我们新加的 :to="logScrollToLine" 绑定加上 -->
           <n-log
             ref="logRef"
             :log="logContent"
@@ -132,33 +136,29 @@
             :rows="30"
             style="font-size: 13px; line-height: 1.6;"
           />
+
         </n-card>
       </n-gi>
-
     </n-grid>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue';
+import { ref, computed, watch, nextTick } from 'vue'; // 重新引入 nextTick
 import axios from 'axios';
 import { 
   NCard, NButton, NCheckbox, NSpace, NAlert, NLog, NIcon, useMessage, 
-  NUpload, NGrid, NGi, NSwitch // ★★★ 1. 导入 NSwitch ★★★
+  NUpload, NGrid, NGi, NSwitch
 } from 'naive-ui';
-
 import { 
   TrashOutline as TrashIcon,
   DownloadOutline as ExportIcon, 
   CloudUploadOutline as ImportIcon 
 } from '@vicons/ionicons5';
 
+// --- Refs and Props (保持不变) ---
 const logRef = ref(null);
 const message = useMessage();
-// ★★★ 新增：用于控制按钮加载状态的计算属性 ★★★
-const currentActionIncludesImageSync = computed(() => 
-  props.taskStatus.current_action && props.taskStatus.current_action.toLowerCase().includes('海报')
-);
 const props = defineProps({
   taskStatus: {
     type: Object,
@@ -172,14 +172,13 @@ const props = defineProps({
     })
   }
 });
-
 const forceReprocessAll = ref(false);
 const isExporting = ref(false);
 const isImporting = ref(false);
-
-// ★★★ 2. 定义开关的状态，默认为开启 ★★★
-const autoScrollEnabled = ref(true);
-
+const autoScrollEnabled = ref(true); // 我们的总开关
+const logScrollToLine = ref(0);
+const logContentForDisplay = ref('等待日志...');
+// --- Computed Properties (保持不变) ---
 const logContent = computed(() => {
   if (props.taskStatus && Array.isArray(props.taskStatus.logs)) {
     return props.taskStatus.logs.join('\n');
@@ -195,15 +194,42 @@ const currentActionIncludesSyncMap = computed(() =>
 );
 
 // ★★★ 3. 修改 watch 监听器 ★★★
-watch(() => props.taskStatus.logs, async () => {
-  // 只有当开关开启时，才执行自动滚动
-  if (autoScrollEnabled.value) {
-    await nextTick();
-    if (logRef.value) {
-      logRef.value.scrollTo({ position: 'bottom', slient: true });
-    }
+watch(() => props.taskStatus.logs, async (newLogs, oldLogs) => {
+  // 如果没有新的日志内容，或者 log 组件的 ref 还不存在，则不执行任何操作
+  if (!newLogs || newLogs.length === (oldLogs?.length || 0) || !logRef.value) {
+    return;
   }
+
+  // 步骤 1: 在 DOM 更新之前，检查用户是否已经滚动到底部
+  // 我们需要安全地访问 Naive UI 内部的滚动条实例
+  const scrollbarInst = logRef.value.scrollbarInst;
+  if (!scrollbarInst || !scrollbarInst.containerRef) {
+    // 如果无法获取滚动条实例，为了安全起见，直接使用之前的简单逻辑
+    if (autoScrollEnabled.value) {
+      await nextTick();
+      if (logRef.value) {
+        logRef.value.scrollTo({ position: 'bottom', slient: true });
+      }
+    }
+    return;
+  }
+  
+  const scrollEl = scrollbarInst.containerRef;
+  // 判断是否在底部，我们给一个小的容差（比如 10px），让判断更宽松
+  const isScrolledToBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight <= 10;
+
+  // 步骤 2: 等待 Vue 完成 DOM 更新
+  await nextTick();
+
+  // 步骤 3: 应用我们最终的智能滚动规则
+  // 只有在“自动滚动”开关为开，并且用户在更新前就已经在底部时，我们才执行滚动
+  if (autoScrollEnabled.value && isScrolledToBottom) {
+    logRef.value.scrollTo({ position: 'bottom', slient: true });
+  }
+  // 在所有其他情况下（开关关闭，或者用户已经向上滚动），我们什么都不做。
+
 }, { deep: true });
+
 
 const triggerFullScan = async () => {
   try {
