@@ -63,7 +63,6 @@ COPY emby_handler.py .
 COPY utils.py .
 COPY logger_setup.py .
 COPY constants.py .
-COPY local_data_handler.py .
 COPY web_parser.py .  
 COPY ai_translator.py . 
 COPY watchlist_processor.py .
