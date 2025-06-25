@@ -2447,6 +2447,17 @@ def api_reprocess_item(item_id):
     """
     提交一个任务，用于重新处理单个媒体项。
     """
+    # ★★★ 优化后的认证方式 ★★★
+    # 1. 检查处理器实例是否存在
+    if not media_processor_instance:
+        return jsonify({"error": "核心处理器未就绪，请检查配置并重启。"}), 503
+
+    # 2. 检查处理器实例的类型
+    #    isinstance() 是 Python 中判断对象类型的标准方法
+    #    假设您的神医模式处理器类名叫 MediaProcessorSA
+    if not isinstance(media_processor_instance, MediaProcessorSA):
+        return jsonify({"error": "此功能仅在神医模式下可用。"}), 403
+    # 3. 开始处理
     logger.info(f"API: 收到重新处理项目 '{item_id}' 的请求。")
     
     if task_lock.locked():
@@ -2469,6 +2480,17 @@ def api_reprocess_all_review_items():
     """
     提交一个任务，用于重新处理所有待复核列表中的项目。
     """
+    # ★★★ 优化后的认证方式 ★★★
+    # 1. 检查处理器实例是否存在
+    if not media_processor_instance:
+        return jsonify({"error": "核心处理器未就绪，请检查配置并重启。"}), 503
+
+    # 2. 检查处理器实例的类型
+    #    isinstance() 是 Python 中判断对象类型的标准方法
+    #    假设您的神医模式处理器类名叫 MediaProcessorSA
+    if not isinstance(media_processor_instance, MediaProcessorSA):
+        return jsonify({"error": "此功能仅在神医模式下可用。"}), 403
+    # 3. 开始处理
     logger.info("API: 收到重新处理所有待复核项的请求。")
     
     if task_lock.locked():
