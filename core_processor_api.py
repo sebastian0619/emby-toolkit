@@ -6,7 +6,6 @@ import json
 import sqlite3 # 用于数据库操作
 from typing import Dict, List, Optional, Any, Tuple
 import threading
-import local_data_handler
 import tmdb_handler
 from douban import DoubanApi, clean_character_name_static
 # 假设 emby_handler.py, utils.py, logger_setup.py, constants.py 都在同一级别或Python路径中

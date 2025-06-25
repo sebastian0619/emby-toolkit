@@ -1061,7 +1061,7 @@ def task_process_single_watchlist_item(processor: WatchlistProcessor, item_id: s
     # 传递 item_id，执行单项更新
     processor.process_watching_list(item_id=item_id)
 # ★★★ 导入映射表 ★★★
-def task_import_person_map(file_content: str, tmdb_api_key: str):
+def task_import_person_map(processor, file_content: str, **kwargs):
     """
     【后台任务】从一个CSV文件字符串内容中，导入演员映射表。
     """
