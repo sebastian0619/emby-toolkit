@@ -67,7 +67,7 @@ class ActorDBManager:
     def upsert_person(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any], tmdb_api_key: Optional[str] = None, enrich_details: bool = False):
         """
         【智能数据管家 v4】
-        更新或插入演员记录，并在必要时自动从TMDb丰富别名信息。
+        更新或插入演员记录，并在必要时自动从TMDb补充别名信息。
         """
         # 1. 清理和准备新数据
         new_data = {
@@ -97,19 +97,19 @@ class ActorDBManager:
         new_other_names = new_data.get("other_names", {})
         merged_data["other_names"] = {**existing_other_names, **new_other_names}
 
-        # 3. ★★★ 智能丰富逻辑 ★★★
+        # 3. ★★★ 智能补充逻辑 ★★★
         # 如果有TMDb ID，但 other_names 里没有别名，就去获取
         can_enrich = tmdb_api_key and merged_data.get("tmdb_person_id")
         needs_enrich = not merged_data["other_names"].get("aliases")
 
         if enrich_details:
             can_enrich = tmdb_api_key and merged_data.get("tmdb_person_id")
-            # 我们只对没有别名 或 没有IMDb ID 的进行丰富
+            # 我们只对没有别名 或 没有IMDb ID 的进行补充
             needs_enrich = (not merged_data.get("other_names", {}).get("aliases")) or \
                            (not merged_data.get("imdb_id"))
 
             if can_enrich and needs_enrich:
-                logger.debug(f"为演员 '{merged_data['primary_name']}' (TMDb ID: {merged_data['tmdb_person_id']}) 尝试丰富别名和IMDb ID...")
+                logger.debug(f"为演员 '{merged_data['primary_name']}' (TMDb ID: {merged_data['tmdb_person_id']}) 尝试补充别名和IMDb ID...")
                 try:
                     tmdb_details = tmdb_handler.get_person_details_tmdb(
                         person_id=int(merged_data["tmdb_person_id"]),
@@ -125,7 +125,7 @@ class ActorDBManager:
                                 merged_data["other_names"] = {}
                             merged_data["other_names"]["aliases"] = aliases
                             merged_data["other_names"]["tmdb_name"] = tmdb_details.get("name")
-                            logger.info(f"  -> 成功为 '{merged_data['primary_name']}' 丰富了 {len(aliases)} 个别名。")
+                            logger.info(f"  -> 成功为 '{merged_data['primary_name']}' 补充了 {len(aliases)} 个别名。")
                         
                         # ✨✨✨ 新增：提取并更新 IMDb ID ✨✨✨
                         imdb_id_from_api = tmdb_details.get("external_ids", {}).get("imdb_id")
@@ -134,7 +134,7 @@ class ActorDBManager:
                             logger.info(f"  -> 成功为 '{merged_data['primary_name']}' 补充了 IMDb ID: {imdb_id_from_api}")
 
                 except Exception as e:
-                    logger.error(f"丰富演员 '{merged_data['primary_name']}' 信息时失败: {e}", exc_info=False)
+                    logger.error(f"补充演员 '{merged_data['primary_name']}' 信息时失败: {e}", exc_info=False)
 
         # 4. 准备最终写入数据库的数据
         # 将 other_names 转回 JSON 字符串
@@ -650,10 +650,10 @@ def enrich_all_actor_aliases_task(db_path: str, tmdb_api_key: str, stop_event: O
         logger = logging.getLogger(__name__) # 获取当前模块的logger
 
         if not db_path or not tmdb_api_key:
-            logger.error("别名丰富任务：数据库路径或TMDb API Key未提供，任务中止。")
+            logger.error("别名补充任务：数据库路径或TMDb API Key未提供，任务中止。")
             return
 
-        logger.info("--- 开始别名丰富计划任务 ---")
+        logger.info("--- 开始演员补充外部ID计划任务 ---")
         
         processed_count = 0
         try:
@@ -676,17 +676,17 @@ def enrich_all_actor_aliases_task(db_path: str, tmdb_api_key: str, stop_event: O
                 actors_to_enrich = cursor.execute(sql_find_needy).fetchall()
                 
                 total_to_process = len(actors_to_enrich)
-                logger.info(f"在数据库中找到 {total_to_process} 位需要补充别名的演员。")
+                logger.info(f"在数据库中找到 {total_to_process} 位需要补充外部ID的演员。")
 
                 for i, actor_row in enumerate(actors_to_enrich):
                     if stop_event and stop_event.is_set():
-                        logger.info("别名丰富任务被中止。")
+                        logger.info("补充演员外部ID任务被中止。")
                         break
 
                     actor_dict = dict(actor_row)
                     logger.info(f"[{i+1}/{total_to_process}] 正在处理: '{actor_dict.get('primary_name')}' (TMDb ID: {actor_dict.get('tmdb_person_id')})")
                     
-                    # 调用 upsert_person，并明确开启丰富模式
+                    # 调用 upsert_person，并明确开启补充模式
                     actor_db_manager.upsert_person(
                         cursor,
                         person_data={
@@ -703,5 +703,5 @@ def enrich_all_actor_aliases_task(db_path: str, tmdb_api_key: str, stop_event: O
                 logger.info(f"任务完成！成功处理了 {processed_count} / {total_to_process} 位演员。")
 
         except Exception as e:
-            logger.error(f"别名丰富任务执行时发生严重错误: {e}", exc_info=True)
+            logger.error(f"别名补充任务执行时发生严重错误: {e}", exc_info=True)
 

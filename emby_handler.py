@@ -399,7 +399,7 @@ def get_emby_library_items(
     library_name_map: Optional[Dict[str, str]] = None
 ) -> Optional[List[Dict[str, Any]]]:
     """
-    【V3 - 安静且信息丰富版】
+    【V3 - 安静且信息补充版】
     获取项目，并为每个项目添加来源库ID，不再打印每个库的日志。
     """
     if not base_url or not api_key:

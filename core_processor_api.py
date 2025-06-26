@@ -652,7 +652,7 @@ class MediaProcessorAPI:
             logger.info(f"步骤 1: 基准列表创建完成，包含 {len(final_cast_list)} 位演员。")
 
             # ======================================================================
-            # 步骤 2: 从豆瓣获取数据并与基准列表比对 (丰富现有演员)
+            # 步骤 2: 从豆瓣获取数据并与基准列表比对 (补充现有演员)
             # ======================================================================
             logger.info("步骤 2: 获取豆瓣演员并与基准列表比对...")
             # ... (您获取 formatted_douban_candidates 的逻辑保持不变) ...
@@ -733,7 +733,7 @@ class MediaProcessorAPI:
                 else:
                     # ✨✨✨ 精准手术在这里 ✨✨✨
                     # 我们不再进行任何TMDb API的交叉匹配，直接丢弃所有未能匹配的豆瓣演员。
-                    # 所有新增演员的逻辑，都将依赖于后台的详情丰富任务和下一次处理。
+                    # 所有新增演员的逻辑，都将依赖于后台的详情补充任务和下一次处理。
                     logger.info(f"当前演员数 ({current_actor_count}) 低于上限 ({limit})，等演员映射表数据更充实时，请重新进行处理。")
                     if unmatched_douban_candidates:
                         discarded_names = [d.get('Name') for d in unmatched_douban_candidates]
@@ -862,10 +862,10 @@ class MediaProcessorAPI:
             # ======================================================================
             # 最终步骤: 将内存中最终的、最完整的演员信息写回数据库
             # ======================================================================
-            logger.info(f"最终步骤: 将 {len(final_cast_list)} 位演员的最终状态同步并丰富到数据库...")
+            logger.info(f"最终步骤: 将 {len(final_cast_list)} 位演员的最终状态同步并补充到数据库...")
             for final_actor in final_cast_list:
                 # ★★★ 优化点 2: 这是整个流程中唯一一次调用 upsert_person ★★★
-                # 它会智能地判断是INSERT还是UPDATE，并按需调用TMDb API丰富别名
+                # 它会智能地判断是INSERT还是UPDATE，并按需调用TMDb API补充别名
                 self.actor_db_manager.upsert_person(
                     cursor,
                     {
@@ -1130,13 +1130,13 @@ class MediaProcessorAPI:
             self.douban_api.close()
         # 如果有其他需要关闭的资源，例如数据库连接池（如果使用的话），在这里关闭
         logger.debug("MediaProcessorAPI close 方法执行完毕。")
-    # ✨✨✨使用从网页提取的新演员列表来“丰富”当前演员列表✨✨✨
+    # ✨✨✨使用从网页提取的新演员列表来“补充”当前演员列表✨✨✨
     def enrich_cast_list(self, current_cast: List[Dict[str, Any]], new_cast_from_web: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        使用从网页提取的新列表来丰富（Enrich）当前演员列表。
+        使用从网页提取的新列表来补充（Enrich）当前演员列表。
         采用反向翻译匹配：将当前演员的中文名翻译成英文，再去匹配网页提取的英文列表。
         """
-        logger.info(f"开始“仅丰富”模式（反向翻译匹配）：使用 {len(new_cast_from_web)} 位新演员信息来更新 {len(current_cast)} 位当前演员。")
+        logger.info(f"开始“仅补充”模式（反向翻译匹配）：使用 {len(new_cast_from_web)} 位新演员信息来更新 {len(current_cast)} 位当前演员。")
         
         enriched_cast = [dict(actor) for actor in current_cast]
         used_new_actor_indices = set()
@@ -1208,7 +1208,7 @@ class MediaProcessorAPI:
         if unmatched_count > 0:
             logger.info(f"{unmatched_count} 位从网页提取的演员未能匹配任何现有演员，已被丢弃。")
 
-        logger.info(f"“仅丰富”模式完成，返回 {len(enriched_cast)} 位演员。")
+        logger.info(f"“仅补充”模式完成，返回 {len(enriched_cast)} 位演员。")
         return enriched_cast
     # ✨✨✨辅助函数更新演员映射表✨✨✨
     # ✨✨✨一键翻译演员列表✨✨✨

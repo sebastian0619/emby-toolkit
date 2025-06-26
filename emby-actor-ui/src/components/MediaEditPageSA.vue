@@ -320,7 +320,7 @@ const handleEnrich = async (newCastFromWeb) => {
     urlToParse.value = '';
 
   } catch (error) {
-    console.error("丰富列表失败:", error);
+    console.error("补充列表失败:", error);
     message.error(error.response?.data?.error || "更新列表时发生错误，请检查后端日志。");
   }
 };
