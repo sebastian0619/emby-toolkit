@@ -104,23 +104,35 @@ class ActorDBManager:
 
         if enrich_details:
             can_enrich = tmdb_api_key and merged_data.get("tmdb_person_id")
-            # 我们只对没有别名信息的进行丰富
-            needs_enrich = not merged_data.get("other_names", {}).get("aliases")
+            # 我们只对没有别名 或 没有IMDb ID 的进行丰富
+            needs_enrich = (not merged_data.get("other_names", {}).get("aliases")) or \
+                           (not merged_data.get("imdb_id"))
 
             if can_enrich and needs_enrich:
-                logger.debug(f"为演员 '{merged_data['primary_name']}' (TMDb ID: {merged_data['tmdb_person_id']}) 尝试丰富别名...")
+                logger.debug(f"为演员 '{merged_data['primary_name']}' (TMDb ID: {merged_data['tmdb_person_id']}) 尝试丰富别名和IMDb ID...")
                 try:
                     tmdb_details = tmdb_handler.get_person_details_tmdb(
                         person_id=int(merged_data["tmdb_person_id"]),
                         api_key=tmdb_api_key,
-                        append_to_response="external_ids"
+                        append_to_response="external_ids" # 确保请求了 external_ids
                     )
                     if tmdb_details:
+                        # 提取别名
                         aliases = tmdb_details.get("also_known_as", [])
                         if aliases:
+                            # 确保 other_names 字典存在
+                            if "other_names" not in merged_data or not isinstance(merged_data["other_names"], dict):
+                                merged_data["other_names"] = {}
                             merged_data["other_names"]["aliases"] = aliases
                             merged_data["other_names"]["tmdb_name"] = tmdb_details.get("name")
                             logger.info(f"  -> 成功为 '{merged_data['primary_name']}' 丰富了 {len(aliases)} 个别名。")
+                        
+                        # ✨✨✨ 新增：提取并更新 IMDb ID ✨✨✨
+                        imdb_id_from_api = tmdb_details.get("external_ids", {}).get("imdb_id")
+                        if imdb_id_from_api and not merged_data.get("imdb_id"):
+                            merged_data["imdb_id"] = imdb_id_from_api
+                            logger.info(f"  -> 成功为 '{merged_data['primary_name']}' 补充了 IMDb ID: {imdb_id_from_api}")
+
                 except Exception as e:
                     logger.error(f"丰富演员 '{merged_data['primary_name']}' 信息时失败: {e}", exc_info=False)
 
@@ -307,7 +319,7 @@ def evaluate_cast_processing_quality(
     logger.debug(f"  - 基础平均分 (惩罚前): {avg_score:.2f}")
 
     if is_animation:
-        logger.info("  - 惩罚: 检测到为动画片，跳过所有数量相关的惩罚。")
+        logger.debug("  - 惩罚: 检测到为动画片，跳过所有数量相关的惩罚。")
     else:
         # 只有在不是动画片时，才执行原来的数量惩罚逻辑
         if total_actors < 10:
@@ -629,11 +641,11 @@ def are_names_match_enhanced(name_to_check: str, target_name: str, target_origin
         return True
 
     return False
-# --- 补充别名 ---
+# --- 补充别名和ImdbID ---
 def enrich_all_actor_aliases_task(db_path: str, tmdb_api_key: str, stop_event: Optional[threading.Event] = None):
         """
         【可被计划任务调用的函数】
-        扫描数据库，为所有缺少别名的演员，从TMDb获取并补充信息。
+        扫描数据库，为所有缺少别名或ImdbID的演员，从TMDb获取并补充信息。
         """
         logger = logging.getLogger(__name__) # 获取当前模块的logger
 
@@ -655,7 +667,11 @@ def enrich_all_actor_aliases_task(db_path: str, tmdb_api_key: str, stop_event: O
                 sql_find_needy = """
                     SELECT tmdb_person_id, primary_name FROM person_identity_map
                     WHERE tmdb_person_id IS NOT NULL 
-                    AND (other_names IS NULL OR other_names = '{}' OR other_names = '')
+                    AND (
+                        (other_names IS NULL OR other_names = '{}' OR other_names = '')
+                        OR
+                        (imdb_id IS NULL OR imdb_id = '')
+                    )
                 """
                 actors_to_enrich = cursor.execute(sql_find_needy).fetchall()
                 

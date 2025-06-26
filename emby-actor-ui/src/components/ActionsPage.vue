@@ -34,7 +34,7 @@
             </template>
             <n-space vertical align="start">
               <n-checkbox v-model:checked="forceReprocessAll" :disabled="taskStatus.is_running">
-                强制重新处理所有项目 (将清除已处理记录)
+                强制重新处理所有项目 (演员映射表充实后，定期强制重处理可以匹配更多的演员)
               </n-checkbox>
               <n-button
                 type="primary"

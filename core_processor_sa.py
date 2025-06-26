@@ -561,54 +561,14 @@ class MediaProcessorSA:
                         still_unmatched.append(d_actor)
                 unmatched_douban_candidates = still_unmatched
 
-                logger.debug(f"--- 匹配阶段 3 & 4: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_candidates)} 位演员) ---")
-                still_unmatched_final = []
-                for d_actor in unmatched_douban_candidates:
-                    if self.is_stop_requested(): raise InterruptedError("任务中止")
-                    d_douban_id = d_actor.get("douban_id")
-                    match_found = False
-                    if d_douban_id and self.douban_api and self.tmdb_api_key:
-                        if self.is_stop_requested(): raise InterruptedError("任务中止")
-                        details = self.douban_api.celebrity_details(d_douban_id)
-                        time.sleep(0.3)
-                        
-                        d_imdb_id = None
-                        if details and not details.get("error"):
-                            try:
-                                info_list = details.get("extra", {}).get("info", [])
-                                if isinstance(info_list, list):
-                                    for item in info_list:
-                                        if isinstance(item, list) and len(item) == 2 and item[0] == 'IMDb编号':
-                                            d_imdb_id = item[1]
-                                            break
-                            except Exception as e_parse:
-                                logger.warning(f"    -> 解析 IMDb ID 时发生意外错误: {e_parse}")
-                        
-                        if d_imdb_id:
-                            logger.debug(f"    -> 为 '{d_actor.get('name')}' 获取到 IMDb ID: {d_imdb_id}，开始反查...")
-                            if self.is_stop_requested(): raise InterruptedError("任务中止")
-                            person_from_tmdb = tmdb_handler.find_person_by_external_id(d_imdb_id, self.tmdb_api_key, "imdb_id")
-                            if person_from_tmdb and person_from_tmdb.get("id"):
-                                tmdb_id_from_find = str(person_from_tmdb.get("id"))
-                                logger.info(f"  新增成功 (TMDb反查): 豆瓣演员 '{d_actor.get('name')}' -> 新增 TMDbID: {tmdb_id_from_find}")
-                                new_actor_entry = {
-                                    "id": tmdb_id_from_find, "name": d_actor.get("name"), "original_name": d_actor.get("original_name"),
-                                    "character": d_actor.get("character"), "adult": False, "gender": 0, "known_for_department": "Acting",
-                                    "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": -1,
-                                    "imdb_id": d_imdb_id, "douban_id": d_douban_id, "_is_newly_added": True
-                                }
-                                final_cast_map[tmdb_id_from_find] = new_actor_entry
-                                match_found = True
-                    if not match_found:
-                        still_unmatched_final.append(d_actor)
+                logger.debug(f"--- 匹配阶段 3: 跳过实时的TMDb/IMDb API反查 ---")
+                if unmatched_douban_candidates:
+                    discarded_names = [d.get('name') for d in unmatched_douban_candidates]
+                    logger.info(f"--- 最终丢弃 {len(unmatched_douban_candidates)} 位无本地数据库匹配的豆瓣演员: {', '.join(discarded_names[:5])}{'...' if len(discarded_names) > 5 else ''} ---")
 
-                if still_unmatched_final:
-                    discarded_names = [d.get('name') for d in still_unmatched_final]
-                    logger.info(f"--- 最终丢弃 {len(still_unmatched_final)} 位无匹配的豆瓣演员: {', '.join(discarded_names[:5])}{'...' if len(discarded_names) > 5 else ''} ---")
 
             intermediate_cast_list = list(final_cast_map.values())
-            # ★★★ 新增的步骤：在截断前进行一次全量反哺 ★★★
-            # ★★★ 新增的步骤：在截断前进行一次全量反哺 ★★★
+            # ★★★ 在截断前进行一次全量反哺 ★★★
             logger.debug(f"截断前：将 {len(intermediate_cast_list)} 位演员的完整映射关系反哺到数据库...")
             for actor_data in intermediate_cast_list:
                 # ★★★ 核心修复：调用我们统一的、强大的 ActorDBManager ★★★
@@ -929,7 +889,7 @@ class MediaProcessorSA:
                 genres = item_details_from_emby.get("Genres", [])
                 is_animation = "Animation" in genres or "动画" in genres
                 if is_animation:
-                    logger.info(f"检测到媒体 '{item_name_for_log}' 为动画片，将处理配音角色。")
+                    logger.debug(f"检测到媒体 '{item_name_for_log}' 为动画片，将处理配音角色。")
 
                 if self.is_stop_requested(): raise InterruptedError("任务被中止")
 
@@ -960,7 +920,7 @@ class MediaProcessorSA:
                 raise e_write
 
             if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
-                logger.info(f"深度处理已启用，开始为 '{item_name_for_log}' 的所有子项目注入演员表...")
+                logger.info(f"开始为 '{item_name_for_log}' 的所有分集注入演员表...")
                 for filename in os.listdir(base_cache_dir):
                     if filename.startswith("season-") and filename.endswith(".json"):
                         child_json_original = _read_local_json(os.path.join(base_cache_dir, filename))
@@ -976,7 +936,7 @@ class MediaProcessorSA:
 
             if self.sync_images_enabled:
                 if self.is_stop_requested(): raise InterruptedError("任务被中止")
-                logger.info(f"图片同步已启用，开始为 '{item_name_for_log}' 下载图片...")
+                logger.info(f"开始为 '{item_name_for_log}' 下载图片...")
                 image_map = {"Primary": "poster.jpg", "Backdrop": "fanart.jpg", "Logo": "clearlogo.png"}
                 if item_type == "Movie": image_map["Thumb"] = "landscape.jpg"
                 for image_type, filename in image_map.items():
@@ -1282,7 +1242,7 @@ class MediaProcessorSA:
             #---深度处理剧集
             process_episodes_config = self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, True)
             if item_type == "Series" and process_episodes_config:
-                logger.info(f"手动处理：深度处理已启用，将为所有子项目注入手动编辑后的演员表...")
+                logger.info(f"手动处理：开始为所有分集注入手动编辑后的演员表...")
                 # base_cache_dir 变量在函数前面已经定义好了，可以直接使用
                 for filename in os.listdir(base_cache_dir):
                     if filename.startswith("season-") and filename.endswith(".json"):
@@ -1300,7 +1260,7 @@ class MediaProcessorSA:
             #---同步图片
             if self.sync_images_enabled:
                 if self.is_stop_requested(): raise InterruptedError("任务中止")
-                logger.info(f"手动处理：图片同步已启用，开始下载图片...")
+                logger.info(f"手动处理：开始下载图片...")
                 # image_override_dir 变量在函数前面已经定义好了，可以直接使用
                 image_map = {"Primary": "poster.jpg", "Backdrop": "fanart.jpg", "Logo": "clearlogo.png"}
                 if item_type == "Movie": image_map["Thumb"] = "landscape.jpg"

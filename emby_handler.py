@@ -231,7 +231,7 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
         response_get.raise_for_status()
         item_to_update = response_get.json()
         item_name_for_log = item_to_update.get("Name", f"ID:{item_id}")
-        logger.info(f"成功获取项目 {item_name_for_log} (UserID: {user_id}) 的当前信息用于更新。")
+        logger.debug(f"成功获取项目 {item_name_for_log} (UserID: {user_id}) 的当前信息用于更新。")
     except requests.exceptions.RequestException as e:
         logger.error(
             f"update_emby_item_cast: 获取Emby项目 {item_name_for_log} (UserID: {user_id}) 失败: {e}", exc_info=True)
@@ -317,7 +317,7 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
         response_post.raise_for_status()
 
         if response_post.status_code == 204:  # No Content，表示成功
-            logger.info(f"成功更新Emby项目 {item_name_for_log} 的演员信息。")
+            logger.debug(f"成功更新Emby项目 {item_name_for_log} 的演员信息。")
             return True
         else:
             logger.warning(
