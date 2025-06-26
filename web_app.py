@@ -2242,29 +2242,53 @@ def proxy_emby_image(image_path):
             b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82',
             mimetype='image/png'
         )
-# ✨✨✨ 清空待复核列表的 API ✨✨✨
+# ✨✨✨ 清空待复核列表（并全部标记为已处理）的 API ✨✨✨
 @app.route('/api/actions/clear_review_items', methods=['POST'])
 def api_clear_review_items():
-    logger.info("API: 收到清空所有待复核项目的请求。")
+    logger.info("API: 收到清空所有待复核项目并标记为已处理的请求。")
     if task_lock.locked():
         return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
     
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        
+        # 1. 将所有 failed_log 中的项目信息复制到 processed_log
+        # 使用 REPLACE INTO 来避免主键冲突，如果项目已存在于 processed_log，则会更新它。
+        # 使用 COALESCE(score, 10.0) 来实现逻辑：如果原始评分存在，就用它；如果为NULL，则默认为10.0。
+        # 这条SQL语句高效地完成了所有项目的“标记为已处理”操作。
+        copy_sql = """
+            REPLACE INTO processed_log (item_id, item_name, processed_at, score)
+            SELECT
+                item_id,
+                item_name,
+                CURRENT_TIMESTAMP,
+                COALESCE(score, 10.0)
+            FROM
+                failed_log;
+        """
+        cursor.execute(copy_sql)
+        
+        # 2. 清空 failed_log 表
         cursor.execute("DELETE FROM failed_log")
         deleted_count = cursor.rowcount
+        
+        # 3. 提交事务
         conn.commit()
         conn.close()
         
-        message = f"操作成功！已从待复核列表中清空 {deleted_count} 条记录。"
-        logger.info(message)
-        return jsonify({"message": message}), 200
+        if deleted_count > 0:
+            message = f"操作成功！已将 {deleted_count} 个项目从待复核列表移至已处理列表。"
+            logger.info(message)
+            return jsonify({"message": message}), 200
+        else:
+            message = "操作完成，待复核列表本就是空的。"
+            logger.info(message)
+            return jsonify({"message": message}), 200
         
     except Exception as e:
-        logger.error(f"清空待复核列表时失败: {e}", exc_info=True)
-        return jsonify({"error": "服务器在清空数据库时发生内部错误"}), 500
-# ✨✨✨ END: 新增 API ✨✨✨
+        logger.error(f"清空并标记待复核列表时失败: {e}", exc_info=True)
+        return jsonify({"error": "服务器在处理数据库时发生内部错误"}), 500
 
 # # ★★★ 获取追剧列表的API ★★★
 @app.route('/api/watchlist', methods=['GET']) 
