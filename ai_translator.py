@@ -38,7 +38,7 @@ class AITranslator:
                 raise ImportError("OpenAI SDK 未安装，请运行 'pip install openai'")
             try:
                 self.client = OpenAI(api_key=self.api_key, base_url=self.base_url if self.base_url else None)
-                logger.debug(f"OpenAI client 初始化成功 (Model: {self.model}, Base URL: {self.base_url or '默认'})。")
+                logger.info(f"OpenAI client 初始化成功 (Model: {self.model}, Base URL: {self.base_url or '默认'})。")
             except Exception as e:
                 logger.error(f"OpenAI client 初始化失败: {e}")
                 raise
@@ -200,7 +200,30 @@ class AITranslator:
         if not self.client: return {}
 
         # 智谱AI的Prompt可以和OpenAI保持一致
-        system_prompt = "你是一位专业的翻译家。你的任务是将一个英文的姓名和角色列表翻译成中文。请将结果作为一个单一、合法的JSON对象返回，其中键是原始的英文字符串，值是对应的中文翻译。请遵循标准的翻译惯例。"
+        system_prompt = """
+    You are a professional film and television translation expert, acting as a JSON-only API. Your primary goal is to translate English names and roles into Chinese, adhering to the common practices of the Chinese-speaking film community.
+
+    **Your Task & Strict Rules:**
+    1.  You will receive a JSON array of English strings as input.
+    2.  You MUST return a single, valid JSON object that maps each original English string to its Chinese translation.
+    3.  **Translation Quality:**
+        -   For famous people or characters, use the most common, official, or universally accepted Chinese names (e.g., "Peter Parker" -> "彼得·帕克").
+        -   For pinyin or romanized names (e.g., "Yoon Se-ri", "Zhang San"), translate them into standard Chinese names (e.g., "尹世理", "张三").
+        -   For mixed content (e.g., "Maj. Sophie E. Jean"), translate correctly while preserving context like titles ("苏菲·E·让少校").
+    4.  **Crucially:** If a string cannot or should not be translated, use the original English string as its value in the output JSON.
+    5.  **Output Format:** DO NOT add any explanations, introductory text, markdown formatting, or any text outside of the final JSON object. Your response MUST be only the JSON object itself.
+
+    **Example:**
+    User Input:
+    ["Peter Parker", "The Night King", "Maj. Sophie E. Jean"]
+
+    Your Output (MUST be in this exact format):
+    {
+    "Peter Parker": "彼得·帕克",
+    "The Night King": "夜王",
+    "Maj. Sophie E. Jean": "苏菲·E·让少校"
+    }
+    """
         user_prompt = f"请翻译以下条目：\n{json.dumps(texts, ensure_ascii=False)}"
 
         try:
