@@ -62,122 +62,89 @@ class ActorDBManager:
         return None
 
     # --- 核心写入/更新逻辑 ---
-    def upsert_person(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any]) -> int:
+    def upsert_person(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any], tmdb_api_key: Optional[str] = None):
         """
-        【融合升级版】更新或插入一条演员记录，并返回其 map_id。
-        此版本修复了原版可能因数据不全而导致更新失败的问题。
+        【智能数据管家 v4】
+        更新或插入演员记录，并在必要时自动从TMDb丰富别名信息。
         """
-        # 1. 清理和准备来自 Emby 的新数据
+        # 1. 清理和准备新数据
         new_data = {
             "primary_name": str(person_data.get("name") or '').strip(),
             "emby_person_id": str(person_data.get("emby_id") or '').strip() or None,
             "tmdb_person_id": str(person_data.get("tmdb_id") or '').strip() or None,
             "imdb_id": str(person_data.get("imdb_id") or '').strip() or None,
             "douban_celebrity_id": str(person_data.get("douban_id") or '').strip() or None,
+            "other_names": person_data.get("other_names", {})
         }
 
-        has_primary_id = new_data["emby_person_id"] or new_data["tmdb_person_id"] or new_data["imdb_id"]
+        if not new_data["primary_name"] or not (new_data["emby_person_id"] or new_data["tmdb_person_id"] or new_data["imdb_id"]):
+            return -1 # 返回-1而不是日志警告，让上层决定如何处理
 
-        if not has_primary_id or not new_data["primary_name"]:
-            logger.warning(f"尝试写入演员信息，但缺少名字或任何主要ID，操作中止。数据: {person_data}")
-            return -1
+        # 2. 查找并合并数据
+        existing_person_row = self.find_person_by_any_id(cursor, **{k.replace('_person', ''): v for k, v in new_data.items() if '_id' in k and v})
+        
+        merged_data = dict(existing_person_row) if existing_person_row else {}
+        map_id = merged_data.get('map_id')
 
-        # 2. 查找数据库中是否已存在关联记录
-        # 使用 find_person_by_any_id，它会通过所有提供的ID进行查找
-        existing_person = self.find_person_by_any_id(cursor, **{
-            "emby_id": new_data["emby_person_id"],
-            "tmdb_id": new_data["tmdb_person_id"],
-            "imdb_id": new_data["imdb_id"],
-            "douban_id": new_data["douban_celebrity_id"],
-        })
+        # 合并新旧数据
+        for key, value in new_data.items():
+            if key != "other_names" and value is not None:
+                merged_data[key] = value
+        
+        existing_other_names = json.loads(merged_data.get("other_names") or "{}")
+        new_other_names = new_data.get("other_names", {})
+        merged_data["other_names"] = {**existing_other_names, **new_other_names}
 
+        # 3. ★★★ 智能丰富逻辑 ★★★
+        # 如果有TMDb ID，但 other_names 里没有别名，就去获取
+        can_enrich = tmdb_api_key and merged_data.get("tmdb_person_id")
+        needs_enrich = not merged_data["other_names"].get("aliases")
+
+        if can_enrich and needs_enrich:
+            logger.debug(f"为演员 '{merged_data['primary_name']}' (TMDb ID: {merged_data['tmdb_person_id']}) 尝试丰富别名...")
+            try:
+                tmdb_details = tmdb_handler.get_person_details_tmdb(
+                    person_id=int(merged_data["tmdb_person_id"]),
+                    api_key=tmdb_api_key,
+                    append_to_response="external_ids"
+                )
+                if tmdb_details:
+                    aliases = tmdb_details.get("also_known_as", [])
+                    if aliases:
+                        merged_data["other_names"]["aliases"] = aliases
+                        merged_data["other_names"]["tmdb_name"] = tmdb_details.get("name")
+                        logger.info(f"  -> 成功为 '{merged_data['primary_name']}' 丰富了 {len(aliases)} 个别名。")
+            except Exception as e:
+                logger.error(f"丰富演员 '{merged_data['primary_name']}' 信息时失败: {e}", exc_info=False)
+
+        # 4. 准备最终写入数据库的数据
+        # 将 other_names 转回 JSON 字符串
+        merged_data["other_names"] = json.dumps(merged_data["other_names"], ensure_ascii=False)
+
+        # 5. 执行数据库操作 (UPDATE 或 INSERT)
         try:
-            if existing_person:
-                # --- UPDATE 逻辑 (最关键的修复) ---
-                map_id = existing_person['map_id']
-                
-                # 准备一个待更新数据的字典，这是我们要合并的目标
-                merged_data = dict(existing_person)
-
-                # 用新数据覆盖或补充旧数据
-                # 遍历新数据的所有字段
-                for key, value in new_data.items():
-                    if value is not None: # 只有当新数据的值有效时，才进行更新
-                        merged_data[key] = value
-                
-                # 特别处理 other_names JSON 字段
-                other_names = json.loads(merged_data.get("other_names") or "{}")
-                if merged_data.get("tmdb_person_id"):
-                    other_names["tmdb"] = merged_data["primary_name"]
-                if merged_data.get("douban_celebrity_id"):
-                    other_names["douban"] = merged_data["primary_name"]
-                merged_data["other_names"] = json.dumps(other_names, ensure_ascii=False)
-
-                # 构建 SQL 更新语句
-                # 我们将更新所有字段，以确保数据的一致性
-                update_columns = [
-                    "primary_name", "other_names", "emby_person_id", 
-                    "tmdb_person_id", "imdb_id", "douban_celebrity_id"
-                ]
-                set_clauses = [f"{col} = ?" for col in update_columns]
-                set_clauses.append("last_synced_at = CURRENT_TIMESTAMP")
-                set_clauses.append("last_updated_at = CURRENT_TIMESTAMP")
-
+            if map_id:
+                # --- UPDATE ---
+                update_cols = ["primary_name", "other_names", "emby_person_id", "tmdb_person_id", "imdb_id", "douban_celebrity_id"]
+                params = [merged_data.get(col) for col in update_cols]
+                set_clauses = [f"{col} = ?" for col in update_cols]
+                set_clauses.extend(["last_synced_at = CURRENT_TIMESTAMP", "last_updated_at = CURRENT_TIMESTAMP"])
                 sql = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = ?"
-                
-                # 按固定顺序准备参数
-                params = [merged_data.get(col) for col in update_columns]
-                params.append(map_id)
-
-                cursor.execute(sql, tuple(params))
-                logger.debug(f"成功合并并更新了演员记录 (map_id: {map_id})")
+                cursor.execute(sql, tuple(params + [map_id]))
                 return map_id
             else:
-                # --- INSERT 逻辑 (保持简单清晰) ---
-                
-                # 准备 other_names
-                other_names = {}
-                if new_data.get("tmdb_person_id"):
-                    other_names["tmdb"] = new_data["primary_name"]
-                if new_data.get("douban_celebrity_id"):
-                    other_names["douban"] = new_data["primary_name"]
-                
-                # 定义插入的列和值
-                cols = ["primary_name", "emby_person_id", "tmdb_person_id", "imdb_id", "douban_celebrity_id", "other_names", "last_synced_at", "last_updated_at"]
-                vals = [
-                    new_data["primary_name"],
-                    new_data["emby_person_id"],
-                    new_data["tmdb_person_id"],
-                    new_data["imdb_id"],
-                    new_data["douban_celebrity_id"],
-                    json.dumps(other_names, ensure_ascii=False) if other_names else None,
-                ]
-                
+                # --- INSERT ---
+                cols = ["primary_name", "other_names", "emby_person_id", "tmdb_person_id", "imdb_id", "douban_celebrity_id", "last_synced_at", "last_updated_at"]
+                vals = [merged_data.get(col) for col in cols if "last_" not in col]
                 placeholders = ["?" for _ in vals] + ["CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP"]
                 sql = f"INSERT INTO person_identity_map ({', '.join(cols)}) VALUES ({', '.join(placeholders)})"
-
                 cursor.execute(sql, tuple(vals))
-                new_id = cursor.lastrowid
-                logger.debug(f"成功插入了新的演员记录 (map_id: {new_id})")
-                return new_id
-
-        except sqlite3.IntegrityError as e:
-            logger.warning(f"处理演员 {new_data['primary_name']} (EmbyID: {new_data['emby_person_id']}) 时发生数据库完整性冲突: {e}。这通常是并发或数据竞争导致，正在尝试恢复。")
-            # 发生冲突后，再次查询以获取正确的 map_id，确保流程可以继续
-            conflicting_person = self.find_person_by_any_id(cursor, **{
-                "emby_id": new_data["emby_person_id"],
-                "tmdb_id": new_data["tmdb_person_id"],
-                "imdb_id": new_data["imdb_id"],
-                "douban_id": new_data["douban_celebrity_id"],
-            })
-            if conflicting_person:
-                logger.info(f"已找到冲突对应的记录 (map_id: {conflicting_person['map_id']})，将使用此ID继续。")
-                return conflicting_person['map_id']
-            else:
-                logger.error("发生完整性冲突后，未能找到对应的现有记录，此条目处理失败。")
-                return -1
-            
-
+                return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            # 简化冲突处理，直接再次查找并返回ID
+            logger.warning(f"处理演员 {merged_data['primary_name']} 时发生完整性冲突，恢复...")
+            final_person = self.find_person_by_any_id(cursor, **{k.replace('_person', ''): v for k, v in new_data.items() if '_id' in k and v})
+            return final_person['map_id'] if final_person else -1
 # ======================================================================
 # 模块 2: 通用的业务逻辑函数 (Business Logic Helpers)
 # ======================================================================
@@ -266,72 +233,84 @@ def select_best_role(current_role: str, candidate_role: str) -> str:
     logger.debug(f"  选择: ''")
     logger.debug(f"--- [角色选择结束] ---")
     return ""
-
+# --- 质量评估 ---
 def evaluate_cast_processing_quality(final_cast: List[Dict[str, Any]], original_cast_count: int, expected_final_count: Optional[int] = None) -> float:
     """
-    评估处理后的演员列表质量，并返回一个分数 (0.0 - 10.0)。
+    【V-Final 极简版】
+    只关心最终产出的中文化质量和演员数量。
     """
-    if not final_cast: return 0.0
+    if not final_cast:
+        logger.warning("  质量评估：处理后演员列表为空！评为 0.0 分。")
+        return 0.0
+        
     total_actors = len(final_cast)
     accumulated_score = 0.0
     
-    logger.debug(f"  质量评估开始：原始演员数={original_cast_count}, 处理后演员数={total_actors}, 预期数={expected_final_count or 'N/A'}")
+    logger.debug(f"--- 质量评估开始 (极简版) ---")
+    logger.debug(f"  - 原始演员数: {original_cast_count}")
+    logger.debug(f"  - 处理后演员数: {total_actors}")
+    logger.debug(f"------------------------------------")
 
-    for actor_data in final_cast:
+    for i, actor_data in enumerate(final_cast):
+        # 每个演员的基础分是 0.0，通过加分项累加
         score = 0.0
-        # 演员名评分 (满分 3)
-        if actor_data.get("name") and utils.contains_chinese(actor_data.get("name")):
-            score += 3.0
-        elif actor_data.get("name"):
-            score += 1.0
         
-        # 角色名评分 (满分 3)
-        role = actor_data.get("character", "")
-        if role and utils.contains_chinese(role):
-            if role not in ["演员", "配音"] and not role.endswith("(配音)"):
-                score += 3.0 # 有意义的中文角色名
-            else:
-                score += 1.5 # 通用角色名
-        elif role:
+        # --- 智能获取数据 ---
+        actor_name = actor_data.get("name") or actor_data.get("Name")
+        actor_role = actor_data.get("character") or actor_data.get("Role")
+        
+        # --- 演员名评分 (满分 5.0) ---
+        if actor_name and utils.contains_chinese(actor_name):
+            score += 5.0
+        elif actor_name:
+            score += 1.0 # 保留一个较低的基础分给英文名
+
+        # --- 角色名评分 (满分 5.0) ---
+        placeholders = {"演员", "配音"}
+        is_placeholder = (str(actor_role).endswith("(配音)")) or (str(actor_role) in placeholders)
+
+        if actor_role and utils.contains_chinese(actor_role) and not is_placeholder:
+            score += 5.0 # 有意义的中文角色名
+        elif actor_role and utils.contains_chinese(actor_role) and is_placeholder:
+            score += 2.5 # 中文占位符
+        elif actor_role:
             score += 0.5 # 英文角色名
-        
-        # ID 评分 (满分 4)
-        if actor_data.get("id"): score += 2.0 # TMDB ID
-        if actor_data.get("imdb_id"): score += 1.5 # IMDb ID
-        if actor_data.get("douban_id"): score += 0.5 # Douban ID
-        
+
         final_actor_score = min(10.0, score)
         accumulated_score += final_actor_score
-        logger.debug(f"    演员 '{actor_data.get('name', '未知')}' 单项评分: {final_actor_score:.1f}")
+        
+        logger.debug(f"  [{i+1}/{total_actors}] 演员: '{actor_name}' (角色: '{actor_role}') | 单项评分: {final_actor_score:.1f}")
 
-    # ★★★ 核心修改 1：只在这里计算一次 avg_score ★★★
     avg_score = accumulated_score / total_actors if total_actors > 0 else 0.0
     
-    # ★★★ 核心修改 2：移除旧的惩罚逻辑，只保留新的 if/elif/else 结构 ★★★
-    
-    # 情况一：我们主动进行了截断 (expected_final_count 被提供了)
-    if expected_final_count is not None:
-        # 检查截断后的数量是否因为某些原因意外减少了
-        if total_actors < expected_final_count * 0.8:
-            logger.warning(f"  质量评估：演员数量 ({total_actors}) 显著少于截断后的预期值 ({expected_final_count})，将进行惩罚。")
-            avg_score *= (total_actors / expected_final_count)
-        else:
-            # 这是最常见的情况：数量符合预期，不惩罚
-            logger.debug(f"  质量评估：演员数量符合主动截断后的预期 ({total_actors}/{expected_final_count})，不进行惩罚。")
-    
-    # 情况二：我们没有主动截断，但数量意外大幅减少
-    elif total_actors < original_cast_count * 0.8:
-        logger.warning(f"  质量评估：演员数量从 {original_cast_count} 大幅减少到 {total_actors} (非主动截断)，将进行惩罚。")
-        avg_score *= (total_actors / original_cast_count)
-    
-    # 情况三：数量正常，没有截断，也没有大幅减少
-    else:
-        logger.debug(f"  质量评估：演员数量 ({total_actors}/{original_cast_count}) 正常，不进行惩罚。")
+    # --- 数量惩罚逻辑 ---
+    logger.debug(f"------------------------------------")
+    logger.debug(f"  - 基础平均分 (惩罚前): {avg_score:.2f}")
 
+    # 惩罚1：最终数量少于10个
+    if total_actors < 10:
+        # 数量越少，惩罚越重。例如9个演员乘以0.9，5个演员乘以0.5
+        penalty_factor = total_actors / 10.0
+        logger.warning(f"  - 惩罚: 最终演员数({total_actors})少于10个，乘以惩罚因子 {penalty_factor:.2f}")
+        avg_score *= penalty_factor
+        
+    # 惩罚2：数量因处理错误而大幅减少 (与惩罚1可叠加)
+    # (我们保留这个逻辑，因为它能捕获处理流程中的严重错误)
+    elif expected_final_count is not None:
+        if total_actors < expected_final_count * 0.8:
+            penalty_factor = total_actors / expected_final_count
+            logger.warning(f"  - 惩罚: 数量({total_actors})远少于预期({expected_final_count})，乘以惩罚因子 {penalty_factor:.2f}")
+            avg_score *= penalty_factor
+    elif total_actors < original_cast_count * 0.8:
+        penalty_factor = total_actors / original_cast_count
+        logger.warning(f"  - 惩罚: 数量从{original_cast_count}大幅减少到{total_actors}，乘以惩罚因子 {penalty_factor:.2f}")
+        avg_score *= penalty_factor
+    else:
+        logger.debug(f"  - 惩罚: 数量正常，不进行惩罚。")
+    
     final_score_rounded = round(avg_score, 1)
     logger.info(f"  最终评分: {final_score_rounded:.1f}")
     return final_score_rounded
-    return 7.5 # 占位符
 
 
 def translate_actor_field(text: Optional[str], db_cursor: sqlite3.Cursor, ai_translator: Optional[AITranslator], translator_engines: List[str], ai_enabled: bool) -> Optional[str]:
@@ -601,5 +580,35 @@ def format_and_complete_cast_list(cast_list: List[Dict[str, Any]], is_animation:
         perfect_cast.append(actor)
             
     return perfect_cast
+# --- 增强版的名字匹配函数，会检查别名列表 ---
+def are_names_match_enhanced(name_to_check: str, target_name: str, target_original_name: str, target_aliases: List[str]) -> bool:
+    """
+    增强版的名字匹配函数，会检查别名列表。
+    """
+    if not name_to_check or not name_to_check.strip():
+        return False
+
+    name_to_check_clean = name_to_check.strip().lower()
+    
+    # 1. 直接比较主名称和原始名称
+    if target_name and name_to_check_clean == target_name.strip().lower():
+        return True
+    if target_original_name and name_to_check_clean == target_original_name.strip().lower():
+        return True
+        
+    # 2. 检查别名列表
+    if target_aliases:
+        for alias in target_aliases:
+            if alias and name_to_check_clean == alias.strip().lower():
+                return True
+                
+    # 3. 考虑移除中间点或空格的模糊匹配 (可选，但有用)
+    name_to_check_fuzzy = name_to_check_clean.replace('.', '').replace(' ', '')
+    if target_name and name_to_check_fuzzy == target_name.strip().lower().replace('.', '').replace(' ', ''):
+        return True
+    if target_original_name and name_to_check_fuzzy == target_original_name.strip().lower().replace('.', '').replace(' ', ''):
+        return True
+
+    return False
 
 

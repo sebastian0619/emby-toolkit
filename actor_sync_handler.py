@@ -75,6 +75,7 @@ class UnifiedSyncHandler:
                         "tmdb_id": provider_ids_lower.get("tmdb"),
                         "imdb_id": provider_ids_lower.get("imdb"),
                         "douban_id": provider_ids_lower.get("douban"),
+                        "other_names": {}
                     }
                     
                     try:
