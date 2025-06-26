@@ -90,9 +90,9 @@ CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED = "schedule_watchlist_enabled" # 是否
 CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON = "schedule_watchlist_cron"       # 智能追剧的CRON表达式
 DEFAULT_SCHEDULE_WATCHLIST_CRON = "0 */6 * * *" # 默认每6小时执行一次
 
-# ★★★ 新增：别名补充任务 ★★★
-CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED = "schedule_enrich_aliases_enabled" # 是否启用别名补充任务
-CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON = "schedule_enrich_aliases_cron"       # 别名补充的CRON表达式
+# ★★★ 新增：外部ID补充任务 ★★★
+CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED = "schedule_enrich_aliases_enabled" # 是否启用外部ID补充任务
+CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON = "schedule_enrich_aliases_cron"       # 外部ID补充的CRON表达式
 
 # ==============================================================================
 # ✨ 内部常量与映射 (Internal Constants & Mappings)

@@ -111,7 +111,7 @@ CONFIG_DEFINITION = {
     constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "0 1 * * *"),
     constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
     constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', constants.DEFAULT_SCHEDULE_WATCHLIST_CRON),
-    # ★★★ 新增我们的别名补充任务配置 ★★★
+    # ★★★ 新增我们的外部ID补充任务配置 ★★★
     constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
     constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "30 2 * * *"),
 
@@ -830,7 +830,7 @@ def setup_scheduled_tasks():
                     logger.error(f"设置定时智能追剧更新任务失败: {e}", exc_info=True)
     else:
         logger.info("定时智能追剧更新任务未启用。")
-    # ✨✨✨ 处理别名补充任务 ✨✨✨
+    # ✨✨✨ 处理外部ID补充任务 ✨✨✨
     job_id_enrich = 'scheduled_enrich_aliases' # 给它一个唯一的ID
     if scheduler.get_job(job_id_enrich):
         scheduler.remove_job(job_id_enrich)
@@ -840,10 +840,10 @@ def setup_scheduled_tasks():
         if cron_expression:
             try:
                 def scheduled_enrich_task_submitter():
-                    logger.debug("定时任务触发：准备提交别名补充任务到队列。")
+                    logger.debug("定时任务触发：准备提交外部ID补充任务到队列。")
                     submit_task_to_queue(
                         task_enrich_aliases, # <--- 调用我们刚刚创建的任务函数
-                        "定时别名补充"
+                        "定时外部ID补充"
                     )
 
                 scheduler.add_job(
@@ -854,11 +854,11 @@ def setup_scheduled_tasks():
                     replace_existing=True,
                 )
                 next_run_str = _get_next_run_time_str(cron_expression)
-                logger.info(f"已设置定时任务：别名补充，将{next_run_str}")
+                logger.info(f"已设置定时任务：外部ID补充，将{next_run_str}")
             except Exception as e:
-                logger.error(f"设置定时别名补充任务失败: {e}", exc_info=True)
+                logger.error(f"设置定时外部ID补充任务失败: {e}", exc_info=True)
     else:
-        logger.info("定时别名补充任务未启用。")
+        logger.info("定时外部ID补充任务未启用。")
 
     # --- 启动调度器逻辑保持不变 ---
     scan_enabled = config.get("schedule_enabled", False)
@@ -940,10 +940,10 @@ def task_sync_person_map(processor):
 # ✨✨✨ 补充别名函数 ✨✨✨
 def task_enrich_aliases(processor: Union[MediaProcessorSA, MediaProcessorAPI]):
     """
-    【后台任务】别名补充任务的入口点。
+    【后台任务】外部ID补充任务的入口点。
     它会调用 actor_utils 中的核心逻辑。
     """
-    task_name = "演员别名补充"
+    task_name = "演员外部ID补充"
     logger.info(f"后台任务 '{task_name}' 开始执行...")
     update_status_from_thread(0, "准备开始补充演员别名...")
 
@@ -969,7 +969,7 @@ def task_enrich_aliases(processor: Union[MediaProcessorSA, MediaProcessorAPI]):
         )
         
         logger.info(f"'{task_name}' 任务执行完毕。")
-        update_status_from_thread(100, "别名补充任务完成。")
+        update_status_from_thread(100, "外部ID补充任务完成。")
 
     except Exception as e:
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)

@@ -650,7 +650,7 @@ def enrich_all_actor_aliases_task(db_path: str, tmdb_api_key: str, stop_event: O
         logger = logging.getLogger(__name__) # 获取当前模块的logger
 
         if not db_path or not tmdb_api_key:
-            logger.error("别名补充任务：数据库路径或TMDb API Key未提供，任务中止。")
+            logger.error("外部ID补充任务：数据库路径或TMDb API Key未提供，任务中止。")
             return
 
         logger.info("--- 开始演员补充外部ID计划任务 ---")
@@ -703,5 +703,5 @@ def enrich_all_actor_aliases_task(db_path: str, tmdb_api_key: str, stop_event: O
                 logger.info(f"任务完成！成功处理了 {processed_count} / {total_to_process} 位演员。")
 
         except Exception as e:
-            logger.error(f"别名补充任务执行时发生严重错误: {e}", exc_info=True)
+            logger.error(f"外部ID补充任务执行时发生严重错误: {e}", exc_info=True)
 
