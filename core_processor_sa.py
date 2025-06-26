@@ -468,7 +468,7 @@ class MediaProcessorSA:
             return None
             
     # --- 核心处理流程 ---
-    def _process_cast_list_from_local(self, local_cast_list: List[Dict[str, Any]], emby_item_info: Dict[str, Any], cursor: sqlite3.Cursor, tmdb_api_key: Optional[str]) -> List[Dict[str, Any]]:
+    def _process_cast_list_from_local(self, local_cast_list: List[Dict[str, Any]], emby_item_info: Dict[str, Any], cursor: sqlite3.Cursor, tmdb_api_key: Optional[str], stop_event: Optional[threading.Event]) -> List[Dict[str, Any]]:
         """
         【V10 - 批量翻译优化版】使用本地缓存或在线API获取豆瓣演员，再进行匹配和处理。
         """
@@ -883,7 +883,8 @@ class MediaProcessorSA:
                     original_cast_from_local, 
                     item_details_from_emby, 
                     cursor,
-                    self.tmdb_api_key  # ✨ 把 API Key 传进去
+                    self.tmdb_api_key,
+                    self.get_stop_event 
                 )
                 
                 genres = item_details_from_emby.get("Genres", [])
