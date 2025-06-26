@@ -38,7 +38,7 @@ class AITranslator:
                 raise ImportError("OpenAI SDK 未安装，请运行 'pip install openai'")
             try:
                 self.client = OpenAI(api_key=self.api_key, base_url=self.base_url if self.base_url else None)
-                logger.info(f"OpenAI client 初始化成功 (Model: {self.model}, Base URL: {self.base_url or '默认'})。")
+                logger.info(f"OpenAI 初始化成功")
             except Exception as e:
                 logger.error(f"OpenAI client 初始化失败: {e}")
                 raise
@@ -48,7 +48,7 @@ class AITranslator:
                 raise ImportError("智谱AI SDK 未安装，请运行 'pip install zhipuai'")
             try:
                 self.client = ZhipuAI(api_key=self.api_key)
-                logger.info(f"智谱AI (ZhipuAI) client 初始化成功 (Model: {self.model})。")
+                logger.info(f"智谱AI 初始化成功")
             except Exception as e:
                 logger.error(f"智谱AI client 初始化失败: {e}")
                 raise
