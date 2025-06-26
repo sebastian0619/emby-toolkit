@@ -108,6 +108,10 @@ class MediaProcessorSA:
     def clear_stop_signal(self):
         self._stop_event.clear()
 
+    def get_stop_event(self) -> threading.Event:
+        """返回内部的停止事件对象，以便传递给其他函数。"""
+        return self._stop_event
+
     def is_stop_requested(self) -> bool:
         return self._stop_event.is_set()
 
@@ -159,7 +163,7 @@ class MediaProcessorSA:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM failed_log WHERE item_id = ?", (item_id,))
             if cursor.rowcount > 0:
-                logger.info(f"Item ID '{item_id}' 已从【待复核列表】中移除。")
+                logger.info(f"  - 已从【手动处理列表】中移除。")
             conn.commit()
             conn.close()
         except Exception as e:
@@ -1006,7 +1010,8 @@ class MediaProcessorSA:
             processing_score = evaluate_cast_processing_quality(
                 final_cast=final_cast_perfect,
                 original_cast_count=initial_actor_count,
-                expected_final_count=len(final_cast_perfect) # 把截断后的数量告诉评估函数
+                expected_final_count=len(final_cast_perfect), # 把截断后的数量告诉评估函数
+                is_animation=is_animation
             )
             min_score_for_review = float(self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW))
             
@@ -1027,7 +1032,7 @@ class MediaProcessorSA:
                 self.save_to_processed_log(item_id, item_name_for_log, score=processing_score)
                 self._remove_from_failed_log_if_exists(item_id)
             
-            logger.info(f"✨✨✨处理完成 '{item_name_for_log}' ✨✨✨")
+            logger.info(f"✨✨✨处理完成 '{item_name_for_log}'✨✨✨")
             return True
 
         except InterruptedError:

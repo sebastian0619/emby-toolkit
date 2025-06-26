@@ -63,6 +63,25 @@
         </n-grid>
       </n-form>
     </n-card>
+    <n-card title="演员别名丰富定时任务" class="beautified-card" :bordered="false">
+      <template #header-extra>
+        <n-switch v-model:value="configModel.schedule_enrich_aliases_enabled" />
+      </template>
+      <n-form :model="configModel" label-placement="top">
+        <n-grid :cols="1">
+          <n-form-item-grid-item label="CRON表达式" path="schedule_enrich_aliases_cron">
+            <n-input 
+              v-model:value="configModel.schedule_enrich_aliases_cron" 
+              :disabled="!configModel.schedule_enrich_aliases_enabled" 
+              placeholder="例如: 30 2 * * * (每天凌晨2:30)" 
+            />
+            <template #feedback>
+              在后台扫描数据库，为缺少别名的演员从TMDb补充信息。这是一个耗时操作，建议在服务器空闲时执行。
+            </template>
+          </n-form-item-grid-item>
+        </n-grid>
+      </n-form>
+    </n-card>
 
     <!-- 保存按钮 -->
     <n-button size="medium" type="primary" @click="savePageConfig" :loading="savingConfig" block>
@@ -93,6 +112,7 @@ const {
 const tasksToWatch = [
   { enabledKey: 'schedule_enabled', cronKey: 'schedule_cron' },
   { enabledKey: 'schedule_sync_map_enabled', cronKey: 'schedule_sync_map_cron' },
+  { enabledKey: 'schedule_enrich_aliases_enabled', cronKey: 'schedule_enrich_aliases_cron' },
   { enabledKey: 'schedule_watchlist_enabled', cronKey: 'schedule_watchlist_cron' }
 ];
 

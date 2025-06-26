@@ -1,6 +1,7 @@
 # web_app.py
 import os
 import re
+import json
 import inspect
 import sqlite3
 import shutil
@@ -30,7 +31,7 @@ import csv
 from io import StringIO
 from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
-from actor_utils import ActorDBManager
+from actor_utils import ActorDBManager, enrich_all_actor_aliases_task
 from flask import session
 from croniter import croniter
 import logging
@@ -60,7 +61,64 @@ except ImportError:
 APP_DATA_DIR_ENV = os.environ.get("APP_DATA_DIR")
 app = Flask(__name__, static_folder='static')
 app.secret_key = os.urandom(24)
+# ✨✨✨ “配置清单” ✨✨✨
+CONFIG_DEFINITION = {
+    # [Features]
+    constants.CONFIG_OPTION_USE_SA_MODE: (constants.CONFIG_SECTION_FEATURES, 'boolean', True),
+    
+    # [Emby]
+    constants.CONFIG_OPTION_EMBY_SERVER_URL: (constants.CONFIG_SECTION_EMBY, 'string', ""),
+    constants.CONFIG_OPTION_EMBY_API_KEY: (constants.CONFIG_SECTION_EMBY, 'string', ""),
+    constants.CONFIG_OPTION_EMBY_USER_ID: (constants.CONFIG_SECTION_EMBY, 'string', ""),
+    constants.CONFIG_OPTION_REFRESH_AFTER_UPDATE: (constants.CONFIG_SECTION_EMBY, 'boolean', True),
+    constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS: (constants.CONFIG_SECTION_EMBY, 'list', []),
 
+    # [TMDB]
+    constants.CONFIG_OPTION_TMDB_API_KEY: (constants.CONFIG_SECTION_TMDB, 'string', ""),
+
+    # [DoubanAPI]
+    constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN: (constants.CONFIG_SECTION_API_DOUBAN, 'float', 1.0),
+
+    # [Translation]
+    constants.CONFIG_OPTION_TRANSLATOR_ENGINES: (constants.CONFIG_SECTION_TRANSLATION, 'list', constants.DEFAULT_TRANSLATOR_ENGINES_ORDER),
+    
+    # [LocalDataSource]
+    constants.CONFIG_OPTION_LOCAL_DATA_PATH: (constants.CONFIG_SECTION_LOCAL_DATA, 'string', ""),
+
+    # [General]
+    "delay_between_items_sec": ("General", 'float', 0.5),
+    constants.CONFIG_OPTION_MIN_SCORE_FOR_REVIEW: ("General", 'float', constants.DEFAULT_MIN_SCORE_FOR_REVIEW),
+    constants.CONFIG_OPTION_PROCESS_EPISODES: ("General", 'boolean', True),
+    constants.CONFIG_OPTION_SYNC_IMAGES: ("General", 'boolean', False),
+    constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS: ("General", 'int', constants.DEFAULT_MAX_ACTORS_TO_PROCESS),
+
+    # [Network]
+    "user_agent": ("Network", 'string', 'Mozilla/5.0 ...'), # 省略默认值
+    "accept_language": ("Network", 'string', 'zh-CN,zh;q=0.9,en;q=0.8'),
+
+    # [AITranslation]
+    constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED: (constants.CONFIG_SECTION_AI_TRANSLATION, 'boolean', False),
+    constants.CONFIG_OPTION_AI_PROVIDER: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', "openai"),
+    constants.CONFIG_OPTION_AI_API_KEY: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', ""),
+    constants.CONFIG_OPTION_AI_MODEL_NAME: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', "deepseek-ai/DeepSeek-V2.5"),
+    constants.CONFIG_OPTION_AI_BASE_URL: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', "https://api.siliconflow.cn/v1"),
+
+    # [Scheduler]
+    constants.CONFIG_OPTION_SCHEDULE_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
+    constants.CONFIG_OPTION_SCHEDULE_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "0 3 * * *"),
+    constants.CONFIG_OPTION_SCHEDULE_FORCE_REPROCESS: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
+    constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
+    constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "0 1 * * *"),
+    constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
+    constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', constants.DEFAULT_SCHEDULE_WATCHLIST_CRON),
+    # ★★★ 新增我们的别名丰富任务配置 ★★★
+    constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
+    constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "30 2 * * *"),
+
+    # [Authentication]
+    constants.CONFIG_OPTION_AUTH_ENABLED: (constants.CONFIG_SECTION_AUTH, 'boolean', False),
+    constants.CONFIG_OPTION_AUTH_USERNAME: (constants.CONFIG_SECTION_AUTH, 'string', constants.DEFAULT_USERNAME),
+}
 if APP_DATA_DIR_ENV:
     # 如果在 Docker 中，并且设置了 APP_DATA_DIR 环境变量 (例如设置为 "/config")
     PERSISTENT_DATA_PATH = APP_DATA_DIR_ENV
@@ -272,6 +330,34 @@ def login_required(f):
         
         return jsonify({"error": "未授权，请先登录"}), 401
     return decorated_function
+# ✨✨✨ 装饰器：检查后台任务锁是否被占用 ✨✨✨
+def task_lock_required(f):
+    """装饰器：检查后台任务锁是否被占用。"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if task_lock.locked():
+            return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
+        return f(*args, **kwargs)
+    return decorated_function
+# ✨✨✨ 装饰器：检查核心处理器是否已初始化 ✨✨✨
+def processor_ready_required(f):
+    """装饰器：检查核心处理器是否已初始化。"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not media_processor_instance:
+            return jsonify({"error": "核心处理器未就绪。"}), 503
+        return f(*args, **kwargs)
+    return decorated_function
+# ✨✨✨ 装饰器：检查是否处于神医模式，并确保处理器已初始化 ✨✨✨
+def sa_mode_required(f):
+    """【守卫3】检查是否处于神医模式。必须在 processor_ready_required 之后使用。"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # 注意：这里我们假设 processor_ready_required 已经确保了 media_processor_instance 存在
+        if not isinstance(media_processor_instance, MediaProcessorSA):
+            return jsonify({"error": "此功能仅在神医模式下可用。"}), 403
+        return f(*args, **kwargs)
+    return decorated_function
 def init_auth():
     """
     【V2 - 使用全局配置版】初始化认证系统。
@@ -330,276 +416,82 @@ def init_auth():
         logger.info("="*21 + " [基础配置加载完毕] " + "="*21)
 # --- 配置加载与保存 ---
 def load_config() -> Tuple[Dict[str, Any], bool]:
-    """
-    【全自动版】从 config.ini 文件加载配置。
-    返回一个元组: (配置字典, 是否是首次创建配置的标记)
-    """
-    global APP_CONFIG # 声明我们要修改全局变量
+    """【清单驱动版】从 config.ini 加载配置。"""
+    global APP_CONFIG
     config_parser = configparser.ConfigParser()
-    is_first_run_creating_config = False # 初始化标记
+    is_first_run = not os.path.exists(CONFIG_FILE_PATH)
 
-    if not os.path.exists(CONFIG_FILE_PATH):
-        logger.warning(f"配置文件 '{CONFIG_FILE_PATH}' 未找到。将标记为首次运行并使用默认值。")
-        is_first_run_creating_config = True
-        # 注意：这里我们不再立即创建文件，将创建文件的责任交给 init_auth
-    else:
+    if not is_first_run:
         try:
             config_parser.read(CONFIG_FILE_PATH, encoding='utf-8')
-            logger.debug(f"配置已从 '{CONFIG_FILE_PATH}' 加载。")
         except Exception as e:
-            logger.error(f"解析配置文件 '{CONFIG_FILE_PATH}' 时发生错误: {e}", exc_info=True)
+            logger.error(f"解析配置文件时出错: {e}", exc_info=True)
 
-    # 定义所有期望的节
-    expected_sections = [
-        constants.CONFIG_SECTION_EMBY, constants.CONFIG_SECTION_TMDB,
-        constants.CONFIG_SECTION_API_DOUBAN, constants.CONFIG_SECTION_TRANSLATION,
-        # constants.CONFIG_SECTION_DOMESTIC_SOURCE, constants.CONFIG_SECTION_LOCAL_DATA,
-        "General", "Scheduler", "Network", "AITranslation",
-        constants.CONFIG_SECTION_AUTH
-    ]
-    for section_name in expected_sections:
-        if not config_parser.has_section(section_name):
-            config_parser.add_section(section_name)
-
-    app_cfg: Dict[str, Any] = {}
-
-    # Emby Section
-    app_cfg["emby_server_url"] = config_parser.get(constants.CONFIG_SECTION_EMBY, "emby_server_url", fallback="")
-    app_cfg["emby_api_key"] = config_parser.get(constants.CONFIG_SECTION_EMBY, "emby_api_key", fallback="")
-    app_cfg["emby_user_id"] = config_parser.get(constants.CONFIG_SECTION_EMBY, "emby_user_id", fallback="")
-    app_cfg["refresh_emby_after_update"] = config_parser.getboolean(constants.CONFIG_SECTION_EMBY, "refresh_emby_after_update", fallback=True)
-    libraries_str = config_parser.get(constants.CONFIG_SECTION_EMBY, "libraries_to_process", fallback="")
-    app_cfg["libraries_to_process"] = [lib_id.strip() for lib_id in libraries_str.split(',') if lib_id.strip()]
-
-    # TMDB, Douban, Translation, etc.
-    app_cfg["tmdb_api_key"] = config_parser.get(constants.CONFIG_SECTION_TMDB, "tmdb_api_key", fallback="")
-    app_cfg["api_douban_default_cooldown_seconds"] = config_parser.getfloat(constants.CONFIG_SECTION_API_DOUBAN, "api_douban_default_cooldown_seconds", fallback=1.0)
-    engines_str = config_parser.get(
-        constants.CONFIG_SECTION_TRANSLATION, 
-        constants.CONFIG_OPTION_TRANSLATOR_ENGINES,
-        fallback=",".join(constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
-    )
-    app_cfg[constants.CONFIG_OPTION_TRANSLATOR_ENGINES] = [eng.strip() for eng in engines_str.split(',') if eng.strip()]
-    app_cfg["local_data_path"] = config_parser.get(constants.CONFIG_SECTION_LOCAL_DATA, "local_data_path", fallback="").strip()
-
-    # General Section
-    app_cfg["delay_between_items_sec"] = config_parser.getfloat("General", "delay_between_items_sec", fallback=0.5)
-    app_cfg["min_score_for_review"] = config_parser.getfloat("General", "min_score_for_review", fallback=6.0)
-    app_cfg["process_episodes"] = config_parser.getboolean("General", "process_episodes", fallback=True)
-    app_cfg[constants.CONFIG_OPTION_SYNC_IMAGES] = config_parser.getboolean(
-        "General",
-        constants.CONFIG_OPTION_SYNC_IMAGES,
-        fallback=False
-    )
-    app_cfg[constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS] = config_parser.getint(
-    constants.CONFIG_SECTION_GENERAL,
-    constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS,
-    fallback=constants.DEFAULT_MAX_ACTORS_TO_PROCESS
-    )
-
-    # Network Section
-    app_cfg["user_agent"] = config_parser.get("Network", "user_agent", fallback='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36')
-    app_cfg["accept_language"] = config_parser.get("Network", "accept_language", fallback='zh-CN,zh;q=0.9,en;q=0.8')
-
-    # AITranslation Section
-    app_cfg[constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED] = config_parser.getboolean(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, fallback=False)
-    app_cfg[constants.CONFIG_OPTION_AI_PROVIDER] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_PROVIDER, fallback="openai")
-    app_cfg[constants.CONFIG_OPTION_AI_API_KEY] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_API_KEY, fallback="")
-    app_cfg[constants.CONFIG_OPTION_AI_MODEL_NAME] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_MODEL_NAME, fallback="deepseek-ai/DeepSeek-V2.5")
-    app_cfg[constants.CONFIG_OPTION_AI_BASE_URL] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_BASE_URL, fallback="https://api.siliconflow.cn/v1")
-    # app_cfg[constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT] = config_parser.get(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT, fallback=constants.DEFAULT_AI_TRANSLATION_PROMPT)
-
-    # Scheduler Section
-    app_cfg["schedule_enabled"] = config_parser.getboolean("Scheduler", "schedule_enabled", fallback=False)
-    app_cfg["schedule_cron"] = config_parser.get("Scheduler", "schedule_cron", fallback="0 3 * * *")
-    app_cfg["schedule_force_reprocess"] = config_parser.getboolean("Scheduler", "schedule_force_reprocess", fallback=False)
-    app_cfg["schedule_sync_map_enabled"] = config_parser.getboolean("Scheduler", "schedule_sync_map_enabled", fallback=False)
-    app_cfg["schedule_sync_map_cron"] = config_parser.get("Scheduler", "schedule_sync_map_cron", fallback="0 1 * * *")
-
-    app_cfg[constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED] = config_parser.getboolean(
-        constants.CONFIG_SECTION_SCHEDULER,
-        constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED,
-        fallback=False  # 默认不开启
-    )
-    app_cfg[constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON] = config_parser.get(
-        constants.CONFIG_SECTION_SCHEDULER,
-        constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON,
-        fallback=constants.DEFAULT_SCHEDULE_WATCHLIST_CRON # 使用常量里的默认值
-    )
-
-    # ★★★ 新增神医开关 ★★★
-    if not config_parser.has_section(constants.CONFIG_SECTION_FEATURES):
-        config_parser.add_section(constants.CONFIG_SECTION_FEATURES)
-        
-    app_cfg[constants.CONFIG_OPTION_USE_SA_MODE] = config_parser.getboolean(
-        constants.CONFIG_SECTION_FEATURES,
-        constants.CONFIG_OPTION_USE_SA_MODE,
-        fallback=True  # 默认开启神医模式，因为它是功能更全的版本
-    )
-    # ★★★ 新增结束 ★★★
-
-    # Authentication Section
-    if is_first_run_creating_config:
-        app_cfg[constants.CONFIG_OPTION_AUTH_ENABLED] = True
-    else:
-        app_cfg[constants.CONFIG_OPTION_AUTH_ENABLED] = config_parser.getboolean(
-            constants.CONFIG_SECTION_AUTH, 
-            constants.CONFIG_OPTION_AUTH_ENABLED, 
-            fallback=False
-        )
+    app_cfg = {}
     
-    app_cfg[constants.CONFIG_OPTION_AUTH_USERNAME] = config_parser.get(
-        constants.CONFIG_SECTION_AUTH,
-        constants.CONFIG_OPTION_AUTH_USERNAME,
-        fallback=constants.DEFAULT_USERNAME
-    )
-    # ...
-    APP_CONFIG = app_cfg.copy() # ✨✨✨ 将加载到的配置存入全局变量 ✨✨✨
-    logger.debug("全局配置变量 APP_CONFIG 已更新。")
+    # 遍历配置清单，自动加载所有配置项
+    for key, (section, type, default) in CONFIG_DEFINITION.items():
+        if not config_parser.has_section(section):
+            config_parser.add_section(section)
+            
+        if type == 'boolean':
+            # 特殊处理首次运行时的认证开关
+            if key == constants.CONFIG_OPTION_AUTH_ENABLED and is_first_run:
+                app_cfg[key] = True
+            else:
+                app_cfg[key] = config_parser.getboolean(section, key, fallback=default)
+        elif type == 'int':
+            app_cfg[key] = config_parser.getint(section, key, fallback=default)
+        elif type == 'float':
+            app_cfg[key] = config_parser.getfloat(section, key, fallback=default)
+        elif type == 'list':
+            value_str = config_parser.get(section, key, fallback=",".join(map(str, default)))
+            app_cfg[key] = [item.strip() for item in value_str.split(',') if item.strip()]
+        else: # string
+            app_cfg[key] = config_parser.get(section, key, fallback=default)
 
-    return app_cfg, is_first_run_creating_config # 返回两个值
-
-def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，它总是应该触发
+    APP_CONFIG = app_cfg.copy()
+    logger.debug("全局配置 APP_CONFIG 已更新。")
+    return app_cfg, is_first_run
+# ---保存配置
+def save_config(new_config: Dict[str, Any]):
+    """【清单驱动版】将配置保存到 config.ini。"""
     global APP_CONFIG
-    config = configparser.ConfigParser()
+    config_parser = configparser.ConfigParser()
     
-    if os.path.exists(CONFIG_FILE_PATH):
-        config.read(CONFIG_FILE_PATH, encoding='utf-8')
-
-    # ✨✨✨ 关键修复：在设置任何值之前，确保所有节都存在 ✨✨✨
-    all_sections_to_manage = [
-        constants.CONFIG_SECTION_EMBY,
-        constants.CONFIG_SECTION_TMDB,
-        constants.CONFIG_SECTION_API_DOUBAN,
-        constants.CONFIG_SECTION_TRANSLATION,
-        # constants.CONFIG_SECTION_DOMESTIC_SOURCE,
-        constants.CONFIG_SECTION_LOCAL_DATA,
-        "General",
-        "Scheduler",
-        "Network",
-        constants.CONFIG_SECTION_AI_TRANSLATION
-    ]
-    all_sections_to_manage.append(constants.CONFIG_SECTION_AUTH)
-
-    for section_name in all_sections_to_manage:
-        if not config.has_section(section_name):
-            logger.info(f"保存配置：配置文件中缺少节 '[{section_name}]'，将自动创建。")
-            config.add_section(section_name)
-    # ✨✨✨ 修复结束 ✨✨✨
-
-    # --- 现在可以安全地设置每个配置项了 ---
-    
-    # Emby Section
-    config.set(constants.CONFIG_SECTION_EMBY, "emby_server_url", str(new_config.get("emby_server_url", "")))
-    config.set(constants.CONFIG_SECTION_EMBY, "emby_api_key", str(new_config.get("emby_api_key", "")))
-    config.set(constants.CONFIG_SECTION_EMBY, "emby_user_id", str(new_config.get("emby_user_id", "")))
-    config.set(constants.CONFIG_SECTION_EMBY, "refresh_emby_after_update", str(new_config.get("refresh_emby_after_update", True)).lower())
-    libraries_list = new_config.get("libraries_to_process", [])
-    if not isinstance(libraries_list, list):
-        libraries_list = [lib_id.strip() for lib_id in str(libraries_list).split(',') if lib_id.strip()]
-    config.set(constants.CONFIG_SECTION_EMBY, "libraries_to_process", ",".join(map(str, libraries_list)))
-
-    # TMDB, Douban, Translation, etc.
-    config.set(constants.CONFIG_SECTION_TMDB, "tmdb_api_key", str(new_config.get("tmdb_api_key", "")))
-    config.set(constants.CONFIG_SECTION_API_DOUBAN, "api_douban_default_cooldown_seconds", str(new_config.get("api_douban_default_cooldown_seconds", 1.0)))
-    engines_list = new_config.get(constants.CONFIG_OPTION_TRANSLATOR_ENGINES, constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
-    if not isinstance(engines_list, list): # 健壮性检查
-        engines_list = constants.DEFAULT_TRANSLATOR_ENGINES_ORDER
-    config.set(
-        constants.CONFIG_SECTION_TRANSLATION, 
-        constants.CONFIG_OPTION_TRANSLATOR_ENGINES, # 使用常量，不再是硬编码字符串
-        ",".join(engines_list)
-    )
-    config.set(constants.CONFIG_SECTION_TRANSLATION, "translator_engines_order_str", ",".join(engines_list))
-    config.set(constants.CONFIG_SECTION_LOCAL_DATA, "local_data_path", str(new_config.get("local_data_path", "")))
-
-    # General Section
-    config.set("General", "delay_between_items_sec", str(new_config.get("delay_between_items_sec", "0.5")))
-    config.set("General", "min_score_for_review", str(new_config.get("min_score_for_review", "6.0")))
-    config.set("General", "process_episodes", str(new_config.get("process_episodes", True)).lower())
-    sync_images_val = new_config.get(constants.CONFIG_OPTION_SYNC_IMAGES, False)
-    config.set(
-        "General", # 将其归入 [General] 节
-        constants.CONFIG_OPTION_SYNC_IMAGES,
-        str(sync_images_val).lower() # 保存为 'true' 或 'false'
-    )
-    config.set(
-    constants.CONFIG_SECTION_GENERAL,
-    constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS,
-    str(new_config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, constants.DEFAULT_MAX_ACTORS_TO_PROCESS))
-    )
-
-    # Network Section
-    config.set("Network", "user_agent", str(new_config.get("user_agent", "")))
-    config.set("Network", "accept_language", str(new_config.get("accept_language", "")))
-
-    # AITranslation Section
-    config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, str(new_config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False)).lower())
-    config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_PROVIDER, str(new_config.get(constants.CONFIG_OPTION_AI_PROVIDER, "openai")))
-    config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_API_KEY, str(new_config.get(constants.CONFIG_OPTION_AI_API_KEY, "")))
-    config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_MODEL_NAME, str(new_config.get(constants.CONFIG_OPTION_AI_MODEL_NAME, "gpt-3.5-turbo")))
-    config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_BASE_URL, str(new_config.get(constants.CONFIG_OPTION_AI_BASE_URL, "")))
-    # config.set(constants.CONFIG_SECTION_AI_TRANSLATION, constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT, str(new_config.get(constants.CONFIG_OPTION_AI_TRANSLATION_PROMPT, "")))
-
-    # Scheduler Section
-    config.set("Scheduler", "schedule_enabled", str(new_config.get("schedule_enabled", False)).lower())
-    config.set("Scheduler", "schedule_cron", str(new_config.get("schedule_cron", "0 3 * * *")))
-    config.set("Scheduler", "schedule_force_reprocess", str(new_config.get("schedule_force_reprocess", False)).lower())
-    config.set("Scheduler", "schedule_sync_map_enabled", str(new_config.get("schedule_sync_map_enabled", False)).lower())
-    config.set("Scheduler", "schedule_sync_map_cron", str(new_config.get("schedule_sync_map_cron", "0 1 * * *")))
-
-    config.set(
-        constants.CONFIG_SECTION_SCHEDULER,
-        constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED,
-        str(new_config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False)).lower()
-    )
-    config.set(
-        constants.CONFIG_SECTION_SCHEDULER,
-        constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON,
-        str(new_config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON, constants.DEFAULT_SCHEDULE_WATCHLIST_CRON))
-    )
-
-    # ★★★ 新增：写入追剧定时任务的配置 ★★★
-    if not config.has_section(constants.CONFIG_SECTION_FEATURES):
-        config.add_section(constants.CONFIG_SECTION_FEATURES)
-    
-    config.set(
-        constants.CONFIG_SECTION_FEATURES,
-        constants.CONFIG_OPTION_USE_SA_MODE,
-        str(new_config.get(constants.CONFIG_OPTION_USE_SA_MODE, True)).lower()
-    )
-    # ★★★ 新增结束 ★★★
-
-    #user
-    config.set(
-        constants.CONFIG_SECTION_AUTH,
-        constants.CONFIG_OPTION_AUTH_ENABLED,
-        str(new_config.get(constants.CONFIG_OPTION_AUTH_ENABLED, False)).lower()
-    )
-    config.set(
-        constants.CONFIG_SECTION_AUTH,
-        constants.CONFIG_OPTION_AUTH_USERNAME,
-        str(new_config.get(constants.CONFIG_OPTION_AUTH_USERNAME, constants.DEFAULT_USERNAME))
-    )
+    # 遍历配置清单，自动设置所有配置项
+    for key, (section, type, _) in CONFIG_DEFINITION.items():
+        if not config_parser.has_section(section):
+            config_parser.add_section(section)
+        
+        value = new_config.get(key)
+        
+        # 将值转换为适合写入ini文件的字符串格式
+        if isinstance(value, bool):
+            value_to_write = str(value).lower()
+        elif isinstance(value, list):
+            value_to_write = ",".join(map(str, value))
+        else:
+            value_to_write = str(value)
+            
+        config_parser.set(section, key, value_to_write)
 
     try:
-        if not os.path.exists(PERSISTENT_DATA_PATH):
-            os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
+        # ... (写入文件和重新初始化的逻辑保持不变) ...
         with open(CONFIG_FILE_PATH, 'w', encoding='utf-8') as configfile:
-            config.write(configfile)
-        logger.info(f"配置已成功写入到 {CONFIG_FILE_PATH}。")
-        # ✨✨✨ 保存成功后，立即更新全局配置变量 ✨✨✨
-        APP_CONFIG = new_config.copy()
-        logger.debug("全局配置变量 APP_CONFIG 已更新。")
+            config_parser.write(configfile)
         
-        logger.debug("配置已保存，正在重新初始化所有相关组件...")
-        initialize_processors() # 使用新配置创建新的 MediaProcessor 实例
-        init_auth()                  # 重新检查认证设置
-        setup_scheduled_tasks()      # 根据新配置重新设置定时任务
+        APP_CONFIG = new_config.copy()
+        logger.info(f"配置已成功写入到 {CONFIG_FILE_PATH}。")
+        
+        # 重新初始化相关服务
+        initialize_processors()
+        init_auth()
+        setup_scheduled_tasks()
         logger.info("所有组件已根据新配置重新初始化完毕。")
-
+        
     except Exception as e:
-        logger.error(f"保存配置文件或重新初始化组件时失败: {e}", exc_info=True)
+        logger.error(f"保存配置文件或重新初始化时失败: {e}", exc_info=True)
 
 def initialize_processors():
     """
@@ -829,7 +721,7 @@ def _get_next_run_time_str(cron_expression: str) -> str:
     except Exception as e:
         logger.warning(f"无法解析CRON表达式 '{cron_expression}': {e}")
         return f"按计划 '{cron_expression}' 执行"
-
+# --- 定时任务配置 ---
 def setup_scheduled_tasks():
     config = APP_CONFIG
 
@@ -938,6 +830,35 @@ def setup_scheduled_tasks():
                     logger.error(f"设置定时智能追剧更新任务失败: {e}", exc_info=True)
     else:
         logger.info("定时智能追剧更新任务未启用。")
+    # ✨✨✨ 处理别名丰富任务 ✨✨✨
+    job_id_enrich = 'scheduled_enrich_aliases' # 给它一个唯一的ID
+    if scheduler.get_job(job_id_enrich):
+        scheduler.remove_job(job_id_enrich)
+
+    if config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED, False):
+        cron_expression = config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON)
+        if cron_expression:
+            try:
+                def scheduled_enrich_task_submitter():
+                    logger.debug("定时任务触发：准备提交别名丰富任务到队列。")
+                    submit_task_to_queue(
+                        task_enrich_aliases, # <--- 调用我们刚刚创建的任务函数
+                        "定时别名丰富"
+                    )
+
+                scheduler.add_job(
+                    func=scheduled_enrich_task_submitter, # 调度器调用这个提交者
+                    trigger=CronTrigger.from_crontab(cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                    id=job_id_enrich,
+                    name="定时丰富演员别名",
+                    replace_existing=True,
+                )
+                next_run_str = _get_next_run_time_str(cron_expression)
+                logger.info(f"已设置定时任务：别名丰富，将{next_run_str}")
+            except Exception as e:
+                logger.error(f"设置定时别名丰富任务失败: {e}", exc_info=True)
+    else:
+        logger.info("定时别名丰富任务未启用。")
 
     # --- 启动调度器逻辑保持不变 ---
     scan_enabled = config.get("schedule_enabled", False)
@@ -1016,7 +937,43 @@ def task_sync_person_map(processor):
     except Exception as e:
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
         update_status_from_thread(-1, f"错误：同步失败 ({str(e)[:50]}...)")
+# ✨✨✨ 补充别名函数 ✨✨✨
+def task_enrich_aliases(processor: Union[MediaProcessorSA, MediaProcessorAPI]):
+    """
+    【后台任务】别名丰富任务的入口点。
+    它会调用 actor_utils 中的核心逻辑。
+    """
+    task_name = "演员别名丰富"
+    logger.info(f"后台任务 '{task_name}' 开始执行...")
+    update_status_from_thread(0, "准备开始丰富演员别名...")
 
+    try:
+        # 从传入的 processor 对象中获取配置
+        config = processor.config
+        
+        # 获取必要的配置项
+        db_path = DB_PATH # 使用全局的数据库路径
+        tmdb_api_key = config.get("tmdb_api_key")
+
+        if not tmdb_api_key:
+            logger.error(f"任务 '{task_name}' 中止：未在配置中找到 TMDb API Key。")
+            update_status_from_thread(-1, "错误：缺少TMDb API Key")
+            return
+
+        # 调用我们之前在 actor_utils.py 中创建的核心函数
+        # 注意：这里我们还没有实现 stop_event 的传递，可以后续优化
+        enrich_all_actor_aliases_task(
+            db_path=db_path,
+            tmdb_api_key=tmdb_api_key,
+            stop_event=processor.get_stop_event()
+        )
+        
+        logger.info(f"'{task_name}' 任务执行完毕。")
+        update_status_from_thread(100, "别名丰富任务完成。")
+
+    except Exception as e:
+        logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
+        update_status_from_thread(-1, f"错误：任务失败 ({str(e)[:50]}...)")
 def task_manual_update(processor: MediaProcessorSA, item_id: str, manual_cast_list: list, item_name: str):
     """任务：使用手动编辑的结果处理媒体项"""
     processor.process_item_with_manual_cast(
@@ -1074,22 +1031,25 @@ def task_process_single_watchlist_item(processor: WatchlistProcessor, item_id: s
 # ★★★ 导入映射表 ★★★
 def task_import_person_map(processor, file_content: str, **kwargs):
     """
-    【后台任务】从一个CSV文件字符串内容中，导入演员映射表。
+    【V2 - 功能完整版】从一个CSV文件字符串内容中，导入演员映射表。
     """
     task_name = "导入演员映射表"
     logger.info(f"后台任务 '{task_name}' 开始执行...")
     update_status_from_thread(0, "准备开始导入...")
 
     try:
-        stream = StringIO(file_content, newline=None)
-        
-        # 先计算总行数用于进度条
-        # 注意：这里我们不能消耗 stream，所以需要一种更聪明的方法
-        # 一个简单的方法是，先完整读取，再创建 stream
+        # ✨ 1. 从 processor 获取必要的配置和工具 ✨
+        config = processor.config
+        tmdb_api_key = config.get("tmdb_api_key")
+        stop_event = processor.get_stop_event() # 假设 processor 有 get_stop_event() 方法
+
+        # --- 数据准备 (这部分逻辑不变) ---
         lines = file_content.splitlines()
         total_lines = len(lines) - 1 if len(lines) > 0 else 0
-        
-        # 重新创建 stream 用于 DictReader
+        if total_lines <= 0:
+            update_status_from_thread(100, "导入完成：文件为空或只有表头。")
+            return
+            
         stream_for_reader = StringIO(file_content, newline=None)
         csv_reader = csv.DictReader(stream_for_reader)
         
@@ -1098,27 +1058,59 @@ def task_import_person_map(processor, file_content: str, **kwargs):
 
         with db_manager._get_db_connection() as conn:
             cursor = conn.cursor()
+            
             for i, row in enumerate(csv_reader):
-                # ... (处理每一行的逻辑，和我们之前讨论的一样) ...
+                # ✨ 2. 增加停止信号检查 ✨
+                if stop_event and stop_event.is_set():
+                    logger.info("导入任务被用户中止。")
+                    break
+
+                # ✨ 3. 构建完整的 person_data 字典 ✨
+                #    - 检查所有ID字段
+                #    - 尝试解析 other_names
                 person_data = {
-                    "tmdb_id": row.get('tmdb_person_id'),
-                    "emby_id": row.get('emby_person_id'),
                     "name": row.get('primary_name'),
-                    # ...
+                    "emby_id": row.get('emby_person_id') or None,
+                    "tmdb_id": row.get('tmdb_person_id') or None,
+                    "imdb_id": row.get('imdb_id') or None,
+                    "douban_id": row.get('douban_celebrity_id') or None,
                 }
-                # ...
+
+                # 尝试解析 other_names JSON 字符串
+                other_names_str = row.get('other_names')
+                if other_names_str:
+                    try:
+                        person_data['other_names'] = json.loads(other_names_str)
+                    except json.JSONDecodeError:
+                        logger.warning(f"导入时，第 {i+2} 行的 other_names 字段不是有效的JSON，将被忽略。内容: '{other_names_str}'")
+                        person_data['other_names'] = {}
+                
+                # 如果名字或任何一个ID都没有，就跳过这一行
+                if not person_data["name"] and not any([person_data["emby_id"], person_data["tmdb_id"], person_data["imdb_id"], person_data["douban_id"]]):
+                    logger.warning(f"导入时，跳过第 {i+2} 行，因为它缺少名字和所有ID。")
+                    stats["skipped"] += 1
+                    continue
+
                 try:
-                    db_manager.upsert_person(cursor, person_data)
+                    # ✨ 4. 调用 upsert_person 时传递 tmdb_api_key ✨
+                    # 注意：我们在这里不开启 enrich_details=True，因为我们假设CSV中的数据是权威的。
+                    # 如果想在导入时也进行丰富，可以设为True。
+                    db_manager.upsert_person(
+                        cursor, 
+                        person_data,
+                        tmdb_api_key=tmdb_api_key
+                    )
                     stats["processed"] += 1
                 except Exception as e_row:
+                    logger.error(f"处理导入文件第 {i+2} 行时发生错误: {e_row}")
                     stats["errors"] += 1
                 
-                # ★★★ 在循环中汇报进度 ★★★
-                if i > 0 and i % 100 == 0 and update_status_from_thread and total_lines > 0:
+                # --- 进度汇报 (不变) ---
+                if i > 0 and i % 100 == 0 and total_lines > 0:
                     progress = int(((i + 1) / total_lines) * 100)
                     update_status_from_thread(progress, f"正在导入... ({i+1}/{total_lines})")
 
-        message = f"导入完成。总行数: {stats['total']}, 成功处理: {stats['processed']}..."
+        message = f"导入完成。总行数: {stats['total']}, 成功处理: {stats['processed']}, 跳过: {stats['skipped']}, 错误: {stats['errors']}"
         logger.info(f"导入任务完成: {message}")
         update_status_from_thread(100, "导入完成！")
 
@@ -1126,7 +1118,7 @@ def task_import_person_map(processor, file_content: str, **kwargs):
         logger.error(f"后台导入任务失败: {e}", exc_info=True)
         update_status_from_thread(-1, f"导入失败: {e}")
 
-# ★★★ 新任务函数 1: 重新处理单个项目 ★★★
+# ★★★ 重新处理单个项目 ★★★
 def task_reprocess_single_item(processor: MediaProcessorSA, item_id: str):
     """
     后台任务：完整地重新处理单个项目。
@@ -1148,7 +1140,7 @@ def task_reprocess_single_item(processor: MediaProcessorSA, item_id: str):
         # 2. 删除缓存
         tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
         item_type = item_details.get("Type")
-        override_path = get_override_path_for_item(item_type, tmdb_id)
+        override_path = get_override_path_for_item(item_type, tmdb_id, APP_CONFIG)
         if override_path and os.path.exists(override_path):
             shutil.rmtree(override_path)
             logger.info(f"已为 '{item_name_for_log}' 删除缓存: {override_path}")
@@ -1160,7 +1152,7 @@ def task_reprocess_single_item(processor: MediaProcessorSA, item_id: str):
         update_status_from_thread(40, "已触发Emby刷新，等待...")
 
         # 4. 等待 Emby 完成刷新
-        time.sleep(60)
+        time.sleep(10)
         update_status_from_thread(70, "Emby刷新完成，开始神医处理...")
 
         # 5. 调用 processor 的核心方法进行“神医”处理
@@ -1220,6 +1212,7 @@ def task_full_image_sync(processor: MediaProcessorSA):
 # --- 路由区 ---
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
+@processor_ready_required
 def emby_webhook():
     data = request.json
     event_type = data.get("Event") if data else "未知事件"
@@ -1243,9 +1236,6 @@ def emby_webhook():
         logger.debug(f"Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略（缺少ID或类型不匹配）。")
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
 
-    if not media_processor_instance:
-        logger.error(f"Webhook 任务 '{original_item_name}' 无法处理：MediaProcessor 未初始化。")
-        return jsonify({"error": "Core processor not ready"}), 503
 
     # ★★★ 核心修复逻辑 START ★★★
     
@@ -1310,7 +1300,6 @@ def emby_webhook():
     return jsonify({"status": "task_queued", "item_id": id_to_process}), 202
 @app.route('/trigger_sync_person_map', methods=['POST'])
 def trigger_sync_person_map(): # WebUI 用的
-    # ... (你的 if not media_processor_instance 和 if task_lock.locked() 检查逻辑不变) ...
 
     task_name = "同步Emby演员映射表 (WebUI)"
     logger.info(f"收到手动触发 '{task_name}' 的请求。")
@@ -1414,13 +1403,11 @@ atexit.register(application_exit_handler)
 
 # --- API 端点 搜索媒体库 ---
 @app.route('/api/search_emby_library', methods=['GET'])
+@processor_ready_required
 def api_search_emby_library():
     query = request.args.get('query', '')
     if not query.strip():
         return jsonify({"error": "搜索词不能为空"}), 400
-
-    if not media_processor_instance:
-        return jsonify({"error": "核心处理器未就绪"}), 503
 
     try:
         # ✨✨✨ 调用改造后的函数，并传入 search_term ✨✨✨
@@ -1711,16 +1698,10 @@ def api_mark_item_processed(item_id):
         return jsonify({"error": "服务器内部错误"}), 500
 # --- 前端全量扫描接口 ---   
 @app.route('/api/trigger_full_scan', methods=['POST'])
+@processor_ready_required # <-- 检查处理器是否就绪
+@task_lock_required      # <-- 检查任务锁
 def api_handle_trigger_full_scan():
     logger.debug("API Endpoint: Received request to trigger full scan.")
-    
-    # 检查任务锁
-    if task_lock.locked():
-        return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
-
-    if not media_processor_instance:
-        return jsonify({"error": "核心处理器未就绪"}), 503
-
     # 从 FormData 获取数据
     # 注意：前端发送的是 FormData，所以我们用 request.form
     force_reprocess = request.form.get('force_reprocess_all') == 'on'
@@ -1784,10 +1765,8 @@ def api_handle_trigger_stop_task():
 # ✨✨✨ 神医保存手动编辑结果的 API ✨✨✨
 @app.route('/api/update_media_cast_sa/<item_id>', methods=['POST'])
 @login_required
+@processor_ready_required
 def api_update_edited_cast_sa(item_id):
-    if not media_processor_instance:
-        return jsonify({"error": "核心处理器未就绪"}), 503
-    
     data = request.json
     if not data or "cast" not in data or not isinstance(data["cast"], list):
         return jsonify({"error": "请求体中缺少有效的 'cast' 列表"}), 400
@@ -1807,10 +1786,8 @@ def api_update_edited_cast_sa(item_id):
     return jsonify({"message": "手动更新任务已在后台启动。"}), 202
 @app.route('/api/update_media_cast_api/<item_id>', methods=['POST'])
 @login_required
+@processor_ready_required
 def api_update_edited_cast_api(item_id):
-    if not media_processor_instance:
-        return jsonify({"error": "核心处理器未就绪"}), 503
-    
     try:
         data = request.json
         if not data or "cast" not in data or not isinstance(data["cast"], list):
@@ -1869,7 +1846,7 @@ def api_export_person_map():
     table_name = 'person_identity_map'
     # 定义统一的、最完整的表头顺序
     headers = [
-        'map_id', 'primary_name', 'emby_person_id', 
+        'map_id', 'primary_name', 'other_names', 'emby_person_id', 
         'tmdb_person_id', 'imdb_id', 'douban_celebrity_id'
     ]
     logger.info(f"API: 收到导出演员映射表 '{table_name}' 的请求。")
@@ -1904,13 +1881,11 @@ def api_export_person_map():
 # ★★★ 导入演员映射表 ★★★
 @app.route('/api/actors/import', methods=['POST'])
 @login_required
+@task_lock_required
 def api_import_person_map():
     """
     【队列版】接收上传的CSV文件，读取内容，并提交一个后台任务来处理它。
     """
-    if task_lock.locked():
-        return jsonify({"error": "后台已有任务在运行，请稍后再试。"}), 409
-
     if 'file' not in request.files:
         return jsonify({"error": "请求中未找到文件部分"}), 400
     
@@ -1940,10 +1915,8 @@ def api_import_person_map():
 # ✨✨✨ 神医编辑页面的API接口 ✨✨✨
 @app.route('/api/media_for_editing_sa/<item_id>', methods=['GET'])
 @login_required
+@processor_ready_required
 def api_get_media_for_editing_sa(item_id):
-    if not media_processor_instance:
-        return jsonify({"error": "核心处理器未就绪"}), 503
-
     # 直接调用 core_processor 的新方法
     data_for_editing = media_processor_instance.get_cast_for_editing(item_id)
     
@@ -1954,12 +1927,9 @@ def api_get_media_for_editing_sa(item_id):
 # ✨✨✨ 普通编辑页面的API接口 ✨✨✨
 @app.route('/api/media_api_edit_details/<item_id>', methods=['GET'])
 @login_required # ✨ 2. 确保依赖存在
+@processor_ready_required
 def api_get_media_for_editing_api(item_id):
     logger.info(f"API: 收到为 ItemID {item_id} 获取编辑详情的请求。")
-
-    if not media_processor_instance:
-        return jsonify({"error": "核心处理器未就绪"}), 503
-
     # 1. 从 Emby 获取详情 (保持不变)
     try:
         emby_details = emby_handler.get_emby_item_details(
@@ -2099,10 +2069,8 @@ def api_parse_cast_from_url():
 # ✨✨✨ 神医一键翻译 ✨✨✨
 @app.route('/api/actions/translate_cast_sa', methods=['POST']) # 注意路径不同
 @login_required
+@processor_ready_required
 def api_translate_cast_sa():
-    if not media_processor_instance:
-        return jsonify({"error": "核心处理器未就绪"}), 503
-        
     data = request.json
     current_cast = data.get('cast')
     if not isinstance(current_cast, list):
@@ -2118,10 +2086,8 @@ def api_translate_cast_sa():
 # ✨✨✨ 普通一键翻译 ✨✨✨
 @app.route('/api/actions/translate_cast_api', methods=['POST']) # 注意路径不同
 @login_required
+@processor_ready_required
 def api_translate_cast_api():
-    if not media_processor_instance:
-        return jsonify({"error": "核心处理器未就绪"}), 503
-        
     data = request.json
     current_cast = data.get('cast')
 
@@ -2138,14 +2104,12 @@ def api_translate_cast_api():
         return jsonify({"error": "服务器在翻译时发生内部错误。"}), 500
 # ✨✨✨ 预览处理后的演员表 ✨✨✨
 @app.route('/api/preview_processed_cast/<item_id>', methods=['POST'])
+@processor_ready_required
 def api_preview_processed_cast(item_id):
     """
     一个轻量级的API，用于预览单个媒体项经过核心处理器处理后的演员列表。
     它只返回处理结果，不执行任何数据库更新或Emby更新。
     """
-    if not media_processor_instance:
-        return jsonify({"error": "核心处理器未就绪"}), 503
-
     logger.info(f"API: 收到为 ItemID {item_id} 预览处理后演员的请求。")
 
     # 步骤 1: 获取当前媒体的 Emby 详情
@@ -2196,20 +2160,11 @@ def api_preview_processed_cast(item_id):
         return jsonify({"error": "在服务器端处理演员列表时发生内部错误"}), 500    
 # ★★★ START: Emby 图片代理路由 ★★★
 @app.route('/image_proxy/<path:image_path>')
+@processor_ready_required
 def proxy_emby_image(image_path):
     """
     一个安全的、动态的 Emby 图片代理。
     """
-    # ★★★ START: 关键修复 - 直接检查属性，而不是调用不存在的方法 ★★★
-    if not media_processor_instance or not media_processor_instance.emby_url or not media_processor_instance.emby_api_key:
-        logger.warning("图片代理请求失败：核心处理器未配置 Emby URL 或 API Key。")
-        # 返回一个 1x1 的透明像素作为占位符
-        return Response(
-            b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82',
-            mimetype='image/png'
-        )
-    # ★★★ END: 关键修复 ★★★
-
     try:
         # 从已加载的配置中获取 Emby URL 和 API Key
         emby_url = media_processor_instance.emby_url.rstrip('/')
@@ -2244,11 +2199,9 @@ def proxy_emby_image(image_path):
         )
 # ✨✨✨ 清空待复核列表（并全部标记为已处理）的 API ✨✨✨
 @app.route('/api/actions/clear_review_items', methods=['POST'])
+@task_lock_required
 def api_clear_review_items():
     logger.info("API: 收到清空所有待复核项目并标记为已处理的请求。")
-    if task_lock.locked():
-        return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
-    
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -2365,12 +2318,9 @@ def api_trigger_watchlist_update(): # <-- 函数名可以不变，因为它和�
 # ★★★ 新增：手动更新追剧状态的API ★★★
 @app.route('/api/watchlist/update_status', methods=['POST'])
 @login_required
+@task_lock_required
 def api_update_watchlist_status():
     # 1. 检查任务锁，防止并发写入
-    if task_lock.locked():
-        logger.warning("API: 无法更新追剧状态，因为有后台任务正在运行。")
-        return jsonify({"error": "后台任务正在运行，请稍后再试"}), 409
-
     data = request.json
     item_id = data.get('item_id')
     new_status = data.get('new_status')
@@ -2401,12 +2351,8 @@ def api_update_watchlist_status():
 # ★★★ 新增：手动从追剧列表移除的API ★★★
 @app.route('/api/watchlist/remove/<item_id>', methods=['POST'])
 @login_required
+@task_lock_required
 def api_remove_from_watchlist(item_id):
-    # 1. 严格检查任务锁
-    if task_lock.locked():
-        logger.warning(f"API: 无法移除项目 {item_id}，因为有后台任务正在运行。")
-        return jsonify({"error": "后台有长时间任务正在运行，请稍后再试"}), 409
-
     logger.info(f"API: 收到请求，将项目 {item_id} 从追剧列表移除。")
     conn = None # ★★★ 将 conn 移到 try 外部
     try:
@@ -2446,12 +2392,9 @@ def api_remove_from_watchlist(item_id):
 # ★★★ 新增：手动触发单项追剧更新的API ★★★
 @app.route('/api/watchlist/trigger_update/<item_id>/', methods=['POST'])
 @login_required
+@task_lock_required
 def api_trigger_single_watchlist_update(item_id):
     logger.info(f"API: 收到对单个项目 {item_id} 的追剧更新请求。")
-    
-    if task_lock.locked():
-        return jsonify({"error": "后台有其他任务正在运行，请稍后再试"}), 409
-
     if not watchlist_processor_instance:
         return jsonify({"error": "追剧处理模块未就绪"}), 503
 
@@ -2467,59 +2410,28 @@ def api_trigger_single_watchlist_update(item_id):
 # ★★★ 重新处理单个项目 ★★★
 @app.route('/api/actions/reprocess_item/<item_id>', methods=['POST'])
 @login_required
+@sa_mode_required  # <-- 一个顶俩！同时检查了实例存在和模式
+@task_lock_required # <-- 检查任务锁
 def api_reprocess_item(item_id):
-    """
-    提交一个任务，用于重新处理单个媒体项。
-    """
-    # ★★★ 优化后的认证方式 ★★★
-    # 1. 检查处理器实例是否存在
-    if not media_processor_instance:
-        return jsonify({"error": "核心处理器未就绪，请检查配置并重启。"}), 503
-
-    # 2. 检查处理器实例的类型
-    #    isinstance() 是 Python 中判断对象类型的标准方法
-    #    假设您的神医模式处理器类名叫 MediaProcessorSA
-    if not isinstance(media_processor_instance, MediaProcessorSA):
-        return jsonify({"error": "此功能仅在神医模式下可用。"}), 403
-    # 3. 开始处理
     logger.info(f"API: 收到重新处理项目 '{item_id}' 的请求。")
-    
-    if task_lock.locked():
-        return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
-
-    # 我们只提交任务，把所有复杂逻辑都交给后台
-    # 注意：我们把 item_id 作为位置参数传递
     submit_task_to_queue(
-        task_reprocess_single_item, # ★★★ 调用新的、封装好的任务函数 ★★★
+        task_reprocess_single_item,
         f"重新处理: {item_id}",
-        item_id # <--- 将 item_id 作为参数传递给任务
+        item_id
     )
-    
     return jsonify({"message": f"重新处理项目 '{item_id}' 的任务已提交。"}), 202
 
 # ★★★ 重新处理所有待复核项 ★★★
 @app.route('/api/actions/reprocess_all_review_items', methods=['POST'])
 @login_required
+@task_lock_required
+@processor_ready_required
+@sa_mode_required
 def api_reprocess_all_review_items():
     """
     提交一个任务，用于重新处理所有待复核列表中的项目。
     """
-    # ★★★ 优化后的认证方式 ★★★
-    # 1. 检查处理器实例是否存在
-    if not media_processor_instance:
-        return jsonify({"error": "核心处理器未就绪，请检查配置并重启。"}), 503
-
-    # 2. 检查处理器实例的类型
-    #    isinstance() 是 Python 中判断对象类型的标准方法
-    #    假设您的神医模式处理器类名叫 MediaProcessorSA
-    if not isinstance(media_processor_instance, MediaProcessorSA):
-        return jsonify({"error": "此功能仅在神医模式下可用。"}), 403
-    # 3. 开始处理
     logger.info("API: 收到重新处理所有待复核项的请求。")
-    
-    if task_lock.locked():
-        return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
-
     # 提交一个宏任务，让后台线程来做这件事
     submit_task_to_queue(
         task_reprocess_all_review_items, # <--- 我们需要创建这个新的任务函数
@@ -2527,27 +2439,16 @@ def api_reprocess_all_review_items():
     )
     
     return jsonify({"message": "重新处理所有待复核项的任务已提交。"}), 202
-# ★★★ 新增：触发全量图片同步的 API 接口 ★★★
+# ★★★ 触发全量图片同步的 API 接口 ★★★
 @app.route('/api/actions/trigger_full_image_sync', methods=['POST'])
 @login_required
+@task_lock_required
+@processor_ready_required
+@sa_mode_required
 def api_trigger_full_image_sync():
     """
     提交一个任务，用于全量同步所有已处理项目的海报。
     """
-    # 1. 检查处理器实例是否存在
-    if not media_processor_instance:
-        return jsonify({"error": "核心处理器未就绪，请检查配置并重启。"}), 503
-
-    # 2. 检查处理器实例的类型
-    #    isinstance() 是 Python 中判断对象类型的标准方法
-    #    假设您的神医模式处理器类名叫 MediaProcessorSA
-    if not isinstance(media_processor_instance, MediaProcessorSA):
-        return jsonify({"error": "此功能仅在神医模式下可用。"}), 403
-    # 3. 开始处理
-    
-    if task_lock.locked():
-        return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
-
     submit_task_to_queue(
         task_full_image_sync,
         "全量同步媒体库海报"
@@ -2590,6 +2491,6 @@ if __name__ == '__main__':
     setup_scheduled_tasks()
     
     # 7. 运行 Flask 应用
-    app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=True, use_reloader=True)
+    app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=True, use_reloader=False)
 
 # # --- 主程序入口结束 ---

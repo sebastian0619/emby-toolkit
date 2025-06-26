@@ -121,7 +121,20 @@ class MediaProcessorAPI:
         final_cast_for_item = self._process_cast_list(current_emby_cast_raw, item_details)
         
         # b. 评分
-        processing_score = evaluate_cast_processing_quality(final_cast_for_item, original_emby_cast_count)
+        # ✨ 在调用评分函数前，先判断类型
+        item_type_for_log = item_details.get("Type", "未知类型")
+        genres = item_details.get("Genres", [])
+        is_animation = "Animation" in genres or "动画" in genres
+        
+        if item_type_for_log in ["Movie", "Series"]:
+            logger.info(f"正在为 {item_type_for_log} '{item_name_for_log}' 进行质量评估...")
+            
+            # ★★★ 核心修改：在调用时，传入 is_animation ★★★
+            processing_score = evaluate_cast_processing_quality(
+                final_cast_for_item, 
+                original_emby_cast_count,
+                is_animation=is_animation # ✨ 把判断结果传进去
+            )
 
         # c. 持久化当前项目的演员表 (两步更新)
         logger.info("开始前置步骤：检查并更新被翻译的演员名字...")
@@ -216,6 +229,9 @@ class MediaProcessorAPI:
     def clear_stop_signal(self):
         self._stop_event.clear()
         logger.debug("MediaProcessorAPI 停止信号已清除。")
+    def get_stop_event(self) -> threading.Event:
+        """返回内部的停止事件对象，以便传递给其他函数。"""
+        return self._stop_event
     # ✨✨✨检查是否已请求停止当前任务✨✨✨
     def is_stop_requested(self) -> bool:
         return self._stop_event.is_set()
@@ -979,8 +995,34 @@ class MediaProcessorAPI:
 
         if update_success:
             if item_type_for_log in ["Movie", "Series"]:
+                # ✨✨✨ “处理统计”日志块 ✨✨✨
+                final_actor_count = len(final_cast_for_item)
+                logger.info(f"✨✨✨处理统计 '{item_name_for_log}'✨✨✨")
+                logger.info(f"  - 原有演员: {original_emby_cast_count} 位")
+                
+                # 只有在演员数量发生变化时才显示新增/减少
+                count_diff = final_actor_count - original_emby_cast_count
+                if count_diff > 0:
+                    logger.info(f"  - 新增演员: {count_diff} 位")
+                elif count_diff < 0:
+                    logger.info(f"  - 减少演员: {abs(count_diff)} 位")
+
+                logger.info(f"  - 最终演员: {final_actor_count} 位")
+                # ✨✨✨ 日志块结束 ✨✨✨
+
                 logger.info(f"正在为 {item_type_for_log} '{item_name_for_log}' 进行质量评估...")
-                processing_score = evaluate_cast_processing_quality(final_cast_for_item, original_emby_cast_count)
+                
+                # 判断是否是动画片
+                genres = item_details.get("Genres", [])
+                is_animation = "Animation" in genres or "动画" in genres or "动漫" in genres
+                
+                # 调用评分函数
+                processing_score = self._evaluate_cast_processing_quality(
+                    final_cast_for_item, 
+                    original_emby_cast_count,
+                    expected_final_count=len(final_cast_for_item), # 传入截断后的数量
+                    is_animation=is_animation
+                )
                 
                 MIN_SCORE_FOR_REVIEW = float(self.config.get("min_score_for_review", 6.0))
                 if processing_score < MIN_SCORE_FOR_REVIEW:
@@ -992,7 +1034,7 @@ class MediaProcessorAPI:
             
             elif item_type_for_log == "Episode":
                 self.processed_items_cache.add(item_id)
-
+            logger.info(f"✨✨✨处理完成 '{item_name_for_log}'✨✨✨")    
             return True
         else:
             if item_type_for_log in ["Movie", "Series"]:
@@ -1067,7 +1109,7 @@ class MediaProcessorAPI:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM failed_log WHERE item_id = ?", (item_id,))
             if cursor.rowcount > 0:
-                logger.info(f"Item ID '{item_id}' 已从【待复核列表】中移除。")
+                logger.info(f"  - 已从【手动处理列表】中移除。")
             conn.commit()
             conn.close()
         except Exception as e:

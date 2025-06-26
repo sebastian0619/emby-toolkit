@@ -1,84 +1,112 @@
 # constants.py
 
-# --- Web Application Settings ---
-APP_VERSION = "2.4.4.2"  # 或者你的实际版本号
-DEBUG_MODE = True      # 开发时设为 True，部署到生产环境时应设为 False
+# ==============================================================================
+# ✨ 应用基础信息 (Application Basics)
+# ==============================================================================
+APP_VERSION = "2.4.4.3"  # 建议更新版本号，因为我们做了很多重要重构
+DEBUG_MODE = True      # 开发模式开关，部署时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
+CONFIG_FILE_NAME = "config.ini" # 主配置文件名
+DB_NAME = "emby_actor_processor.sqlite" # 主数据库文件名
+TIMEZONE = "Asia/Shanghai" # 应用使用的时区，用于计划任务等
 
-# --- 功能模式切换开关 ---
+# ==============================================================================
+# ✨ 功能模式与开关 (Feature Toggles)
+# ==============================================================================
 CONFIG_SECTION_FEATURES = "Features"
-CONFIG_OPTION_USE_SA_MODE = "use_sa_mode"
+CONFIG_OPTION_USE_SA_MODE = "use_sa_mode" # 是否启用“神医模式”（处理本地JSON元数据）
 
-# --- 数据库设置 ---
-DB_NAME = "emby_actor_processor.sqlite" # 数据库文件名 (也可以在这里定义，然后在 web_app.py 中引用)
+# ==============================================================================
+# ✨ Emby 服务器连接配置 (Emby Connection)
+# ==============================================================================
+CONFIG_SECTION_EMBY = "Emby"
+CONFIG_OPTION_EMBY_SERVER_URL = "emby_server_url"       # Emby服务器地址
+CONFIG_OPTION_EMBY_API_KEY = "emby_api_key"             # Emby API密钥
+CONFIG_OPTION_EMBY_USER_ID = "emby_user_id"             # 用于操作的Emby用户ID
+CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS = "libraries_to_process" # 需要处理的媒体库名称列表
 
-# --- 配置文件名 ---
-CONFIG_FILE_NAME = "config.ini"
-DOUBAN_API_AVAILABLE = True
+# ==============================================================================
+# ✨ 数据处理流程配置 (Processing Workflow)
+# ==============================================================================
+CONFIG_SECTION_PROCESSING = "Processing"
+CONFIG_OPTION_REFRESH_AFTER_UPDATE = "refresh_emby_after_update" # 处理完成后是否自动刷新Emby项目
+CONFIG_OPTION_PROCESS_EPISODES = "process_episodes"             # 在神医模式下，是否处理剧集的子项目（如季、集）
+CONFIG_OPTION_SYNC_IMAGES = "sync_images"                       # 在神医模式下，是否同步封面、海报等图片
+CONFIG_OPTION_MAX_ACTORS_TO_PROCESS = "max_actors_to_process"   # 每个媒体项目处理的演员数量上限
+DEFAULT_MAX_ACTORS_TO_PROCESS = 50                              # 默认的演员数量上限
+CONFIG_OPTION_MIN_SCORE_FOR_REVIEW = "min_score_for_review"     # 低于此评分的项目将进入手动处理列表
+DEFAULT_MIN_SCORE_FOR_REVIEW = 6.0                              # 默认的最低分
 
-# --- 用户认证常量 ---
+# ==============================================================================
+# ✨ 外部API与数据源配置 (External APIs & Data Sources)
+# ==============================================================================
+# --- TMDb ---
+CONFIG_SECTION_TMDB = "TMDB"
+CONFIG_OPTION_TMDB_API_KEY = "tmdb_api_key" # TMDb API密钥
+
+# --- 豆瓣 API ---
+CONFIG_SECTION_API_DOUBAN = "DoubanAPI"
+DOUBAN_API_AVAILABLE = True # 一个硬编码的开关，表示豆瓣API功能是可用的
+CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN = "api_douban_default_cooldown_seconds" # 调用豆瓣API的冷却时间
+
+# --- 本地数据源 (神医模式) ---
+CONFIG_SECTION_LOCAL_DATA = "LocalDataSource"
+CONFIG_OPTION_LOCAL_DATA_PATH = "local_data_path" # 本地JSON元数据（TMDbHelper等生成）的根路径
+
+# ==============================================================================
+# ✨ 翻译功能配置 (Translation)
+# ==============================================================================
+CONFIG_SECTION_TRANSLATION = "Translation"
+CONFIG_OPTION_TRANSLATOR_ENGINES = "translator_engines_order" # 传统翻译引擎的使用顺序
+AVAILABLE_TRANSLATOR_ENGINES = ['bing', 'google', 'baidu', 'alibaba', 'youdao', 'tencent'] # 所有可选的翻译引擎
+DEFAULT_TRANSLATOR_ENGINES_ORDER = ['bing', 'google', 'baidu'] # 默认的翻译引擎顺序
+CONFIG_OPTION_TRANSLATION_FAILURE_RETRY_DAYS = "translation_failure_retry_days" # 翻译失败的词条，多少天后可以重试
+DEFAULT_TRANSLATION_FAILURE_RETRY_DAYS = 1 # 默认1天
+
+# --- AI 翻译 ---
+CONFIG_SECTION_AI_TRANSLATION = "AITranslation"
+CONFIG_OPTION_AI_TRANSLATION_ENABLED = "ai_translation_enabled" # 是否启用AI翻译
+CONFIG_OPTION_AI_PROVIDER = "ai_provider"                       # AI服务提供商 (如 'siliconflow', 'openai')
+CONFIG_OPTION_AI_API_KEY = "ai_api_key"                         # AI服务的API密钥
+CONFIG_OPTION_AI_MODEL_NAME = "ai_model_name"                   # 使用的AI模型名称 (如 'Qwen/Qwen2-7B-Instruct')
+CONFIG_OPTION_AI_BASE_URL = "ai_base_url"                       # AI服务的API基础URL
+
+# ==============================================================================
+# ✨ 计划任务配置 (Scheduler)
+# ==============================================================================
+CONFIG_SECTION_SCHEDULER = "Scheduler"
+
+# --- 全量扫描任务 ---
+CONFIG_OPTION_SCHEDULE_ENABLED = "schedule_enabled"             # 是否启用全量扫描定时任务
+CONFIG_OPTION_SCHEDULE_CRON = "schedule_cron"                   # 全量扫描的CRON表达式
+CONFIG_OPTION_SCHEDULE_FORCE_REPROCESS = "schedule_force_reprocess" # 定时任务是否强制重处理所有项目
+
+# --- 同步演员映射表任务 ---
+CONFIG_OPTION_SCHEDULE_SYNC_MAP_ENABLED = "schedule_sync_map_enabled" # 是否启用同步演员映射表任务
+CONFIG_OPTION_SCHEDULE_SYNC_MAP_CRON = "schedule_sync_map_cron"       # 同步映射表的CRON表达式
+
+# --- 智能追剧任务 (神医模式) ---
+CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED = "schedule_watchlist_enabled" # 是否启用智能追剧任务
+CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON = "schedule_watchlist_cron"       # 智能追剧的CRON表达式
+DEFAULT_SCHEDULE_WATCHLIST_CRON = "0 */6 * * *" # 默认每6小时执行一次
+
+# ★★★ 新增：别名丰富任务 ★★★
+CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED = "schedule_enrich_aliases_enabled" # 是否启用别名丰富任务
+CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON = "schedule_enrich_aliases_cron"       # 别名丰富的CRON表达式
+
+# ==============================================================================
+# ✨ 内部常量与映射 (Internal Constants & Mappings)
+# ==============================================================================
+# --- 用户认证 (如果未来启用) ---
 CONFIG_SECTION_AUTH = "Authentication"
 CONFIG_OPTION_AUTH_ENABLED = "auth_enabled"
 CONFIG_OPTION_AUTH_USERNAME = "username"
 DEFAULT_USERNAME = "admin"
-# --- 新增：翻译缓存配置 ---
-CONFIG_OPTION_TRANSLATION_FAILURE_RETRY_DAYS = "translation_failure_retry_days"
-DEFAULT_TRANSLATION_FAILURE_RETRY_DAYS = 1 # 默认1天后重试
-# --- 翻译引擎 ---
-# 你可以定义所有可用的翻译引擎列表，供设置页面选择
-AVAILABLE_TRANSLATOR_ENGINES = ['bing', 'google', 'baidu', 'alibaba', 'youdao', 'tencent']
-# 默认的翻译引擎顺序
-DEFAULT_TRANSLATOR_ENGINES_ORDER = ['bing', 'google', 'baidu']
 
-#本地数据源配置
-CONFIG_SECTION_LOCAL_DATA = "LocalDataSource" # 新的节名
-CONFIG_OPTION_LOCAL_DATA_PATH = "local_data_path" # 本地数据源根路径
-DEFAULT_LOCAL_DATA_PATH = "" # 默认空，表示未配置
+# --- 语言代码 ---
+CHINESE_LANG_CODES = ["zh", "zh-cn", "zh-hans", "cmn", "yue", "cn", "zh-sg", "zh-tw", "zh-hk"]
 
-# --- API 冷却时间默认值 (如果 core_processor 或其他地方需要) ---
-DEFAULT_API_COOLDOWN_SECONDS_FALLBACK = 1.0
-MAX_API_COOLDOWN_SECONDS_FALLBACK = 5.0
-COOLDOWN_INCREMENT_SECONDS_FALLBACK = 0.5
-
-# --- TMDB API Key 
-FALLBACK_TMDB_API_KEY = "" 
-
-# --- 配置文件的节和选项名 (保持与你的 load_config/save_config 一致) ---
-CONFIG_SECTION_EMBY = "Emby"
-CONFIG_OPTION_EMBY_SERVER_URL = "emby_server_url"
-CONFIG_OPTION_EMBY_API_KEY = "emby_api_key"
-CONFIG_OPTION_EMBY_USER_ID = "emby_user_id"
-CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS = "libraries_to_process"
-# ✨ 新增处理选项的节和选项常量 ✨
-CONFIG_SECTION_PROCESSING = "Processing"
-CONFIG_OPTION_REFRESH_AFTER_UPDATE = "refresh_emby_after_update"
-CONFIG_OPTION_PROCESS_EPISODES = "process_episodes"
-CONFIG_OPTION_SYNC_IMAGES = "sync_images" # <--- 在这里定义新选项的常量
-# ... 其他配置常量 ...
-CONFIG_SECTION_TMDB = "TMDB"
-CONFIG_OPTION_TMDB_API_KEY = "tmdb_api_key"
-CONFIG_SECTION_API_DOUBAN = "DoubanAPI"
-CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN = "api_douban_default_cooldown_seconds"
-CONFIG_SECTION_TRANSLATION = "Translation"
-CONFIG_OPTION_TRANSLATOR_ENGINES = "translator_engines_order"
-# CONFIG_SECTION_DOMESTIC_SOURCE = "DomesticSource"
-CONFIG_OPTION_DOMESTIC_SOURCE_MODE = "domestic_source_mode"
-DEFAULT_MIN_SCORE_FOR_REVIEW = 6.0
-CONFIG_SECTION_GENERAL = "General"
-CONFIG_OPTION_MAX_ACTORS_TO_PROCESS = "max_actors_to_process"
-DEFAULT_MAX_ACTORS_TO_PROCESS = 50 # 最多演员数量默认值
-CONFIG_SECTION_SCHEDULER = "Scheduler"
-# ★★★ 新增追剧定时任务的常量 ★★★
-CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED = "schedule_watchlist_enabled"
-CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON = "schedule_watchlist_cron"
-DEFAULT_SCHEDULE_WATCHLIST_CRON = "0 */6 * * *" # 默认每6小时执行一次
-# ✨✨✨ AI 翻译相关的常量 ✨✨✨
-CONFIG_SECTION_AI_TRANSLATION = "AITranslation"
-CONFIG_OPTION_AI_TRANSLATION_ENABLED = "ai_translation_enabled"
-CONFIG_OPTION_AI_PROVIDER = "ai_provider"
-CONFIG_OPTION_AI_API_KEY = "ai_api_key"
-CONFIG_OPTION_AI_MODEL_NAME = "ai_model_name"
-CONFIG_OPTION_AI_BASE_URL = "ai_base_url"
+# --- 状态文本映射 (可能用于UI显示) ---
 ACTOR_STATUS_TEXT_MAP = {
     "ok": "已处理",
     "name_untranslated": "演员名未翻译",
@@ -88,7 +116,8 @@ ACTOR_STATUS_TEXT_MAP = {
     "parent_failed": "媒体项处理失败",
     "unknown": "未知状态"
 }
-# API Source Map (如果未来增加其他API来源)
+
+# --- 数据源信息映射 (可能用于动态构建UI或逻辑) ---
 SOURCE_API_MAP = {
     "Douban": {
         "name": "豆瓣",
@@ -98,8 +127,3 @@ SOURCE_API_MAP = {
         },
     },
 }
-#时区
-TIMEZONE = "Asia/Shanghai"
-
-# 中文语言代码列表 (用于判断文本是否为中文)
-CHINESE_LANG_CODES = ["zh", "zh-cn", "zh-hans", "cmn", "yue", "cn", "zh-sg", "zh-tw", "zh-hk"]

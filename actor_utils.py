@@ -2,6 +2,8 @@
 import sqlite3
 import re
 import json
+import threading
+import time
 from typing import Optional, Dict, Any, List, Tuple
 
 # 导入底层工具箱和日志
@@ -62,7 +64,7 @@ class ActorDBManager:
         return None
 
     # --- 核心写入/更新逻辑 ---
-    def upsert_person(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any], tmdb_api_key: Optional[str] = None):
+    def upsert_person(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any], tmdb_api_key: Optional[str] = None, enrich_details: bool = False):
         """
         【智能数据管家 v4】
         更新或插入演员记录，并在必要时自动从TMDb丰富别名信息。
@@ -100,22 +102,27 @@ class ActorDBManager:
         can_enrich = tmdb_api_key and merged_data.get("tmdb_person_id")
         needs_enrich = not merged_data["other_names"].get("aliases")
 
-        if can_enrich and needs_enrich:
-            logger.debug(f"为演员 '{merged_data['primary_name']}' (TMDb ID: {merged_data['tmdb_person_id']}) 尝试丰富别名...")
-            try:
-                tmdb_details = tmdb_handler.get_person_details_tmdb(
-                    person_id=int(merged_data["tmdb_person_id"]),
-                    api_key=tmdb_api_key,
-                    append_to_response="external_ids"
-                )
-                if tmdb_details:
-                    aliases = tmdb_details.get("also_known_as", [])
-                    if aliases:
-                        merged_data["other_names"]["aliases"] = aliases
-                        merged_data["other_names"]["tmdb_name"] = tmdb_details.get("name")
-                        logger.info(f"  -> 成功为 '{merged_data['primary_name']}' 丰富了 {len(aliases)} 个别名。")
-            except Exception as e:
-                logger.error(f"丰富演员 '{merged_data['primary_name']}' 信息时失败: {e}", exc_info=False)
+        if enrich_details:
+            can_enrich = tmdb_api_key and merged_data.get("tmdb_person_id")
+            # 我们只对没有别名信息的进行丰富
+            needs_enrich = not merged_data.get("other_names", {}).get("aliases")
+
+            if can_enrich and needs_enrich:
+                logger.debug(f"为演员 '{merged_data['primary_name']}' (TMDb ID: {merged_data['tmdb_person_id']}) 尝试丰富别名...")
+                try:
+                    tmdb_details = tmdb_handler.get_person_details_tmdb(
+                        person_id=int(merged_data["tmdb_person_id"]),
+                        api_key=tmdb_api_key,
+                        append_to_response="external_ids"
+                    )
+                    if tmdb_details:
+                        aliases = tmdb_details.get("also_known_as", [])
+                        if aliases:
+                            merged_data["other_names"]["aliases"] = aliases
+                            merged_data["other_names"]["tmdb_name"] = tmdb_details.get("name")
+                            logger.info(f"  -> 成功为 '{merged_data['primary_name']}' 丰富了 {len(aliases)} 个别名。")
+                except Exception as e:
+                    logger.error(f"丰富演员 '{merged_data['primary_name']}' 信息时失败: {e}", exc_info=False)
 
         # 4. 准备最终写入数据库的数据
         # 将 other_names 转回 JSON 字符串
@@ -145,6 +152,7 @@ class ActorDBManager:
             logger.warning(f"处理演员 {merged_data['primary_name']} 时发生完整性冲突，恢复...")
             final_person = self.find_person_by_any_id(cursor, **{k.replace('_person', ''): v for k, v in new_data.items() if '_id' in k and v})
             return final_person['map_id'] if final_person else -1
+    
 # ======================================================================
 # 模块 2: 通用的业务逻辑函数 (Business Logic Helpers)
 # ======================================================================
@@ -234,14 +242,25 @@ def select_best_role(current_role: str, candidate_role: str) -> str:
     logger.debug(f"--- [角色选择结束] ---")
     return ""
 # --- 质量评估 ---
-def evaluate_cast_processing_quality(final_cast: List[Dict[str, Any]], original_cast_count: int, expected_final_count: Optional[int] = None) -> float:
+def evaluate_cast_processing_quality(
+    final_cast: List[Dict[str, Any]], 
+    original_cast_count: int, 
+    expected_final_count: Optional[int] = None,
+    is_animation: bool = False  # ✨✨✨ 新增参数，默认为 False ✨✨✨
+) -> float:
     """
-    【V-Final 极简版】
+    【V-Final 极简版 - 动画片优化】
     只关心最终产出的中文化质量和演员数量。
+    如果检测到是动画片，则跳过所有关于数量的惩罚。
     """
     if not final_cast:
-        logger.warning("  质量评估：处理后演员列表为空！评为 0.0 分。")
-        return 0.0
+        # ✨ 如果是动画片且演员列表为空，可以给一个基础通过分，避免进手动列表
+        if is_animation:
+            logger.info("  质量评估：动画片演员列表为空，属于正常情况，给予基础通过分 7.0。")
+            return 7.0
+        else:
+            logger.warning("  质量评估：处理后演员列表为空！评为 0.0 分。")
+            return 0.0
         
     total_actors = len(final_cast)
     accumulated_score = 0.0
@@ -283,33 +302,33 @@ def evaluate_cast_processing_quality(final_cast: List[Dict[str, Any]], original_
 
     avg_score = accumulated_score / total_actors if total_actors > 0 else 0.0
     
-    # --- 数量惩罚逻辑 ---
+    # --- ✨✨✨ 核心修改：条件化的数量惩罚逻辑 ✨✨✨ ---
     logger.debug(f"------------------------------------")
     logger.debug(f"  - 基础平均分 (惩罚前): {avg_score:.2f}")
 
-    # 惩罚1：最终数量少于10个
-    if total_actors < 10:
-        # 数量越少，惩罚越重。例如9个演员乘以0.9，5个演员乘以0.5
-        penalty_factor = total_actors / 10.0
-        logger.warning(f"  - 惩罚: 最终演员数({total_actors})少于10个，乘以惩罚因子 {penalty_factor:.2f}")
-        avg_score *= penalty_factor
-        
-    # 惩罚2：数量因处理错误而大幅减少 (与惩罚1可叠加)
-    # (我们保留这个逻辑，因为它能捕获处理流程中的严重错误)
-    elif expected_final_count is not None:
-        if total_actors < expected_final_count * 0.8:
-            penalty_factor = total_actors / expected_final_count
-            logger.warning(f"  - 惩罚: 数量({total_actors})远少于预期({expected_final_count})，乘以惩罚因子 {penalty_factor:.2f}")
-            avg_score *= penalty_factor
-    elif total_actors < original_cast_count * 0.8:
-        penalty_factor = total_actors / original_cast_count
-        logger.warning(f"  - 惩罚: 数量从{original_cast_count}大幅减少到{total_actors}，乘以惩罚因子 {penalty_factor:.2f}")
-        avg_score *= penalty_factor
+    if is_animation:
+        logger.info("  - 惩罚: 检测到为动画片，跳过所有数量相关的惩罚。")
     else:
-        logger.debug(f"  - 惩罚: 数量正常，不进行惩罚。")
+        # 只有在不是动画片时，才执行原来的数量惩罚逻辑
+        if total_actors < 10:
+            penalty_factor = total_actors / 10.0
+            logger.warning(f"  - 惩罚: 最终演员数({total_actors})少于10个，乘以惩罚因子 {penalty_factor:.2f}")
+            avg_score *= penalty_factor
+            
+        elif expected_final_count is not None:
+            if total_actors < expected_final_count * 0.8:
+                penalty_factor = total_actors / expected_final_count
+                logger.warning(f"  - 惩罚: 数量({total_actors})远少于预期({expected_final_count})，乘以惩罚因子 {penalty_factor:.2f}")
+                avg_score *= penalty_factor
+        elif total_actors < original_cast_count * 0.8:
+            penalty_factor = total_actors / original_cast_count
+            logger.warning(f"  - 惩罚: 数量从{original_cast_count}大幅减少到{total_actors}，乘以惩罚因子 {penalty_factor:.2f}")
+            avg_score *= penalty_factor
+        else:
+            logger.debug(f"  - 惩罚: 数量正常，不进行惩罚。")
     
     final_score_rounded = round(avg_score, 1)
-    logger.info(f"  最终评分: {final_score_rounded:.1f}")
+    logger.info(f"  - 最终评分: {final_score_rounded:.1f}")
     return final_score_rounded
 
 
@@ -610,5 +629,63 @@ def are_names_match_enhanced(name_to_check: str, target_name: str, target_origin
         return True
 
     return False
+# --- 补充别名 ---
+def enrich_all_actor_aliases_task(db_path: str, tmdb_api_key: str, stop_event: Optional[threading.Event] = None):
+        """
+        【可被计划任务调用的函数】
+        扫描数据库，为所有缺少别名的演员，从TMDb获取并补充信息。
+        """
+        logger = logging.getLogger(__name__) # 获取当前模块的logger
 
+        if not db_path or not tmdb_api_key:
+            logger.error("别名丰富任务：数据库路径或TMDb API Key未提供，任务中止。")
+            return
+
+        logger.info("--- 开始别名丰富计划任务 ---")
+        
+        processed_count = 0
+        try:
+            with sqlite3.connect(db_path, timeout=10) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                actor_db_manager = ActorDBManager(db_path)
+
+                # 找到需要补充的演员
+                sql_find_needy = """
+                    SELECT tmdb_person_id, primary_name FROM person_identity_map
+                    WHERE tmdb_person_id IS NOT NULL 
+                    AND (other_names IS NULL OR other_names = '{}' OR other_names = '')
+                """
+                actors_to_enrich = cursor.execute(sql_find_needy).fetchall()
+                
+                total_to_process = len(actors_to_enrich)
+                logger.info(f"在数据库中找到 {total_to_process} 位需要补充别名的演员。")
+
+                for i, actor_row in enumerate(actors_to_enrich):
+                    if stop_event and stop_event.is_set():
+                        logger.info("别名丰富任务被中止。")
+                        break
+
+                    actor_dict = dict(actor_row)
+                    logger.info(f"[{i+1}/{total_to_process}] 正在处理: '{actor_dict.get('primary_name')}' (TMDb ID: {actor_dict.get('tmdb_person_id')})")
+                    
+                    # 调用 upsert_person，并明确开启丰富模式
+                    actor_db_manager.upsert_person(
+                        cursor,
+                        person_data={
+                            "tmdb_id": actor_dict.get("tmdb_person_id"),
+                            "name": actor_dict.get("primary_name")
+                        },
+                        tmdb_api_key=tmdb_api_key,
+                        enrich_details=True
+                    )
+                    processed_count += 1
+                    time.sleep(0.5) # 保持API调用间隔
+
+                conn.commit()
+                logger.info(f"任务完成！成功处理了 {processed_count} / {total_to_process} 位演员。")
+
+        except Exception as e:
+            logger.error(f"别名丰富任务执行时发生严重错误: {e}", exc_info=True)
 
