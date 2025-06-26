@@ -28,9 +28,9 @@ class ActorDBManager:
         logger.debug(f"ActorDBManager 初始化，使用数据库: {self.db_path}")
 
     def _get_db_connection(self) -> sqlite3.Connection:
-        """获取一个配置好 row_factory 的数据库连接。"""
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;") # ✨ 启用 WAL 模式
         return conn
 
     # --- 核心查询引擎 ---
@@ -657,8 +657,9 @@ def enrich_all_actor_aliases_task(db_path: str, tmdb_api_key: str, stop_event: O
         
         processed_count = 0
         try:
-            with sqlite3.connect(db_path, timeout=10) as conn:
+            with sqlite3.connect(db_path, timeout=30) as conn:
                 conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA journal_mode=WAL;") # ✨ 启用 WAL 模式
                 cursor = conn.cursor()
                 
                 actor_db_manager = ActorDBManager(db_path)
@@ -697,6 +698,11 @@ def enrich_all_actor_aliases_task(db_path: str, tmdb_api_key: str, stop_event: O
                         enrich_details=True
                     )
                     processed_count += 1
+                    # ✨✨✨ 核心修改：每处理N个演员就提交一次 ✨✨✨
+                    # 比如每处理 10 个，或者根据您的需要调整
+                    if (i + 1) % 10 == 0:
+                        conn.commit()
+                        logger.info(f"  -> 已处理 {i+1} / {total_to_process}，提交事务...")
                     time.sleep(0.5) # 保持API调用间隔
 
                 conn.commit()
