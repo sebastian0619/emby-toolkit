@@ -93,7 +93,7 @@ class DoubanApi:
             
             if elapsed < cls._cooldown_seconds:
                 wait_time = cls._cooldown_seconds - elapsed
-                logger.infog(f"豆瓣 API 冷却中... 等待 {wait_time:.2f} 秒。")
+                logger.info(f"豆瓣 API 冷却中... 等待 {wait_time:.2f} 秒。")
                 time.sleep(wait_time)
             
             # 无论是否等待，都更新最后请求时间为当前时间

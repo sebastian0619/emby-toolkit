@@ -474,7 +474,7 @@ def save_config(new_config: Dict[str, Any]):
             value_to_write = ",".join(map(str, value))
         else:
             value_to_write = str(value)
-            
+        value_to_write = value_to_write.replace('%', '%%')
         config_parser.set(section, key, value_to_write)
 
     try:
