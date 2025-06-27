@@ -11,6 +11,7 @@ import re
 import base64
 import hashlib
 import hmac
+import time
 from urllib import parse
 from datetime import datetime
 from random import choice
@@ -40,6 +41,11 @@ class DoubanApi:
     _session: Optional[requests.Session] = None
     _db_path: Optional[str] = None
     _session_lock = threading.Lock()
+    # --- ✨ 新增的冷却相关属性 ✨ ---
+    _cooldown_seconds: float = 1.5  # 默认冷却时间（秒），可以设置一个安全值
+    _last_request_time: float = 0.0 # 上次请求的时间戳
+    _cooldown_lock = threading.Lock() # 用于冷却计时的线程锁，防止多线程下计时错乱
+    # --- ✨ 新增属性结束 ✨ ---
 
     _urls = {
         "search": "/search/weixin", "imdbid": "/movie/imdb/%s",
@@ -58,7 +64,7 @@ class DoubanApi:
     _api_url = "https://api.douban.com/v2"
     _default_timeout = 15 # 稍微增加超时
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: Optional[str] = None, cooldown_seconds: Optional[float] = None):
         if DoubanApi._session is None:
             DoubanApi._session = requests.Session()
             logger.debug("DoubanApi requests.Session 已初始化。")
@@ -67,6 +73,25 @@ class DoubanApi:
             logger.debug(f"DoubanApi 将使用数据库路径进行缓存: {DoubanApi._db_path}")
         elif not DoubanApi._db_path:
             logger.warning("DoubanApi 初始化：未提供数据库路径 (db_path)，翻译缓存功能将不可用或受限。")
+        # 如果外部传入了冷却时间，则使用它覆盖默认值
+        if cooldown_seconds is not None and cooldown_seconds > 0:
+            DoubanApi._cooldown_seconds = cooldown_seconds
+            logger.info(f"DoubanApi 已设置请求冷却时间为: {DoubanApi._cooldown_seconds} 秒。")
+    # --- ✨ 新增 _apply_cooldown 核心方法 ✨ ---
+    @classmethod
+    def _apply_cooldown(cls):
+        """在每次API请求前应用冷却等待，线程安全。"""
+        with cls._cooldown_lock:
+            now = time.time()
+            elapsed = now - cls._last_request_time
+            
+            if elapsed < cls._cooldown_seconds:
+                wait_time = cls._cooldown_seconds - elapsed
+                logger.debug(f"Douban API 冷却中... 等待 {wait_time:.2f} 秒。")
+                time.sleep(wait_time)
+            
+            # 无论是否等待，都更新最后请求时间为当前时间
+            cls._last_request_time = time.time()
 
     @classmethod
     def _get_translation_from_db(cls, text: str, by_translated_text: bool = False, cursor: Optional[sqlite3.Cursor] = None) -> Optional[Dict[str, Any]]:
@@ -174,6 +199,7 @@ class DoubanApi:
         return err_dict
 
     def __invoke(self, url: str, **kwargs) -> Dict[str, Any]:
+        DoubanApi._apply_cooldown()
         DoubanApi._ensure_session() # <--- 在每次请求前确保 session 存在
         if DoubanApi._session is None: return self._make_error_dict("session_not_initialized", "Session未初始化")
         req_url = DoubanApi._base_url + url
@@ -208,6 +234,7 @@ class DoubanApi:
             return self._make_error_dict("json_decode_error", "无效的JSON响应")
 
     def __post(self, url: str, **kwargs) -> Dict[str, Any]:
+        DoubanApi._apply_cooldown()
         DoubanApi._ensure_session() # <--- 在每次请求前确保 session 存在
         if DoubanApi._session is None: return self._make_error_dict("session_not_initialized", "Session未初始化")
         req_url = DoubanApi._api_url + url

@@ -52,8 +52,29 @@ class MediaProcessorAPI:
         self.douban_api = None
         if getattr(constants, 'DOUBAN_API_AVAILABLE', False):
             try:
-                self.douban_api = DoubanApi(db_path=self.db_path)
+                # ✨✨✨ 步骤 1: 从配置中安全地获取冷却时间 ✨✨✨
+                # 配置文件中的键
+                cooldown_key = "api_douban_default_cooldown_seconds"
+                # 如果配置不存在，提供一个安全的默认值
+                default_cooldown = 2.0 
+                
+                # 从 self.config 获取原始值（可能是字符串）
+                raw_cooldown_value = self.config.get(cooldown_key, default_cooldown)
+                
+                # 尝试将值转换为浮点数，如果失败则使用默认值
+                try:
+                    douban_cooldown = float(raw_cooldown_value)
+                except (ValueError, TypeError):
+                    logger.warning(f"配置中的豆瓣冷却时间 '{raw_cooldown_value}' 无效，将使用默认值 {default_cooldown} 秒。")
+                    douban_cooldown = default_cooldown
+
+                # ✨✨✨ 步骤 2: 将冷却时间传递给 DoubanApi 构造函数 ✨✨✨
+                self.douban_api = DoubanApi(
+                    db_path=self.db_path,
+                    cooldown_seconds=douban_cooldown  # <--- 将获取到的值传进去
+                )
                 logger.debug("DoubanApi 实例已在 MediaProcessorAPI 中创建。")
+
             except Exception as e:
                 logger.error(f"MediaProcessorAPI 初始化 DoubanApi 失败: {e}", exc_info=True)
         else:
@@ -65,7 +86,6 @@ class MediaProcessorAPI:
         self.emby_user_id = self.config.get("emby_user_id")
         self.tmdb_api_key = self.config.get("tmdb_api_key", "")
         self.translator_engines = self.config.get("translator_engines_order", constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
-        # self.data_source_mode = self.config.get("data_source_mode", constants.DEFAULT_DOMESTIC_SOURCE_MODE)
         self.local_data_path = self.config.get("local_data_path", "").strip()
         self.libraries_to_process = self.config.get("libraries_to_process", [])
 
@@ -74,17 +94,15 @@ class MediaProcessorAPI:
 
         # ✨✨✨ 关键修复：从 config 字典中获取AI配置 ✨✨✨
         self.ai_translator = None
-        # .get("ai_translation_enabled", False) 会安全地处理键不存在的情况
         self.ai_translation_enabled = self.config.get("ai_translation_enabled", False) 
         
         if self.ai_translation_enabled:
             try:
-                # 把整个 config 字典传给 AITranslator，让它自己去取需要的配置
                 self.ai_translator = AITranslator(self.config)
                 logger.info("AI翻译器已成功初始化并启用。")
             except Exception as e:
                 logger.error(f"AI翻译器初始化失败，将禁用AI翻译功能: {e}")
-                self.ai_translation_enabled = False # 初始化失败，自动关闭开关
+                self.ai_translation_enabled = False
         else:
             logger.info("AI翻译功能未启用。")
 
@@ -95,7 +113,7 @@ class MediaProcessorAPI:
         logger.info(f"  已从数据库加载 {len(self.processed_items_cache)} 个已处理媒体记录到内存缓存。")
         logger.debug(f"  INIT - self.local_data_path: '{self.local_data_path}'")
         logger.debug(f"  INIT - self.tmdb_api_key (len): {len(self.tmdb_api_key) if self.tmdb_api_key else 0}")
-        logger.debug(f"  INIT - DOUBAN_API_AVAILABLE (from top level): {DOUBAN_API_AVAILABLE}") # 打印顶层导入状态
+        logger.debug(f"  INIT - DOUBAN_API_AVAILABLE (from top level): {DOUBAN_API_AVAILABLE}")
         logger.debug(f"  INIT - self.douban_api is None: {self.douban_api is None}")
         if self.douban_api:
             logger.debug(f"  INIT - self.douban_api type: {type(self.douban_api)}")

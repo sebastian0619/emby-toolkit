@@ -58,7 +58,36 @@ class MediaProcessorSA:
         self.actor_db_manager = ActorDBManager(self.db_path)
 
         # 从 config 中获取所有其他配置
-        self.douban_api = DoubanApi(db_path=self.db_path) if DOUBAN_API_AVAILABLE else None
+        self.douban_api = None
+        if getattr(constants, 'DOUBAN_API_AVAILABLE', False):
+            try:
+                # ✨✨✨ 步骤 1: 从配置中安全地获取冷却时间 ✨✨✨
+                # 配置文件中的键
+                cooldown_key = "api_douban_default_cooldown_seconds"
+                # 如果配置不存在，提供一个安全的默认值
+                default_cooldown = 2.0 
+                
+                # 从 self.config 获取原始值（可能是字符串）
+                raw_cooldown_value = self.config.get(cooldown_key, default_cooldown)
+                
+                # 尝试将值转换为浮点数，如果失败则使用默认值
+                try:
+                    douban_cooldown = float(raw_cooldown_value)
+                except (ValueError, TypeError):
+                    logger.warning(f"配置中的豆瓣冷却时间 '{raw_cooldown_value}' 无效，将使用默认值 {default_cooldown} 秒。")
+                    douban_cooldown = default_cooldown
+
+                # ✨✨✨ 步骤 2: 将冷却时间传递给 DoubanApi 构造函数 ✨✨✨
+                self.douban_api = DoubanApi(
+                    db_path=self.db_path,
+                    cooldown_seconds=douban_cooldown  # <--- 将获取到的值传进去
+                )
+                logger.debug("DoubanApi 实例已在 MediaProcessorAPI 中创建。")
+
+            except Exception as e:
+                logger.error(f"MediaProcessorAPI 初始化 DoubanApi 失败: {e}", exc_info=True)
+        else:
+            logger.warning("DoubanApi 常量指示不可用，将不使用豆瓣功能。")
         self.emby_url = self.config.get("emby_server_url")
         self.emby_api_key = self.config.get("emby_api_key")
         self.emby_user_id = self.config.get("emby_user_id")
