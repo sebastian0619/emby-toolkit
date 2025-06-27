@@ -68,7 +68,6 @@
           <!-- 卡片: 数据源与 API -->
           <n-card title="数据源与 API" size="small" class="beautified-card">
             <n-form-item label="本地数据源路径" path="local_data_path">
-                <!-- ★★★ 在这里添加 :disabled 绑定 ★★★ -->
                 <n-input v-model:value="configModel.local_data_path" placeholder="神医TMDB缓存目录 (cache和override的上层)" :disabled="!configModel.use_sa_mode" />
                  <template #feedback>
                   <n-text v-if="!configModel.use_sa_mode" depth="3" style="font-size:0.8em; color: var(--n-warning-color); font-weight: bold;">
@@ -79,6 +78,23 @@
             <n-form-item label="TMDB API Key" path="tmdb_api_key">
               <n-input type="password" show-password-on="mousedown" v-model:value="configModel.tmdb_api_key" placeholder="输入你的 TMDB API Key" />
             </n-form-item>
+
+            <!-- ✨✨✨ 在这里添加新代码 ✨✨✨ -->
+            <n-form-item label="豆瓣登录 Cookie" path="douban_cookie">
+              <n-input
+                type="password"
+                show-password-on="mousedown"
+                v-model:value="configModel.douban_cookie"
+                placeholder="从浏览器开发者工具中获取"
+              />
+              <template #feedback>
+                <n-text depth="3" style="font-size:0.8em;">
+                  非必要不用配置，当日志频繁出现“豆瓣API请求失败: 需要登录...”的提示时再配置。
+                </n-text>
+              </template>
+            </n-form-item>
+            <!-- ✨✨✨ 新代码结束 ✨✨✨ -->
+
           </n-card>
         </n-space>
       </n-gi>

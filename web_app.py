@@ -78,6 +78,7 @@ CONFIG_DEFINITION = {
 
     # [DoubanAPI]
     constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN: (constants.CONFIG_SECTION_API_DOUBAN, 'float', 1.0),
+    constants.CONFIG_OPTION_DOUBAN_COOKIE: (constants.CONFIG_SECTION_API_DOUBAN, 'string', ""),
 
     # [Translation]
     constants.CONFIG_OPTION_TRANSLATOR_ENGINES: (constants.CONFIG_SECTION_TRANSLATION, 'list', constants.DEFAULT_TRANSLATOR_ENGINES_ORDER),

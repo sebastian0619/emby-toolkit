@@ -61,28 +61,29 @@ class MediaProcessorSA:
         self.douban_api = None
         if getattr(constants, 'DOUBAN_API_AVAILABLE', False):
             try:
-                # ✨✨✨ 步骤 1: 从配置中安全地获取冷却时间 ✨✨✨
-                # 配置文件中的键
-                cooldown_key = "api_douban_default_cooldown_seconds"
-                # 如果配置不存在，提供一个安全的默认值
-                default_cooldown = 2.0 
-                
-                # 从 self.config 获取原始值（可能是字符串）
-                raw_cooldown_value = self.config.get(cooldown_key, default_cooldown)
-                
-                # 尝试将值转换为浮点数，如果失败则使用默认值
-                try:
-                    douban_cooldown = float(raw_cooldown_value)
-                except (ValueError, TypeError):
-                    logger.warning(f"配置中的豆瓣冷却时间 '{raw_cooldown_value}' 无效，将使用默认值 {default_cooldown} 秒。")
-                    douban_cooldown = default_cooldown
+                # --- ✨✨✨ 核心修改区域 START ✨✨✨ ---
 
-                # ✨✨✨ 步骤 2: 将冷却时间传递给 DoubanApi 构造函数 ✨✨✨
+                # 1. 从配置中获取冷却时间 (这部分逻辑您可能已经有了)
+                douban_cooldown = self.config.get(constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN, 2.0)
+                
+                # 2. 从配置中获取 Cookie，使用我们刚刚在 constants.py 中定义的常量
+                douban_cookie = self.config.get(constants.CONFIG_OPTION_DOUBAN_COOKIE, "")
+                
+                # 3. 添加一个日志，方便调试
+                if not douban_cookie:
+                    logger.warning(f"配置文件中未找到或未设置 '{constants.CONFIG_OPTION_DOUBAN_COOKIE}'。如果豆瓣API返回'need_login'错误，请在此处配置。")
+                else:
+                    logger.info("已从配置中加载豆瓣 Cookie。")
+
+                # 4. 将所有参数传递给 DoubanApi 的构造函数
                 self.douban_api = DoubanApi(
                     db_path=self.db_path,
-                    cooldown_seconds=douban_cooldown  # <--- 将获取到的值传进去
+                    cooldown_seconds=douban_cooldown,
+                    user_cookie=douban_cookie  # <--- 将 cookie 传进去
                 )
                 logger.debug("DoubanApi 实例已在 MediaProcessorAPI 中创建。")
+                
+                # --- ✨✨✨ 核心修改区域 END ✨✨✨ ---
 
             except Exception as e:
                 logger.error(f"MediaProcessorAPI 初始化 DoubanApi 失败: {e}", exc_info=True)

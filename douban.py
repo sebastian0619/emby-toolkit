@@ -46,6 +46,7 @@ class DoubanApi:
     _last_request_time: float = 0.0 # 上次请求的时间戳
     _cooldown_lock = threading.Lock() # 用于冷却计时的线程锁，防止多线程下计时错乱
     # --- ✨ 新增属性结束 ✨ ---
+    _user_cookie: Optional[str] = None
 
     _urls = {
         "search": "/search/weixin", "imdbid": "/movie/imdb/%s",
@@ -63,11 +64,14 @@ class DoubanApi:
     _base_url = "https://frodo.douban.com/api/v2"
     _api_url = "https://api.douban.com/v2"
     _default_timeout = 15 # 稍微增加超时
+    
 
-    def __init__(self, db_path: Optional[str] = None, cooldown_seconds: Optional[float] = None):
+    def __init__(self, db_path: Optional[str] = None, cooldown_seconds: Optional[float] = None, user_cookie: Optional[str] = None):
         if DoubanApi._session is None:
-            DoubanApi._session = requests.Session()
-            logger.debug("DoubanApi requests.Session 已初始化。")
+            with DoubanApi._session_lock:
+                if DoubanApi._session is None:
+                    DoubanApi._session = requests.Session()
+                    logger.debug("DoubanApi requests.Session 已初始化。")
         if db_path:
             DoubanApi._db_path = db_path
             logger.debug(f"DoubanApi 将使用数据库路径进行缓存: {DoubanApi._db_path}")
@@ -77,7 +81,9 @@ class DoubanApi:
         if cooldown_seconds is not None and cooldown_seconds > 0:
             DoubanApi._cooldown_seconds = cooldown_seconds
             logger.info(f"DoubanApi 已设置请求冷却时间为: {DoubanApi._cooldown_seconds} 秒。")
-    # --- ✨ 新增 _apply_cooldown 核心方法 ✨ ---
+        if user_cookie:
+            DoubanApi._user_cookie = user_cookie
+            logger.info("DoubanApi 已加载用户登录 Cookie。")
     @classmethod
     def _apply_cooldown(cls):
         """在每次API请求前应用冷却等待，线程安全。"""
@@ -87,7 +93,7 @@ class DoubanApi:
             
             if elapsed < cls._cooldown_seconds:
                 wait_time = cls._cooldown_seconds - elapsed
-                logger.debug(f"Douban API 冷却中... 等待 {wait_time:.2f} 秒。")
+                logger.infog(f"豆瓣 API 冷却中... 等待 {wait_time:.2f} 秒。")
                 time.sleep(wait_time)
             
             # 无论是否等待，都更新最后请求时间为当前时间
@@ -207,10 +213,14 @@ class DoubanApi:
         ts = params.pop('_ts', datetime.strftime(datetime.now(), '%Y%m%d'))
         params.update({'os_rom': 'android', '_ts': ts, '_sig': DoubanApi._sign(url=req_url, ts=ts)})
         headers = {'User-Agent': choice(DoubanApi._user_agents)}
+        if DoubanApi._user_cookie:
+            headers['Cookie'] = DoubanApi._user_cookie
         resp = None
         try:
             logger.debug(f"GET Request: {req_url}, Params: {params.get('q', params)}") # 简化日志
             resp = DoubanApi._session.get(req_url, params=params, headers=headers, timeout=DoubanApi._default_timeout)
+            logger.debug(f"GET Response Status: {resp.status_code} for {params.get('q', url)}")
+            resp.raise_for_status()
             logger.debug(f"GET Response Status: {resp.status_code} for {params.get('q', url)}")
             resp.raise_for_status()
             response_json = resp.json()
@@ -222,9 +232,17 @@ class DoubanApi:
         except requests.exceptions.HTTPError as e:
             msg = str(e)
             if e.response is not None:
-                try: error_json = e.response.json(); msg = error_json.get("msg", str(e))
-                except json.JSONDecodeError: msg = f"{str(e)} (响应非JSON: {e.response.text[:100]})"
-            logger.error(f"HTTP error on GET {req_url}: {msg}", exc_info=True)
+                try:
+                    error_json = e.response.json()
+                    # 专门处理 need_login 错误
+                    if error_json.get("code") == 1001 or "need_login" in error_json.get("msg", ""):
+                        msg = "need_login"
+                        logger.error(f"豆瓣API请求失败: 需要登录。请在设置中配置有效的豆瓣Cookie。")
+                    else:
+                        msg = error_json.get("msg", str(e))
+                except json.JSONDecodeError:
+                    msg = f"{str(e)} (响应非JSON: {e.response.text[:100]})"
+            logger.error(f"HTTP error on GET {req_url}: {msg}", exc_info=False) # exc_info=False 避免need_login刷屏
             return self._make_error_dict("http_error", msg, getattr(e.response, 'json', lambda: None)())
         except requests.exceptions.RequestException as e:
             logger.error(f"Request failed on GET {req_url}: {e}", exc_info=True)
@@ -240,11 +258,15 @@ class DoubanApi:
         req_url = DoubanApi._api_url + url
         data_payload: Dict[str, Any] = {'apikey': DoubanApi._api_key2, **kwargs}
         if '_ts' in data_payload: data_payload.pop('_ts')
-        headers = {'User-Agent': choice(DoubanApi._user_agents), "Content-Type": "application/x-www-form-urlencoded; charset=utf-8", "Cookie": "bid=J9zb1zA5sJc"}
+        headers = {'User-Agent': choice(DoubanApi._user_agents), "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"}
+        if DoubanApi._user_cookie:
+            headers['Cookie'] = DoubanApi._user_cookie
         resp = None
         try:
             logger.debug(f"POST Request: {req_url}, Data: {data_payload}")
             resp = DoubanApi._session.post(req_url, data=data_payload, headers=headers, timeout=DoubanApi._default_timeout)
+            logger.debug(f"POST Response Status: {resp.status_code} for {url}")
+            resp.raise_for_status()
             logger.debug(f"POST Response Status: {resp.status_code} for {url}")
             resp.raise_for_status()
             response_json = resp.json()
@@ -256,8 +278,15 @@ class DoubanApi:
         except requests.exceptions.HTTPError as e:
             msg = str(e)
             if e.response is not None:
-                try: error_json = e.response.json(); msg = error_json.get("msg", str(e))
-                except json.JSONDecodeError: msg = f"{str(e)} (响应非JSON: {e.response.text[:100]})"
+                try:
+                    error_json = e.response.json()
+                    if error_json.get("code") == 1001 or "need_login" in error_json.get("msg", ""):
+                        msg = "need_login"
+                        logger.error(f"豆瓣API请求失败: 需要登录。请在设置中配置有效的豆瓣Cookie。")
+                    else:
+                        msg = error_json.get("msg", str(e))
+                except json.JSONDecodeError:
+                    msg = f"{str(e)} (响应非JSON: {e.response.text[:100]})"
             logger.error(f"HTTP error on POST {req_url}: {msg}", exc_info=True)
             return self._make_error_dict("http_error", msg, getattr(e.response, 'json', lambda: None)())
         except requests.exceptions.RequestException as e:
