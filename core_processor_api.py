@@ -14,7 +14,7 @@ import utils # 导入我们上面修改的 utils.py
 import constants
 import logging
 from ai_translator import AITranslator # ✨✨✨ 导入新的AI翻译器 ✨✨✨
-from actor_utils import ActorDBManager, are_names_match_enhanced, evaluate_cast_processing_quality
+from actor_utils import ActorDBManager, are_names_match_enhanced, evaluate_cast_processing_quality, select_best_role
 # DoubanApi 的导入和可用性检查
 logger = logging.getLogger(__name__)
 try:
@@ -404,90 +404,6 @@ class MediaProcessorAPI:
             DoubanApi._save_translation_to_db(text_stripped, None, f"failed_or_same_via_{final_engine}", cursor=db_cursor_for_cache)
             return text
     # ✨✨✨优先级：有意义的候选角色 > 现有角色 > "演员" > 空✨✨✨    
-    def _select_best_role(self, current_role: str, candidate_role: str) -> str:
-        """
-        根据优先级选择最佳角色名。
-        【最终修正版】确保有价值的中文名不会被英文名覆盖。
-
-        优先级顺序:
-        1. 有内容的豆瓣中文角色名
-        2. 有内容的本地中文角色名  <-- 这是保护您本地数据的关键
-        3. 有内容的英文角色名 (候选来源优先)
-        4. '演员' (或其他占位符)
-        5. 空字符串
-        """
-        # --- 步骤 1: 清理和规范化输入 ---
-        original_current = current_role # 保存原始值用于日志
-        original_candidate = candidate_role # 保存原始值用于日志
-        
-        current_role = str(current_role or '').strip()
-        candidate_role = str(candidate_role or '').strip()
-
-        # --- 步骤 2: 准备日志和判断标志 ---
-        # 使用 self.logger，如果您的类中是这样命名的
-        # 如果不是，请替换为正确的 logger 对象名
-        logger.debug(f"--- [角色选择开始] ---")
-        logger.debug(f"  输入: current='{original_current}', candidate='{original_candidate}'")
-        logger.debug(f"  清理后: current='{current_role}', candidate='{candidate_role}'")
-
-        current_is_chinese = utils.contains_chinese(current_role)
-        candidate_is_chinese = utils.contains_chinese(candidate_role)
-        
-        # 定义一个更广泛的占位符列表
-        placeholders = {"actor", "actress", "演员", "配音"}
-        current_is_placeholder = current_role.lower() in placeholders
-        candidate_is_placeholder = candidate_role.lower() in placeholders
-
-        logger.debug(f"  分析: current_is_chinese={current_is_chinese}, current_is_placeholder={current_is_placeholder}")
-        logger.debug(f"  分析: candidate_is_chinese={candidate_is_chinese}, candidate_is_placeholder={candidate_is_placeholder}")
-
-        # --- 步骤 3: 应用优先级规则并记录决策 ---
-
-        # 优先级 1: 候选角色是有效的中文名
-        if candidate_is_chinese and not candidate_is_placeholder:
-            logger.debug(f"  决策: [优先级1] 候选角色是有效中文名。选择候选角色。")
-            logger.debug(f"  选择: '{candidate_role}'")
-            logger.debug(f"--- [角色选择结束] ---")
-            return candidate_role
-
-        # 优先级 2: 当前角色是有效的中文名，而候选角色不是。必须保留当前角色！
-        if current_is_chinese and not current_is_placeholder and not candidate_is_chinese:
-            logger.debug(f"  决策: [优先级2] 当前角色是有效中文名，而候选不是。保留当前角色。")
-            logger.debug(f"  选择: '{current_role}'")
-            logger.debug(f"--- [角色选择结束] ---")
-            return current_role
-
-        # 优先级 3: 两者都不是有效的中文名（或都是）。选择一个非占位符的，候选者优先。
-        if candidate_role and not candidate_is_placeholder:
-            logger.debug(f"  决策: [优先级3a] 候选角色是有效的非中文名/占位符。选择候选角色。")
-            logger.debug(f"  选择: '{candidate_role}'")
-            logger.debug(f"--- [角色选择结束] ---")
-            return candidate_role
-        
-        if current_role and not current_is_placeholder:
-            logger.debug(f"  决策: [优先级3b] 当前角色是有效的非中文名/占位符，而候选是无效的。保留当前角色。")
-            logger.debug(f"  选择: '{current_role}'")
-            logger.debug(f"--- [角色选择结束] ---")
-            return current_role
-
-        # 优先级 4: 处理占位符。如果两者之一是占位符，则返回一个（候选优先）。
-        if candidate_role: # 如果候选有内容（此时只能是占位符）
-            logger.debug(f"  决策: [优先级4a] 候选角色是占位符。选择候选角色。")
-            logger.debug(f"  选择: '{candidate_role}'")
-            logger.debug(f"--- [角色选择结束] ---")
-            return candidate_role
-            
-        if current_role: # 如果当前有内容（此时只能是占位符）
-            logger.debug(f"  决策: [优先级4b] 当前角色是占位符，候选为空。保留当前角色。")
-            logger.debug(f"  选择: '{current_role}'")
-            logger.debug(f"--- [角色选择结束] ---")
-            return current_role
-
-        # 优先级 5: 所有情况都处理完，只剩下两者都为空。
-        logger.debug(f"  决策: [优先级5] 所有输入均为空或无效。返回空字符串。")
-        logger.debug(f"  选择: ''")
-        logger.debug(f"--- [角色选择结束] ---")
-        return ""
     # ✨✨✨从豆瓣API获取指定媒体的演员原始数据列表✨✨✨
     def _fetch_douban_cast(self, media_info: Dict[str, Any]) -> List[Dict[str, Any]]:
         """从豆瓣API获取演员原始数据。"""
@@ -614,49 +530,55 @@ class MediaProcessorAPI:
             logger.info(f"步骤 1: 初始化 Emby 演员基准列表 ({len(current_emby_cast_people)} 位)...")
             final_cast_list: List[Dict[str, Any]] = []
             for person_emby in current_emby_cast_people:
-                # ✨✨✨ 关键修复：把这些变量定义加回来 ✨✨✨
+                if self.is_stop_requested(): break
                 emby_pid = str(person_emby.get("Id", "")).strip()
                 emby_name = str(person_emby.get("Name", "")).strip()
                 if not emby_pid or not emby_name:
                     continue
 
                 provider_ids = person_emby.get("ProviderIds", {})
-                # ✨✨✨ 修复结束 ✨✨✨
-
-                # ★★★ 优化点 1: 不再调用 upsert_person，而是先查找 ★★★
-                # 尝试从数据库中找到这个演员的完整记录
-                full_actor_data = self.actor_db_manager.find_person_by_any_id(
-                    cursor, 
-                    emby_id=emby_pid,
-                    tmdb_id=provider_ids.get("Tmdb"),
-                    imdb_id=provider_ids.get("Imdb")
-                )
-
-                # 构建内存中的演员对象
                 actor_internal_format = {
                     "Name": emby_name,
                     "OriginalName": person_emby.get("OriginalName", emby_name),
                     "Role": str(person_emby.get("Role", "")).strip(),
                     "Type": "Actor",
                     "EmbyPersonId": emby_pid,
-                    "TmdbPersonId": provider_ids.get("Tmdb"),
-                    "DoubanCelebrityId": provider_ids.get("Douban"),
-                    "ImdbId": provider_ids.get("Imdb"),
+                    "TmdbPersonId": str(provider_ids.get("Tmdb", "")).strip() or None,
+                    "DoubanCelebrityId": str(provider_ids.get("Douban", "")).strip() or None,
+                    "ImdbId": str(provider_ids.get("Imdb", "")).strip() or None,
                     "ProviderIds": provider_ids.copy(),
                     "Order": person_emby.get("Order"),
-                    # 如果数据库中有记录，就加载别名
-                    "_aliases": json.loads(full_actor_data["other_names"] or '{}').get("aliases", []) if full_actor_data else []
+                    "_source_comment": "from_emby_initial"
                 }
                 final_cast_list.append(actor_internal_format)
+                # 使用 Emby 的原始数据更新映射表
+                self.actor_db_manager.upsert_person(
+                    cursor,
+                    {  # <--- 注意这里，创建了一个字典
+                        "emby_id": actor_internal_format["EmbyPersonId"],
+                        "name": actor_internal_format["Name"],  # 函数内部用的是 'name'
+                        "tmdb_id": actor_internal_format["TmdbPersonId"],
+                        "douban_id": actor_internal_format["DoubanCelebrityId"],
+                        "imdb_id": actor_internal_format["ImdbId"]
+                    }
+                )
 
             logger.info(f"步骤 1: 基准列表创建完成，包含 {len(final_cast_list)} 位演员。")
+            if self.is_stop_requested():
+                conn.commit()
+                return final_cast_list
 
             # ======================================================================
-            # 步骤 2: 从豆瓣获取数据并与基准列表比对 (补充现有演员)
+            # 步骤 2: 从豆瓣获取数据并与基准列表比对 (丰富现有演员)
             # ======================================================================
             logger.info("步骤 2: 获取豆瓣演员并与基准列表比对...")
-            # ... (您获取 formatted_douban_candidates 的逻辑保持不变) ...
-            formatted_douban_candidates = self._fetch_and_format_douban_cast(media_info)
+            formatted_douban_candidates = []
+            if media_type_for_log in ["Movie", "Series"]:
+                douban_api_actors_raw = self._fetch_douban_cast(media_info)
+                formatted_douban_candidates = self._format_douban_cast(douban_api_actors_raw)
+                logger.info(f"从豆瓣 API 格式化后得到 {len(formatted_douban_candidates)} 位候选演员。")
+            else:
+                logger.info(f"步骤 2: 跳过获取豆瓣演员 (因为类型是 {media_type_for_log})。")
 
             unmatched_douban_candidates: List[Dict[str, Any]] = []
             if formatted_douban_candidates:
@@ -667,42 +589,58 @@ class MediaProcessorAPI:
                     match_found = False
                     for emby_actor_to_update in final_cast_list:
                         is_match, match_reason = False, ""
-                        
-                        # 匹配策略 1: ID 优先 (最可靠)
                         dc_douban_id = douban_candidate.get("DoubanCelebrityId")
                         if dc_douban_id and dc_douban_id == emby_actor_to_update.get("DoubanCelebrityId"):
                             is_match, match_reason = True, f"Douban ID ({dc_douban_id})"
                         
-                        # ✨✨✨ 匹配策略 2: 使用别名的增强名字匹配 ✨✨✨
+                        # 【错误修复】修正此处的逻辑
                         if not is_match:
-                            # are_names_match_enhanced 是一个新的工具函数，我们需要创建它
-                            if are_names_match_enhanced(
-                                name_to_check=douban_candidate.get("Name"),
-                                target_name=emby_actor_to_update.get("Name"),
-                                target_original_name=emby_actor_to_update.get("OriginalName"),
-                                target_aliases=emby_actor_to_update.get("_aliases", [])
+                            # 直接在 if 条件中使用 utils.are_names_match，因为它返回布尔值
+                            if utils.are_names_match(
+                                douban_candidate.get("Name"), douban_candidate.get("OriginalName"),
+                                emby_actor_to_update.get("Name"), emby_actor_to_update.get("OriginalName")
                             ):
+                                # 如果匹配成功，再设置 is_match 和 match_reason
                                 is_match = True
-                                match_reason = f"名字/别名匹配 ('{douban_candidate.get('Name')}' vs '{emby_actor_to_update.get('Name')}')"
+                                match_reason = f"名字匹配 ('{douban_candidate.get('Name')}' vs '{emby_actor_to_update.get('Name')}')"
 
                         if is_match:
                             logger.info(f"  匹配成功: 豆瓣候选 '{douban_candidate.get('Name')}' 通过 [{match_reason}] 关联到 Emby 演员 '{emby_actor_to_update.get('Name')}'")
                             
-                            # 在内存中更新ID和角色信息
                             if dc_douban_id and not emby_actor_to_update.get("DoubanCelebrityId"):
                                 emby_actor_to_update["DoubanCelebrityId"] = dc_douban_id
-                                logger.info(f"    -> 已在内存中为该演员补充 Douban ID: {dc_douban_id}")
+                                emby_actor_to_update["ProviderIds"]["Douban"] = dc_douban_id
+                                logger.info(f"    -> 已为该演员补充 Douban ID: {dc_douban_id}")
 
-                            # ... (您更新角色的逻辑保持不变) ...
-                            
+                            original_role = emby_actor_to_update.get("Role")
+                            candidate_role = utils.clean_character_name_static(douban_candidate.get("Role"))
+                            best_role = select_best_role(original_role, candidate_role)
+                            if best_role != original_role:
+                                emby_actor_to_update["Role"] = best_role
+                                logger.info(f"    -> 角色名已更新: '{original_role}' -> '{best_role}'")
+                                                        
+                            # 更新映射表
+                            self.actor_db_manager.upsert_person(
+                                cursor,
+                                { # <--- 同样，打包成字典
+                                    "emby_id": emby_actor_to_update["EmbyPersonId"],
+                                    "name": emby_actor_to_update["Name"],
+                                    "douban_id": emby_actor_to_update.get("DoubanCelebrityId")
+                                    # douban_name_override 这个参数在 upsert_person 函数中没有被用到，可以先移除
+                                }
+                            )
+
                             matched_douban_indices.add(i)
                             match_found = True
-                            break # 找到匹配就跳出内层循环
+                            break
                     
                     if not match_found:
                         unmatched_douban_candidates.append(douban_candidate)
             
             logger.info(f"步骤 2: 完成。{len(matched_douban_indices) if formatted_douban_candidates else 0} 位豆瓣演员已匹配，{len(unmatched_douban_candidates)} 位溢出。")
+            if self.is_stop_requested():
+                conn.commit()
+                return final_cast_list
 
             # ======================================================================
             # 步骤 3: 条件化处理流程 (核心逻辑分叉点)
@@ -743,7 +681,6 @@ class MediaProcessorAPI:
             if self.is_stop_requested():
                 conn.commit()
                 return final_cast_list
-            
             
             # ======================================================================
             # 步骤 4: 最终截断
@@ -858,7 +795,6 @@ class MediaProcessorAPI:
                     actor_data["Role"] = final_role
 
             logger.info("步骤 5: 完成。")
-            
             # ======================================================================
             # 最终步骤: 将内存中最终的、最完整的演员信息写回数据库
             # ======================================================================
@@ -869,15 +805,14 @@ class MediaProcessorAPI:
                 self.actor_db_manager.upsert_person(
                     cursor,
                     {
-                        "emby_id": final_actor.get("EmbyPersonId"),
-                        "name": final_actor.get("Name"),
-                        "tmdb_id": final_actor.get("TmdbPersonId"),
-                        "douban_id": final_actor.get("DoubanCelebrityId"),
-                        "imdb_id": final_actor.get("ImdbId"),
-                    },
-                    tmdb_api_key=self.tmdb_api_key
+                        "emby_id": emby_actor_to_update["EmbyPersonId"], # key 是 "emby_id"
+                        "name": emby_actor_to_update["Name"],           # key 是 "name"
+                        "douban_id": emby_actor_to_update.get("DoubanCelebrityId"),
+                        # 如果需要传递 douban_name_override，可以这样做，假设 upsert_person 会处理它
+                        "other_names": {"douban_override": douban_candidate.get("Name")}
+                    }
                 )
-
+            
             logger.info(f"处理完影片 '{media_name_for_log}' 的所有演员，提交数据库更改...")
             conn.commit()
             logger.info("数据库更改已提交。")

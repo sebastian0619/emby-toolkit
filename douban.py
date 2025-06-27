@@ -69,7 +69,7 @@ class DoubanApi:
             logger.warning("DoubanApi 初始化：未提供数据库路径 (db_path)，翻译缓存功能将不可用或受限。")
 
     @classmethod
-    def _get_translation_from_db(cls, text: str, by_translated_text: bool = False, cursor: Optional[sqlite3.Cursor] = None) -> Optional[Dict[str, Any]]:
+    def _get_translation_from_db(cls, text: str, by_translated_text: bool = False) -> Optional[Dict[str, Any]]:
         """
         从数据库获取翻译缓存。
         :param text: 要查询的文本 (可以是原文或译文)。

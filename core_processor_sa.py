@@ -15,7 +15,7 @@ import tmdb_handler
 import utils
 import constants
 import logging
-from actor_utils import ActorDBManager, batch_translate_cast, evaluate_cast_processing_quality
+from actor_utils import ActorDBManager, batch_translate_cast, evaluate_cast_processing_quality, select_best_role
 from ai_translator import AITranslator
 from utils import get_override_path_for_item
 from watchlist_processor import WatchlistProcessor
@@ -256,91 +256,6 @@ class MediaProcessorSA:
             DoubanApi._save_translation_to_db(text_stripped, None, f"failed_or_same_via_{final_engine}", cursor=db_cursor)
             return text
 
-    def _select_best_role(self, current_role: str, candidate_role: str) -> str:
-        """
-        根据优先级选择最佳角色名。
-        【最终修正版】确保有价值的中文名不会被英文名覆盖。
-
-        优先级顺序:
-        1. 有内容的豆瓣中文角色名
-        2. 有内容的本地中文角色名  <-- 这是保护您本地数据的关键
-        3. 有内容的英文角色名 (候选来源优先)
-        4. '演员' (或其他占位符)
-        5. 空字符串
-        """
-        # --- 步骤 1: 清理和规范化输入 ---
-        original_current = current_role # 保存原始值用于日志
-        original_candidate = candidate_role # 保存原始值用于日志
-        
-        current_role = str(current_role or '').strip()
-        candidate_role = str(candidate_role or '').strip()
-
-        # --- 步骤 2: 准备日志和判断标志 ---
-        # 使用 self.logger，如果您的类中是这样命名的
-        # 如果不是，请替换为正确的 logger 对象名
-        logger.debug(f"--- [角色选择开始] ---")
-        logger.debug(f"  输入: current='{original_current}', candidate='{original_candidate}'")
-        logger.debug(f"  清理后: current='{current_role}', candidate='{candidate_role}'")
-
-        current_is_chinese = utils.contains_chinese(current_role)
-        candidate_is_chinese = utils.contains_chinese(candidate_role)
-        
-        # 定义一个更广泛的占位符列表
-        placeholders = {"actor", "actress", "演员", "配音"}
-        current_is_placeholder = current_role.lower() in placeholders
-        candidate_is_placeholder = candidate_role.lower() in placeholders
-
-        logger.debug(f"  分析: current_is_chinese={current_is_chinese}, current_is_placeholder={current_is_placeholder}")
-        logger.debug(f"  分析: candidate_is_chinese={candidate_is_chinese}, candidate_is_placeholder={candidate_is_placeholder}")
-
-        # --- 步骤 3: 应用优先级规则并记录决策 ---
-
-        # 优先级 1: 候选角色是有效的中文名
-        if candidate_is_chinese and not candidate_is_placeholder:
-            logger.debug(f"  决策: [优先级1] 候选角色是有效中文名。选择候选角色。")
-            logger.debug(f"  选择: '{candidate_role}'")
-            logger.debug(f"--- [角色选择结束] ---")
-            return candidate_role
-
-        # 优先级 2: 当前角色是有效的中文名，而候选角色不是。必须保留当前角色！
-        if current_is_chinese and not current_is_placeholder and not candidate_is_chinese:
-            logger.debug(f"  决策: [优先级2] 当前角色是有效中文名，而候选不是。保留当前角色。")
-            logger.debug(f"  选择: '{current_role}'")
-            logger.debug(f"--- [角色选择结束] ---")
-            return current_role
-
-        # 优先级 3: 两者都不是有效的中文名（或都是）。选择一个非占位符的，候选者优先。
-        if candidate_role and not candidate_is_placeholder:
-            logger.debug(f"  决策: [优先级3a] 候选角色是有效的非中文名/占位符。选择候选角色。")
-            logger.debug(f"  选择: '{candidate_role}'")
-            logger.debug(f"--- [角色选择结束] ---")
-            return candidate_role
-        
-        if current_role and not current_is_placeholder:
-            logger.debug(f"  决策: [优先级3b] 当前角色是有效的非中文名/占位符，而候选是无效的。保留当前角色。")
-            logger.debug(f"  选择: '{current_role}'")
-            logger.debug(f"--- [角色选择结束] ---")
-            return current_role
-
-        # 优先级 4: 处理占位符。如果两者之一是占位符，则返回一个（候选优先）。
-        if candidate_role: # 如果候选有内容（此时只能是占位符）
-            logger.debug(f"  决策: [优先级4a] 候选角色是占位符。选择候选角色。")
-            logger.debug(f"  选择: '{candidate_role}'")
-            logger.debug(f"--- [角色选择结束] ---")
-            return candidate_role
-            
-        if current_role: # 如果当前有内容（此时只能是占位符）
-            logger.debug(f"  决策: [优先级4b] 当前角色是占位符，候选为空。保留当前角色。")
-            logger.debug(f"  选择: '{current_role}'")
-            logger.debug(f"--- [角色选择结束] ---")
-            return current_role
-
-        # 优先级 5: 所有情况都处理完，只剩下两者都为空。
-        logger.debug(f"  决策: [优先级5] 所有输入均为空或无效。返回空字符串。")
-        logger.debug(f"  选择: ''")
-        logger.debug(f"--- [角色选择结束] ---")
-        return ""
-
     def _fetch_douban_cast(self, media_info: Dict[str, Any]) -> List[Dict[str, Any]]:
         # 1. 检查 Douban API 是否可用
         if not (DOUBAN_API_AVAILABLE and self.douban_api):
@@ -512,7 +427,7 @@ class MediaProcessorSA:
                         logger.info(f"  匹配成功 (名字): 豆瓣演员 '{d_actor.get('name')}' -> 本地演员 '{l_actor.get('name')}'")
                         l_actor["name"] = d_actor.get("name")
                         cleaned_douban_character = utils.clean_character_name_static(d_actor.get("character"))
-                        l_actor["character"] = self._select_best_role(
+                        l_actor["character"] = select_best_role(
                             l_actor.get("character"), 
                             cleaned_douban_character 
                         )
