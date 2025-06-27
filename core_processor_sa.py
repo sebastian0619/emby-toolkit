@@ -569,19 +569,18 @@ class MediaProcessorSA:
 
             intermediate_cast_list = list(final_cast_map.values())
             # ★★★ 在截断前进行一次全量反哺 ★★★
-            # logger.debug(f"截断前：将 {len(intermediate_cast_list)} 位演员的完整映射关系反哺到数据库...")
-            # for actor_data in intermediate_cast_list:
-            #     # ★★★ 核心修复：调用我们统一的、强大的 ActorDBManager ★★★
-            #     self.actor_db_manager.upsert_person(
-            #         cursor,
-            #         {
-            #             "tmdb_id": actor_data.get("id"),
-            #             "name": actor_data.get("name"),
-            #             "imdb_id": actor_data.get("imdb_id"),
-            #             "douban_id": actor_data.get("douban_id"),
-            #         },
-            #     )
-            # logger.info("所有演员的ID映射关系已保存。")
+            logger.debug(f"截断前：将 {len(intermediate_cast_list)} 位演员的完整映射关系反哺到数据库...")
+            for actor_data in intermediate_cast_list:
+                self.actor_db_manager.upsert_person(
+                    cursor,
+                    {
+                        "tmdb_id": actor_data.get("id"),
+                        "name": actor_data.get("name"),
+                        "imdb_id": actor_data.get("imdb_id"),
+                        "douban_id": actor_data.get("douban_id"),
+                    },
+                )
+            logger.info("所有演员的ID映射关系已保存。")
             # 步骤 演员列表截断 (先截断！)
             # ======================================================================
             max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)

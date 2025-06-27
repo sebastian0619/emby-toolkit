@@ -722,9 +722,9 @@ def enrich_all_actor_aliases_task(
             logger.info("--- 智能交叉丰富计划任务全部完成 ---")
 
     except InterruptedError:
-        logger.info("数据丰富任务被用户中止。")
+        logger.info("外部ID补充任务被用户中止。")
     except Exception as e:
-        logger.error(f"智能交叉丰富任务执行时发生严重错误: {e}", exc_info=True)
+        logger.error(f"智能交叉外部ID补充执行时发生严重错误: {e}", exc_info=True)
     finally:
         if 'douban_api' in locals() and douban_api:
             douban_api.close()
