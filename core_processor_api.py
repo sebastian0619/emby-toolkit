@@ -62,9 +62,9 @@ class MediaProcessorAPI:
                 
                 # 3. 添加一个日志，方便调试
                 if not douban_cookie:
-                    logger.warning(f"配置文件中未找到或未设置 '{constants.CONFIG_OPTION_DOUBAN_COOKIE}'。如果豆瓣API返回'need_login'错误，请在此处配置。")
+                    logger.debug(f"配置文件中未找到或未设置 '{constants.CONFIG_OPTION_DOUBAN_COOKIE}'。如果豆瓣API返回'need_login'错误，请在此处配置。")
                 else:
-                    logger.info("已从配置中加载豆瓣 Cookie。")
+                    logger.debug("已从配置中加载豆瓣 Cookie。")
 
                 # 4. 将所有参数传递给 DoubanApi 的构造函数
                 self.douban_api = DoubanApi(
