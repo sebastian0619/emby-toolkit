@@ -19,7 +19,7 @@ from actor_utils import ActorDBManager, batch_translate_cast, evaluate_cast_proc
 from ai_translator import AITranslator
 from utils import get_override_path_for_item
 from watchlist_processor import WatchlistProcessor
-
+from douban import DoubanApi, clean_character_name_static
 logger = logging.getLogger(__name__)
 try:
     from douban import DoubanApi
