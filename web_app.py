@@ -903,7 +903,7 @@ def task_process_full_library(processor: MediaProcessorSA, process_episodes: boo
         update_status_callback=update_status_from_thread,
         process_episodes=process_episodes
     )
-
+# --- 同步演员映射表 ---
 def task_sync_person_map(processor):
     """
     【最终兼容版】任务：同步演员映射表。
@@ -1736,7 +1736,7 @@ def api_handle_trigger_full_scan():
 @app.route('/api/trigger_sync_person_map', methods=['POST'])
 @login_required
 def api_handle_trigger_sync_map():
-    logger.debug("API: 收到触发统一演员映射表同步的请求。")
+    logger.debug("API: 收到触发演员映射表同步的请求。")
     try:
         # ★★★ 核心修复：不再需要 full_sync，因为同步逻辑已经统一 ★★★
         task_name_for_api = "同步演员映射表"

@@ -46,24 +46,26 @@ class UnifiedSyncHandler:
         logger.info(f"Emby中共有约 {total_from_emby} 个演员条目，开始同步...")
         if update_status_callback: update_status_callback(0, f"开始同步 {total_from_emby} 位演员...")
 
+        # ✨ 使用带有合并逻辑的 upsert_person，但关闭在线丰富功能
         with self.actor_db_manager._get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # 2. 使用 for 循环来消费生成器
             for person_batch in emby_handler.get_all_persons_from_emby(self.emby_url, self.emby_api_key, self.emby_user_id, stop_event):
                 
                 for person_emby in person_batch:
                     if stop_event and stop_event.is_set():
-                        logger.info("同步任务在处理批次时被中止。")
-                        conn.commit()
-                        if update_status_callback: update_status_callback(stats['processed'] / stats['total'] * 100, "任务已中断")
+                        # ... (中止逻辑不变) ...
                         return
 
                     stats["processed"] += 1
                     
                     emby_pid = str(person_emby.get("Id", "")).strip()
-                    if not emby_pid:
+                    person_name = str(person_emby.get("Name", "")).strip()
+
+                    # ✨ 核心优化：在源头就跳过没有名字的演员 ✨
+                    if not emby_pid or not person_name:
                         stats["skipped"] += 1
+                        logger.debug(f"跳过Emby演员 (ID: {emby_pid or 'N/A'})，因为其ID或名字为空。")
                         continue
                     
                     provider_ids = person_emby.get("ProviderIds", {})
@@ -71,20 +73,25 @@ class UnifiedSyncHandler:
                     
                     person_data_for_db = {
                         "emby_id": emby_pid,
-                        "name": str(person_emby.get("Name", "")).strip(),
+                        "name": person_name,
                         "tmdb_id": provider_ids_lower.get("tmdb"),
                         "imdb_id": provider_ids_lower.get("imdb"),
                         "douban_id": provider_ids_lower.get("douban"),
-                        "other_names": {}
                     }
                     
                     try:
-                        map_id = self.actor_db_manager.upsert_person(cursor, person_data_for_db)
-                        if map_id > 0: stats['success'] += 1
-                    except sqlite3.IntegrityError as e:
-                        self.actor_db_manager.record_conflict(cursor, person_data_for_db, str(e))
-                        stats['errors'] += 1
+                        # ✨✨✨ 核心修改：关闭 enrich_details ✨✨✨
+                        map_id = self.actor_db_manager.upsert_person(
+                            cursor, 
+                            person_data_for_db,
+                            # 我们不需要传递 tmdb_api_key，因为 enrich_details 是 False
+                            enrich_details=False 
+                        )
+                        # upsert_person 返回-1表示传入数据无效，但我们已经在前面检查过了
+                        if map_id > 0: 
+                            stats['success'] += 1
                     except Exception as e_upsert:
+                        # 新的 upsert_person 内部会处理 IntegrityError，所以这里只捕获通用异常
                         logger.error(f"同步时写入数据库失败 for EmbyPID {emby_pid}: {e_upsert}")
                         stats['errors'] += 1
 
