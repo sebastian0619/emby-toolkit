@@ -47,7 +47,7 @@ class UnifiedSyncHandler:
         if update_status_callback: update_status_callback(0, f"开始同步 {total_from_emby} 位演员...")
 
         # ✨ 使用带有合并逻辑的 upsert_person，但关闭在线丰富功能
-        with self.actor_db_manager._get_db_connection() as conn:
+        with self.actor_db_manager.get_db_connection() as conn:
             cursor = conn.cursor()
             
             for person_batch in emby_handler.get_all_persons_from_emby(self.emby_url, self.emby_api_key, self.emby_user_id, stop_event):

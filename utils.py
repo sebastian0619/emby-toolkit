@@ -6,6 +6,7 @@ from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
 import unicodedata
 import logging
+import sqlite3
 logger = logging.getLogger(__name__)
 # 尝试导入 pypinyin，如果失败则创建一个模拟函数
 try:
@@ -209,6 +210,48 @@ def get_override_path_for_item(item_type: str, tmdb_id: str, config: dict) -> st
 
     logger.warning(f"未知的媒体类型 '{item_type}'，无法确定 override 路径。")
     return None
+class LogDBManager:
+    """
+    专门负责与日志相关的数据库表 (processed_log, failed_log) 进行交互的类。
+    """
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        logger.debug(f"LogDBManager 初始化，使用数据库: {self.db_path}")
+
+    # 注意：这个类不自己管理连接，它假设操作都在一个外部事务中
+    def save_to_processed_log(self, cursor: sqlite3.Cursor, item_id: str, item_name: Optional[str] = None, score: Optional[float] = None):
+        """在一个外部事务中，保存已处理记录。"""
+        try:
+            cursor.execute(
+                "REPLACE INTO processed_log (item_id, item_name, processed_at, score) VALUES (?, ?, CURRENT_TIMESTAMP, ?)",
+                (item_id, item_name or f"未知项目(ID:{item_id})", score)
+            )
+            logger.debug(f"已将 Item ID '{item_id}' 写入 processed_log。")
+        except sqlite3.Error as e:
+            logger.error(f"写入 processed_log 失败 (Item ID: {item_id}): {e}")
+            raise # 重新抛出异常，让事务管理器处理
+    
+    def remove_from_failed_log(self, cursor: sqlite3.Cursor, item_id: str):
+        """在一个外部事务中，从 failed_log 中删除记录。"""
+        try:
+            cursor.execute("DELETE FROM failed_log WHERE item_id = ?", (item_id,))
+            if cursor.rowcount > 0:
+                logger.info(f"  - 已从【手动处理列表】中移除 Item ID '{item_id}'。")
+        except sqlite3.Error as e:
+            logger.error(f"从 failed_log 删除 Item ID '{item_id}' 时失败: {e}")
+            raise
+
+    def save_to_failed_log(self, cursor: sqlite3.Cursor, item_id: str, item_name: str, reason: str, item_type: str, score: Optional[float] = None):
+        """在一个外部事务中，保存失败记录。"""
+        try:
+            cursor.execute(
+                "REPLACE INTO failed_log (item_id, item_name, reason, item_type, score, failed_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                (item_id, item_name, reason, item_type, score)
+            )
+            logger.debug(f"已将 Item ID '{item_id}' 写入 failed_log。")
+        except sqlite3.Error as e:
+            logger.error(f"写入 failed_log 失败 (Item ID: {item_id}): {e}")
+            raise
 
 if __name__ == '__main__':
     # 测试新的 are_names_match

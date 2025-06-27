@@ -8,6 +8,7 @@ import shutil
 from actor_sync_handler import UnifiedSyncHandler
 import emby_handler
 import utils
+from utils import LogDBManager
 import configparser
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory,Response
 from werkzeug.utils import safe_join
@@ -1797,45 +1798,63 @@ def api_update_edited_cast_api(item_id):
         edited_cast_from_frontend = data["cast"]
         logger.info(f"API: 收到为 ItemID {item_id} 更新演员的请求，共 {len(edited_cast_from_frontend)} 位演员。")
 
-        # ======================================================================
-        # ✨✨✨ 逻辑变更：不再自己处理，而是交给 core_processor ✨✨✨
-        # ======================================================================
+        # ✨✨✨ 1. 使用 with 语句，在所有操作开始前获取数据库连接 ✨✨✨
+        with media_processor_instance.actor_db_manager.get_db_connection() as conn:
+            cursor = conn.cursor()
 
-        # 1. 更新翻译缓存 (这部分逻辑可以保留在 API 层)
-        # (您现有的更新翻译缓存的代码可以放在这里，我暂时省略以保持清晰)
-        # ... 您更新翻译缓存的代码 ...
-        
-        # 2. 准备传递给核心处理器的数据 (emby_handler 期望的格式)
-        cast_for_processor = []
-        for actor_frontend in edited_cast_from_frontend:
-            entry = {
-                "emby_person_id": str(actor_frontend.get("embyPersonId", "")).strip(),
-                "name": str(actor_frontend.get("name", "")).strip(),
-                "character": str(actor_frontend.get("role", "")).strip(),
-                "provider_ids": {} # 您可以根据需要填充这个
-            }
-            cast_for_processor.append(entry)
+            # ✨✨✨ 2. 手动开启一个事务 ✨✨✨
+            # 虽然这里的操作不多，但使用事务可以保证所有日志记录的原子性
+            cursor.execute("BEGIN TRANSACTION;")
+            logger.debug(f"API 手动更新 (ItemID: {item_id}) 的数据库事务已开启。")
 
-        # 3. 调用新的核心处理函数
-        process_success = media_processor_instance.process_item_with_manual_cast(
-            item_id=item_id,
-            manual_cast_list=cast_for_processor
-        )
+            try:
+                # 准备传递给核心处理器的数据
+                cast_for_processor = []
+                for actor_frontend in edited_cast_from_frontend:
+                    entry = {
+                        "emby_person_id": str(actor_frontend.get("embyPersonId", "")).strip(),
+                        "name": str(actor_frontend.get("name", "")).strip(),
+                        "character": str(actor_frontend.get("role", "")).strip(),
+                        "provider_ids": {}
+                    }
+                    cast_for_processor.append(entry)
 
-        # 4. 根据处理结果返回响应
-        if process_success:
-            logger.info(f"API: ItemID {item_id} 的手动更新流程已成功执行。")
-            # 更新成功后，也应该更新处理日志
-            item_name_for_log = data.get("item_name", f"未知项目(ID:{item_id})")
-            media_processor_instance._remove_from_failed_log_if_exists(item_id)
-            media_processor_instance.save_to_processed_log(item_id, item_name_for_log, score=10.0) # 手动处理给满分
-            return jsonify({"message": "演员信息已成功更新，并执行了完整的处理流程。"}), 200
-        else:
-            logger.error(f"API: 核心处理器未能成功处理 ItemID {item_id} 的手动更新。")
-            return jsonify({"error": "核心处理器执行手动更新失败，请检查后端日志。"}), 500
+                # 调用核心处理函数
+                # 注意：我们需要确保 process_item_with_manual_cast 不会自己 commit/close 连接
+                # 理想情况下，它也应该接收 cursor 参数。但如果它内部自己管理连接，我们暂时也能接受。
+                process_success = media_processor_instance.process_item_with_manual_cast(
+                    item_id=item_id,
+                    manual_cast_list=cast_for_processor
+                )
 
-    except Exception as e:
-        logger.error(f"API /api/update_media_cast CRITICAL Error for {item_id}: {e}", exc_info=True)
+                if not process_success:
+                    logger.error(f"API: 核心处理器未能成功处理 ItemID {item_id} 的手动更新。")
+                    # 核心处理失败，回滚日志事务并返回错误
+                    conn.rollback()
+                    return jsonify({"error": "核心处理器执行手动更新失败，请检查后端日志。"}), 500
+
+                # ✨✨✨ 3. 在事务中，使用新的 LogDBManager 更新日志 ✨✨✨
+                logger.info(f"API: ItemID {item_id} 的手动更新流程已成功执行，正在更新处理日志...")
+                item_name_for_log = data.get("item_name", f"未知项目(ID:{item_id})")
+                
+                # 使用 self.log_db_manager 调用，并传入 cursor
+                media_processor_instance.log_db_manager.remove_from_failed_log(cursor, item_id)
+                media_processor_instance.log_db_manager.save_to_processed_log(cursor, item_id, item_name_for_log, score=10.0)
+
+                # ✨✨✨ 4. 所有操作成功后，提交事务 ✨✨✨
+                conn.commit()
+                
+                return jsonify({"message": "演员信息已成功更新，并执行了完整的处理流程。"}), 200
+
+            except Exception as inner_e:
+                # 如果在事务中发生任何错误，回滚
+                logger.error(f"API /api/update_media_cast 事务处理中发生错误 for {item_id}: {inner_e}", exc_info=True)
+                conn.rollback()
+                # 重新抛出，让外层捕获并返回 500
+                raise
+
+    except Exception as outer_e:
+        logger.error(f"API /api/update_media_cast 顶层错误 for {item_id}: {outer_e}", exc_info=True)
         return jsonify({"error": "保存演员信息时发生服务器内部错误"}), 500
 # ★★★ 导出演员映射表 ★★★
 @app.route('/api/actors/export', methods=['GET'])
