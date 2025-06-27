@@ -910,7 +910,7 @@ def task_sync_person_map(processor):
     接收 processor 和 is_full_sync 以匹配通用任务执行器，
     但内部逻辑已统一，不再使用 is_full_sync。
     """
-    task_name = "统一演员映射表同步"
+    task_name = "演员映射表同步"
     # 我们不再需要根据 is_full_sync 来改变任务名了，因为逻辑已经统一
     
     logger.info(f"开始执行 '{task_name}'...")
