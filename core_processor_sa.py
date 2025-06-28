@@ -290,23 +290,6 @@ class MediaProcessorSA:
                 elif dc_orig_name_lower and (dc_orig_name_lower == local_name_lower or dc_orig_name_lower == local_original_name_lower):
                     is_match, match_reason = True, f"精确匹配 (豆瓣外文名)"
 
-                # --- 引擎2: 强大的别名模糊匹配 (低优先级) ---
-                if not is_match:
-                    person_map_entry = self.actor_db_manager.find_person_by_any_id(
-                        cursor,
-                        tmdb_id=l_actor.get("id")
-                    )
-                    other_names_from_db = {}
-                    if person_map_entry and person_map_entry['other_names']:
-                        try: other_names_from_db = json.loads(person_map_entry['other_names'])
-                        except: pass
-
-                    if actor_utils.are_names_match(
-                        d_actor.get("Name"), d_actor.get("OriginalName"),
-                        l_actor.get("name"), l_actor.get("original_name"),
-                        other_names_from_db
-                    ):
-                        is_match, match_reason = True, f"别名模糊匹配"
 
                 if is_match:
                     logger.info(f"  匹配成功 ({match_reason}): 豆瓣演员 '{d_actor.get('Name')}' -> 本地演员 '{l_actor.get('name')}'")

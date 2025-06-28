@@ -285,7 +285,6 @@ def init_db():
                 -- 权威的、用户友好的名字
                 primary_name TEXT NOT NULL,
                 -- (可选) 使用JSON存储其他平台的名字，如 {"tmdb": "Yan Ni", "douban": "闫妮"}
-                other_names TEXT,
 
                 -- 所有外部ID，都应该是 UNIQUE 且允许为 NULL
                 emby_person_id TEXT UNIQUE,
@@ -1076,7 +1075,6 @@ def task_import_person_map(processor, file_content: str, **kwargs):
 
                 # ✨ 3. 构建完整的 person_data 字典 ✨
                 #    - 检查所有ID字段
-                #    - 尝试解析 other_names
                 person_data = {
                     "name": row.get('primary_name'),
                     "emby_id": row.get('emby_person_id') or None,
@@ -1085,14 +1083,6 @@ def task_import_person_map(processor, file_content: str, **kwargs):
                     "douban_id": row.get('douban_celebrity_id') or None,
                 }
 
-                # 尝试解析 other_names JSON 字符串
-                other_names_str = row.get('other_names')
-                if other_names_str:
-                    try:
-                        person_data['other_names'] = json.loads(other_names_str)
-                    except json.JSONDecodeError:
-                        logger.warning(f"导入时，第 {i+2} 行的 other_names 字段不是有效的JSON，将被忽略。内容: '{other_names_str}'")
-                        person_data['other_names'] = {}
                 
                 # 如果名字或任何一个ID都没有，就跳过这一行
                 if not person_data["name"] and not any([person_data["emby_id"], person_data["tmdb_id"], person_data["imdb_id"], person_data["douban_id"]]):
@@ -1873,7 +1863,7 @@ def api_export_person_map():
     table_name = 'person_identity_map'
     # 定义统一的、最完整的表头顺序
     headers = [
-        'map_id', 'primary_name', 'other_names', 'emby_person_id', 
+        'map_id', 'primary_name', 'emby_person_id', 
         'tmdb_person_id', 'imdb_id', 'douban_celebrity_id'
     ]
     logger.info(f"API: 收到导出演员映射表 '{table_name}' 的请求。")
