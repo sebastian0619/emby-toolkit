@@ -3,8 +3,8 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "2.4.9.3"  # 建议更新版本号，因为我们做了很多重要重构
-DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
+APP_VERSION = "2.5.0"  # 建议更新版本号，因为我们做了很多重要重构
+DEBUG_MODE = False     # 开发模式开关，部署时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 CONFIG_FILE_NAME = "config.ini" # 主配置文件名
 DB_NAME = "emby_actor_processor.sqlite" # 主数据库文件名
@@ -91,10 +91,10 @@ CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED = "schedule_watchlist_enabled" # 是否
 CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON = "schedule_watchlist_cron"       # 智能追剧的CRON表达式
 DEFAULT_SCHEDULE_WATCHLIST_CRON = "0 */6 * * *" # 默认每6小时执行一次
 
-# ★★★ 新增：外部ID补充任务 ★★★
+# ★★★ 外部ID补充任务 ★★★
 CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED = "schedule_enrich_aliases_enabled" # 是否启用外部ID补充任务
 CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON = "schedule_enrich_aliases_cron"       # 外部ID补充的CRON表达式
-
+CONFIG_OPTION_SCHEDULE_ENRICH_DURATION_MINUTES = "schedule_enrich_run_duration_minutes" # 外部ID补充任务的运行时长常量
 # ==============================================================================
 # ✨ 内部常量与映射 (Internal Constants & Mappings)
 # ==============================================================================

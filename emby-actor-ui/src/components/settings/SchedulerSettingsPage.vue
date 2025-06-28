@@ -82,18 +82,39 @@
             <n-switch v-model:value="configModel.schedule_enrich_aliases_enabled" />
           </template>
           <n-form :model="configModel" label-placement="top">
-            <n-grid :cols="1">
-              <n-form-item-grid-item label="CRON表达式" path="schedule_enrich_aliases_cron">
-                <n-input 
-                  v-model:value="configModel.schedule_enrich_aliases_cron" 
-                  :disabled="!configModel.schedule_enrich_aliases_enabled" 
-                  placeholder="例如: 30 2 * * * (每天凌晨2:30)" 
-                />
-                <template #feedback>
-                  在后台扫描数据库，为缺少别名、ImdbID的演员从TMDb补充信息。这是一个耗时操作，建议在服务器空闲时执行。
-                </template>
-              </n-form-item-grid-item>
+            <!-- ✨ 使用 n-grid 来更好地布局两个输入框 ✨ -->
+            <n-grid :cols="2" :x-gap="12">
+              <n-gi>
+                <n-form-item-grid-item label="CRON表达式" path="schedule_enrich_aliases_cron">
+                  <n-input 
+                    v-model:value="configModel.schedule_enrich_aliases_cron" 
+                    :disabled="!configModel.schedule_enrich_aliases_enabled" 
+                    placeholder="例如: 30 2 * * *" 
+                  />
+                </n-form-item-grid-item>
+              </n-gi>
+              <n-gi>
+                <!-- ✨✨✨ 在这里添加新的输入框 ✨✨✨ -->
+                <n-form-item-grid-item label="每次运行时长 (分钟)" path="schedule_enrich_run_duration_minutes">
+                  <n-input-number
+                    v-model:value="configModel.schedule_enrich_run_duration_minutes"
+                    :disabled="!configModel.schedule_enrich_aliases_enabled"
+                    :min="0"
+                    :step="60"
+                    placeholder="0 表示不限制"
+                    style="width: 100%;"
+                  />
+                </n-form-item-grid-item>
+              </n-gi>
             </n-grid>
+            <!-- ✨✨✨ 新增的帮助文本 ✨✨✨ -->
+            <template #feedback>
+              <n-text depth="3" style="font-size:0.8em;">
+                在后台扫描数据库，为缺少别名、ImdbID的演员补充信息。这是一个耗时操作，建议在服务器空闲时执行。
+                <br/>
+                <strong>设置一个大于0的“每次运行时长”，任务到点后会自动停止，下次从断点继续。设为0则不限制时长。</strong>
+              </n-text>
+            </template>
           </n-form>
         </n-card>
       </n-gi>

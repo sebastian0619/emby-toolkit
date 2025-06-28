@@ -184,7 +184,7 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
     update_url = f"{emby_server_url.rstrip('/')}/Items/{person_id}"
     headers = {'Content-Type': 'application/json'}
 
-    logger.info(f"准备更新 Person (ID: {person_id}) 的信息，新数据: {new_data}")
+    logger.debug(f"准备更新 Person (ID: {person_id}) 的信息，新数据: {new_data}")
     try:
         response_post = requests.post(update_url, json=person_to_update, headers=headers, params=params, timeout=15)
         response_post.raise_for_status()

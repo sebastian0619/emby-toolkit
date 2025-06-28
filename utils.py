@@ -116,69 +116,6 @@ def normalize_name_for_matching(name: Optional[str]) -> str:
     ascii_name = u"".join([c for c in nfkd_form if not unicodedata.combining(c)])
     # 转小写并只保留字母和数字
     return ''.join(filter(str.isalnum, ascii_name.lower()))
-# ★★★ 获取 override 路径的辅助函数 ★★★
-def get_name_variants(name: Optional[str]) -> set:
-    """
-    根据一个名字生成所有可能的变体集合，用于匹配。
-    处理中文转拼音、英文名姓/名顺序。
-    """
-    if not name:
-        return set()
-    
-    name_str = str(name).strip()
-    
-    # 检查是否包含中文字符
-    if contains_chinese(name_str):
-        if PYPINYIN_AVAILABLE:
-            # 如果是中文，转换为无音调拼音
-            pinyin_list = pinyin(name_str, style=Style.NORMAL)
-            pinyin_flat = "".join([item[0] for item in pinyin_list if item])
-            return {pinyin_flat.lower()}
-        else:
-            # 如果 pypinyin 不可用，无法处理中文名，返回空集合
-            return set()
-
-    # 如果是英文/拼音，处理姓和名顺序
-    parts = name_str.split()
-    if not parts:
-        return set()
-        
-    # 标准化并移除所有空格和特殊字符
-    normalized_direct = normalize_name_for_matching(name_str)
-    variants = {normalized_direct}
-    
-    # 如果有多于一个部分，尝试颠倒顺序
-    if len(parts) > 1:
-        reversed_name = " ".join(parts[::-1])
-        normalized_reversed = normalize_name_for_matching(reversed_name)
-        variants.add(normalized_reversed)
-        
-    return variants
-
-def are_names_match(name1_a: Optional[str], name1_b: Optional[str], name2_a: Optional[str], name2_b: Optional[str]) -> bool:
-    """
-    【智能版】比较两组名字是否可能指向同一个人。
-    """
-    # 为第一组名字（通常是 TMDb）生成变体集合
-    variants1 = get_name_variants(name1_a)
-    if name1_b:
-        variants1.update(get_name_variants(name1_b))
-    
-    # 为第二组名字（通常是豆瓣）生成变体集合
-    variants2 = get_name_variants(name2_a)
-    if name2_b:
-        variants2.update(get_name_variants(name2_b))
-
-    # 移除可能产生的空字符串，避免错误匹配
-    if "" in variants1: variants1.remove("")
-    if "" in variants2: variants2.remove("")
-        
-    # 如果任何一个集合为空，则无法匹配
-    if not variants1 or not variants2:
-        return False
-            
-    # 检查两个集合是否有任何共同的元素（交集不为空）
-    return not variants1.isdisjoint(variants2)
 
 # --- ★★★ 获取覆盖缓存路径 ★★★ ---
 def get_override_path_for_item(item_type: str, tmdb_id: str, config: dict) -> str | None:
@@ -236,7 +173,7 @@ class LogDBManager:
         try:
             cursor.execute("DELETE FROM failed_log WHERE item_id = ?", (item_id,))
             if cursor.rowcount > 0:
-                logger.info(f"  - 已从【手动处理列表】中移除 Item ID '{item_id}'。")
+                logger.info(f"  - 已从【手动处理列表】中移除")
         except sqlite3.Error as e:
             logger.error(f"从 failed_log 删除 Item ID '{item_id}' 时失败: {e}")
             raise
@@ -253,19 +190,19 @@ class LogDBManager:
             logger.error(f"写入 failed_log 失败 (Item ID: {item_id}): {e}")
             raise
 
-if __name__ == '__main__':
-    # 测试新的 are_names_match
-    print("\n--- Testing are_names_match ---")
-    # 测试1: 张子枫
-    print(f"张子枫 vs Zhang Zifeng: {are_names_match('Zhang Zifeng', 'Zhang Zifeng', '张子枫', 'Zifeng Zhang')}") # 应该为 True
-    # 测试2: 姓/名顺序
-    print(f"Jon Hamm vs Hamm Jon: {are_names_match('Jon Hamm', None, 'Hamm Jon', None)}") # 应该为 True
-    # 测试3: 特殊字符和大小写
-    print(f"Chloë Moretz vs chloe moretz: {are_names_match('Chloë Moretz', None, 'chloe moretz', None)}") # 应该为 True
-    # 测试4: 中文 vs 拼音
-    print(f"张三 vs zhang san: {are_names_match('zhang san', None, '张三', None)}") # 应该为 True
-    # 测试5: 不匹配
-    print(f"Zhang San vs Li Si: {are_names_match('Zhang San', None, 'Li Si', None)}") # 应该为 False
+# if __name__ == '__main__':
+#     # 测试新的 are_names_match
+#     print("\n--- Testing are_names_match ---")
+#     # 测试1: 张子枫
+#     print(f"张子枫 vs Zhang Zifeng: {are_names_match('Zhang Zifeng', 'Zhang Zifeng', '张子枫', 'Zifeng Zhang')}") # 应该为 True
+#     # 测试2: 姓/名顺序
+#     print(f"Jon Hamm vs Hamm Jon: {are_names_match('Jon Hamm', None, 'Hamm Jon', None)}") # 应该为 True
+#     # 测试3: 特殊字符和大小写
+#     print(f"Chloë Moretz vs chloe moretz: {are_names_match('Chloë Moretz', None, 'chloe moretz', None)}") # 应该为 True
+#     # 测试4: 中文 vs 拼音
+#     print(f"张三 vs zhang san: {are_names_match('zhang san', None, '张三', None)}") # 应该为 True
+#     # 测试5: 不匹配
+#     print(f"Zhang San vs Li Si: {are_names_match('Zhang San', None, 'Li Si', None)}") # 应该为 False
 
 
 

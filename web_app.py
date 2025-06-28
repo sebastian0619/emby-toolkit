@@ -113,9 +113,10 @@ CONFIG_DEFINITION = {
     constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "0 1 * * *"),
     constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
     constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', constants.DEFAULT_SCHEDULE_WATCHLIST_CRON),
-    # ★★★ 新增我们的外部ID补充任务配置 ★★★
+    # ★★★ 外部ID补充任务配置 ★★★
     constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
     constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "30 2 * * *"),
+    constants.CONFIG_OPTION_SCHEDULE_ENRICH_DURATION_MINUTES: (constants.CONFIG_SECTION_SCHEDULER, 'int', 420), # 默认420分钟 = 7小时
 
     # [Authentication]
     constants.CONFIG_OPTION_AUTH_ENABLED: (constants.CONFIG_SECTION_AUTH, 'boolean', False),
@@ -943,7 +944,7 @@ def task_sync_person_map(processor):
 def task_enrich_aliases(processor: Union[MediaProcessorSA, MediaProcessorAPI]):
     """
     【后台任务】外部ID补充任务的入口点。
-    它会调用 actor_utils 中的核心逻辑。
+    它会调用 actor_utils 中的核心逻辑，并传递运行时长。
     """
     task_name = "演员外部ID补充"
     logger.info(f"后台任务 '{task_name}' 开始执行...")
@@ -962,11 +963,17 @@ def task_enrich_aliases(processor: Union[MediaProcessorSA, MediaProcessorAPI]):
             update_status_from_thread(-1, "错误：缺少TMDb API Key")
             return
 
+        # ✨✨✨ 1. 从配置中读取“运行时长” ✨✨✨
+        # 使用我们在 constants.py 中定义的常量
+        # 从 config 字典中获取值，如果找不到，则使用默认值 0 (不限时)
+        duration_minutes = config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_DURATION_MINUTES, 0)
+        
         # 调用我们之前在 actor_utils.py 中创建的核心函数
-        # 注意：这里我们还没有实现 stop_event 的传递，可以后续优化
+        # ✨✨✨ 2. 将 duration_minutes 作为参数传递进去 ✨✨✨
         enrich_all_actor_aliases_task(
             db_path=db_path,
             tmdb_api_key=tmdb_api_key,
+            run_duration_minutes=duration_minutes, # <--- 传递时长
             stop_event=processor.get_stop_event()
         )
         

@@ -15,7 +15,8 @@ import tmdb_handler
 import utils
 import constants
 import logging
-from actor_utils import ActorDBManager, batch_translate_cast, evaluate_cast_processing_quality, select_best_role
+import actor_utils
+from actor_utils import ActorDBManager
 from ai_translator import AITranslator
 from utils import LogDBManager, get_override_path_for_item
 from watchlist_processor import WatchlistProcessor
@@ -173,106 +174,6 @@ class MediaProcessorSA:
         except Exception as e:
             logger.error(f"清除数据库已处理记录失败: {e}")
 
-    def _translate_actor_field(self, text: Optional[str], field_name: str, actor_name_for_log: str, db_cursor: sqlite3.Cursor) -> Optional[str]:
-        """
-        【修复缓存逻辑版】翻译演员的特定字段，智能选择AI或传统翻译引擎，并正确处理缓存。
-        """
-        # 1. 前置检查：如果文本为空、是纯空格，或已包含中文，则直接返回原文
-        if not text or not text.strip() or utils.contains_chinese(text):
-            return text
-        
-        text_stripped = text.strip()
-
-        # 2. 前置检查：跳过短的大写字母缩写
-        if len(text_stripped) <= 2 and text_stripped.isupper():
-            return text
-
-        # 3. 核心修复：优先从数据库读取缓存，并处理所有情况
-        cached_entry = DoubanApi._get_translation_from_db(text_stripped, cursor=db_cursor)
-        if cached_entry:
-            # 情况 A: 缓存中有成功的翻译结果
-            if cached_entry.get("translated_text"):
-                cached_translation = cached_entry.get("translated_text")
-                logger.info(f"数据库翻译缓存命中 for '{text_stripped}' -> '{cached_translation}'")
-                return cached_translation
-            # 情况 B: 缓存中明确记录了这是一个失败的翻译
-            else:
-                logger.debug(f"数据库翻译缓存命中 (失败记录) for '{text_stripped}'，不再尝试在线翻译。")
-                return text # 直接返回原文，避免重复请求
-
-        # 4. 如果缓存中完全没有记录，才进行在线翻译
-        logger.debug(f"'{text_stripped}' 在翻译缓存中未找到，将进行在线翻译...")
-        final_translation = None
-        final_engine = "unknown"
-
-        # 根据配置选择翻译方式
-        ai_translation_attempted = False
-
-        # 步骤 1: 如果AI翻译启用，优先尝试AI
-        if self.ai_translator and self.config.get("ai_translation_enabled", False):
-            ai_translation_attempted = True
-            logger.debug(f"AI翻译已启用，优先尝试使用 '{self.ai_translator.provider}' 进行翻译...")
-            try:
-                # ai_translator.translate 应该在失败时返回 None 或抛出异常
-                ai_result = self.batch_translate_cast(text_stripped)
-                if ai_result: # 确保AI返回了有效结果
-                    final_translation = ai_result
-                    final_engine = self.ai_translator.provider
-            except Exception as e_ai:
-                # 如果AI翻译器内部抛出异常，在这里捕获
-                logger.error(f"AI翻译器在翻译 '{text_stripped}' 时发生异常: {e_ai}")
-                # 不做任何事，让流程继续往下走，尝试传统引擎
-
-        # 步骤 2: 如果AI翻译未启用，或AI翻译失败/未返回结果，则使用传统引擎
-        if not final_translation:
-            if ai_translation_attempted:
-                logger.warning(f"AI翻译未能获取有效结果，将降级使用传统翻译引擎...")
-            
-            translation_result = utils.translate_text_with_translators(
-                text_stripped,
-                engine_order=self.translator_engines
-            )
-            if translation_result and translation_result.get("text"):
-                final_translation = translation_result["text"]
-                final_engine = translation_result["engine"]
-
-        # 5. 处理在线翻译的结果，并更新缓存
-        if final_translation and final_translation.strip() and final_translation.strip().lower() != text_stripped.lower():
-            # 翻译成功，存入缓存并返回结果
-            logger.debug(f"在线翻译成功: '{text_stripped}' -> '{final_translation}' (使用引擎: {final_engine})")
-            DoubanApi._save_translation_to_db(text_stripped, final_translation, final_engine, cursor=db_cursor)
-            return final_translation
-        else:
-            # 翻译失败或返回原文，将失败状态存入缓存，并返回原文
-            logger.warning(f"在线翻译未能翻译 '{text_stripped}' 或返回了原文 (使用引擎: {final_engine})。")
-            DoubanApi._save_translation_to_db(text_stripped, None, f"failed_or_same_via_{final_engine}", cursor=db_cursor)
-            return text
-
-    def _fetch_douban_cast(self, media_info: Dict[str, Any]) -> List[Dict[str, Any]]:
-        # 1. 检查 Douban API 是否可用
-        if not (DOUBAN_API_AVAILABLE and self.douban_api):
-            logger.warning("在线豆瓣功能不可用 (DoubanApi 未导入或初始化失败)，无法获取豆瓣演员。")
-            return []
-
-        # 2. 直接执行在线请求逻辑
-        logger.debug("神医专用版：开始在线请求豆瓣 API 获取演员...")
-        douban_data = self.douban_api.get_acting(
-            name=media_info.get("Name"),
-            imdbid=media_info.get("ProviderIds", {}).get("Imdb"),
-            mtype="movie" if media_info.get("Type") == "Movie" else "tv",
-            year=str(media_info.get("ProductionYear", "")),
-            douban_id_override=media_info.get("ProviderIds", {}).get("Douban")
-        )
-        
-        if douban_data and not douban_data.get("error"):
-            return douban_data.get("cast", [])
-        
-        # 如果请求失败或返回错误，打印警告并返回空列表
-        if douban_data and douban_data.get("error"):
-            logger.warning(f"请求豆瓣 API 失败: {douban_data.get('message')}")
-            
-        return []
-
     # ✨ 从 SyncHandler 迁移并改造，用于在本地缓存中查找豆瓣JSON文件
     def _find_local_douban_json(self, imdb_id: Optional[str], douban_id: Optional[str], douban_cache_dir: str) -> Optional[str]:
         """根据 IMDb ID 或 豆瓣 ID 在本地缓存目录中查找对应的豆瓣JSON文件。"""
@@ -323,41 +224,14 @@ class MediaProcessorSA:
             if douban_data and 'actors' in douban_data:
                 # 为了与API返回的格式兼容，这里做个转换
                 # API返回: {'cast': [...]}  本地缓存: {'actors': [...]}
-                # _format_douban_cast 需要的是一个列表，所以直接返回列表即可
                 return douban_data.get('actors', [])
             else:
                 logger.warning(f"本地豆瓣缓存文件 '{local_json_path}' 无效或不含 'actors' 键，将回退到在线API。")
         
         # 3. 如果本地未找到，回退到在线API
         logger.info("未找到本地豆瓣缓存，将通过在线API获取演员信息。")
-        return self._fetch_douban_cast(media_info)
+        return actor_utils.find_douban_cast(self.douban_api, media_info)
 
-    def _format_douban_cast(self, douban_api_actors_raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        formatted, seen_ids, seen_names = [], set(), set()
-        for item in douban_api_actors_raw:
-            # 兼容两种可能的来源：API返回的 'name' 和 本地缓存的 'name'/'latin_name'
-            name_zh = str(item.get("name", "")).strip()
-            if not name_zh: continue
-            
-            douban_id = str(item.get("id", "")).strip() or None
-            
-            # 兼容本地缓存的 'latin_name'
-            original_name = str(item.get("original_name", "") or item.get("latin_name", "")).strip()
-
-            if douban_id:
-                if douban_id in seen_ids: continue
-                seen_ids.add(douban_id)
-            else:
-                name_sig = f"{name_zh.lower()}|{original_name.lower()}"
-                if name_sig in seen_names: continue
-                seen_names.add(name_sig)
-            
-            formatted.append({
-                "name": name_zh, "original_name": original_name,
-                "character": str(item.get("character", "")).strip(), "douban_id": douban_id,
-            })
-        return formatted
-    
     def _find_person_in_map_by_douban_id(self, douban_id: str, cursor: sqlite3.Cursor) -> Optional[sqlite3.Row]:
         """
         根据豆瓣名人ID在 person_identity_map 表中查找对应的记录。
@@ -398,7 +272,7 @@ class MediaProcessorSA:
         # ★★★ 源头过滤结束 ★★★
         
         douban_candidates_raw = self._get_douban_cast_with_local_cache(emby_item_info)
-        douban_candidates = self._format_douban_cast(douban_candidates_raw)
+        douban_candidates = actor_utils.format_douban_cast(douban_candidates_raw)
         
         final_cast_map = {actor['id']: actor for actor in local_cast_list if actor.get('id')}
         for actor in local_cast_list:
@@ -413,18 +287,60 @@ class MediaProcessorSA:
         logger.debug("--- 匹配阶段 1: 按名字匹配 ---")
         matched_douban_indices = set()
         for i, d_actor in enumerate(douban_candidates):
+            # ✨✨✨ 严格使用 format_douban_cast 输出的标准键名 (大写开头) ✨✨✨
+            douban_name_zh = d_actor.get("Name")
+            douban_name_en = d_actor.get("OriginalName")
+            douban_id = d_actor.get("DoubanCelebrityId")
+
             for l_actor in final_cast_map.values():
-                if utils.are_names_match(d_actor.get("name"), d_actor.get("original_name"), l_actor.get("name"), l_actor.get("original_name")):
-                    logger.info(f"  匹配成功 (名字): 豆瓣演员 '{d_actor.get('name')}' -> 本地演员 '{l_actor.get('name')}'")
-                    l_actor["name"] = d_actor.get("name")
-                    cleaned_douban_character = utils.clean_character_name_static(d_actor.get("character"))
-                    l_actor["character"] = select_best_role(
+        
+                # ✨✨✨ 统一使用经过验证的、简单直接的匹配逻辑 ✨✨✨
+                is_match, match_reason = False, ""
+        
+                # --- 引擎1: 简单直接的精确匹配 (高优先级) ---
+                dc_name_lower = str(d_actor.get("Name") or "").lower().strip()
+                dc_orig_name_lower = str(d_actor.get("OriginalName") or "").lower().strip()
+                local_name_lower = str(l_actor.get("name") or "").lower().strip()
+                local_original_name_lower = str(l_actor.get("original_name") or "").lower().strip()
+
+                if dc_name_lower and (dc_name_lower == local_name_lower or dc_name_lower == local_original_name_lower):
+                    is_match, match_reason = True, f"精确匹配 (豆瓣中文名)"
+                elif dc_orig_name_lower and (dc_orig_name_lower == local_name_lower or dc_orig_name_lower == local_original_name_lower):
+                    is_match, match_reason = True, f"精确匹配 (豆瓣外文名)"
+
+                # --- 引擎2: 强大的别名模糊匹配 (低优先级) ---
+                if not is_match:
+                    person_map_entry = self.actor_db_manager.find_person_by_any_id(
+                        cursor,
+                        tmdb_id=l_actor.get("id")
+                    )
+                    other_names_from_db = {}
+                    if person_map_entry and person_map_entry['other_names']:
+                        try: other_names_from_db = json.loads(person_map_entry['other_names'])
+                        except: pass
+
+                    if actor_utils.are_names_match(
+                        d_actor.get("Name"), d_actor.get("OriginalName"),
+                        l_actor.get("name"), l_actor.get("original_name"),
+                        other_names_from_db
+                    ):
+                        is_match, match_reason = True, f"别名模糊匹配"
+
+                if is_match:
+                    logger.info(f"  匹配成功 ({match_reason}): 豆瓣演员 '{d_actor.get('Name')}' -> 本地演员 '{l_actor.get('name')}'")
+                    
+                    # 匹配成功后的逻辑 (保持不变)
+                    l_actor["name"] = d_actor.get("Name")
+                    cleaned_douban_character = utils.clean_character_name_static(d_actor.get("Role"))
+                    l_actor["character"] = actor_utils.select_best_role(
                         l_actor.get("character"), 
                         cleaned_douban_character 
                     )
-                    if d_actor.get("douban_id"): l_actor["douban_id"] = d_actor.get("douban_id")
+                    if d_actor.get("DoubanCelebrityId"): 
+                        l_actor["douban_id"] = d_actor.get("DoubanCelebrityId")
+                    
                     matched_douban_indices.add(i)
-                    break
+                    break # 找到匹配就跳出内层循环
         
         unmatched_douban_candidates = [d for i, d in enumerate(douban_candidates) if i not in matched_douban_indices]
         
@@ -470,7 +386,12 @@ class MediaProcessorSA:
             logger.debug(f"--- 匹配阶段 3: 跳过实时的TMDb/IMDb API反查 ---")
             if unmatched_douban_candidates:
                 discarded_names = [d.get('name') for d in unmatched_douban_candidates]
-                logger.info(f"--- 最终丢弃 {len(unmatched_douban_candidates)} 位无本地数据库匹配的豆瓣演员: {', '.join(discarded_names[:5])}{'...' if len(discarded_names) > 5 else ''} ---")
+                logger.info(
+                    f"--- 最终丢弃 {len(unmatched_douban_candidates)} 位无本地数据库匹配的豆瓣演员: " +
+                    f"{', '.join(str(name) for name in discarded_names[:5] if name)}" +
+                    ("..." if len(discarded_names) > 5 else "") +
+                    " ---"
+                )
 
 
         intermediate_cast_list = list(final_cast_map.values())
@@ -583,10 +504,10 @@ class MediaProcessorSA:
                     raise InterruptedError("任务在翻译演员列表时被中止")
                 
                 # _translate_actor_field 本身就有缓存和多引擎逻辑，非常适合做降级
-                actor['name'] = self._translate_actor_field(actor.get('name'), "演员名", actor.get('name'), cursor)
+                actor['name'] = actor_utils.translate_actor_field(actor.get('name'), "演员名", actor.get('name'), cursor)
                 
                 cleaned_character = utils.clean_character_name_static(actor.get('character'))
-                translated_character = self._translate_actor_field(cleaned_character, "角色名", actor.get('name'), cursor)
+                translated_character = actor_utils.translate_actor_field(cleaned_character, "角色名", actor.get('name'), cursor)
                 actor['character'] = translated_character
 
         # 返回处理完的、已经截断和翻译的列表
@@ -701,7 +622,7 @@ class MediaProcessorSA:
                                 
                                 # 如果找到了翻译结果，就更新 Emby
                                 if translated_name:
-                                    logger.info(f"  【API轨道】准备更新: '{original_name}' -> '{translated_name}' (Emby Person ID: {person_id})")
+                                    logger.info(f"更新演员译名: '{original_name}' -> '{translated_name}' (Emby Person ID: {person_id})")
                                     emby_handler.update_person_details(
                                         person_id=person_id,
                                         new_data={"Name": translated_name},
@@ -862,7 +783,7 @@ class MediaProcessorSA:
                     if self.is_stop_requested(): raise InterruptedError("任务被中止")
 
                     # ★★★ 核心修改：在调用时，传入预期的最终数量 ★★★
-                    processing_score = evaluate_cast_processing_quality(
+                    processing_score = actor_utils.evaluate_cast_processing_quality(
                         final_cast=final_cast_perfect,
                         original_cast_count=initial_actor_count,
                         expected_final_count=len(final_cast_perfect), # 把截断后的数量告诉评估函数
@@ -908,8 +829,6 @@ class MediaProcessorSA:
                 cursor, item_id, item_name_for_log, f"核心处理异常: {str(inner_e)}", item_type
             )
             return False
-
-        
 
     def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False, process_episodes: bool = True) -> bool:
         if self.is_stop_requested(): return False
@@ -1054,7 +973,7 @@ class MediaProcessorSA:
                     # 翻译演员名
                     name_to_translate = actor.get('name', '').strip()
                     if name_to_translate:
-                        translated_name = self._translate_actor_field(name_to_translate, "演员名", actor_name_for_log, cursor)
+                        translated_name = actor_utils.translate_actor_field(name_to_translate, "演员名", actor_name_for_log, cursor)
                         if translated_name and translated_name != name_to_translate:
                             translated_cast[i]['name'] = translated_name
                             actor_name_for_log = translated_name
@@ -1062,7 +981,7 @@ class MediaProcessorSA:
                     # 翻译角色名
                     role_to_translate = actor.get('role', '').strip()
                     if role_to_translate:
-                        translated_role = self._translate_actor_field(role_to_translate, "角色名", actor_name_for_log, cursor)
+                        translated_role = actor_utils.translate_actor_field(role_to_translate, "角色名", actor_name_for_log, cursor)
                         if translated_role and translated_role != role_to_translate:
                             translated_cast[i]['role'] = translated_role
                 
@@ -1417,7 +1336,6 @@ class MediaProcessorSA:
 
         logger.info("--- 全量海报同步任务结束 ---")
 
-    
     def close(self):
         if self.douban_api: self.douban_api.close()
         logger.debug("MediaProcessor closed.")

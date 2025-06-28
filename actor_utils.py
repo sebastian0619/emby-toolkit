@@ -3,9 +3,10 @@ import sqlite3
 import re
 import json
 import threading
+import concurrent.futures
 import time
-from typing import Optional, Dict, Any, List, Tuple
-
+from datetime import datetime
+from typing import Optional, Dict, Any, List, Tuple, Set
 # 导入底层工具箱和日志
 import logging
 import utils
@@ -62,6 +63,11 @@ class ActorDBManager:
         return None
 
     def upsert_person(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any], tmdb_api_key: Optional[str] = None, enrich_details: bool = False):
+        """
+        【V-Final 终极合并版 - 名字ID双重索引 + 唯一性约束安全】
+        智能插入或更新演员身份记录，并强力合并所有找到的“分身”。
+        """
+        # 1. 标准化和清理输入数据
         data_to_process = {
             "primary_name": str(person_data.get("name") or '').strip(),
             "emby_person_id": str(person_data.get("emby_id") or '').strip() or None,
@@ -70,105 +76,133 @@ class ActorDBManager:
             "douban_celebrity_id": str(person_data.get("douban_id") or '').strip() or None,
             "other_names": person_data.get("other_names", {})
         }
-        if not data_to_process["primary_name"]: return -1
+        if not data_to_process["primary_name"] and not any(data_to_process.get(k) for k in data_to_process if '_id' in k):
+            return -1
 
+        # (可选的预丰富逻辑)
         if enrich_details and tmdb_api_key and data_to_process.get("tmdb_person_id"):
             try:
                 details = tmdb_handler.get_person_details_tmdb(int(data_to_process["tmdb_person_id"]), tmdb_api_key, "external_ids,also_known_as")
                 if details:
                     if not data_to_process.get("imdb_id"):
                         data_to_process["imdb_id"] = details.get("external_ids", {}).get("imdb_id")
-                    
-                    # 合并别名
-                    current_aliases = data_to_process.get("other_names", {})
-                    if isinstance(current_aliases, str):
-                        try: current_aliases = json.loads(current_aliases)
-                        except: current_aliases = {}
-                    
                     tmdb_aliases = details.get("also_known_as", [])
                     if tmdb_aliases:
-                        current_aliases["tmdb"] = tmdb_aliases
-                    data_to_process["other_names"] = current_aliases
-
+                        if not isinstance(data_to_process.get("other_names"), dict): data_to_process["other_names"] = {}
+                        existing = data_to_process["other_names"].get("tmdb_aliases", [])
+                        data_to_process["other_names"]["tmdb_aliases"] = list(dict.fromkeys(existing + tmdb_aliases))
             except Exception as e:
                 logger.error(f"预丰富演员信息时失败: {e}")
 
+        # 2. 核心修复：通过 ID 和 名字 共同查找所有相关的“分身”
         all_related_entries = []
         unique_map_ids = set()
         query_parts = []
         query_values = []
-        for column, value in data_to_process.items():
-            if "_id" in column and value:
+        id_fields = ["emby_person_id", "tmdb_person_id", "imdb_id", "douban_celebrity_id"]
+
+        for column in id_fields:
+            value = data_to_process.get(column)
+            if value:
                 query_parts.append(f"{column} = ?")
                 query_values.append(value)
         
-        if query_parts:
-            sql_find = f"SELECT * FROM person_identity_map WHERE {' OR '.join(query_parts)}"
-            cursor.execute(sql_find, tuple(query_values))
-            for row in cursor.fetchall():
-                entry = dict(row)
-                if entry['map_id'] not in unique_map_ids:
-                    all_related_entries.append(entry)
-                    unique_map_ids.add(entry['map_id'])
+        if data_to_process["primary_name"]:
+            query_parts.append("primary_name = ?")
+            query_values.append(data_to_process["primary_name"])
+
+        if not query_parts: return -1
+
+        sql_find = f"SELECT * FROM person_identity_map WHERE {' OR '.join(query_parts)}"
+        cursor.execute(sql_find, tuple(query_values))
+        for row in cursor.fetchall():
+            entry = dict(row)
+            if entry['map_id'] not in unique_map_ids:
+                all_related_entries.append(entry)
+                unique_map_ids.add(entry['map_id'])
 
         try:
+            # --- 情况A: 全新的人 ---
             if not all_related_entries:
+                if not data_to_process["primary_name"]: return -1
                 insert_data = data_to_process.copy()
                 insert_data["other_names"] = json.dumps(insert_data.get("other_names", {}), ensure_ascii=False)
-                cols = ["primary_name", "other_names", "emby_person_id", "tmdb_person_id", "imdb_id", "douban_celebrity_id", "last_synced_at", "last_updated_at"]
+                cols = ["primary_name", "other_names"] + id_fields + ["last_synced_at", "last_updated_at"]
                 vals = [insert_data.get(col) for col in cols if "last_" not in col]
                 placeholders = ["?" for _ in vals] + ["CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP"]
                 sql = f"INSERT INTO person_identity_map ({', '.join(cols)}) VALUES ({', '.join(placeholders)})"
                 cursor.execute(sql, tuple(vals))
+                logger.debug(f"创建了新的演员记录: {data_to_process['primary_name']} (ID: {cursor.lastrowid})")
                 return cursor.lastrowid
+
+            # --- 情况B: 需要合并 ---
             else:
                 all_related_entries.sort(key=lambda x: x['map_id'])
                 primary_record = all_related_entries[0]
                 other_records = all_related_entries[1:]
 
                 if other_records:
-                    logger.warning(f"检测到冲突，将合并 Map IDs {[r['map_id'] for r in other_records]} 到主记录 {primary_record['map_id']}.")
+                    logger.warning(f"检测到数据冲突，将合并 Map IDs {[r['map_id'] for r in other_records]} 到主记录 {primary_record['map_id']} ('{primary_record['primary_name']}')。")
 
+                # 核心修复：先清空待合并记录的唯一ID，防止冲突
+                if other_records:
+                    for rec in other_records:
+                        set_null_clauses = [f"{col} = NULL" for col in id_fields if rec.get(col)]
+                        if set_null_clauses:
+                            sql_clear_ids = f"UPDATE person_identity_map SET {', '.join(set_null_clauses)} WHERE map_id = ?"
+                            cursor.execute(sql_clear_ids, (rec['map_id'],))
+                    logger.debug(f"已预先清空待合并记录的唯一ID，为合并做准备。")
+
+                # 信息大融合
                 try:
-                    merged_other_names = json.loads(primary_record.get('other_names') or '{}')
-                    if not isinstance(merged_other_names, dict): merged_other_names = {}
-                except (json.JSONDecodeError, TypeError):
-                    merged_other_names = {}
-
-                all_sources_for_merge = [data_to_process] + other_records
-                for source in all_sources_for_merge:
-                    for key, value in source.items():
-                        if key != "other_names" and value and not primary_record.get(key):
-                            primary_record[key] = value
-                    
+                    final_other_names = json.loads(primary_record.get('other_names') or '{}')
+                    if not isinstance(final_other_names, dict): final_other_names = {}
+                except (json.JSONDecodeError, TypeError): final_other_names = {}
+                
+                all_names_pool = {primary_record.get('primary_name')}
+                for source in [data_to_process] + other_records:
+                    for key in id_fields:
+                        if source.get(key) and not primary_record.get(key): primary_record[key] = source.get(key)
+                    if source.get('primary_name'): all_names_pool.add(source.get('primary_name'))
                     source_other_names = source.get("other_names", {})
                     if isinstance(source_other_names, str):
                         try: source_other_names = json.loads(source_other_names)
-                        except (json.JSONDecodeError, TypeError): source_other_names = {}
-                    
+                        except: continue
                     if isinstance(source_other_names, dict):
-                        merged_other_names.update(source_other_names)
-
-                primary_record['other_names'] = json.dumps(merged_other_names, ensure_ascii=False)
+                        for key, value in source_other_names.items():
+                            if not isinstance(value, list): value = [value] if value else []
+                            existing_list = final_other_names.get(key, [])
+                            final_other_names[key] = list(dict.fromkeys(existing_list + value))
                 
-                update_cols = ["primary_name", "other_names", "emby_person_id", "tmdb_person_id", "imdb_id", "douban_celebrity_id"]
+                valid_names = {name for name in all_names_pool if name and name.strip()}
+                chinese_names = {name for name in valid_names if utils.contains_chinese(name)}
+                if chinese_names:
+                    primary_record['primary_name'] = max(chinese_names, key=len)
+                elif valid_names:
+                    primary_record['primary_name'] = max(valid_names, key=len)
+
+                # 更新主记录并删除分身
+                update_cols = ["primary_name"] + id_fields
                 params = [primary_record.get(col) for col in update_cols]
-                set_clauses = [f"{col} = ?" for col in update_cols] + ["last_updated_at = CURRENT_TIMESTAMP"]
+                params.append(json.dumps(final_other_names, ensure_ascii=False))
+                set_clauses = [f"{col} = ?" for col in update_cols] + ["other_names = ?", "last_updated_at = CURRENT_TIMESTAMP"]
                 sql_update = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = ?"
                 cursor.execute(sql_update, tuple(params + [primary_record['map_id']]))
 
                 if other_records:
                     ids_to_delete = [r['map_id'] for r in other_records]
-                    cursor.execute(f"DELETE FROM person_identity_map WHERE map_id IN ({','.join('?'*len(ids_to_delete))})", ids_to_delete)
+                    placeholders = ','.join('?' * len(ids_to_delete))
+                    cursor.execute(f"DELETE FROM person_identity_map WHERE map_id IN ({placeholders})", ids_to_delete)
+                    logger.info(f"已成功合并并删除了旧记录: {ids_to_delete}")
                 
                 return primary_record['map_id']
         except sqlite3.IntegrityError as e:
-            logger.error(f"在执行写入或合并后，仍然发生了意外的完整性冲突: {e}")
-            return -1
+            logger.error(f"在执行合并后，仍然发生了意外的完整性冲突: {e}", exc_info=True)
+            raise e
 # ======================================================================
 # 模块 2: 通用的业务逻辑函数 (Business Logic Helpers)
 # ======================================================================
-
+# --- 演员选择 ---
 def select_best_role(current_role: str, candidate_role: str) -> str:
     """
     根据优先级选择最佳角色名。
@@ -417,7 +451,7 @@ def translate_actor_field(text: Optional[str], db_cursor: sqlite3.Cursor, ai_tra
         DoubanApi._save_translation_to_db(text_stripped, None, f"failed_or_same_via_{final_engine}", cursor=db_cursor)
         return text
 # ✨✨✨从豆瓣API获取指定媒体的演员原始数据列表✨✨✨
-def get_douban_cast(douban_api: DoubanApi, media_info: Dict[str, Any]) -> List[Dict[str, Any]]:
+def find_douban_cast(douban_api: DoubanApi, media_info: Dict[str, Any]) -> List[Dict[str, Any]]:
         """从豆瓣API获取演员原始数据。"""
         # 假设 constants 和 self.douban_api 已经存在
         # if not (getattr(constants, 'DOUBAN_API_AVAILABLE', False) and self.douban_api and \
@@ -469,49 +503,6 @@ def format_douban_cast(douban_api_actors_raw: List[Dict[str, Any]]) -> List[Dict
             "ProviderIds": {"Douban": douban_id} if douban_id else {},
         })
     return formatted_candidates
-# ✨✨✨为给定的候选人（通常来自豆瓣）查询并返回其在TMDb和IMDb上的ID✨✨✨
-def fetch_external_ids_for_person(tmdb_api_key: str, person_candidate: Dict[str, Any], media_info: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    # 假设 utils 和 tmdb_handler 已经导入
-    if not tmdb_api_key:
-        logger.warning("未提供 TMDb API Key，无法为演员查找外部ID。")
-        return None, None, None
-    name_zh = person_candidate.get("Name")
-    name_orig = person_candidate.get("OriginalName")
-    
-    search_query = name_zh
-    if not utils.contains_chinese(str(search_query or "")):
-        if name_orig: search_query = name_orig
-    elif not search_query and name_orig:
-        search_query = name_orig
-
-    if not search_query or not search_query.strip():
-        logger.debug(f"  跳过TMDb搜索，候选人 '{name_zh}' 无有效搜索词。")
-        return None, None, None
-
-    logger.debug(f"  -> 正在为 '{search_query}' (源自 '{name_zh}') 搜索TMDb...")
-    tmdb_results = tmdb_handler.search_person_tmdb(search_query, tmdb_api_key)
-    
-    media_year = int(media_info.get("ProductionYear")) if str(media_info.get("ProductionYear", "")).isdigit() else None
-    
-    selected_person = tmdb_handler.select_best_person_match(
-        search_query, tmdb_results,
-        target_media_year=media_year,
-        known_for_titles=[media_info.get("Name")] if media_info.get("Name") else None
-    )
-
-    if selected_person and selected_person.get("id"):
-        tmdb_id = str(selected_person.get("id"))
-        tmdb_name = selected_person.get("name")
-        logger.debug(f"    TMDb匹配成功: '{tmdb_name}' (ID: {tmdb_id})")
-        details = tmdb_handler.get_person_details_tmdb(int(tmdb_id), tmdb_api_key, append_to_response="external_ids")
-        if details and details.get("external_ids", {}).get("imdb_id"):
-            imdb_id = details["external_ids"]["imdb_id"]
-            logger.debug(f"      获取到 IMDb ID: {imdb_id}")
-            return tmdb_id, imdb_id, tmdb_name
-        return tmdb_id, None, tmdb_name
-    
-    logger.debug(f"    TMDb未能为 '{search_query}' 找到匹配。")
-    return None, None, None
 # ✨✨✨批量翻译辅助方法✨✨✨
 def batch_translate_cast(cast_list: List[Dict[str, Any]], db_cursor: sqlite3.Cursor, ai_translator: Optional[AITranslator], translator_engines: List[str], ai_enabled: bool) -> List[Dict[str, Any]]:
     """
@@ -612,145 +603,302 @@ def format_and_complete_cast_list(cast_list: List[Dict[str, Any]], is_animation:
             
     return perfect_cast
 # --- 增强版的名字匹配函数，会检查别名列表 ---
-def are_names_match_enhanced(name_to_check: str, target_name: str, target_original_name: str, target_aliases: List[str]) -> bool:
+def get_name_variants(name: Optional[str]) -> Set[str]:
+    """生成一个名字的所有可能变体，用于模糊匹配。"""
+    if not name or not name.strip():
+        return set()
+    name_lower = name.strip().lower()
+    variants = {name_lower}
+    variants.add(name_lower.replace(' ', '').replace('.', ''))
+    # 您可以根据需要添加更多的变体规则
+    return variants
+def are_names_match(
+    name1_a: Optional[str], 
+    name1_b: Optional[str], 
+    name2_a: Optional[str], 
+    name2_b: Optional[str],
+    other_names2: Optional[Dict[str, List[str]]] = None
+) -> bool:
     """
-    增强版的名字匹配函数，会检查别名列表。
+    【V-Final 统一标准版 @ actor_utils】比较两组名字是否可能指向同一个人。
+    会检查主名、原始名，以及一个结构化的别名字典。
     """
-    if not name_to_check or not name_to_check.strip():
-        return False
-
-    name_to_check_clean = name_to_check.strip().lower()
+    # ... (我们之前完善的函数逻辑放在这里) ...
+    variants1 = get_name_variants(name1_a)
+    if name1_b:
+        variants1.update(get_name_variants(name1_b))
     
-    # 1. 直接比较主名称和原始名称
-    if target_name and name_to_check_clean == target_name.strip().lower():
-        return True
-    if target_original_name and name_to_check_clean == target_original_name.strip().lower():
-        return True
-        
-    # 2. 检查别名列表
-    if target_aliases:
-        for alias in target_aliases:
-            if alias and name_to_check_clean == alias.strip().lower():
-                return True
-                
-    # 3. 考虑移除中间点或空格的模糊匹配 (可选，但有用)
-    name_to_check_fuzzy = name_to_check_clean.replace('.', '').replace(' ', '')
-    if target_name and name_to_check_fuzzy == target_name.strip().lower().replace('.', '').replace(' ', ''):
-        return True
-    if target_original_name and name_to_check_fuzzy == target_original_name.strip().lower().replace('.', '').replace(' ', ''):
-        return True
+    variants2 = get_name_variants(name2_a)
+    if name2_b:
+        variants2.update(get_name_variants(name2_b))
 
-    return False
-# --- 补充别名和ImdbID ---
+    if other_names2 and isinstance(other_names2, dict):
+        alias_list = other_names2.get("tmdb_aliases", [])
+        for alias in alias_list:
+            variants2.update(get_name_variants(alias))
+            
+        douban_aliases = other_names2.get("douban_aliases")
+        if isinstance(douban_aliases, str):
+            variants2.update(get_name_variants(douban_aliases))
+
+    if "" in variants1: variants1.remove("")
+    if "" in variants2: variants2.remove("")
+        
+    if not variants1 or not variants2:
+        return False
+            
+    return not variants1.isdisjoint(variants2)
+# --- 用于获取单个演员的TMDb详情 ---
+def fetch_tmdb_details_for_actor(actor_info: Dict, tmdb_api_key: str) -> Optional[Dict]:
+    """一个独立的、可在线程中运行的函数，用于获取单个演员的TMDb详情。"""
+    tmdb_id = actor_info.get("tmdb_person_id")
+    if not tmdb_id:
+        return None
+    try:
+        details = tmdb_handler.get_person_details_tmdb(int(tmdb_id), tmdb_api_key, "external_ids,also_known_as")
+        if details:
+            return {"tmdb_id": tmdb_id, "details": details}
+        return None
+    except Exception as e:
+        logger.warning(f"获取 TMDb 详情 (ID: {tmdb_id}) 时失败: {e}")
+        return None
+# --- 补充演员别名和外部ID ---
 def enrich_all_actor_aliases_task(
     db_path: str, 
     tmdb_api_key: str, 
+    run_duration_minutes: int,
     stop_event: Optional[threading.Event] = None
 ):
     """
-    【V7 - 事务与性能优化版】
-    在一个大的事务中处理所有演员，并使用 with 语句确保连接关闭。
+    【V14 - 贼不走空终极版】
+    确保豆瓣别名能够被稳定获取和更新。
     """
-    logger.info("--- 开始执行智能交叉丰富计划任务 ---")
+    logger.info("--- 开始执行“演员数据深度治理”计划任务 (贼不走空版) ---")
     
-    conn: Optional[sqlite3.Connection] = None
-    douban_api = None
-    
+    start_time = time.time()
+    if run_duration_minutes > 0:
+        end_time = start_time + run_duration_minutes * 60
+        end_time_str = datetime.fromtimestamp(end_time).strftime('%Y-%m-%d %H:%M:%S')
+        logger.info(f"任务将运行 {run_duration_minutes} 分钟，预计在 {end_time_str} 左右自动停止。")
+    else:
+        end_time = float('inf')
+        logger.info("任务未设置运行时长，将持续运行。")
+
+    actor_db_manager = ActorDBManager(db_path)
+
+    # ✨✨✨ 核心改变：将数据库连接管理提到最外层 ✨✨✨
     try:
-        douban_api = DoubanApi(db_path=db_path)
-        actor_db_manager = ActorDBManager(db_path)
-        
         with actor_db_manager.get_db_connection() as conn:
             cursor = conn.cursor()
-
-            sql_find_all_needy = """
+            douban_api = DoubanApi(db_path=db_path)
+            
+            # ======================================================================
+            # 阶段一：TMDb 批量处理 (应用“贼不走空”模式)
+            # ======================================================================
+            logger.info("--- 阶段一：从 TMDb 补充信息 (确保执行) ---")
+            
+            # ✨✨✨ 核心修复：TMDb也使用基于同步时间的查询逻辑 ✨✨✨
+            sql_find_tmdb_needy = """
                 SELECT * FROM person_identity_map
-                WHERE 
-                    (tmdb_person_id IS NOT NULL AND (other_names IS NULL OR other_names = '{}' OR imdb_id IS NULL))
-                    OR 
-                    (douban_celebrity_id IS NOT NULL AND imdb_id IS NULL)
-                ORDER BY last_updated_at ASC
+                WHERE tmdb_person_id IS NOT NULL
+                ORDER BY CASE WHEN last_synced_at IS NULL THEN 0 ELSE 1 END, last_synced_at ASC
             """
-            actors_to_process = cursor.execute(sql_find_all_needy).fetchall()
+            actors_for_tmdb = cursor.execute(sql_find_tmdb_needy).fetchall()
             
-            total_to_process = len(actors_to_process)
-            if total_to_process == 0:
-                logger.info("没有需要补充信息的演员，任务提前结束。")
-                return
-            
-            logger.info(f"找到 {total_to_process} 位可能需要补充信息的演员，开始处理...")
-
-            cursor.execute("BEGIN TRANSACTION;")
-            logger.debug("后台任务数据库事务已开启。")
-
-            for i, actor_row in enumerate(actors_to_process):
-                if stop_event and stop_event.is_set():
-                    raise InterruptedError("任务中止")
-
-                actor_dict = dict(actor_row)
-                actor_name = actor_dict.get("primary_name")
-                logger.info(f"[{i+1}/{total_to_process}] 正在处理: '{actor_name}' (map_id: {actor_dict['map_id']})")
+            if actors_for_tmdb:
+                logger.info(f"找到 {len(actors_for_tmdb)} 位演员需要检查并补充 TMDb 信息。")
                 
-                if actor_dict.get("tmdb_person_id") and \
-                   (not actor_dict.get("other_names") or actor_dict.get("other_names") == '{}' or not actor_dict.get("imdb_id")):
+                CHUNK_SIZE = 500 # 可根据需要调整
+                MAX_TMDB_WORKERS = 10
+
+                for i in range(0, len(actors_for_tmdb), CHUNK_SIZE):
+                    if (stop_event and stop_event.is_set()) or (time.time() >= end_time): break
+
+                    chunk = actors_for_tmdb[i:i + CHUNK_SIZE]
+                    logger.info(f"--- 开始处理 TMDb 第 {i//CHUNK_SIZE + 1} 波次，共 {len(chunk)} 个演员 ---")
+
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_TMDB_WORKERS) as executor:
+                        future_to_actor = {executor.submit(fetch_tmdb_details_for_actor, dict(actor), tmdb_api_key): actor for actor in chunk}
+                        
+                        for future in concurrent.futures.as_completed(future_to_actor):
+                            if stop_event and stop_event.is_set():
+                                for f in future_to_actor: f.cancel()
+                                raise InterruptedError("任务在TMDb处理波次中被中止")
+
+                            result = future.result()
+                            if result and result.get("details"):
+                                details = result["details"]
+                                tmdb_id = result["tmdb_id"]
+                                
+                                # 准备更新数据
+                                update_payload = {"tmdb_id": tmdb_id}
+                                if details.get("external_ids", {}).get("imdb_id"):
+                                    update_payload["imdb_id"] = details["external_ids"]["imdb_id"]
+                                
+                                tmdb_aliases = details.get("also_known_as", [])
+                                if tmdb_aliases:
+                                    update_payload["other_names"] = {"tmdb_aliases": tmdb_aliases}
+                                
+                                if len(update_payload) > 1:
+                                    logger.debug(f"    -> 从 TMDb 获取到新信息，准备更新: {update_payload}")
+                                    actor_db_manager.upsert_person(cursor, update_payload)
+                            
+                            # 无论成功与否，都更新同步时间戳
+                            original_actor = future_to_actor[future]
+                            cursor.execute("UPDATE person_identity_map SET last_synced_at = CURRENT_TIMESTAMP WHERE map_id = ?", (original_actor['map_id'],))
+
+                    conn.commit() # 每个波次后提交一次事务
+                    logger.info(f"  -> 波次数据写入成功！")
+            else:
+                logger.info("数据库中没有需要补充 TMDb 信息的演员。")
+
+            logger.info("--- TMDb 信息补充阶段完成 ---")
+
+            # --- 阶段二：豆瓣串行处理 (核心修改在这里) ---
+            if (stop_event and stop_event.is_set()) or (time.time() >= end_time): raise InterruptedError("任务中止")
+            
+            logger.info("--- 阶段二：从 豆瓣 丰富信息 (确保执行) ---")
+            
+            sql_find_douban_needy = """
+                SELECT * FROM person_identity_map
+                WHERE douban_celebrity_id IS NOT NULL
+                ORDER BY CASE WHEN last_synced_at IS NULL THEN 0 ELSE 1 END, last_synced_at ASC
+            """
+            actors_for_douban = cursor.execute(sql_find_douban_needy).fetchall()
+            
+            if actors_for_douban:
+                logger.info(f"找到 {len(actors_for_douban)} 位演员需要检查并补充豆瓣信息。")
+                
+                for i, actor_row in enumerate(actors_for_douban):
+                    if (stop_event and stop_event.is_set()) or (time.time() >= end_time): break
                     
-                    logger.debug(f"  -> 尝试从TMDb补充...")
-                    actor_db_manager.upsert_person(
-                        cursor,
-                        {"tmdb_id": actor_dict.get("tmdb_person_id"), "name": actor_name},
-                        tmdb_api_key=tmdb_api_key,
-                        enrich_details=True
-                    )
-                    time.sleep(0.5)
-
-                map_id = actor_dict.get("map_id")
-                cursor.execute("SELECT * FROM person_identity_map WHERE map_id = ?", (map_id,))
-                updated_actor_dict = dict(cursor.fetchone())
-
-                if updated_actor_dict.get("douban_celebrity_id") and not updated_actor_dict.get("imdb_id"):
-                    douban_id = updated_actor_dict.get("douban_celebrity_id")
-                    logger.debug(f"  -> 尝试从豆瓣(ID:{douban_id})补充IMDb ID...")
+                    actor_dict = dict(actor_row)
+                    douban_id = actor_dict.get("douban_celebrity_id")
+                    
+                    # ✨ 增加一个检查，如果近期同步过且信息完整，可以跳过，提高效率
+                    last_synced = actor_dict.get('last_synced_at')
+                    if last_synced:
+                        
+                        logger.info(f"  ({i+1}/{len(actors_for_douban)}) 正在处理豆瓣: '{actor_dict['primary_name']}' (ID: {douban_id})")
                     try:
-                        new_imdb_id = None
                         details = douban_api.celebrity_details(douban_id)
                         if details and not details.get("error"):
+                            
+                            # ✨✨✨ 核心修复：地毯式搜索别名 ✨✨✨
+                            all_aliases = set()
+                            new_imdb_id = None
+
+                            # 1. 搜索顶层字段
+                            if details.get('name_en'): all_aliases.add(details.get('name_en').strip())
+                            if details.get('name_origin'): all_aliases.add(details.get('name_origin').strip())
+                            if isinstance(details.get('aka'), list):
+                                all_aliases.update([name.strip() for name in details['aka'] if name.strip()])
+                            if isinstance(details.get('aka_cn'), list):
+                                all_aliases.update([name.strip() for name in details['aka_cn'] if name.strip()])
+
+                            # 2. 搜索 extra.info 列表
                             for item in details.get("extra", {}).get("info", []):
-                                if isinstance(item, list) and len(item) == 2 and item[0] == 'IMDb编号':
-                                    new_imdb_id = item[1]
-                                    break
+                                if isinstance(item, list) and len(item) == 2:
+                                    key, value = item[0], str(item[1]).strip()
+                                    if not value: continue
+                                    
+                                    if key == 'IMDb编号':
+                                        new_imdb_id = value
+                                    elif key in ['更多中文名', '更多外文名', '外文名']:
+                                        aliases_from_str = [name.strip() for name in value.split('/') if name.strip()]
+                                        all_aliases.update(aliases_from_str)
+                            
+                            # 3. 清理掉主名，别名不应包含主名
+                            if details.get('name'):
+                                all_aliases.discard(details.get('name').strip())
+
+                            # 准备更新 payload
+                            update_payload = {"douban_id": douban_id}
+                            if new_imdb_id:
+                                update_payload["imdb_id"] = new_imdb_id
+                            
+                            final_aliases_list = sorted(list(all_aliases))
+                            if final_aliases_list:
+                                update_payload["other_names"] = {"douban_aliases": final_aliases_list}
+
+                            # 只有在获取到新信息时才调用 upsert
+                            if len(update_payload) > 1:
+                                logger.debug(f"    -> 从豆瓣获取到新信息，准备更新: {update_payload}")
+                                actor_db_manager.upsert_person(cursor, update_payload)
                         
-                        if new_imdb_id:
-                            logger.info(f"    -> 成功从豆瓣获取到 IMDb ID: {new_imdb_id}，正在更新...")
-                            actor_db_manager.upsert_person(
-                                cursor,
-                                {"douban_id": douban_id, "name": actor_name, "imdb_id": new_imdb_id}
-                            )
-                        else:
-                            logger.info(f"    -> 未能从豆瓣详情中找到IMDb ID。")
+                        # 更新同步时间戳
+                        cursor.execute("UPDATE person_identity_map SET last_synced_at = CURRENT_TIMESTAMP WHERE douban_celebrity_id = ?", (douban_id,))
+
                     except Exception as e_douban:
-                        logger.error(f"从豆瓣获取演员 '{actor_name}' 详情时失败: {e_douban}")
+                        logger.error(f"从豆瓣获取演员 '{actor_dict['primary_name']}' 详情时失败: {e_douban}")
 
-                if (i + 1) % 100 == 0:
-                    logger.info(f"  -> 已处理 {i+1} / {total_to_process}，正在提交阶段性事务...")
-                    conn.commit()
-                    cursor.execute("BEGIN TRANSACTION;")
+                    # 每处理50个就提交一次事务，防止长时间锁定
+                    if (i + 1) % 50 == 0:
+                        conn.commit()
+                        logger.info(f"  已处理 {i+1} 个，提交事务。")
 
-            logger.info("所有演员处理完毕，提交最终事务...")
-            conn.commit()
-            logger.info("--- 智能交叉丰富计划任务全部完成 ---")
+                conn.commit() # 提交剩余的更改
+            else:
+                logger.info("数据库中没有需要补充豆瓣信息的演员。")
 
-    except InterruptedError:
-        logger.info("外部ID补充任务被用户中止。")
-        if conn and conn.in_transaction:
-            logger.warning("任务中止，正在回滚数据库事务...")
-            conn.rollback()
+            logger.info("--- 豆瓣补充阶段完成 ---")
+            # ======================================================================
+            # ✨✨✨ 阶段三：合并清理 (在同一个连接和事务中执行) ✨✨✨
+            # ======================================================================
+            if not (stop_event and stop_event.is_set()):
+                logger.info("--- 开始执行任务结束前的“合并清理”扫尾工作 ---")
+                
+                # 1. 找出所有存在ID的记录
+                cursor.execute("SELECT * FROM person_identity_map WHERE tmdb_person_id IS NOT NULL OR emby_person_id IS NOT NULL OR imdb_id IS NOT NULL OR douban_celebrity_id IS NOT NULL ORDER BY map_id")
+                all_actors = [dict(row) for row in cursor.fetchall()]
+                
+                # 2. 按每个ID进行分组
+                groups = {}
+                id_fields = ["tmdb_person_id", "emby_person_id", "imdb_id", "douban_celebrity_id"]
+                for actor in all_actors:
+                    for field in id_fields:
+                        actor_id = actor.get(field)
+                        if actor_id:
+                            key = f"{field}_{actor_id}"
+                            if key not in groups: groups[key] = set()
+                            groups[key].add(actor['map_id'])
+                
+                # 3. 识别出需要合并的集合
+                processed_map_ids = set()
+                for map_ids_set in groups.values():
+                    if len(map_ids_set) > 1 and not map_ids_set.issubset(processed_map_ids):
+                        
+                        map_ids = list(map_ids_set)
+                        logger.info(f"  发现需要合并的组: {map_ids}")
+                        
+                        # ✨ 直接调用强大的 upsert_person 来完成合并 ✨
+                        # 我们只需要提供一个能把它们关联起来的ID即可
+                        # 比如，用这个组里的第一个 map_id 对应的记录的所有ID去触发合并
+                        first_map_id = map_ids[0]
+                        first_actor_record = next((a for a in all_actors if a['map_id'] == first_map_id), None)
+                        
+                        if first_actor_record:
+                            # 构造一个包含所有已知ID的payload，触发终极合并
+                            payload_for_merge = {
+                                "name": first_actor_record.get("primary_name"),
+                                "emby_id": first_actor_record.get("emby_person_id"),
+                                "tmdb_id": first_actor_record.get("tmdb_person_id"),
+                                "imdb_id": first_actor_record.get("imdb_id"),
+                                "douban_id": first_actor_record.get("douban_celebrity_id"),
+                            }
+                            # 调用 upsert，它会找到所有相关的分身并合并它们
+                            actor_db_manager.upsert_person(cursor, payload_for_merge)
+                        
+                        processed_map_ids.update(map_ids_set)
+                
+                conn.commit() # 提交所有合并操作
+                logger.info("--- 合并清理阶段完成 ---")
+
     except Exception as e:
-        logger.error(f"智能交叉外部ID补充执行时发生严重错误: {e}", exc_info=True)
-        if conn and conn.in_transaction:
-            logger.warning("发生严重错误，正在回滚数据库事务...")
-            conn.rollback()
+        logger.error(f"演员数据深度治理任务发生严重错误: {e}", exc_info=True)
+        # conn 会在 with 语句结束时自动处理回滚（如果没有commit）和关闭
     finally:
         if 'douban_api' in locals() and douban_api:
             douban_api.close()
-        logger.info("--- 智能交叉丰富计划任务已退出 ---")
+        logger.info("--- “演员数据深度治理”计划任务已退出 ---")
 
