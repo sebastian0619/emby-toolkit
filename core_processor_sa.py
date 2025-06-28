@@ -253,24 +253,6 @@ class MediaProcessorSA:
         """
         【V10 - 批量翻译优化版】使用本地缓存或在线API获取豆瓣演员，再进行匹配和处理。
         """
-        # ★★★ V-Final 优化：在源头过滤无头像演员 ★★★
-        initial_count = len(local_cast_list)
-        if self.config.get("filter_actors_without_avatar", True):
-            logger.info(f"【头像过滤】开始检查 {initial_count} 位原始演员的头像信息...")
-            
-            cast_to_process_after_filter = [
-                actor for actor in local_cast_list if actor.get("profile_path")
-            ]
-            
-            filtered_count = initial_count - len(cast_to_process_after_filter)
-            if filtered_count > 0:
-                logger.info(f"【头像过滤】已过滤掉 {filtered_count} 位无头像的演员。")
-            
-            local_cast_list = cast_to_process_after_filter
-        else:
-            logger.info("【源头过滤】未启用无头像演员过滤功能。")
-        # ★★★ 源头过滤结束 ★★★
-        
         douban_candidates_raw = self._get_douban_cast_with_local_cache(emby_item_info)
         douban_candidates = actor_utils.format_douban_cast(douban_candidates_raw)
         
