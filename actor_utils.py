@@ -62,7 +62,7 @@ class ActorDBManager:
                 logger.error(f"查询 person_identity_map 时出错 ({column}={value}): {e}")
         return None
 
-    def upsert_person(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any]):
+    def upsert_person(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any], **kwargs):
         """
         【V-Final 终极简化版】
         只关心ID和主名的关联与合并，不再处理别名。
