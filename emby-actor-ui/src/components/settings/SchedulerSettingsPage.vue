@@ -83,7 +83,7 @@
           </template>
           <n-form :model="configModel" label-placement="top">
             <!-- ✨ 使用 n-grid 来更好地布局两个输入框 ✨ -->
-            <n-grid :cols="2" :x-gap="12">
+            <n-grid :cols="3" :x-gap="12"> <!-- ✨ 1. 建议将列数改为 3，布局更美观 -->
               <n-gi>
                 <n-form-item-grid-item label="CRON表达式" path="schedule_enrich_aliases_cron">
                   <n-input 
@@ -94,7 +94,6 @@
                 </n-form-item-grid-item>
               </n-gi>
               <n-gi>
-                <!-- ✨✨✨ 在这里添加新的输入框 ✨✨✨ -->
                 <n-form-item-grid-item label="每次运行时长 (分钟)" path="schedule_enrich_run_duration_minutes">
                   <n-input-number
                     v-model:value="configModel.schedule_enrich_run_duration_minutes"
@@ -103,7 +102,34 @@
                     :step="60"
                     placeholder="0 表示不限制"
                     style="width: 100%;"
-                  />
+                  >
+                    <template #suffix>分钟</template> <!-- 增加单位，更清晰 -->
+                  </n-input-number>
+                </n-form-item-grid-item>
+              </n-gi>
+              
+              <!-- ✨✨✨ 2. 在这里添加新的 Grid Item ✨✨✨ -->
+              <n-gi>
+                <n-form-item-grid-item label="同步冷却时间 (天)" path="schedule_enrich_sync_interval_days">
+                  <template #label>
+                    同步冷却时间 (天)
+                    <n-tooltip trigger="hover">
+                      <template #trigger>
+                        <n-icon :component="Info24Regular" class="ms-1 align-middle" />
+                      </template>
+                      设置在多少天内不重复检查同一个演员。对于新数据库，可设置为 0 以立即处理所有演员。
+                    </n-tooltip>
+                  </template>
+                  <n-input-number
+                    v-model:value="configModel.schedule_enrich_sync_interval_days"
+                    :disabled="!configModel.schedule_enrich_aliases_enabled"
+                    :min="0"
+                    :step="1"
+                    placeholder="建议值为 7"
+                    style="width: 100%;"
+                  >
+                    <template #suffix>天</template>
+                  </n-input-number>
                 </n-form-item-grid-item>
               </n-gi>
             </n-grid>

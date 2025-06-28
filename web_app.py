@@ -117,6 +117,7 @@ CONFIG_DEFINITION = {
     constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
     constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "30 2 * * *"),
     constants.CONFIG_OPTION_SCHEDULE_ENRICH_DURATION_MINUTES: (constants.CONFIG_SECTION_SCHEDULER, 'int', 420), # 默认420分钟 = 7小时
+    constants.CONFIG_OPTION_SCHEDULE_ENRICH_SYNC_INTERVAL_DAYS: (constants.CONFIG_SECTION_SCHEDULER, 'int', constants.DEFAULT_ENRICH_ALIASES_SYNC_INTERVAL_DAYS),
 
     # [Authentication]
     constants.CONFIG_OPTION_AUTH_ENABLED: (constants.CONFIG_SECTION_AUTH, 'boolean', False),
@@ -852,7 +853,7 @@ def setup_scheduled_tasks():
                     func=scheduled_enrich_task_submitter, # 调度器调用这个提交者
                     trigger=CronTrigger.from_crontab(cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
                     id=job_id_enrich,
-                    name="定时补充演员别名",
+                    name="定时补充演员外部ID",
                     replace_existing=True,
                 )
                 next_run_str = _get_next_run_time_str(cron_expression)
@@ -950,29 +951,35 @@ def task_enrich_aliases(processor: Union[MediaProcessorSA, MediaProcessorAPI]):
     update_status_from_thread(0, "准备开始补充演员别名...")
 
     try:
-        # 从传入的 processor 对象中获取配置
+        # 从传入的 processor 对象中获取配置字典
         config = processor.config
         
         # 获取必要的配置项
-        db_path = DB_PATH # 使用全局的数据库路径
-        tmdb_api_key = config.get("tmdb_api_key")
+        db_path = DB_PATH
+        tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
 
         if not tmdb_api_key:
             logger.error(f"任务 '{task_name}' 中止：未在配置中找到 TMDb API Key。")
             update_status_from_thread(-1, "错误：缺少TMDb API Key")
             return
 
-        # ✨✨✨ 1. 从配置中读取“运行时长” ✨✨✨
-        # 使用我们在 constants.py 中定义的常量
-        # 从 config 字典中获取值，如果找不到，则使用默认值 0 (不限时)
+        # --- 使用 .get() 方法从字典中安全地获取所有配置 ---
+        
+        # 1. 获取运行时长
         duration_minutes = config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_DURATION_MINUTES, 0)
         
-        # 调用我们之前在 actor_utils.py 中创建的核心函数
-        # ✨✨✨ 2. 将 duration_minutes 作为参数传递进去 ✨✨✨
+        # 2. 获取同步冷却天数 (这是关键的修复！)
+        sync_interval_days = config.get(
+            constants.CONFIG_OPTION_SCHEDULE_ENRICH_SYNC_INTERVAL_DAYS, 
+            constants.DEFAULT_ENRICH_ALIASES_SYNC_INTERVAL_DAYS  # 使用默认值以防万一
+        )
+        
+        # 调用核心函数，并传递所有正确获取的参数
         enrich_all_actor_aliases_task(
             db_path=db_path,
             tmdb_api_key=tmdb_api_key,
-            run_duration_minutes=duration_minutes, # <--- 传递时长
+            run_duration_minutes=duration_minutes,
+            sync_interval_days=sync_interval_days, # <--- 现在这里是完全正确的
             stop_event=processor.get_stop_event()
         )
         

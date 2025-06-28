@@ -588,6 +588,7 @@ def enrich_all_actor_aliases_task(
     db_path: str, 
     tmdb_api_key: str, 
     run_duration_minutes: int,
+    sync_interval_days: int,
     stop_event: Optional[threading.Event] = None
 ):
     logger.info("--- 开始执行“演员外部ID补充”计划任务 ---")
@@ -602,7 +603,8 @@ def enrich_all_actor_aliases_task(
         logger.info("任务未设置运行时长，将持续运行。")
 
     actor_db_manager = ActorDBManager(db_path)
-    SYNC_INTERVAL_DAYS = 7 # 定义一个同步间隔，7天内同步过的不处理
+    SYNC_INTERVAL_DAYS = sync_interval_days # ✨ 3. 使用传入的参数
+    logger.info(f"同步冷却时间设置为 {SYNC_INTERVAL_DAYS} 天。") # 添加日志，方便调试
 
     try:
         with actor_db_manager.get_db_connection() as conn:
@@ -612,7 +614,7 @@ def enrich_all_actor_aliases_task(
             sql_find_tmdb_needy = f"""
                 SELECT * FROM person_identity_map 
                 WHERE tmdb_person_id IS NOT NULL AND imdb_id IS NULL 
-                AND (last_synced_at IS NULL OR last_synced_at < date('now', '-{SYNC_INTERVAL_DAYS} days'))
+                AND (last_synced_at IS NULL OR last_synced_at < datetime('now', '-{SYNC_INTERVAL_DAYS} days'))
                 ORDER BY last_synced_at ASC
             """
             actors_for_tmdb = cursor.execute(sql_find_tmdb_needy).fetchall()
@@ -663,6 +665,8 @@ def enrich_all_actor_aliases_task(
                         conn.commit()
                     else:
                         logger.info("没有需要从 TMDb 补充 IMDb ID 的演员（或都已在近期检查过）。")
+            else:
+                logger.info("没有需要从 TMDb 补充 IMDb ID 的演员。")
 
             # --- 阶段二：从 豆瓣 补充 IMDb ID (串行执行) ---
             if (stop_event and stop_event.is_set()) or (time.time() >= end_time): raise InterruptedError("任务中止")
@@ -672,7 +676,7 @@ def enrich_all_actor_aliases_task(
             sql_find_douban_needy = f"""
                 SELECT * FROM person_identity_map 
                 WHERE douban_celebrity_id IS NOT NULL AND imdb_id IS NULL
-                AND (last_synced_at IS NULL OR last_synced_at < date('now', '-{SYNC_INTERVAL_DAYS} days'))
+                AND (last_synced_at IS NULL OR last_synced_at < datetime('now', '-{SYNC_INTERVAL_DAYS} days'))
                 ORDER BY last_synced_at ASC
             """
             actors_for_douban = cursor.execute(sql_find_douban_needy).fetchall()
