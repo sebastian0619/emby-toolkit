@@ -703,7 +703,7 @@ def enrich_all_actor_aliases_task(
                             cursor.execute("BEGIN TRANSACTION;")
                     except Exception as e:
                         logger.error(f"从豆瓣获取详情失败 (ID: {actor['douban_celebrity_id']}): {e}")
-                    cursor.execute("UPDATE person_identity_map SET last_synced_at = CURRENT_TIMESTAMP WHERE map_id = ?", (actor['map_id'],))
+                    
                 conn.commit()
                 logger.info(f"豆瓣信息补充完成，本轮共处理 {processed_in_douban_run} 个。")
             else:
