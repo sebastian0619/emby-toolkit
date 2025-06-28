@@ -602,13 +602,19 @@ def enrich_all_actor_aliases_task(
         logger.info("任务未设置运行时长，将持续运行。")
 
     actor_db_manager = ActorDBManager(db_path)
+    SYNC_INTERVAL_DAYS = 7 # 定义一个同步间隔，7天内同步过的不处理
 
     try:
         with actor_db_manager.get_db_connection() as conn:
             # --- 阶段一：从 TMDb 补充 IMDb ID (并发执行) ---
             logger.info("--- 阶段一：从 TMDb 补充 IMDb ID ---")
             cursor = conn.cursor()
-            sql_find_tmdb_needy = "SELECT * FROM person_identity_map WHERE tmdb_person_id IS NOT NULL AND imdb_id IS NULL ORDER BY last_synced_at ASC"
+            sql_find_tmdb_needy = f"""
+                SELECT * FROM person_identity_map 
+                WHERE tmdb_person_id IS NOT NULL AND imdb_id IS NULL 
+                AND (last_synced_at IS NULL OR last_synced_at < date('now', '-{SYNC_INTERVAL_DAYS} days'))
+                ORDER BY last_synced_at ASC
+            """
             actors_for_tmdb = cursor.execute(sql_find_tmdb_needy).fetchall()
             
             if actors_for_tmdb:
@@ -644,23 +650,31 @@ def enrich_all_actor_aliases_task(
                         cursor.execute("BEGIN TRANSACTION;")
                         for update_data in tmdb_updates_chunk:
                             details = update_data.get("details")
+                            tmdb_id = update_data.get("tmdb_id")
                             imdb_id = details.get("external_ids", {}).get("imdb_id")
-                            if update_data.get("tmdb_id") and imdb_id:
-                                actor_db_manager.upsert_person(
-                                    cursor, 
-                                    {"tmdb_id": update_data["tmdb_id"], "imdb_id": imdb_id}
-                                )
+                            if tmdb_id:
+                                if imdb_id:
+                                    actor_db_manager.upsert_person(
+                                        cursor, 
+                                        {"tmdb_id": tmdb_id, "imdb_id": imdb_id}
+                                    )
+                                # ✨✨✨ 核心修复 2：即使没找到IMDb ID，也要更新同步时间 ✨✨✨
+                                cursor.execute("UPDATE person_identity_map SET last_synced_at = CURRENT_TIMESTAMP WHERE tmdb_person_id = ?", (tmdb_id,))
                         conn.commit()
-                        logger.info(f"  -> 批次数据写入成功！")
-            else:
-                logger.info("没有需要从 TMDb 补充 IMDb ID 的演员。")
+                    else:
+                        logger.info("没有需要从 TMDb 补充 IMDb ID 的演员（或都已在近期检查过）。")
 
             # --- 阶段二：从 豆瓣 补充 IMDb ID (串行执行) ---
             if (stop_event and stop_event.is_set()) or (time.time() >= end_time): raise InterruptedError("任务中止")
             
             douban_api = DoubanApi(db_path=db_path)
             logger.info("--- 阶段二：从 豆瓣 补充 IMDb ID ---")
-            sql_find_douban_needy = "SELECT * FROM person_identity_map WHERE douban_celebrity_id IS NOT NULL AND imdb_id IS NULL ORDER BY last_synced_at ASC"
+            sql_find_douban_needy = f"""
+                SELECT * FROM person_identity_map 
+                WHERE douban_celebrity_id IS NOT NULL AND imdb_id IS NULL
+                AND (last_synced_at IS NULL OR last_synced_at < date('now', '-{SYNC_INTERVAL_DAYS} days'))
+                ORDER BY last_synced_at ASC
+            """
             actors_for_douban = cursor.execute(sql_find_douban_needy).fetchall()
 
             if actors_for_douban:
@@ -689,7 +703,7 @@ def enrich_all_actor_aliases_task(
                             cursor.execute("BEGIN TRANSACTION;")
                     except Exception as e:
                         logger.error(f"从豆瓣获取详情失败 (ID: {actor['douban_celebrity_id']}): {e}")
-                
+                    cursor.execute("UPDATE person_identity_map SET last_synced_at = CURRENT_TIMESTAMP WHERE map_id = ?", (actor['map_id'],))
                 conn.commit()
                 logger.info(f"豆瓣信息补充完成，本轮共处理 {processed_in_douban_run} 个。")
             else:
