@@ -1630,7 +1630,7 @@ def api_get_review_items():
 
         # 2. 查询当前页的数据
         items_sql = f"""
-            SELECT item_id, item_name, failed_at, error_message, item_type, score 
+            SELECT item_id, item_name, failed_at, reason, item_type, score 
             FROM failed_log 
             {where_clause}
             ORDER BY failed_at DESC 

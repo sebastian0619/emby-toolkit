@@ -222,7 +222,6 @@ const columns = computed(() => [
       ]);
     }
   },
-  // ... other columns ...
   { 
     title: '类型', 
     key: 'item_type', 
@@ -240,7 +239,8 @@ const columns = computed(() => [
     resizable: true,
     render(row) { return formatDate(row.failed_at); }
   },
-  { title: '原因', key: 'error_message', resizable: true, ellipsis: { tooltip: true } },
+  // ✅【关键修复】将 key 从 'error_message' 改为 'reason'
+  { title: '原因', key: 'reason', resizable: true, ellipsis: { tooltip: true } },
   {
     title: '评分',
     key: 'score',
@@ -257,6 +257,7 @@ const columns = computed(() => [
     align: 'center',
     fixed: 'right',
     render(row) {
+      // ... render 函数内部逻辑保持不变 ...
       const actionButtons = [];
       
       if (!isShowingSearchResults.value) {
@@ -267,7 +268,6 @@ const columns = computed(() => [
                   type: 'warning',
                   ghost: true,
                   loading: loadingAction.value[row.item_id] && currentRowId.value === row.item_id,
-                  // ✅ [修正] Access prop via `props.taskStatus`
                   disabled: loadingAction.value[row.item_id] || props.taskStatus?.is_running
               }, {
                   icon: () => h(NIcon, { component: ReprocessIcon }),
@@ -294,7 +294,6 @@ const columns = computed(() => [
               type: 'success',
               ghost: true,
               loading: loadingAction.value[row.item_id] && currentRowId.value === row.item_id,
-              // ✅ [修正] Access prop via `props.taskStatus`
               disabled: loadingAction.value[row.item_id] || props.taskStatus?.is_running
             }, {
               icon: () => h(NIcon, { component: MarkDoneIcon }),
