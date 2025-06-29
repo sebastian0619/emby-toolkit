@@ -1039,7 +1039,7 @@ class MediaProcessorSA:
                     logger.info(f"手动处理：成功生成覆盖元数据文件: {override_json_path}")
 
                     #---深度处理剧集
-                    process_episodes_config = self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, True)
+                    process_episodes_config = self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False)
                     if item_type == "Series" and process_episodes_config:
                         logger.info(f"手动处理：开始为所有分集注入手动编辑后的演员表...")
                         # base_cache_dir 变量在函数前面已经定义好了，可以直接使用
