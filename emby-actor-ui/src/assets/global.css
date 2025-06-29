@@ -11,38 +11,86 @@
  *
  */
 
-/* 
-  我们使用 .n-card.beautified-card 来提高选择器权重，
-  确保能覆盖 Naive UI 的默认样式，同时避免使用 !important。
-*/
-
 /* 卡片的默认状态 */
 .n-card.beautified-card {
-  /* 
-    使用 Naive UI 的主题变量来定义阴影和圆角，
-    这样可以完美自适应深色/浅色模式。
-  */
   box-shadow: var(--n-box-shadow);
   border-radius: var(--n-border-radius);
-  
-  /* 为动效添加平滑过渡 */
   transition: transform 0.3s ease, box-shadow 0.3s ease;
 }
 
 /* 鼠标悬停在卡片上时的效果 */
 .n-card.beautified-card:hover {
-  /* 
-    transform 属性实现轻微上浮效果。
-    可以根据喜好调整 -4px 这个值。
-  */
   transform: translateY(-4px);
-  
-  /* 
-    使用 Naive UI 定义的悬停状态下的阴影变量，
-    它通常比默认阴影更深、更弥散。
-  */
   box-shadow: var(--n-box-shadow-hover);
-  
-  /* 鼠标悬停时，光标变成小手形状，提示用户可以点击 */
   cursor: pointer;
+}
+
+
+/*
+ * ===============================================
+ * 全局交互式卡片样式 (Global Interactive Card Style)
+ * ===============================================
+ *
+ * 功能: 鼠标悬停时，为卡片添加一个橙色轮廓。
+ * 使用方法: 在卡片上同时添加 `beautified-card` 和 `interactive-card`。
+ * 例如: <n-card class="beautified-card interactive-card">...</n-card>
+ *
+ */
+
+/* 交互式卡片的默认状态 */
+.n-card.interactive-card {
+  /* 
+    【关键技巧】默认状态下，边框必须存在，但颜色是透明的。
+    如果不这样做，鼠标悬停时突然增加边框会导致卡片大小变化，产生“跳动”感。
+  */
+  border: 2px solid transparent;
+
+  /* 
+    让边框颜色的变化也加入到过渡动画中，效果更平滑。
+    注意：这里我们只添加 border-color 的过渡，因为 transform 和 box-shadow 的过渡
+    已经在 .beautified-card 中定义了。
+  */
+  transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+}
+
+/* 鼠标悬停在交互式卡片上时的效果 */
+.n-card.interactive-card:hover {
+  /* 悬停时，将透明的边框变为我们想要的橙色 */
+  border-color: #f39c12;
+}
+
+
+/*
+ * ===============================================
+ * 全局操作按钮样式 (Global Action Button Style)
+ * ===============================================
+ *
+ * 使用方法:
+ * 在任何 <button> 或 <a> 标签上添加 `class="action-button"` 即可。
+ *
+ */
+
+/* 按钮的默认状态 (橙色轮廓) */
+.action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: 2px solid #f39c12;
+  background-color: transparent;
+  color: #f39c12;
+  font-size: 16px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.3s ease-in-out;
+}
+
+/* 鼠标悬停在按钮上时的效果 (渐变填充) */
+.action-button:hover {
+  color: #ffffff;
+  background-image: linear-gradient(to right, #ff416c, #ff4b2b);
+  border-color: transparent;
 }

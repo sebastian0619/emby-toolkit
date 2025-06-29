@@ -609,7 +609,7 @@ class MediaProcessorSA:
         
         logger.info(f"前置翻译为 '{item_name_for_log}' 的演员中文化处理完成。")
 
-    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool = False) -> bool:
+    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool = False, should_process_episodes_this_run: bool = False):
         """
         【V-Final 事务优化版】
         在一个统一的数据库事务中，串行执行所有数据库相关的处理轨道。
@@ -700,7 +700,7 @@ class MediaProcessorSA:
                         if os.path.exists(temp_json_path): os.remove(temp_json_path)
                         raise e_write
 
-                    if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
+                    if item_type == "Series" and should_process_episodes_this_run:
                         logger.info(f"开始为 '{item_name_for_log}' 的所有分集注入演员表...")
                         for filename in os.listdir(base_cache_dir):
                             if filename.startswith("season-") and filename.endswith(".json"):
@@ -723,7 +723,7 @@ class MediaProcessorSA:
                         for image_type, filename in image_map.items():
                             emby_handler.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
                         
-                        if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
+                        if item_type == "Series" and should_process_episodes_this_run:
                             children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name_for_log) or []
                             for child in children:
                                 child_type, child_id = child.get("Type"), child.get("Id")
@@ -795,18 +795,35 @@ class MediaProcessorSA:
             )
             return False
 
-    def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False, process_episodes: bool = True) -> bool:
-        if self.is_stop_requested(): return False
-        #if not force_reprocess_this_item and emby_item_id in self.processed_items_cache: return True
+    def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False, process_episodes: Optional[bool] = None):
+        """
+        【已修复】此函数现在不再修改全局 self.config。
+        它会根据传入的参数和全局配置，做出一次性的决策，并将该决策作为参数传递给下游函数。
+        """
+        if self.is_stop_requested(): 
+            return False
 
         item_details = emby_handler.get_emby_item_details(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
         if not item_details:
             self.save_to_failed_log(emby_item_id, f"未知项目(ID:{emby_item_id})", "无法获取Emby项目详情")
             return False
         
-        self.config[constants.CONFIG_OPTION_PROCESS_EPISODES] = process_episodes
-        
-        return self._process_item_core_logic(item_details, force_reprocess_this_item)
+        # 1. 决定本次运行是否应该处理分集
+        if process_episodes is None:
+            # 如果调用者没有通过参数明确指定，则遵循 config.ini 中的全局设置。
+            # 使用 .get() 方法，并提供一个安全的默认值 False。
+            should_process_episodes_this_run = self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False)
+        else:
+            # 如果调用者通过参数明确指定了 True 或 False，则听从本次调用的指令。
+            should_process_episodes_this_run = process_episodes
+
+
+        # 3. 将最终决策作为参数，显式传递给核心处理函数
+        return self._process_item_core_logic(
+            item_details, 
+            force_reprocess_this_item,
+            should_process_episodes_this_run  # <--- 新增的参数
+        )
 
     def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False, process_episodes: bool = True):
         self.clear_stop_signal()

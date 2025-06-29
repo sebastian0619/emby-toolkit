@@ -51,7 +51,6 @@
           <!-- 卡片2: 同步映射表 -->
           <n-card title="同步Emby演员映射表" class="beautified-card" :bordered="false">
             <n-space vertical>
-              <!-- 复选框已被删除 -->
               <n-space align="center">
                 <n-button
                   type="primary"
@@ -61,7 +60,7 @@
                 >
                   启动同步 <!-- 按钮文本已固定 -->
                 </n-button>
-                <n-button @click="exportMap" :loading="isExporting">
+                <n-button @click="exportMap" :loading="isExporting" class="action-button">
                   <template #icon><n-icon :component="ExportIcon" /></template>
                   导出
                 </n-button>
@@ -73,7 +72,7 @@
                   @error="errorImport"
                   accept=".csv"
                 >
-                  <n-button :loading="isImporting">
+                  <n-button :loading="isImporting" class="action-button">
                     <template #icon><n-icon :component="ImportIcon" /></template>
                     导入
                   </n-button>
