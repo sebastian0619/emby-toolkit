@@ -115,8 +115,8 @@
                 animation="300"
               >
                 <template #item="{ element: actor, index }">
-                  <div class="actor-grid-item">
-                    <n-card size="small" class="actor-edit-card" content-style="padding: 12px;">
+                  <div class="glass-section">
+                    <n-card size="small" class="actor-edit-card" content-style="padding: 16px;">
                       <template #header>
                         <div class="actor-card-header">
                           <n-avatar

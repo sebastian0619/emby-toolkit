@@ -37,7 +37,7 @@ html, body {
   transition: all 0.3s ease;
 }
 .glass-section:hover {
-  box-shadow: 0 0 25px rgba(156, 39, 176, 0.8);
+  box-shadow: 0 0 25px rgba(248, 2, 2, 0.9);
 }
 
 /* 明亮模式下玻璃卡片 */
@@ -89,7 +89,8 @@ html.light input, html.light textarea {
 /* ========== 实用工具类 ========== */
 .text-gradient {
   background: linear-gradient(to right, #00bcd4, #9c27b0);
-  -webkit-background-clip: text;
+  background-clip: text;               /* 标准语法 */
+  -webkit-background-clip: text;       /* 兼容 Chrome/Safari */
   -webkit-text-fill-color: transparent;
 }
 .fade-in {
