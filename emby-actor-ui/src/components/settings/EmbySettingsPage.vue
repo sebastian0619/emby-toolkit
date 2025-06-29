@@ -2,7 +2,7 @@
   <div v-if="configModel">
   <n-space vertical :size="24" style="margin-top: 15px;">
     <!-- Emby 连接设置卡片 (保持不变) -->
-    <n-card title="Emby 连接设置" class="beautified-card" :bordered="false">
+    <n-card title="Emby 连接设置" class="glass-section" :bordered="false">
       <n-form :model="configModel" label-placement="left" label-width="auto" require-mark-placement="right-hanging">
         <n-grid :cols="1" :x-gap="24">
           <n-form-item-grid-item label="Emby 服务器 URL" path="emby_server_url">
@@ -31,7 +31,7 @@
 
 
     <!-- 媒体库选择卡片 (保持不变) -->
-    <n-card class="beautified-card" :bordered="false">
+    <n-card class="glass-section" :bordered="false">
       <template #header>
         <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
           <span>选择要处理的媒体库</span>

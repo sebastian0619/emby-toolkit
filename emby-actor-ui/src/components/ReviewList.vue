@@ -1,6 +1,6 @@
 <!-- src/components/ReviewList.vue -->
 <template>
-  <n-card title="媒体库浏览器" class="beautified-card" :bordered="false" size="small">
+  <n-card title="媒体库浏览器" class="glass-section" :bordered="false" size="small">
     <!-- ✅ [修正] Access prop via `props.taskStatus` -->
     <n-alert 
       v-if="props.taskStatus?.is_running" 

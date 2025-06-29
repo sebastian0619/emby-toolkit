@@ -47,7 +47,7 @@
       <n-grid cols="1 s:2 m:3 l:4 xl:5" :x-gap="20" :y-gap="20" responsive="screen">
         <n-gi v-for="item in filteredWatchlist" :key="item.item_id">
           
-          <n-card class="watchlist-card" :bordered="false" content-style="display: flex; padding: 0; gap: 16px;">
+          <n-card class="glass-section" :bordered="false" content-style="display: flex; padding: 0; gap: 16px;">
             
             <!-- 左侧列：海报 -->
             <div class="card-poster-container">

@@ -14,7 +14,7 @@
       <n-gi>
         <n-space vertical :size="24">
           <!-- 卡片: 基础设置 -->
-          <n-card title="基础设置" size="small" class="beautified-card">
+          <n-card title="基础设置" size="small" class="glass-section">
             <n-form-item-grid-item label="启用神医Pro模式">
                 <n-switch v-model:value="configModel.use_sa_mode" />
                 <template #feedback>
@@ -66,7 +66,7 @@
           </n-card>
 
           <!-- 卡片: 数据源与 API -->
-          <n-card title="数据源与 API" size="small" class="beautified-card">
+          <n-card title="数据源与 API" size="small" class="glass-section">
             <n-form-item label="本地数据源路径" path="local_data_path">
                 <n-input v-model:value="configModel.local_data_path" placeholder="神医TMDB缓存目录 (cache和override的上层)" :disabled="!configModel.use_sa_mode" />
                  <template #feedback>
@@ -103,7 +103,7 @@
       <n-gi>
         <n-space vertical :size="24">
           <!-- 卡片: 传统翻译引擎 -->
-          <n-card title="传统翻译引擎" size="small" class="beautified-card">
+          <n-card title="传统翻译引擎" size="small" class="glass-section">
             <n-form-item label="翻译引擎顺序" path="translator_engines_order">
               <template #feedback>可拖动调整顺序，点击添加新的翻译引擎。</template>
               <draggable
@@ -132,7 +132,7 @@
           </n-card>
 
           <!-- 卡片: AI 翻译设置 -->
-          <n-card title="AI 翻译设置" size="small" class="beautified-card">
+          <n-card title="AI 翻译设置" size="small" class="glass-section">
             <template #header-extra>
               <n-space align="center">
                 <n-switch v-model:value="configModel.ai_translation_enabled" />

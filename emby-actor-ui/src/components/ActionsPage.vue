@@ -20,7 +20,7 @@
           </n-alert>
 
           <!-- 卡片1: 全量扫描 -->
-          <n-card title="全量媒体库扫描" class="beautified-card" :bordered="false">
+          <n-card title="全量媒体库扫描" class="glass-section" :bordered="false">
             <template #header-extra>
               <n-button
                 type="error"
@@ -49,7 +49,7 @@
           </n-card>
 
           <!-- 卡片2: 同步映射表 -->
-          <n-card title="同步Emby演员映射表" class="beautified-card" :bordered="false">
+          <n-card title="同步Emby演员映射表" class="glass-section" :bordered="false">
             <n-space vertical>
               <n-space align="center">
                 <n-button
@@ -84,7 +84,7 @@
               </p>
             </n-space>
           </n-card>
-          <n-card title="全量海报同步" class="beautified-card" :bordered="false">
+          <n-card title="全量海报同步" class="glass-section" :bordered="false">
             <n-space vertical>
               <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">
                 此功能会遍历所有**已处理**的媒体，将你在 Emby 中设置的最新海报、背景图等同步到 override 缓存目录。
@@ -105,7 +105,7 @@
 
       <!-- 右侧列：实时日志区 -->
       <n-gi span="1">
-        <n-card title="实时日志" class="beautified-card" :bordered="false" content-style="padding: 0;">
+        <n-card title="实时日志" class="glass-section" :bordered="false" content-style="padding: 0;">
           
           <!-- ★★★ 1. 把 #header-extra 插槽放在正确的位置 ★★★ -->
           <!-- 它应该是 n-card 的直接子元素 -->

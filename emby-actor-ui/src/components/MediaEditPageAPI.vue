@@ -111,7 +111,7 @@
 
         <!-- 右侧演员列表 -->
         <n-grid-item span="1 l:3">
-          <n-card title="演员列表 (可拖动排序)" :bordered="false">
+          <n-card title="演员列表 (可拖动排序)" :bordered="false" class="glass-section">
             
             <n-form label-placement="left" label-width="auto">
               <draggable

@@ -7,7 +7,7 @@
       
       <!-- 卡片 1: 全量扫描 -->
       <n-gi>
-        <n-card title="全量扫描定时任务" class="beautified-card" :bordered="false">
+        <n-card title="全量扫描定时任务" class="glass-section" :bordered="false">
           <template #header-extra>
             <n-switch v-model:value="configModel.schedule_enabled" />
           </template>
@@ -28,7 +28,7 @@
 
       <!-- 卡片 2: 同步映射表 -->
       <n-gi>
-        <n-card title="同步演员映射表定时任务" class="beautified-card" :bordered="false">
+        <n-card title="同步演员映射表定时任务" class="glass-section" :bordered="false">
           <template #header-extra>
             <n-switch v-model:value="configModel.schedule_sync_map_enabled" />
           </template>
@@ -44,7 +44,7 @@
 
       <!-- 卡片 3: 智能追剧 -->
       <n-gi>
-        <n-card title="智能追剧更新定时任务" class="beautified-card" :bordered="false">
+        <n-card title="智能追剧更新定时任务" class="glass-section" :bordered="false">
           <template #header-extra>
             <n-tooltip trigger="hover">
               <template #trigger>
@@ -77,7 +77,7 @@
       
       <!-- 卡片 4: 演员补充外部ID -->
       <n-gi>
-        <n-card title="演员补充外部ID定时任务" class="beautified-card" :bordered="false">
+        <n-card title="演员补充外部ID定时任务" class="glass-section" :bordered="false">
           <template #header-extra>
             <n-switch v-model:value="configModel.schedule_enrich_aliases_enabled" />
           </template>

@@ -132,7 +132,7 @@ import {
   HeartOutline as WatchlistIcon,
 } from '@vicons/ionicons5';
 import { Password24Regular as PasswordIcon } from '@vicons/fluent'
-
+import { watchEffect } from 'vue'
 const router = useRouter(); 
 const route = useRoute(); 
 const authStore = useAuthStore();
@@ -155,7 +155,11 @@ watch(isDarkTheme, (newValue) => {
 const renderIcon = (iconComponent) => {
   return () => h(NIcon, null, { default: () => h(iconComponent) });
 };
-
+watchEffect(() => {
+  const html = document.documentElement
+  html.classList.remove('dark', 'light')
+  html.classList.add(isDarkTheme.value ? 'dark' : 'light')
+})
 // --- 用户下拉菜单的逻辑 ---
 const userOptions = computed(() => [
   {
