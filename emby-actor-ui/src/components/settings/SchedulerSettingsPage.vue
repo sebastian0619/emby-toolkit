@@ -18,7 +18,7 @@
               </n-form-item-grid-item>
               <n-form-item-grid-item>
                 <n-checkbox v-model:checked="configModel.schedule_force_reprocess" :disabled="!configModel.schedule_enabled">
-                  定时任务强制重处理所有项目
+                  定时任务强制重处理所有项目 (将使用TmdbAPI进行在线更新元数据)
                 </n-checkbox>
               </n-form-item-grid-item>
             </n-grid>
