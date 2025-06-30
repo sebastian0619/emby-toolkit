@@ -1071,7 +1071,7 @@ def task_import_person_map(processor, file_content: str, **kwargs):
         stats = {"total": total_lines, "processed": 0, "skipped": 0, "errors": 0}
         db_manager = ActorDBManager(DB_PATH)
 
-        with db_manager._get_db_connection() as conn:
+        with db_manager.get_db_connection() as conn:
             cursor = conn.cursor()
             
             for i, row in enumerate(csv_reader):

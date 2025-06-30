@@ -28,7 +28,7 @@ class ActorDBManager:
     def __init__(self, db_path: str):
         self.db_path = db_path
         logger.debug(f"ActorDBManager 初始化，使用数据库: {self.db_path}")
-
+    # ✨✨✨获取数据库连接的辅助方法✨✨✨
     def get_db_connection(self) -> sqlite3.Connection:
         """
         获取一个配置好 WAL 模式和 row_factory 的数据库连接。
