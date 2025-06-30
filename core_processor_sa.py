@@ -666,11 +666,54 @@ class MediaProcessorSA:
                         raise ValueError(f"无法读取基础JSON文件: {json_file_path}")
 
                     # --- 阶段1: 演员处理 ---
-                    original_cast_from_local = base_json_data_original.get("credits", {}).get("cast") or base_json_data_original.get("casts", {}).get("cast", [])
-                    initial_actor_count = len(original_cast_from_local)
+                    logger.info("开始从本地 TMDb 缓存聚合最完整的基准演员表...")
                     
+                    # 1. 定义变量来存储聚合后的基准演员表和原始JSON数据
+                    full_tmdb_cast_as_base = []
+                    # base_json_data_original 必须被正确赋值，因为它在后面写入文件时需要作为模板
+                    base_json_data_original = None 
+                    
+                    # 2. 根据类型执行不同的逻辑
+                    if item_type == "Movie":
+                        # 电影逻辑：读取 all.json 作为模板和演员来源
+                        json_file_path = os.path.join(base_cache_dir, "all.json")
+                        base_json_data_original = _read_local_json(json_file_path)
+                        if not base_json_data_original:
+                            raise ValueError(f"无法读取基础电影JSON文件: {json_file_path}")
+                        
+                        full_tmdb_cast_as_base = base_json_data_original.get("credits", {}).get("cast", []) or base_json_data_original.get("casts", {}).get("cast", []) or []
+                    
+                    elif item_type == "Series":
+                        # 电视剧逻辑：
+                        # a. 读取 series.json 作为元数据模板
+                        json_file_path = os.path.join(base_cache_dir, "series.json")
+                        base_json_data_original = _read_local_json(json_file_path)
+                        if not base_json_data_original:
+                            raise ValueError(f"无法读取基础剧集JSON文件: {json_file_path}")
+                        
+                        # b. 【核心调用】调用聚合函数来获取完整的演员列表作为基准
+                        full_tmdb_cast_as_base = self._get_full_tv_cast_from_cache(base_cache_dir)
+                    
+                    else:
+                        # 对于未知类型，记录错误并中止此项目的处理
+                        logger.error(f"未知的媒体类型 '{item_type}'，无法处理演员。")
+                        conn.commit() # 提交事务以保存可能已完成的API轨道日志
+                        return False
+
+                    if not full_tmdb_cast_as_base:
+                        logger.warning(f"未能从本地TMDb缓存为 '{item_name_for_log}' 聚合到任何演员，但将继续处理其他元数据。")
+                    
+                    logger.info(f"成功聚合了 {len(full_tmdb_cast_as_base)} 位 TMDb 基准演员。")
+                    
+                    # =================================================================
+                    # 【★★★ 核心修改区域 END ★★★】
+                    # =================================================================
+
+                    initial_actor_count = len(full_tmdb_cast_as_base)
+                    
+                    # 现在，我们将这个【完整的】基准列表传递给下游函数进行丰富和处理
                     intermediate_cast = self._process_cast_list_from_local(
-                        original_cast_from_local, 
+                        full_tmdb_cast_as_base,  # <--- 使用我们聚合后的完整列表！
                         item_details_from_emby, 
                         cursor,
                         self.tmdb_api_key,
@@ -1151,9 +1194,9 @@ class MediaProcessorSA:
     # --- 从本地 cache 文件获取演员列表用于编辑 ---
     def get_cast_for_editing(self, item_id: str) -> Optional[Dict[str, Any]]:
         """
-        【V4 - 后端缓存最终版】为手动编辑准备数据。
-        1. 从本地 cache 加载完整的演员列表。
-        2. 将完整列表缓存在内存中。
+        【V5 - 最终版】为手动编辑准备数据。
+        1. 根据类型，从本地 cache 加载最完整的演员列表（电影直接加载，电视剧智能聚合）。
+        2. 将完整列表缓存在内存中，供后续保存时使用。
         3. 只向前端发送轻量级数据 (ID, name, role, profile_path)。
         """
         logger.info(f"为编辑页面准备数据 (后端缓存模式)：ItemID {item_id}")
@@ -1167,17 +1210,29 @@ class MediaProcessorSA:
             item_type = emby_details.get("Type")
             if not tmdb_id: raise ValueError(f"项目 {item_id} 缺少 TMDb ID")
 
-            # 2. 从本地 cache 文件读取最可靠的演员列表
-            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-            base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
-            base_json_filename = "all.json" if item_type == "Movie" else "series.json"
-            tmdb_data = _read_local_json(os.path.join(base_cache_dir, base_json_filename))
-            if not tmdb_data: raise ValueError("未找到本地 TMDb 缓存文件")
+            # 2. ★★★ 根据类型决定如何从本地 cache 文件读取演员列表 ★★★
+            full_cast_from_cache = []
+            if item_type == "Movie":
+                logger.debug(f"项目类型为电影，直接加载 all.json。")
+                cache_folder_name = "tmdb-movies2"
+                base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
+                base_json_filename = "all.json"
+                tmdb_data = _read_local_json(os.path.join(base_cache_dir, base_json_filename))
+                if not tmdb_data: raise ValueError("未找到本地 TMDb 电影缓存文件")
+                full_cast_from_cache = tmdb_data.get("credits", {}).get("cast", []) or tmdb_data.get("casts", {}).get("cast", [])
             
-            full_cast_from_cache = tmdb_data.get("credits", {}).get("cast", []) or tmdb_data.get("casts", {}).get("cast", [])
+            elif item_type == "Series":
+                logger.debug(f"项目类型为电视剧，调用聚合函数。")
+                cache_folder_name = "tmdb-tv"
+                base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
+                # 【核心调用】调用我们已经完善的辅助函数来聚合所有演员
+                full_cast_from_cache = self._get_full_tv_cast_from_cache(base_cache_dir)
+                if not full_cast_from_cache: raise ValueError("未找到或无法聚合本地 TMDb 电视剧缓存")
+            
+            else:
+                raise ValueError(f"不支持的 ItemType: {item_type} 用于演员编辑")
 
-            # ★★★ 3. 将完整的演员列表存入内存缓存 ★★★
-            # 使用 item_id 作为键，确保每个编辑会话都是独立的
+            # 3. 将完整的演员列表存入内存缓存
             self.manual_edit_cache[item_id] = full_cast_from_cache
             logger.debug(f"已为 ItemID {item_id} 缓存了 {len(full_cast_from_cache)} 条完整演员数据。")
 
@@ -1187,7 +1242,6 @@ class MediaProcessorSA:
                 actor_tmdb_id = actor_data.get('id')
                 if not actor_tmdb_id: continue
                 
-                # 直接拼接 TMDb 头像链接，使用最小尺寸 w185
                 profile_path = actor_data.get('profile_path')
                 image_url = f"https://image.tmdb.org/t/p/w185{profile_path}" if profile_path else None
 
@@ -1195,10 +1249,10 @@ class MediaProcessorSA:
                     "tmdbId": actor_tmdb_id,
                     "name": actor_data.get('name'),
                     "role": actor_data.get('character'),
-                    "imageUrl": image_url, # 发送拼接好的完整 URL
+                    "imageUrl": image_url,
                 })
             
-            # ... (从 failed_log 获取信息和组合 response_data 的逻辑保持不变) ...
+            # 5. 获取失败日志信息和组合 response_data
             failed_log_info = {}
             with self._get_db_connection() as conn:
                 cursor = conn.cursor()
@@ -1328,7 +1382,69 @@ class MediaProcessorSA:
             time.sleep(0.2)
 
         logger.info("--- 全量海报同步任务结束 ---")
+    # --- 从本地 cache 获取完整演员表 ---
+    def _get_full_tv_cast_from_cache(self, base_cache_dir: str) -> List[Dict[str, Any]]:
+        """
+        【折中优化方案 - V3 - 修正文件路径】从本地缓存中聚合电视剧的演员。
+        在正确的根目录下查找所有文件。
+        """
+        # 确保 re 和 glob 已导入
+        import re
+        import glob
+        
+        logger.info(f"开始聚合演员(剧、季、集)")
+        full_cast_map = {}
 
+        def _add_cast_to_map(cast_list: List[Dict[str, Any]], cast_map: Dict[int, Dict]):
+            if not cast_list: return
+            for actor_data in cast_list:
+                actor_id = actor_data.get('id')
+                if isinstance(actor_data, dict) and actor_id and actor_id not in cast_map:
+                    cast_map[actor_id] = actor_data
+
+        # 1. 读取 series.json 的主演员 (这部分正确)
+        series_json_path = os.path.join(base_cache_dir, "series.json")
+        series_data = _read_local_json(series_json_path)
+        if series_data:
+            series_cast = series_data.get("credits", {}).get("cast", []) or series_data.get("casts", {}).get("cast", [])
+            _add_cast_to_map(series_cast, full_cast_map)
+        
+        # =======================================================
+        # 【★★★ 核心修复 V3：在正确的目录下查找文件 ★★★】
+        # =======================================================
+        
+        # 2. 直接在 base_cache_dir 中查找所有季文件，不再假设有 'seasons' 子目录
+        season_files = glob.glob(os.path.join(base_cache_dir, 'season-*.json'))
+        season_files = [f for f in season_files if 'episode' not in os.path.basename(f)]
+        logger.debug(f"在根目录找到 {len(season_files)} 个季文件进行处理。")
+
+        for season_file_path in season_files:
+            # a. 读取季文件本身的演员
+            season_data = _read_local_json(season_file_path)
+            if season_data:
+                season_cast = season_data.get("credits", {}).get("cast", [])
+                _add_cast_to_map(season_cast, full_cast_map)
+
+            # b. 尝试读取该季的第一集
+            match = re.search(r'season-(\d+)\.json', os.path.basename(season_file_path))
+            if match:
+                season_number = match.group(1)
+                first_episode_filename = f"season-{season_number}-episode-1.json"
+                # 直接在 base_cache_dir 中构建第一集的路径
+                first_episode_path = os.path.join(base_cache_dir, first_episode_filename)
+
+                if os.path.exists(first_episode_path):
+                    logger.debug(f"正在读取第一集演员信息: {first_episode_path}")
+                    episode_data = _read_local_json(first_episode_path)
+                    if episode_data:
+                        episode_cast = episode_data.get("credits", {}).get("cast", [])
+                        guest_stars = episode_data.get("guest_stars", [])
+                        _add_cast_to_map(episode_cast, full_cast_map)
+                        _add_cast_to_map(guest_stars, full_cast_map)
+        
+        full_cast_list = list(full_cast_map.values())
+        logger.debug(f"聚合完成，共获得 {len(full_cast_list)} 个独立演员。")
+        return full_cast_list
     def close(self):
         if self.douban_api: self.douban_api.close()
         logger.debug("MediaProcessor closed.")
