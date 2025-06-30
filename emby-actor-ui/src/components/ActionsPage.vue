@@ -1,6 +1,7 @@
 <!-- src/components/ActionsPage.vue -->
 
 <template>
+  <n-space vertical :size="24" style="margin-top: 15px;">
   <div class="actions-page-container">
     
     <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
@@ -140,6 +141,7 @@
       </n-gi>
     </n-grid>
   </div>
+  </n-space>
 </template>
 
 <script setup>

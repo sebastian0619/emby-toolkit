@@ -162,18 +162,28 @@ class MediaProcessorSA:
             logger.error(f"从数据库读取已处理记录失败: {e}")
         return log_dict
 
+    # --- 清除已处理记录 ---
     def clear_processed_log(self):
+        """
+        【最终正确版】清除数据库和内存中的已处理记录。
+        """
         try:
+            # ★★★ 修正函数名：使用 _get_db_connection ★★★
             conn = self._get_db_connection()
             cursor = conn.cursor()
+            
+            logger.debug("正在从数据库删除 processed_log 表中的所有记录...")
             cursor.execute("DELETE FROM processed_log")
             conn.commit()
             conn.close()
-            self.processed_items_cache.clear()
-            logger.info("数据库和内存中的已处理记录已清除。")
-        except Exception as e:
-            logger.error(f"清除数据库已处理记录失败: {e}")
+            logger.info("数据库中的已处理记录已清除。")
 
+            self.processed_items_cache.clear()
+            logger.info("内存中的已处理记录缓存已清除。")
+
+        except Exception as e:
+            logger.error(f"清除数据库或内存已处理记录时失败: {e}", exc_info=True)
+            raise
     # ✨ 从 SyncHandler 迁移并改造，用于在本地缓存中查找豆瓣JSON文件
     def _find_local_douban_json(self, imdb_id: Optional[str], douban_id: Optional[str], douban_cache_dir: str) -> Optional[str]:
         """根据 IMDb ID 或 豆瓣 ID 在本地缓存目录中查找对应的豆瓣JSON文件。"""
@@ -851,43 +861,52 @@ class MediaProcessorSA:
             force_fetch_from_tmdb=force_fetch_from_tmdb  # <--- 把新命令传递下去
         )
 
-    def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False, process_episodes: bool = True):
+    def process_full_library(self, update_status_callback: Optional[callable] = None, process_episodes: bool = True, force_reprocess_all: bool = False, force_fetch_from_tmdb: bool = False):
+        """
+        【V3 - 最终完整版】
+        这是所有全量扫描的唯一入口，它自己处理所有与“强制”相关的逻辑。
+        """
         self.clear_stop_signal()
         
+        logger.info(f"进入核心执行层: process_full_library, 接收到的 force_reprocess_all = {force_reprocess_all}, force_fetch_from_tmdb = {force_fetch_from_tmdb}")
+
+        if force_reprocess_all:
+            logger.info("检测到“强制重处理”选项，正在清空已处理日志...")
+            try:
+                self.clear_processed_log()
+            except Exception as e:
+                logger.error(f"在 process_full_library 中清空日志失败: {e}", exc_info=True)
+                if update_status_callback: update_status_callback(-1, "清空日志失败")
+                return
+
+        # --- ★★★ 补全了这部分代码 ★★★ ---
         libs_to_process_ids = self.config.get("libraries_to_process", [])
         if not libs_to_process_ids:
             logger.warning("未在配置中指定要处理的媒体库。")
             return
 
-        # --- 步骤 1: 获取库名对照表 ---
         logger.info("正在尝试从Emby获取媒体项目...")
         all_emby_libraries = emby_handler.get_emby_libraries(self.emby_url, self.emby_api_key, self.emby_user_id) or []
         library_name_map = {lib.get('Id'): lib.get('Name', '未知库名') for lib in all_emby_libraries}
-        logger.debug(f"已生成媒体库名称对照表: {library_name_map}")
-
-        # --- 步骤 2: 分别获取电影和电视剧 ---
+        
         movies = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Movie", self.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
         series = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Series", self.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
         
-        # --- 步骤 3: 汇总和打印漂亮的日志 ---
         if movies:
-            source_movie_lib_ids = sorted(list({item.get('_SourceLibraryId') for item in movies if item.get('_SourceLibraryId')}))
-            source_movie_lib_names = [library_name_map.get(id, str(id)) for id in source_movie_lib_ids]
+            source_movie_lib_names = sorted(list({library_name_map.get(item.get('_SourceLibraryId')) for item in movies if item.get('_SourceLibraryId')}))
             logger.info(f"从媒体库【{', '.join(source_movie_lib_names)}】获取到 {len(movies)} 个电影项目。")
 
         if series:
-            source_series_lib_ids = sorted(list({item.get('_SourceLibraryId') for item in series if item.get('_SourceLibraryId')}))
-            source_series_lib_names = [library_name_map.get(id, str(id)) for id in source_series_lib_ids]
+            source_series_lib_names = sorted(list({library_name_map.get(item.get('_SourceLibraryId')) for item in series if item.get('_SourceLibraryId')}))
             logger.info(f"从媒体库【{', '.join(source_series_lib_names)}】获取到 {len(series)} 个电视剧项目。")
 
-        # --- 步骤 4: 合并并继续后续处理 ---
         all_items = movies + series
-        
         total = len(all_items)
+        # --- ★★★ 补全结束 ★★★ ---
+        
         if total == 0:
             logger.info("在所有选定的库中未找到任何可处理的项目。")
-            if update_status_callback:
-                update_status_callback(100, "未找到可处理的项目。")
+            if update_status_callback: update_status_callback(100, "未找到可处理的项目。")
             return
 
         for i, item in enumerate(all_items):
@@ -896,9 +915,7 @@ class MediaProcessorSA:
             item_id = item.get('Id')
             item_name = item.get('Name', f"ID:{item_id}")
 
-            # ★★★ 核心修改：这里的跳过逻辑现在对所有情况都生效 ★★★
-            # 不再需要 if not force_reprocess_all ...
-            if item_id in self.processed_items_cache:
+            if not force_reprocess_all and item_id in self.processed_items_cache:
                 logger.info(f"正在跳过已处理的项目: {item_name}")
                 if update_status_callback:
                     update_status_callback(int(((i + 1) / total) * 100), f"跳过: {item_name}")
@@ -907,8 +924,12 @@ class MediaProcessorSA:
             if update_status_callback:
                 update_status_callback(int(((i + 1) / total) * 100), f"处理中 ({i+1}/{total}): {item_name}")
             
-            # ★★★ 核心修改：调用时不再需要传递 force_reprocess_all ★★★
-            self.process_single_item(item_id, process_episodes=process_episodes)
+            self.process_single_item(
+                item_id, 
+                process_episodes=process_episodes,
+                force_reprocess_this_item=force_reprocess_all,
+                force_fetch_from_tmdb=force_fetch_from_tmdb
+            )
             
             time.sleep(float(self.config.get("delay_between_items_sec", 0.5)))
         

@@ -1,5 +1,6 @@
 <!-- src/components/settings/GeneralSettingsPage.vue -->
 <template>
+  <n-space vertical :size="24" style="margin-top: 15px;">
   <div v-if="configModel">
   <n-form
     v-if="configModel"
@@ -199,6 +200,7 @@
     正在加载配置...
   </div>
   </div>
+  </n-space>
 </template>
 
 <script setup>

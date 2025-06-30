@@ -121,6 +121,18 @@ class MediaProcessorAPI:
         logger.debug(f"  INIT - self.douban_api is None: {self.douban_api is None}")
         if self.douban_api:
             logger.debug(f"  INIT - self.douban_api type: {type(self.douban_api)}")
+    # --- 清除已处理记录 ---
+    def clear_processed_log(self):
+        try:
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM processed_log")
+            conn.commit()
+            conn.close()
+            self.processed_items_cache.clear()
+            logger.info("数据库和内存中的已处理记录已清除。")
+        except Exception as e:
+            logger.error(f"清除数据库已处理记录失败: {e}")
     # ✨✨✨占位符✨✨✨
     def check_and_add_to_watchlist(self, item_details: Dict[str, Any]):
         """
@@ -315,19 +327,6 @@ class MediaProcessorAPI:
         
         # return 前面也有4个空格的缩进
         return log_dict
-    # ✨✨✨清除数据库中的所有已处理记录以及内存中的缓存✨✨✨
-    def clear_processed_log(self):
-        """清除数据库中的已处理记录和内存缓存。"""
-        try:
-            conn = self._get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM processed_log")
-            conn.commit()
-            conn.close()
-            self.processed_items_cache.clear()
-            logger.info("数据库和内存中的已处理记录已清除。")
-        except Exception as e:
-            logger.error(f"清除数据库已处理记录失败: {e}", exc_info=True)
     # ✨✨✨处理单个媒体项目演员列表的核心方法✨✨✨
     def _process_cast_list(self, current_emby_cast_people: List[Dict[str, Any]], media_info: Dict[str, Any], cursor: sqlite3.Cursor) -> List[Dict[str, Any]]:
         media_name_for_log = media_info.get("Name", "未知媒体")
@@ -747,7 +746,7 @@ class MediaProcessorAPI:
 
         return actor_entry
     # ✨✨✨处理配置文件中指定的所有媒体库的入口方法✨✨✨
-    def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False, process_episodes: bool = True):
+    def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False, process_episodes: bool = True, force_fetch_from_tmdb: bool = False):
         self.clear_stop_signal()
         logger.debug("process_full_library: 方法开始执行。")
         logger.debug(f"  force_reprocess_all: {force_reprocess_all}, process_episodes: {process_episodes}")
