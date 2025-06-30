@@ -1127,55 +1127,45 @@ def task_import_person_map(processor, file_content: str, **kwargs):
 # ★★★ 重新处理单个项目 ★★★
 def task_reprocess_single_item(processor: MediaProcessorSA, item_id: str):
     """
-    后台任务：完整地重新处理单个项目。
+    【已升级 - 强制在线获取版】
+    后台任务：通过强制在线获取TMDb最新数据的方式，重新处理单个项目。
     """
     item_name_for_log = f"ItemID: {item_id}"
-    logger.info(f"--- 开始执行“重新处理单个项目”任务 ({item_name_for_log}) ---")
+    logger.info(f"--- 开始执行“重新处理单个项目”任务 ({item_name_for_log}) [强制在线获取模式] ---")
     
     try:
-        # 1. 获取详情
+        # 1. 获取项目名用于日志（可选，但体验更好）
         item_details = emby_handler.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-        if not item_details:
-            logger.error(f"无法获取项目 {item_id} 的详情，任务中止。")
-            update_status_from_thread(-1, f"获取 {item_id} 详情失败")
-            return
-
-        item_name_for_log = item_details.get("Name", item_name_for_log)
+        if item_details:
+            item_name_for_log = item_details.get("Name", item_name_for_log)
+        
         update_status_from_thread(10, f"正在处理: {item_name_for_log}")
 
-        # 2. 删除缓存
-        tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-        item_type = item_details.get("Type")
-        override_path = get_override_path_for_item(item_type, tmdb_id, APP_CONFIG)
-        if override_path and os.path.exists(override_path):
-            shutil.rmtree(override_path)
-            logger.info(f"已为 '{item_name_for_log}' 删除缓存: {override_path}")
-        update_status_from_thread(25, "缓存已清除")
-
-        # 3. 触发刷新
-        emby_handler.refresh_emby_item_metadata(item_id, processor.emby_url, processor.emby_api_key, replace_all_metadata_param=True)
-        logger.info(f"已向 Emby 发送对 '{item_name_for_log}' 的刷新请求。")
-        update_status_from_thread(40, "已触发Emby刷新，等待...")
-
-        # 4. 等待 Emby 完成刷新
-        time.sleep(10)
-        update_status_from_thread(70, "Emby刷新完成，开始神医处理...")
-
-        # 5. 调用 processor 的核心方法进行“神医”处理
-        #    process_single_item 内部已经有完整的日志和状态更新
-        processor.process_single_item(item_id, force_reprocess_this_item=True)
+        # 2. 【核心修改】直接调用 processor 的核心方法，并传递 force_fetch_from_tmdb=True
+        #    不再需要删除缓存、触发Emby刷新、等待等脆弱的步骤！
+        logger.info(f"为 '{item_name_for_log}' 调用核心处理器，并设置强制在线获取标志...")
+        
+        processor.process_single_item(
+            item_id, 
+            force_reprocess_this_item=True, # 确保它会被处理，即使在processed_log里
+            force_fetch_from_tmdb=True      # ★★★ 这就是我们新的“魔法棒” ★★★
+        )
+        
+        # 3. 任务结束（process_single_item内部会处理最终状态）
+        # 这里的日志可以简化，因为核心日志在processor里
+        logger.info(f"--- “重新处理单个项目”任务完成 ({item_name_for_log}) ---")
 
     except Exception as e:
         logger.error(f"重新处理 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
         update_status_from_thread(-1, f"重新处理失败: {e}")
 
 
-# ★★★ 新任务函数 2: 重新处理所有待复核项 ★★★
+# ★★★ 重新处理所有待复核项 ★★★
 def task_reprocess_all_review_items(processor: MediaProcessorSA):
     """
-    后台任务：遍历所有待复核项并逐一重新处理。
+    【已升级】后台任务：遍历所有待复核项并逐一以“强制在线获取”模式重新处理。
     """
-    logger.info("--- 开始执行“重新处理所有待复核项”任务 ---")
+    logger.info("--- 开始执行“重新处理所有待复核项”任务 [强制在线获取模式] ---")
     try:
         with processor._get_db_connection() as conn:
             cursor = conn.cursor()
@@ -1188,21 +1178,19 @@ def task_reprocess_all_review_items(processor: MediaProcessorSA):
             update_status_from_thread(100, "待复核列表为空。")
             return
 
-        logger.info(f"共找到 {total} 个待复核项需要重新处理。")
+        logger.info(f"共找到 {total} 个待复核项需要以“强制在线获取”模式重新处理。")
 
         for i, item_id in enumerate(all_item_ids):
             if processor.is_stop_requested():
                 logger.info("任务被中止。")
                 break
             
-            # 更新总体任务进度
             update_status_from_thread(int((i/total)*100), f"正在重新处理 {i+1}/{total}: {item_id}")
             
-            # 直接调用单个重新处理的任务函数，复用逻辑
-            # 注意：我们传递了 processor 和 item_id
+            # 【核心修改】直接调用升级后的单个重新处理任务函数
             task_reprocess_single_item(processor, item_id)
             
-            # 每个项目之间稍作停顿，避免请求过于频繁
+            # 每个项目之间稍作停顿
             time.sleep(2) 
 
     except Exception as e:
