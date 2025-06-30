@@ -17,6 +17,7 @@ import logging
 import actor_utils
 from ai_translator import AITranslator # ✨✨✨ 导入新的AI翻译器 ✨✨✨
 from actor_utils import ActorDBManager
+from actor_utils import get_db_connection as get_central_db_connection
 # DoubanApi 的导入和可用性检查
 logger = logging.getLogger(__name__)
 try:
@@ -123,16 +124,29 @@ class MediaProcessorAPI:
             logger.debug(f"  INIT - self.douban_api type: {type(self.douban_api)}")
     # --- 清除已处理记录 ---
     def clear_processed_log(self):
+        """
+        【已改造】清除数据库和内存中的已处理记录。
+        使用中央数据库连接函数。
+        """
         try:
-            conn = self.get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM processed_log")
-            conn.commit()
-            conn.close()
+            # 1. ★★★ 调用中央函数，并传入 self.db_path ★★★
+            with get_central_db_connection(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                logger.debug("正在从数据库删除 processed_log 表中的所有记录...")
+                cursor.execute("DELETE FROM processed_log")
+                # with 语句会自动处理 conn.commit()
+            
+            logger.info("数据库中的已处理记录已清除。")
+
+            # 2. 清空内存缓存
             self.processed_items_cache.clear()
-            logger.info("数据库和内存中的已处理记录已清除。")
+            logger.info("内存中的已处理记录缓存已清除。")
+
         except Exception as e:
-            logger.error(f"清除数据库已处理记录失败: {e}")
+            logger.error(f"清除数据库或内存已处理记录时失败: {e}", exc_info=True)
+            # 3. ★★★ 重新抛出异常，通知上游调用者操作失败 ★★★
+            raise
     # ✨✨✨占位符✨✨✨
     def check_and_add_to_watchlist(self, item_details: Dict[str, Any]):
         """
@@ -149,7 +163,7 @@ class MediaProcessorAPI:
         logger.debug(f"开始处理: '{item_name_for_log}' (类型: {item_type}) ---")
         try:
             # ✨✨✨ 1. 使用 with 语句管理唯一的数据库连接 ✨✨✨
-            with self.actor_db_manager.get_db_connection() as conn:
+            with get_central_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # ✨✨✨ 2. 在所有操作开始前，开启一个总事务 ✨✨✨
@@ -287,11 +301,6 @@ class MediaProcessorAPI:
             logger.error(f"处理 '{item_name_for_log}' 时发生严重错误（如数据库连接失败）: {outer_e}", exc_info=True)
             # 在这里，我们不能写入数据库日志，因为连接可能已经失败
             # 记录到应用日志中即可
-    # ✨✨✨获取数据库连接的辅助方法✨✨✨
-    def _get_db_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row # 方便按列名访问
-        return conn
     # ✨✨✨设置停止信号，用于在多线程环境中优雅地中止长时间运行的任务✨✨✨
     def signal_stop(self):
         logger.info("MediaProcessorAPI 收到停止信号。")
@@ -311,18 +320,25 @@ class MediaProcessorAPI:
         # 这一块的所有内容都需要缩进！
         log_dict = {}
         try:
-            # self 前面有4个空格的缩进
-            conn = self._get_db_connection()
-            cursor = conn.cursor()
-            # 同时查询 item_id 和 item_name
-            cursor.execute("SELECT item_id, item_name FROM processed_log")
-            rows = cursor.fetchall()
-            for row in rows:
-                # 将 ID 和 名称 存入字典
-                if row['item_id'] and row['item_name']:
-                    log_dict[row['item_id']] = row['item_name']
-            conn.close()
+            # 1. ★★★ 使用 with 语句和中央函数 ★★★
+            #    它需要知道 db_path，我们从 self.db_path 获取
+            with get_central_db_connection(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # 2. 执行查询
+                cursor.execute("SELECT item_id, item_name FROM processed_log")
+                rows = cursor.fetchall()
+                
+                # 3. 处理结果
+                for row in rows:
+                    if row['item_id'] and row['item_name']:
+                        log_dict[row['item_id']] = row['item_name']
+            
+            # 4. ★★★ 无需手动 conn.close() 或 conn.commit() ★★★
+            #    with 语句在退出时会自动处理这一切！
+
         except Exception as e:
+            # 异常处理逻辑保持不变，但现在它能捕获更多类型的错误（比如连接失败）
             logger.error(f"从数据库读取已处理记录失败: {e}", exc_info=True)
         
         # return 前面也有4个空格的缩进
@@ -837,68 +853,60 @@ class MediaProcessorAPI:
         enriched_cast = [dict(actor) for actor in current_cast]
         used_new_actor_indices = set()
         
-        # 我们需要一个数据库连接来调用翻译缓存和在线翻译
-        conn = self._get_db_connection()
-        cursor = conn.cursor()
-
         try:
-            for i, current_actor in enumerate(enriched_cast):
-                current_name_zh = current_actor.get('name', '').strip()
-                if not current_name_zh or not utils.contains_chinese(current_name_zh):
-                    # 如果当前演员名不是中文，就直接进行常规匹配
-                    logger.debug(f"当前演员 '{current_name_zh}' 非中文，使用直接匹配。")
-                    # (这里可以保留之前的直接匹配逻辑，为简化，我们先专注解决中文名问题)
-                    pass
-                
-                # --- 核心：反向翻译匹配 ---
-                # 将当前演员的中文名翻译成英文
-                # 注意：_translate_actor_field 内部会自动处理缓存
-                translated_name_en = actor_utils.translate_actor_field(
-                    text=current_name_zh,
-                    field_name="演员名(用于匹配)",
-                    actor_name_for_log=current_name_zh,
-                    db_cursor_for_cache=cursor
-                )
-                
-                # 如果翻译结果和原文一样（说明翻译失败或已经是英文），则跳过这个演员
-                if translated_name_en == current_name_zh:
-                    logger.debug(f"演员 '{current_name_zh}' 翻译失败或无需翻译，跳过反向匹配。")
-                    continue
+            # 1. 使用 with 语句和中央函数，将所有数据库操作包裹起来
+            with get_central_db_connection(self.db_path) as conn:
+                cursor = conn.cursor()
 
-                logger.info(f"尝试为 '{current_name_zh}' (翻译为: '{translated_name_en}') 寻找匹配...")
-
-                # 在新列表中寻找能与翻译后的英文名匹配的项
-                for j, new_actor in enumerate(new_cast_from_web):
-                    if j in used_new_actor_indices:
+                # 2. 您所有的业务逻辑代码，原封不动地放在这里
+                for i, current_actor in enumerate(enriched_cast):
+                    current_name_zh = current_actor.get('name', '').strip()
+                    if not current_name_zh or not utils.contains_chinese(current_name_zh):
+                        logger.debug(f"当前演员 '{current_name_zh}' 非中文，使用直接匹配。")
+                        pass
+                    
+                    translated_name_en = actor_utils.translate_actor_field(
+                        text=current_name_zh,
+                        field_name="演员名(用于匹配)",
+                        actor_name_for_log=current_name_zh,
+                        db_cursor_for_cache=cursor
+                    )
+                    
+                    if translated_name_en == current_name_zh:
+                        logger.debug(f"演员 '{current_name_zh}' 翻译失败或无需翻译，跳过反向匹配。")
                         continue
 
-                    new_name_en = new_actor.get('name', '').strip()
-                    if not new_name_en:
-                        continue
+                    logger.info(f"尝试为 '{current_name_zh}' (翻译为: '{translated_name_en}') 寻找匹配...")
 
-                    # 进行不区分大小写的匹配
-                    if translated_name_en.lower() == new_name_en.lower():
-                        logger.info(f"匹配成功: '{current_name_zh}' <=> '{new_name_en}' (通过翻译)")
-                        
-                        new_role = new_actor.get('role')
-                        if new_role:
-                            logger.info(f"  -> 角色名更新: '{current_actor.get('role')}' -> '{new_role}'")
-                            enriched_cast[i]['role'] = new_role
-                        
-                        enriched_cast[i]['matchStatus'] = '已更新(翻译匹配)'
-                        used_new_actor_indices.add(j)
-                        break # 找到匹配，处理下一个当前演员
+                    for j, new_actor in enumerate(new_cast_from_web):
+                        if j in used_new_actor_indices:
+                            continue
 
-            # 提交可能在翻译过程中产生的数据库缓存更新
-            conn.commit()
+                        new_name_en = new_actor.get('name', '').strip()
+                        if not new_name_en:
+                            continue
+
+                        if translated_name_en.lower() == new_name_en.lower():
+                            logger.info(f"匹配成功: '{current_name_zh}' <=> '{new_name_en}' (通过翻译)")
+                            
+                            new_role = new_actor.get('role')
+                            if new_role:
+                                logger.info(f"  -> 角色名更新: '{current_actor.get('role')}' -> '{new_role}'")
+                                enriched_cast[i]['role'] = new_role
+                            
+                            enriched_cast[i]['matchStatus'] = '已更新(翻译匹配)'
+                            used_new_actor_indices.add(j)
+                            break
+                
+                # 3. with 语句块在这里结束。
+                #    如果代码能执行到这里（没有发生异常），事务会自动提交。
+                #    如果中间发生异常，事务会自动回滚。
+                #    无论如何，连接都会被自动关闭。
+                #    我们不再需要任何手动的 conn.commit(), conn.rollback(), conn.close()。
 
         except Exception as e:
+            # 4. 这里的 except 块现在能捕获所有错误，包括连接数据库时的错误
             logger.error(f"在 enrich_cast_list 中发生错误: {e}", exc_info=True)
-            if conn:
-                conn.rollback()
-        finally:
-            if conn:
-                conn.close()
 
         unmatched_count = len(new_cast_from_web) - len(used_new_actor_indices)
         if unmatched_count > 0:
@@ -967,36 +975,41 @@ class MediaProcessorAPI:
             else:
                 logger.info("一键翻译：AI未启用，使用传统引擎逐个翻译。")
                 
-            conn = self._get_db_connection()
             try:
-                cursor = conn.cursor()
-                for i, actor in enumerate(translated_cast):
-                    actor_name_for_log = actor.get('name', '未知演员')
+                # 1. 使用 with 语句和中央函数，将所有数据库操作包裹起来
+                with get_central_db_connection(self.db_path) as conn:
+                    cursor = conn.cursor()
+
+                    # 2. 您所有的业务逻辑代码，原封不动地放在这里
+                    for i, actor in enumerate(translated_cast):
+                        actor_name_for_log = actor.get('name', '未知演员')
+                        
+                        # 翻译演员名
+                        name_to_translate = actor.get('name', '').strip()
+                        if name_to_translate and not utils.contains_chinese(name_to_translate):
+                            translated_name = actor_utils.translate_actor_field(name_to_translate, "演员名(一键翻译)", name_to_translate, cursor)
+                            if translated_name and translated_name != name_to_translate:
+                                translated_cast[i]['name'] = translated_name
+                                actor_name_for_log = translated_name
+
+                        # 翻译角色名
+                        role_to_translate = actor.get('role', '').strip()
+                        if role_to_translate and not utils.contains_chinese(role_to_translate):
+                            translated_role = actor_utils.translate_actor_field(role_to_translate, "角色名(一键翻译)", actor_name_for_log, cursor)
+                            if translated_role and translated_role != role_to_translate:
+                                translated_cast[i]['role'] = translated_role
+
+                        if translated_cast[i].get('name') != actor.get('name') or translated_cast[i].get('role') != actor.get('role'):
+                            translated_cast[i]['matchStatus'] = '已翻译'
                     
-                    # 翻译演员名
-                    name_to_translate = actor.get('name', '').strip()
-                    if name_to_translate and not utils.contains_chinese(name_to_translate):
-                        translated_name = actor_utils.translate_actor_field(name_to_translate, "演员名(一键翻译)", name_to_translate, cursor)
-                        if translated_name and translated_name != name_to_translate:
-                            translated_cast[i]['name'] = translated_name
-                            actor_name_for_log = translated_name
+                    # 3. with 语句块在这里结束。
+                    #    因为 translate_actor_field 内部可能会写入翻译缓存，
+                    #    所以 with 语句在退出时会自动 commit 这些更改。
+                    #    我们不再需要任何手动的 conn.commit() 或 conn.close()。
 
-                    # 翻译角色名
-                    role_to_translate = actor.get('role', '').strip()
-                    if role_to_translate and not utils.contains_chinese(role_to_translate):
-                        translated_role = actor_utils.translate_actor_field(role_to_translate, "角色名(一键翻译)", actor_name_for_log, cursor)
-                        if translated_role and translated_role != role_to_translate:
-                            translated_cast[i]['role'] = translated_role
-
-                    if translated_cast[i].get('name') != actor.get('name') or translated_cast[i].get('role') != actor.get('role'):
-                        translated_cast[i]['matchStatus'] = '已翻译'
-
-                conn.commit()
             except Exception as e:
+                # 4. 这里的 except 块现在能捕获所有错误
                 logger.error(f"一键翻译（降级模式）时发生错误: {e}", exc_info=True)
-                if conn: conn.rollback()
-            finally:
-                if conn: conn.close()
 
         logger.info("一键翻译完成。")
         return translated_cast

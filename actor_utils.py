@@ -28,20 +28,7 @@ class ActorDBManager:
     def __init__(self, db_path: str):
         self.db_path = db_path
         logger.debug(f"ActorDBManager 初始化，使用数据库: {self.db_path}")
-    # ✨✨✨获取数据库连接的辅助方法✨✨✨
-    def get_db_connection(self) -> sqlite3.Connection:
-        """
-        获取一个配置好 WAL 模式和 row_factory 的数据库连接。
-        调用者负责关闭连接。
-        """
-        try:
-            conn = sqlite3.connect(self.db_path, timeout=20.0)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL;")
-            return conn
-        except sqlite3.Error as e:
-            logger.error(f"获取数据库连接失败: {e}", exc_info=True)
-            raise
+    
 
     def find_person_by_any_id(self, cursor: sqlite3.Cursor, **kwargs) -> Optional[sqlite3.Row]:
         search_criteria = [
@@ -169,6 +156,25 @@ class ActorDBManager:
 # ======================================================================
 # 模块 2: 通用的业务逻辑函数 (Business Logic Helpers)
 # ======================================================================
+# ✨✨✨获取数据库连接的辅助方法✨✨✨
+def get_db_connection(db_path: str) -> sqlite3.Connection:
+    """
+    【中央函数】获取一个配置好 WAL 模式和 row_factory 的数据库连接。
+    接收数据库路径作为参数。
+    """
+    if not db_path:
+        logger.error("尝试获取数据库连接，但未提供 db_path。")
+        raise ValueError("数据库路径 (db_path) 不能为空。")
+        
+    try:
+        # ★★★ 不再使用 self.db_path，而是使用传入的参数 db_path ★★★
+        conn = sqlite3.connect(db_path, timeout=20.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        return conn
+    except sqlite3.Error as e:
+        logger.error(f"获取数据库连接失败: {e}", exc_info=True)
+        raise
 # --- 演员选择 ---
 def select_best_role(current_role: str, candidate_role: str) -> str:
     """
@@ -607,7 +613,7 @@ def enrich_all_actor_aliases_task(
     logger.info(f"同步冷却时间设置为 {SYNC_INTERVAL_DAYS} 天。") # 添加日志，方便调试
 
     try:
-        with actor_db_manager.get_db_connection() as conn:
+        with get_db_connection(db_path) as conn:
             # --- 阶段一：从 TMDb 补充 IMDb ID (并发执行) ---
             logger.info("--- 阶段一：从 TMDb 补充 IMDb ID ---")
             cursor = conn.cursor()

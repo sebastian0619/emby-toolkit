@@ -17,6 +17,7 @@ import constants
 import logging
 import actor_utils
 from actor_utils import ActorDBManager
+from actor_utils import get_db_connection as get_central_db_connection
 from ai_translator import AITranslator
 from utils import LogDBManager, get_override_path_for_item
 from watchlist_processor import WatchlistProcessor
@@ -106,7 +107,31 @@ class MediaProcessorSA:
         self.processed_items_cache = self._load_processed_log_from_db()
         self.manual_edit_cache = {}
         logger.debug("(神医模式)初始化完成。")
+    # --- 清除已处理记录 ---
+    def clear_processed_log(self):
+        """
+        【已改造】清除数据库和内存中的已处理记录。
+        使用中央数据库连接函数。
+        """
+        try:
+            # 1. ★★★ 调用中央函数，并传入 self.db_path ★★★
+            with get_central_db_connection(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                logger.debug("正在从数据库删除 processed_log 表中的所有记录...")
+                cursor.execute("DELETE FROM processed_log")
+                # with 语句会自动处理 conn.commit()
+            
+            logger.info("数据库中的已处理记录已清除。")
 
+            # 2. 清空内存缓存
+            self.processed_items_cache.clear()
+            logger.info("内存中的已处理记录缓存已清除。")
+
+        except Exception as e:
+            logger.error(f"清除数据库或内存已处理记录时失败: {e}", exc_info=True)
+            # 3. ★★★ 重新抛出异常，通知上游调用者操作失败 ★★★
+            raise
     # ★★★ 公开的、独立的追剧判断方法 ★★★
     def check_and_add_to_watchlist(self, item_details: Dict[str, Any]):
         """
@@ -127,13 +152,6 @@ class MediaProcessorSA:
         except Exception as e_watchlist:
             logger.error(f"在自动添加 '{item_name_for_log}' 到追剧列表时发生错误: {e_watchlist}", exc_info=True)
 
-    def _get_db_connection(self) -> sqlite3.Connection:
-        # ✨✨✨ 增加 timeout 参数，单位是秒 ✨✨✨
-        # 5-10秒是一个比较合理的等待时间
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
-        conn.row_factory = sqlite3.Row
-        return conn
-
     def signal_stop(self):
         self._stop_event.set()
 
@@ -150,40 +168,26 @@ class MediaProcessorSA:
     def _load_processed_log_from_db(self) -> Dict[str, str]:
         log_dict = {}
         try:
-            conn = self._get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT item_id, item_name FROM processed_log")
-            rows = cursor.fetchall()
-            for row in rows:
-                if row['item_id'] and row['item_name']:
-                    log_dict[row['item_id']] = row['item_name']
-            conn.close()
+            # 1. ★★★ 使用 with 语句和中央函数 ★★★
+            with get_central_db_connection(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # 2. 执行查询
+                cursor.execute("SELECT item_id, item_name FROM processed_log")
+                rows = cursor.fetchall()
+                
+                # 3. 处理结果
+                for row in rows:
+                    if row['item_id'] and row['item_name']:
+                        log_dict[row['item_id']] = row['item_name']
+            
+            # 4. with 语句会自动处理所有事情，代码干净利落！
+
         except Exception as e:
-            logger.error(f"从数据库读取已处理记录失败: {e}")
+            # 5. ★★★ 记录更详细的异常信息 ★★★
+            logger.error(f"从数据库读取已处理记录失败: {e}", exc_info=True)
         return log_dict
 
-    # --- 清除已处理记录 ---
-    def clear_processed_log(self):
-        """
-        【最终正确版】清除数据库和内存中的已处理记录。
-        """
-        try:
-            # ★★★ 修正函数名：使用 _get_db_connection ★★★
-            conn = self._get_db_connection()
-            cursor = conn.cursor()
-            
-            logger.debug("正在从数据库删除 processed_log 表中的所有记录...")
-            cursor.execute("DELETE FROM processed_log")
-            conn.commit()
-            conn.close()
-            logger.info("数据库中的已处理记录已清除。")
-
-            self.processed_items_cache.clear()
-            logger.info("内存中的已处理记录缓存已清除。")
-
-        except Exception as e:
-            logger.error(f"清除数据库或内存已处理记录时失败: {e}", exc_info=True)
-            raise
     # ✨ 从 SyncHandler 迁移并改造，用于在本地缓存中查找豆瓣JSON文件
     def _find_local_douban_json(self, imdb_id: Optional[str], douban_id: Optional[str], douban_cache_dir: str) -> Optional[str]:
         """根据 IMDb ID 或 豆瓣 ID 在本地缓存目录中查找对应的豆瓣JSON文件。"""
@@ -547,7 +551,7 @@ class MediaProcessorSA:
             return
 
         try:
-            with self._get_db_connection() as conn:
+            with get_central_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # --- ★★★ 开始移植批量翻译逻辑 ★★★ ---
@@ -619,33 +623,35 @@ class MediaProcessorSA:
         
         logger.info(f"前置翻译为 '{item_name_for_log}' 的演员中文化处理完成。")
 
-    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool = False, should_process_episodes_this_run: bool = False, force_fetch_from_tmdb: bool = False):
+    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool, should_process_episodes_this_run: bool, force_fetch_from_tmdb: bool):
         """
         【V-Final 升级版 - 支持强制在线获取】
         在一个统一的数据库事务中，串行执行所有数据库相关的处理轨道。
         增加了 force_fetch_from_tmdb 标志以实现逻辑分岔。
         """
+        # --- 准备工作 (确保所有变量先定义) ---
         item_id = item_details_from_emby.get("Id")
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
         tmdb_id = item_details_from_emby.get("ProviderIds", {}).get("Tmdb")
         item_type = item_details_from_emby.get("Type")
-
         log_prefix = f"[{'在线模式' if force_fetch_from_tmdb else '本地模式'}]"
+        
+        # ★★★ 现在 item_name_for_log 已经定义好了 ★★★
+        original_emby_actor_count = len(item_details_from_emby.get("People", []))
+        
+        # ★★★ 在这里使用它就完全安全了 ★★★
+        logger.debug(f"记录到 '{item_name_for_log}' 在Emby中的原始演员数为: {original_emby_actor_count}")
+
         logger.debug(f"{log_prefix} --- 开始核心处理: '{item_name_for_log}' (TMDbID: {tmdb_id}) ---")
 
         if self.is_stop_requested():
             logger.info(f"{log_prefix} 任务在处理 '{item_name_for_log}' 前被中止。")
             return False
 
-        cursor = None
-        conn = None # 将 conn 也提到外面，以便在顶层 except 中使用
+        # ★★★ 使用 with 语句来管理数据库连接和事务 ★★★
         try:
-            conn = self.actor_db_manager.get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("BEGIN TRANSACTION;")
-            logger.debug(f"{log_prefix} 媒体 '{item_name_for_log}' 的总数据库事务已开启。")
-
-            try:
+            with get_central_db_connection(self.db_path) as conn:
+                cursor = conn.cursor()
                 # ★★★ 轨道一：API 轨道 (仅中文化演员名) ★★★
                 if not force_fetch_from_tmdb:
                     self._process_api_track_person_names_only(item_details_from_emby, cursor)
@@ -775,14 +781,17 @@ class MediaProcessorSA:
                 # --- 阶段3: 统计、评分和最终日志记录 ---
                 final_actor_count = len(final_cast_perfect)
                 logger.info(f"✨✨✨处理统计 '{item_name_for_log}'✨✨✨")
-                logger.info(f"  - 原有演员: {initial_actor_count} 位")
+                logger.info(f"  - 原有演员: {original_emby_actor_count} 位")
+                newly_added_count = final_actor_count - original_emby_actor_count
+                if newly_added_count > 0:
+                    logger.info(f"  - 新增演员: {newly_added_count} 位") # 可以换个说法
                 logger.info(f"  - 最终演员: {final_actor_count} 位")
 
                 if self.is_stop_requested(): raise InterruptedError("任务被中止")
 
                 processing_score = actor_utils.evaluate_cast_processing_quality(
                     final_cast=final_cast_perfect,
-                    original_cast_count=initial_actor_count,
+                    original_cast_count=original_emby_actor_count,
                     expected_final_count=len(final_cast_perfect),
                     is_animation=is_animation
                 )
@@ -813,21 +822,25 @@ class MediaProcessorSA:
                 conn.commit()
                 return True
 
-            except (ValueError, InterruptedError) as e:
-                # 捕获可预见的错误或用户中止，回滚事务
-                log_message = f"处理 '{item_name_for_log}' 的过程中被用户中止" if isinstance(e, InterruptedError) else f"处理 '{item_name_for_log}' 失败: {e}"
-                logger.warning(f"{log_message}，正在回滚数据库事务...")
-                conn.rollback()
-                if isinstance(e, ValueError): # 只为可预见的错误记录失败日志
-                     self.log_db_manager.save_to_failed_log(cursor, item_id, item_name_for_log, f"文件或数据错误: {e}", item_type)
-                return False
-
+        except (ValueError, InterruptedError) as e:
+            # 捕获我们预期的、不应中止整个程序的错误
+            log_message = f"处理 '{item_name_for_log}' 的过程中被用户中止" if isinstance(e, InterruptedError) else f"处理 '{item_name_for_log}' 失败: {e}"
+            logger.warning(f"{log_message}")
+            # 注意：因为异常发生在 with 块内，事务会自动回滚，我们无需手动操作
+            # 我们可以在这里手动写入失败日志，但这需要一个新的数据库连接
+            # 更简单的做法是，让上层调用者决定是否记录失败
+            return False
+    
         except Exception as outer_e:
-            logger.error(f"在事务处理中发生未知错误 for media '{item_name_for_log}': {outer_e}", exc_info=True)
-            if conn and cursor:
-                logger.warning("正在回滚数据库事务...")
-                conn.rollback()
-                self.log_db_manager.save_to_failed_log(cursor, item_id, item_name_for_log, f"核心处理异常: {str(outer_e)}", item_type)
+            # 捕获所有其他意外的、严重的错误
+            logger.error(f"核心处理流程中发生未知严重错误 for '{item_name_for_log}': {outer_e}", exc_info=True)
+            # 事务同样会自动回滚
+            # 我们可以在这里手动写入失败日志
+            try:
+                with get_central_db_connection(self.db_path) as conn_fail:
+                    self.log_db_manager.save_to_failed_log(conn_fail.cursor(), item_id, item_name_for_log, f"核心处理异常: {str(outer_e)}", item_type)
+            except Exception as log_e:
+                logger.error(f"写入失败日志时再次发生错误: {log_e}")
             return False
 
     def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False, process_episodes: Optional[bool] = None, force_fetch_from_tmdb: bool = False):
@@ -993,33 +1006,42 @@ class MediaProcessorSA:
             else:
                 logger.info("手动编辑-翻译：AI未启用，使用传统引擎逐个翻译。")
                 
-            conn = self._get_db_connection()
             try:
-                cursor = conn.cursor()
-                for i, actor in enumerate(translated_cast):
-                    actor_name_for_log = actor.get('name', '未知演员')
-                    
-                    # 翻译演员名
-                    name_to_translate = actor.get('name', '').strip()
-                    if name_to_translate:
-                        translated_name = actor_utils.translate_actor_field(name_to_translate, "演员名", actor_name_for_log, cursor)
-                        if translated_name and translated_name != name_to_translate:
-                            translated_cast[i]['name'] = translated_name
-                            actor_name_for_log = translated_name
+                # 1. 使用 with 语句和中央函数，将所有数据库操作包裹起来
+                with get_central_db_connection(self.db_path) as conn:
+                    cursor = conn.cursor()
 
-                    # 翻译角色名
-                    role_to_translate = actor.get('role', '').strip()
-                    if role_to_translate:
-                        translated_role = actor_utils.translate_actor_field(role_to_translate, "角色名", actor_name_for_log, cursor)
-                        if translated_role and translated_role != role_to_translate:
-                            translated_cast[i]['role'] = translated_role
-                
-                conn.commit()
+                    # 2. 您所有的翻译业务逻辑，原封不动地放在这里
+                    for i, actor in enumerate(translated_cast):
+                        actor_name_for_log = actor.get('name', '未知演员')
+                        
+                        # 翻译演员名
+                        name_to_translate = actor.get('name', '').strip()
+                        if name_to_translate and not utils.contains_chinese(name_to_translate):
+                            translated_name = actor_utils.translate_actor_field(name_to_translate, "演员名(一键翻译)", name_to_translate, cursor)
+                            if translated_name and translated_name != name_to_translate:
+                                translated_cast[i]['name'] = translated_name
+                                actor_name_for_log = translated_name
+
+                        # 翻译角色名
+                        role_to_translate = actor.get('role', '').strip()
+                        if role_to_translate and not utils.contains_chinese(role_to_translate):
+                            translated_role = actor_utils.translate_actor_field(role_to_translate, "角色名(一键翻译)", actor_name_for_log, cursor)
+                            if translated_role and translated_role != role_to_translate:
+                                translated_cast[i]['role'] = translated_role
+
+                        if translated_cast[i].get('name') != actor.get('name') or translated_cast[i].get('role') != actor.get('role'):
+                            translated_cast[i]['matchStatus'] = '已翻译'
+                    
+                    # 3. with 语句块在这里结束。
+                    #    因为 translate_actor_field 内部可能会写入翻译缓存，
+                    #    所以 with 语句在退出时会自动 commit 这些更改。
+                    #    我们不再需要任何手动的 conn.commit(), conn.rollback(), conn.close()。
+
             except Exception as e:
-                logger.error(f"手动编辑-翻译（降级模式）时发生错误: {e}", exc_info=True)
-                if conn: conn.rollback()
-            finally:
-                if conn: conn.close()
+                # 4. 这里的 except 块现在能捕获所有错误，包括连接数据库时的错误
+                logger.error(f"一键翻译（降级模式）时发生错误: {e}", exc_info=True)
+                # 注意：这里不需要返回 translated_cast，因为这个函数是直接修改列表内容的
 
         logger.info("手动编辑-翻译完成。")
         return translated_cast
@@ -1031,7 +1053,7 @@ class MediaProcessorSA:
         logger.info(f"手动处理流程启动 (后端缓存模式)：ItemID: {item_id} ('{item_name}')")
         try:
             # ✨✨✨ 1. 使用 with 语句，在所有操作开始前获取数据库连接 ✨✨✨
-            with self.actor_db_manager.get_db_connection() as conn:
+            with get_central_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # ✨✨✨ 2. 手动开启一个事务 ✨✨✨
@@ -1247,7 +1269,7 @@ class MediaProcessorSA:
             
             # 5. 获取失败日志信息和组合 response_data
             failed_log_info = {}
-            with self._get_db_connection() as conn:
+            with get_central_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT error_message, score FROM failed_log WHERE item_id = ?", (item_id,))
                 row = cursor.fetchone()
@@ -1278,7 +1300,7 @@ class MediaProcessorSA:
         logger.info("--- 开始执行全量海报同步任务 ---")
         
         try:
-            with self._get_db_connection() as conn:
+            with get_central_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT item_id, item_name FROM processed_log")
                 items_to_process = cursor.fetchall()
@@ -1378,14 +1400,24 @@ class MediaProcessorSA:
     # --- 从本地 cache 获取完整演员表 ---
     def _get_full_tv_cast_from_cache(self, base_cache_dir: str) -> List[Dict[str, Any]]:
         """
-        【折中优化方案 - V3 - 修正文件路径】从本地缓存中聚合电视剧的演员。
-        在正确的根目录下查找所有文件。
+        【终极方案 - 本地全量聚合+缓存】从本地缓存中聚合电视剧的所有演员。
+        1. 检查是否存在聚合缓存 `_cast_aggregated.json`，存在则直接使用。
+        2. 若不存在，则遍历所有json文件进行全量聚合，并将结果写入缓存。
         """
         # 确保 re 和 glob 已导入
         import re
         import glob
         
-        logger.info(f"开始聚合演员(剧、季、集)")
+        # 定义聚合缓存文件的名字，用下划线开头以示其为生成文件
+        aggregated_cache_file = os.path.join(base_cache_dir, "_cast_aggregated.json")
+
+        # 1. 快速通道：检查并使用聚合缓存
+        if os.path.exists(aggregated_cache_file):
+            logger.debug(f"发现并使用聚合演员缓存文件: {aggregated_cache_file}")
+            return _read_local_json(aggregated_cache_file) or []
+
+        # 2. 慢速通道：执行一次性的全量聚合
+        logger.info(f"未找到聚合缓存，开始为 '{os.path.basename(base_cache_dir)}' 执行首次全量演员聚合...")
         full_cast_map = {}
 
         def _add_cast_to_map(cast_list: List[Dict[str, Any]], cast_map: Dict[int, Dict]):
@@ -1394,49 +1426,36 @@ class MediaProcessorSA:
                 actor_id = actor_data.get('id')
                 if isinstance(actor_data, dict) and actor_id and actor_id not in cast_map:
                     cast_map[actor_id] = actor_data
-
-        # 1. 读取 series.json 的主演员 (这部分正确)
-        series_json_path = os.path.join(base_cache_dir, "series.json")
-        series_data = _read_local_json(series_json_path)
-        if series_data:
-            series_cast = series_data.get("credits", {}).get("cast", []) or series_data.get("casts", {}).get("cast", [])
-            _add_cast_to_map(series_cast, full_cast_map)
         
-        # =======================================================
-        # 【★★★ 核心修复 V3：在正确的目录下查找文件 ★★★】
-        # =======================================================
+        # 使用 glob 查找当前目录下的所有 .json 文件
+        all_json_files = glob.glob(os.path.join(base_cache_dir, '*.json'))
         
-        # 2. 直接在 base_cache_dir 中查找所有季文件，不再假设有 'seasons' 子目录
-        season_files = glob.glob(os.path.join(base_cache_dir, 'season-*.json'))
-        season_files = [f for f in season_files if 'episode' not in os.path.basename(f)]
-        logger.debug(f"在根目录找到 {len(season_files)} 个季文件进行处理。")
-
-        for season_file_path in season_files:
-            # a. 读取季文件本身的演员
-            season_data = _read_local_json(season_file_path)
-            if season_data:
-                season_cast = season_data.get("credits", {}).get("cast", [])
-                _add_cast_to_map(season_cast, full_cast_map)
-
-            # b. 尝试读取该季的第一集
-            match = re.search(r'season-(\d+)\.json', os.path.basename(season_file_path))
-            if match:
-                season_number = match.group(1)
-                first_episode_filename = f"season-{season_number}-episode-1.json"
-                # 直接在 base_cache_dir 中构建第一集的路径
-                first_episode_path = os.path.join(base_cache_dir, first_episode_filename)
-
-                if os.path.exists(first_episode_path):
-                    logger.debug(f"正在读取第一集演员信息: {first_episode_path}")
-                    episode_data = _read_local_json(first_episode_path)
-                    if episode_data:
-                        episode_cast = episode_data.get("credits", {}).get("cast", [])
-                        guest_stars = episode_data.get("guest_stars", [])
-                        _add_cast_to_map(episode_cast, full_cast_map)
-                        _add_cast_to_map(guest_stars, full_cast_map)
+        # ★★★ 关键一步：排除我们即将生成的聚合缓存文件本身，防止下次重复读取 ★★★
+        all_json_files = [f for f in all_json_files if os.path.basename(f) != "_cast_aggregated.json"]
         
+        logger.debug(f"找到 {len(all_json_files)} 个源数据文件进行全量聚合。")
+
+        for file_path in all_json_files:
+            data = _read_local_json(file_path)
+            if data:
+                # 兼容所有可能的演员键
+                cast = data.get("credits", {}).get("cast", []) or data.get("casts", {}).get("cast", [])
+                guest_stars = data.get("guest_stars", [])
+                
+                _add_cast_to_map(cast, full_cast_map)
+                _add_cast_to_map(guest_stars, full_cast_map)
+
         full_cast_list = list(full_cast_map.values())
-        logger.debug(f"聚合完成，共获得 {len(full_cast_list)} 个独立演员。")
+        logger.info(f"全量聚合完成，共获得 {len(full_cast_list)} 个独立演员。")
+
+        # 3. 将聚合结果写入缓存文件，供下次使用
+        try:
+            with open(aggregated_cache_file, 'w', encoding='utf-8') as f:
+                json.dump(full_cast_list, f, ensure_ascii=False, indent=4)
+            logger.info(f"已将聚合结果写入新缓存: {aggregated_cache_file}")
+        except IOError as e:
+            logger.error(f"写入聚合演员缓存失败: {e}")
+
         return full_cast_list
     # --- 通过tmdb获取演员表 ---
     def _fetch_and_build_tmdb_base_json(self, tmdb_id: str, item_type: str) -> Optional[Dict[str, Any]]:

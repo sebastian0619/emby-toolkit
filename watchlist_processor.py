@@ -8,7 +8,7 @@ import copy
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 import threading
-
+from actor_utils import get_db_connection as get_central_db_connection
 # 导入我们需要的辅助模块
 import tmdb_handler
 import emby_handler
@@ -38,11 +38,6 @@ class WatchlistProcessor:
     def close(self): logger.debug("WatchlistProcessor closed.")
 
     # --- 数据库和文件辅助方法 ---
-    def _get_db_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
-        conn.row_factory = sqlite3.Row
-        return conn
-    
     def _read_local_json(self, file_path: str) -> Optional[Dict[str, Any]]:
         if not os.path.exists(file_path):
             return None
@@ -81,7 +76,7 @@ class WatchlistProcessor:
         tmdb_status = tmdb_details.get("status")
         if tmdb_status in ["Returning Series", "In Production", "Planned"]:
             try:
-                with self._get_db_connection() as conn:
+                with get_central_db_connection(self.db_path) as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
                         INSERT OR IGNORE INTO watchlist (item_id, tmdb_id, item_name, item_type, status)
@@ -170,7 +165,7 @@ class WatchlistProcessor:
         
         series_to_process = []
         try:
-            with self._get_db_connection() as conn:
+            with get_central_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
                 if item_id:
                     cursor.execute("SELECT * FROM watchlist WHERE item_id = ?", (item_id,))
@@ -287,7 +282,7 @@ class WatchlistProcessor:
     def _update_watchlist_status(self, item_id: str, status: str, item_name: str):
         """更新数据库中指定项目的状态。"""
         try:
-            with self._get_db_connection() as conn:
+            with get_central_db_connection(self.db_path) as conn:
                 current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute("UPDATE watchlist SET status = ?, last_checked_at = ? WHERE item_id = ?", (status, current_time, item_id))
             logger.info(f"  成功更新 '{item_name}' 在数据库中的状态为 '{status}'。")
@@ -297,7 +292,7 @@ class WatchlistProcessor:
     def _update_watchlist_timestamp(self, item_id: str, item_name: str):
         """仅更新数据库中指定项目的 last_checked_at 时间戳。"""
         try:
-            with self._get_db_connection() as conn:
+            with get_central_db_connection(self.db_path) as conn:
                 current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute("UPDATE watchlist SET last_checked_at = ? WHERE item_id = ?", (current_time, item_id))
         except Exception as e:
