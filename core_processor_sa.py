@@ -367,6 +367,12 @@ class MediaProcessorSA:
             still_unmatched_final = []
             for d_actor in unmatched_douban_candidates:
                 if self.is_stop_requested(): raise InterruptedError("任务中止")
+                # ✨ 核心修改：在每次循环开始时检查上限
+                if len(final_cast_map) >= limit:
+                    logger.info(f"演员数已达上限 ({limit})，跳过剩余 {len(unmatched_douban_candidates) - i} 位演员的API查询。")
+                    # 将所有剩下的演员直接加入 still_unmatched_final
+                    still_unmatched_final.extend(unmatched_douban_candidates[i:])
+                    break # 彻底结束新增流程
                 d_douban_id = d_actor.get("DoubanCelebrityId")
                 match_found = False
                 if d_douban_id and self.douban_api and self.tmdb_api_key:
