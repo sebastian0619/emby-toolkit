@@ -1,4 +1,5 @@
 <template>
+  <n-layout content-style="padding: 24px;">
   <!-- 最外层使用 n-space 来管理 Grid 和下方按钮的垂直间距 -->
   <n-space vertical :size="24" style="margin-top: 15px;">
     
@@ -152,6 +153,7 @@
       保存定时任务配置
     </n-button>
   </n-space>
+  </n-layout>
 </template>
 
 <script setup>

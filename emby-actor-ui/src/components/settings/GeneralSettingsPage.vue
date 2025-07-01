@@ -1,5 +1,6 @@
 <!-- src/components/settings/GeneralSettingsPage.vue -->
 <template>
+  <n-layout content-style="padding: 24px;">
   <n-space vertical :size="24" style="margin-top: 15px;">
   <div v-if="configModel">
   <n-form
@@ -201,6 +202,7 @@
   </div>
   </div>
   </n-space>
+  </n-layout>
 </template>
 
 <script setup>

@@ -1,5 +1,6 @@
 <!-- src/components/ReviewList.vue -->
 <template>
+  <n-layout content-style="padding: 24px;">
   <n-card title="媒体库浏览器" class="glass-section" :bordered="false" size="small">
     <!-- ✅ [修正] Access prop via `props.taskStatus` -->
     <n-alert 
@@ -77,6 +78,7 @@
       </n-spin>
     </div>
   </n-card>
+  </n-layout>
 </template>
 
 <script setup>

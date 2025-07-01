@@ -100,3 +100,6 @@ html.light input, html.light textarea {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+.actions-page-container {
+  padding: 0 24px 24px 24px; /* 左右和底部间距 */
+}

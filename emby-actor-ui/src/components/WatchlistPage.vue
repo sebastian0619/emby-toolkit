@@ -1,6 +1,7 @@
 <!-- src/components/WatchlistPage.vue (带视图切换的最终版) -->
 
 <template>
+  <n-layout content-style="padding: 24px;">
   <div class="watchlist-page">
     <n-page-header>
       <template #title>
@@ -140,6 +141,7 @@
       <n-empty :description="emptyStateDescription" size="huge" />
     </div>
   </div>
+  </n-layout>
 </template>
 
 <script setup>

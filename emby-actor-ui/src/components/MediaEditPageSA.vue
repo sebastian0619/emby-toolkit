@@ -1,4 +1,5 @@
 <template>
+  <n-layout content-style="padding: 24px;">
   <div class="media-edit-page">
     <n-page-header @back="goBack">
       <template #title>
@@ -115,7 +116,7 @@
                 animation="300"
               >
                 <template #item="{ element: actor, index }">
-                  <div class="glass-section">
+                  <div class="actor-card-header">
                     <n-card size="small" class="actor-edit-card" content-style="padding: 16px;">
                       <template #header>
                         <div class="actor-card-header">
@@ -161,10 +162,10 @@
                         
                         <div class="actor-inputs">
                           <n-form-item label="演员" label-placement="left" label-width="40" class="compact-form-item">
-                            <n-input v-model:value="actor.name" placeholder="演员名" size="small" />
+                            <n-input v-model:value="actor.name" placeholder="演员名" size="small" style="width: 100%;" />
                           </n-form-item>
                           <n-form-item label="角色" label-placement="left" label-width="40" class="compact-form-item">
-                            <n-input v-model:value="actor.role" placeholder="角色名" size="small" />
+                            <n-input v-model:value="actor.role" placeholder="角色名" size="small" style="width: 100%;" />
                           </n-form-item>
                         </div>
                       </div>
@@ -194,6 +195,7 @@
       </n-alert>
     </div>
   </div>
+  </n-layout>
 </template>
 
 <script setup>

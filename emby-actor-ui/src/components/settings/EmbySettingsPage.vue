@@ -1,4 +1,5 @@
 <template>
+  <n-layout content-style="padding: 24px;">
   <div v-if="configModel">
   <n-space vertical :size="24" style="margin-top: 15px;">
     <!-- Emby 连接设置卡片 (保持不变) -->
@@ -54,6 +55,7 @@
     </n-card>
   </n-space>
   </div>
+  </n-layout>
 </template>
 
 <script setup>
