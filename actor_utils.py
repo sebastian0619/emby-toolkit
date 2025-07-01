@@ -278,7 +278,7 @@ def evaluate_cast_processing_quality(
             logger.info("  质量评估：动画片演员列表为空，属于正常情况，给予基础通过分 7.0。")
             return 7.0
         else:
-            logger.warning("  质量评估：处理后演员列表为空！评为 0.0 分。")
+            logger.warning("  - 处理后演员列表为空！评为 0.0 分。")
             return 0.0
         
     total_actors = len(final_cast)

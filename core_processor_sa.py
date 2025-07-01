@@ -680,7 +680,12 @@ class MediaProcessorSA:
                 
                 if force_fetch_from_tmdb:
                     # 【新路径】强制在线获取
-                    base_json_data_original = self._fetch_and_build_tmdb_base_json(tmdb_id, item_type)
+                    # ★★★ 核心修正：将 item_name_for_log 传递给 item_name 参数 ★★★
+                    base_json_data_original = self._fetch_and_build_tmdb_base_json(
+                        tmdb_id=tmdb_id, 
+                        item_type=item_type, 
+                        item_name=item_name_for_log  # <--- 就是这里！
+                    )
                 else:
                     # 【旧路径】从本地文件读取
                     logger.debug("标准模式：从本地缓存文件读取元数据。")
@@ -818,7 +823,7 @@ class MediaProcessorSA:
                     self.log_db_manager.save_to_processed_log(cursor, item_id, item_name_for_log, score=processing_score)
                     self.log_db_manager.remove_from_failed_log(cursor, item_id)
                 
-                logger.info(f"✨✨✨处理完成 '{item_name_for_log}'，提交数据库总事务✨✨✨")
+                logger.info(f"✨✨✨处理完成 '{item_name_for_log}'✨✨✨")
                 conn.commit()
                 return True
 
@@ -1458,25 +1463,45 @@ class MediaProcessorSA:
 
         return full_cast_list
     # --- 通过tmdb获取演员表 ---
-    def _fetch_and_build_tmdb_base_json(self, tmdb_id: str, item_type: str) -> Optional[Dict[str, Any]]:
+    def _fetch_and_build_tmdb_base_json(self, tmdb_id: str, item_type: str, item_name: str) -> Optional[Dict[str, Any]]:
         """
         【已升级】直接从TMDb API获取媒体详情和演职员信息，并对电视剧进行在线聚合。
         """
-        logger.info(f"强制在线获取模式：正在从TMDb API获取 {item_type} (ID: {tmdb_id}) 的最新数据...")
+        # ★★★ 优化日志 START ★★★
+        # 1. 创建一个类型到中文的映射
+        type_to_chinese = {
+            "Movie": "电影",
+            "Series": "电视剧"
+        }
+        # 2. 获取中文类型，如果找不到就用原始类型
+        item_type_chinese = type_to_chinese.get(item_type, item_type)
+        
+        # 3. 打印全新的、友好的日志
+        logger.info(f"[在线模式] 正在从TMDb API获取 {item_type_chinese} '{item_name}' (TMDb ID: {tmdb_id}) 的最新数据...")
+        # ★★★ 优化日志 END ★★★
         
         if not self.tmdb_api_key:
             logger.error("TMDb API Key 未配置，无法执行在线获取。")
             return None
             
         try:
+            tmdb_id_int = int(tmdb_id)
             if item_type == "Movie":
-                # 电影逻辑不变，直接获取详情+credits
-                return tmdb_handler.get_movie_details_tmdb(int(tmdb_id), self.tmdb_api_key, append_to_response="credits,casts")
+                # ★★★ 把 item_name 传递进去！ ★★★
+                return tmdb_handler.get_movie_details_tmdb(
+                    movie_id=tmdb_id_int, 
+                    api_key=self.tmdb_api_key, 
+                    append_to_response="credits,casts",
+                    item_name=item_name # <--- 电影也有姓名了！
+                )
             
             elif item_type == "Series":
-                # 【核心调用】调用我们新的在线聚合函数！
-                # 默认使用 'first_episode' 级别，性能和数据量的最佳平衡
-                return tmdb_handler.get_full_tv_details_online(int(tmdb_id), self.tmdb_api_key, aggregation_level='first_episode')
+                return tmdb_handler.get_full_tv_details_online(
+                    tv_id=tmdb_id_int, 
+                    api_key=self.tmdb_api_key, 
+                    aggregation_level='first_episode',
+                    item_name=item_name
+                )
             
             else:
                 logger.warning(f"不支持的类型 '{item_type}' 用于在线获取。")

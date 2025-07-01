@@ -109,14 +109,17 @@ def select_best_movie_match(query_title: str, search_results: Optional[Dict[str,
     return None
 
 
-def get_movie_details_tmdb(movie_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations") -> Optional[Dict[str, Any]]:
+def get_movie_details_tmdb(movie_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations", item_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """【已升级】获取电影的详细信息。日志降级为 DEBUG。"""
     endpoint = f"/movie/{movie_id}"
     params = {
-        "language": DEFAULT_LANGUAGE, # 获取中文详情
+        "language": DEFAULT_LANGUAGE,
         "append_to_response": append_to_response
     }
-    # 为了获取英文标题等信息，可以考虑再请求一次英文版或查看translations
-    logger.info(f"TMDb: 获取电影详情 (ID: {movie_id})")
+    # ★★★ 日志降级，并使用 item_name ★★★
+    item_name_for_log = f"'{item_name}' " if item_name else ""
+    logger.debug(f"TMDb API: 获取电影 {item_name_for_log}(ID: {movie_id}) 详情")
+    
     details = _tmdb_request(endpoint, api_key, params)
     
     # 尝试补充英文标题，如果主语言是中文且original_title不是英文
@@ -148,7 +151,7 @@ def get_tv_details_tmdb(tv_id: int, api_key: str, append_to_response: Optional[s
         "language": DEFAULT_LANGUAGE,
         "append_to_response": append_to_response
     }
-    logger.info(f"TMDb: 获取电视剧详情 (ID: {tv_id})")
+    logger.debug(f"TMDb: 获取电视剧详情 (ID: {tv_id})")
     details = _tmdb_request(endpoint, api_key, params)
     
     # 同样可以为剧集补充英文标题
@@ -345,53 +348,52 @@ def search_movie_and_get_imdb_id(
     else:
         logger.warning(f"  未能为电影 '{movie_title}' 找到合适的 TMDb 匹配。")
     return None
-
-def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append_to_response: Optional[str] = "credits") -> Optional[Dict[str, Any]]:
+# --- 获取电视剧某一季的详细信息 ---
+def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append_to_response: Optional[str] = "credits", item_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
-    【已升级】获取电视剧某一季的详细信息，默认附加credits。
+    【已升级】获取电视剧某一季的详细信息，并支持 item_name 用于日志。
     """
     endpoint = f"/tv/{tv_id}/season/{season_number}"
     params = {
         "language": DEFAULT_LANGUAGE,
         "append_to_response": append_to_response
     }
-    logger.info(f"TMDb: 获取电视剧 {tv_id} 第 {season_number} 季的详情...")
+    
+    item_name_for_log = f"'{item_name}' " if item_name else ""
+    logger.debug(f"TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) 第 {season_number} 季的详情...")
+    
     return _tmdb_request(endpoint, api_key, params)
-
-def get_episode_details_tmdb(tv_id: int, season_number: int, episode_number: int, api_key: str, append_to_response: Optional[str] = "credits,guest_stars") -> Optional[Dict[str, Any]]:
+# --- 获取电视剧某一集的详细信息 ---
+def get_episode_details_tmdb(tv_id: int, season_number: int, episode_number: int, api_key: str, append_to_response: Optional[str] = "credits,guest_stars", item_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
-    【已升级】获取电视剧某一集的详细信息，默认附加credits和guest_stars。
+    【已升级】获取电视剧某一集的详细信息，并支持 item_name 用于日志。
     """
     endpoint = f"/tv/{tv_id}/season/{season_number}/episode/{episode_number}"
     params = {
         "language": DEFAULT_LANGUAGE,
         "append_to_response": append_to_response
     }
-    logger.info(f"TMDb: 获取电视剧 {tv_id} S{season_number:02d}E{episode_number:02d} 的详情...")
+    
+    item_name_for_log = f"'{item_name}' " if item_name else ""
+    logger.debug(f"TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) S{season_number:02d}E{episode_number:02d} 的详情...")
+    
     return _tmdb_request(endpoint, api_key, params)
 # --- 获取完整演员表 ---
-def get_full_tv_details_online(tv_id: int, api_key: str, aggregation_level: str = 'first_episode') -> Optional[Dict[str, Any]]:
+def get_full_tv_details_online(tv_id: int, api_key: str, aggregation_level: str = 'first_episode', item_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
-    【新 - 在线聚合核心】在线获取完整的电视剧详情，并聚合演员表。
-    
-    Args:
-        tv_id (int): 电视剧的 TMDb ID.
-        api_key (str): TMDb API Key.
-        aggregation_level (str): 聚合级别。
-            'series': 只获取剧集根级别的演员。
-            'first_episode': (推荐) 聚合剧集+所有季+每季第一集。(默认)
-            'full': (API消耗大) 聚合剧集+所有季+所有集。
-    
-    Returns:
-        Optional[Dict[str, Any]]: 一个包含了聚合后演员表的、与本地缓存格式兼容的JSON对象。
+    【V2 - 友好日志版】在线获取完整的电视剧详情，并聚合演员表。
     """
-    # 1. 获取剧集根详情，这将是我们的基础模板
+    # 如果没有提供 item_name，就用 ID 作为备用
+    item_name_for_log = item_name if item_name else f"ID: {tv_id}"
+    
+    # ★★★ 由这个高层函数，打印对用户友好的 INFO 日志 ★★★
+    logger.info(f"开始为电视剧 '{item_name_for_log}' 进行在线演员聚合 (级别: {aggregation_level})...")
+    
+    # 1. 获取剧集根详情
     base_details = get_tv_details_tmdb(tv_id, api_key, append_to_response="credits,casts")
     if not base_details:
-        logger.error(f"无法获取电视剧 {tv_id} 的基础详情，在线聚合中止。")
+        logger.error(f"无法获取电视剧 '{item_name_for_log}' 的基础详情，在线聚合中止。")
         return None
-    
-    logger.info(f"开始为电视剧 '{base_details.get('name')}' (ID: {tv_id}) 进行在线演员聚合 (级别: {aggregation_level})...")
     
     # 使用字典来高效去重
     full_cast_map = {}
@@ -407,24 +409,18 @@ def get_full_tv_details_online(tv_id: int, api_key: str, aggregation_level: str 
     root_cast = base_details.get("credits", {}).get("cast", []) or base_details.get("casts", {}).get("cast", [])
     _add_cast_to_map(root_cast)
     
-    if aggregation_level == 'series':
-        logger.info(f"聚合级别为 'series'，聚合完成。")
-    else:
-        # b. 遍历所有季
+    if aggregation_level != 'series':
         number_of_seasons = base_details.get("number_of_seasons", 0)
-        for season_num in range(1, number_of_seasons + 1): # 季号从1开始
-            season_details = get_season_details_tmdb(tv_id, season_num, api_key, append_to_response="credits")
+        for season_num in range(1, number_of_seasons + 1):
+            # ★★★ 在调用底层函数时，也把片名传下去，让 DEBUG 日志也更友好 ★★★
+            season_details = get_season_details_tmdb(tv_id, season_num, api_key, append_to_response="credits", item_name=item_name)
             if season_details:
-                # 添加季级别的演员
                 _add_cast_to_map(season_details.get("credits", {}).get("cast", []))
-                
-                if aggregation_level == 'first_episode':
-                    # 只获取第一集
-                    if season_details.get("episodes") and len(season_details["episodes"]) > 0:
-                        ep_details = get_episode_details_tmdb(tv_id, season_num, 1, api_key, append_to_response="credits,guest_stars")
-                        if ep_details:
-                            _add_cast_to_map(ep_details.get("credits", {}).get("cast", []))
-                            _add_cast_to_map(ep_details.get("guest_stars", []))
+                if aggregation_level == 'first_episode' and season_details.get("episodes"):
+                    ep_details = get_episode_details_tmdb(tv_id, season_num, 1, api_key, append_to_response="credits,guest_stars", item_name=item_name)
+                    if ep_details:
+                        _add_cast_to_map(ep_details.get("credits", {}).get("cast", []))
+                        _add_cast_to_map(ep_details.get("guest_stars", []))
                 
                 elif aggregation_level == 'full':
                     # 获取所有集 (API消耗大)
@@ -445,7 +441,7 @@ def get_full_tv_details_online(tv_id: int, api_key: str, aggregation_level: str 
     if "credits" not in base_details: base_details["credits"] = {}
     base_details["credits"]["cast"] = final_cast_list
     
-    logger.info(f"在线聚合完成，共获得 {len(final_cast_list)} 位独立演员。")
+    logger.info(f"为 '{item_name_for_log}' 在线聚合完成，共获得 {len(final_cast_list)} 位独立演员。")
     
     return base_details
 def get_person_details_for_cast(person_id: int, api_key: str) -> Optional[Dict[str, Any]]:
