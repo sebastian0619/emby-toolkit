@@ -63,10 +63,16 @@ def clean_character_name_static(character_name: Optional[str]) -> str:
     name = re.sub(r'\s*(饰演|饰|配音|配)$', '', name).strip()
 
     # 处理中外对照：“中文 + 英文”形式，只保留中文部分
-    match = re.match(r'^([\u4e00-\u9fa5·]{1,})([^a-zA-Z]*)[a-zA-Z]+.*$', name)
+    match = re.search(r'[a-zA-Z]', name)
     if match:
-        chinese_part = match.group(1).strip()
-        return chinese_part
+        # 如果找到了英文字母，取它之前的所有内容
+        first_letter_index = match.start()
+        chinese_part = name[:first_letter_index].strip()
+        
+        # 只有当截取出来的部分确实包含中文时，才进行截断。
+        # 这可以防止 "Kevin" 这种纯英文名字被错误地清空。
+        if re.search(r'[\u4e00-\u9fa5]', chinese_part):
+            return chinese_part
 
     # 如果只有外文，或清理后是英文，保留原值，等待后续翻译流程
     return name.strip()
