@@ -300,7 +300,7 @@ def get_person_details_tmdb(person_id: int, api_key: str, append_to_response: Op
         "language": DEFAULT_LANGUAGE,
         "append_to_response": append_to_response
     }
-    logger.info(f"TMDb: 获取人物详情 (ID: {person_id})")
+    logger.debug(f"TMDb: 获取人物详情 (ID: {person_id})")
     details = _tmdb_request(endpoint, api_key, params)
 
     # 尝试补充英文名，如果主语言是中文且original_name不是英文 (TMDb人物的original_name通常是其母语名)

@@ -705,25 +705,64 @@ def submit_task_to_queue(task_function, task_name: str, *args, **kwargs):
 
 def _get_next_run_time_str(cron_expression: str) -> str:
     """
-    将 CRON 表达式转换为人类可读的执行计划字符串。
+    【V3 - 口齿伶俐版】将 CRON 表达式转换为人类可读的、干净的执行计划字符串。
     """
     try:
-        tz = pytz.timezone(constants.TIMEZONE)
-        now = datetime.now(tz)
-        
-        # 特殊处理常见的分钟级周期任务
         parts = cron_expression.split()
-        if parts[0].startswith('*/') and parts[1:] == ['*', '*', '*', '*']:
-            minutes = parts[0][2:]
-            # ✨ 优化点：返回一个完整的短语，加上“执行” ✨
-            return f"每隔 {minutes} 分钟执行"
+        if len(parts) != 5:
+            raise ValueError("CRON 表达式必须有5个部分")
 
-        iterator = croniter(cron_expression, now)
-        next_run = iterator.get_next(datetime)
-        return f"在 {next_run.strftime('%H:%M')} 执行"
+        minute, hour, day_of_month, month, day_of_week = parts
+
+        # --- 周期描述 ---
+        # 优先判断分钟级的周期任务
+        if minute.startswith('*/') and all(p == '*' for p in [hour, day_of_month, month, day_of_week]):
+            return f"每隔 {minute[2:]} 分钟执行"
+        
+        # 判断小时级的周期任务
+        if hour.startswith('*/') and all(p == '*' for p in [day_of_month, month, day_of_week]):
+            # 如果分钟是0，就说是整点
+            if minute == '0':
+                return f"每隔 {hour[2:]} 小时的整点执行"
+            else:
+                return f"每隔 {hour[2:]} 小时的第 {minute} 分钟执行"
+
+        # --- 时间点描述 ---
+        time_str = f"{hour.zfill(2)}:{minute.zfill(2)}"
+        
+        # 判断星期
+        if day_of_week != '*':
+            day_map = {
+                '0': '周日', '1': '周一', '2': '周二', '3': '周三', 
+                '4': '周四', '5': '周五', '6': '周六', '7': '周日',
+                'sun': '周日', 'mon': '周一', 'tue': '周二', 'wed': '周三',
+                'thu': '周四', 'fri': '周五', 'sat': '周六'
+            }
+            days = [day_map.get(d.lower(), d) for d in day_of_week.split(',')]
+            return f"每周的 {','.join(days)} {time_str} 执行"
+        
+        # 判断日期
+        if day_of_month != '*':
+            if day_of_month.startswith('*/'):
+                 return f"每隔 {day_of_month[2:]} 天的 {time_str} 执行"
+            else:
+                 return f"每月的 {day_of_month} 号 {time_str} 执行"
+
+        # 如果上面都没匹配上，说明是每天
+        return f"每天 {time_str} 执行"
+
     except Exception as e:
-        logger.warning(f"无法解析CRON表达式 '{cron_expression}': {e}")
-        return f"按计划 '{cron_expression}' 执行"
+        logger.warning(f"无法智能解析CRON表达式 '{cron_expression}': {e}，回退到简单模式。")
+        # 保留旧的回退方案
+        try:
+            # ... (croniter 的回退逻辑保持不变) ...
+            tz = pytz.timezone(constants.TIMEZONE)
+            now = datetime.now(tz)
+            iterator = croniter(cron_expression, now)
+            next_run = iterator.get_next(datetime)
+            return f"下一次将在 {next_run.strftime('%Y-%m-%d %H:%M')} 执行"
+        except:
+            return f"按计划 '{cron_expression}' 执行"
 # --- 定时任务配置 ---
 def setup_scheduled_tasks():
     config = APP_CONFIG
@@ -1537,7 +1576,7 @@ def api_get_config():
         current_config, _ = load_config() 
         
         if current_config:
-            logger.info(f"API /api/config (GET): 成功加载并返回配置。")
+            logger.debug(f"API /api/config (GET): 成功加载并返回配置。")
             return jsonify(current_config)
         else:
             logger.error(f"API /api/config (GET): load_config() 返回为空或None。")

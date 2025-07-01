@@ -584,11 +584,20 @@ def fetch_tmdb_details_for_actor(actor_info: Dict, tmdb_api_key: str) -> Optiona
     try:
         details = tmdb_handler.get_person_details_tmdb(int(tmdb_id), tmdb_api_key, "external_ids,also_known_as")
         if details:
-            return {"tmdb_id": tmdb_id, "details": details}
-        return None
-    except Exception as e:
-        logger.warning(f"获取 TMDb 详情 (ID: {tmdb_id}) 时失败: {e}")
-        return None
+            # 成功获取，返回详情
+            return {"tmdb_id": tmdb_id, "status": "found", "details": details}
+        else:
+            # API调用成功但返回空，也标记为未找到
+            return {"tmdb_id": tmdb_id, "status": "not_found"}
+
+    except tmdb_handler.TMDbResourceNotFound:
+        # ★★★ 捕获到404异常，返回一个明确的“未找到”状态 ★★★
+        return {"tmdb_id": tmdb_id, "status": "not_found"}
+    
+    except tmdb_handler.TMDbAPIError as e:
+        # 其他API错误（如网络问题），记录日志并返回失败状态
+        logger.warning(f"获取演员 {tmdb_id} 详情时遇到API错误: {e}")
+        return {"tmdb_id": tmdb_id, "status": "failed"}
 # --- 补充演员外部ID ---
 def enrich_all_actor_aliases_task(
     db_path: str, 
@@ -641,6 +650,8 @@ def enrich_all_actor_aliases_task(
                     logger.info(f"--- 开始处理 TMDb 第 {i//CHUNK_SIZE + 1} 批次，共 {len(chunk)} 个演员 ---")
 
                     tmdb_updates_chunk = []
+                    updates_to_commit = []
+                    deletions_to_commit = []
                     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_TMDB_WORKERS) as executor:
                         future_to_actor = {executor.submit(fetch_tmdb_details_for_actor, dict(actor), tmdb_api_key): actor for actor in chunk}
                         
@@ -650,29 +661,51 @@ def enrich_all_actor_aliases_task(
                                 raise InterruptedError("任务在TMDb处理批次中被中止")
 
                             result = future.result()
-                            if result and result.get("details"):
-                                tmdb_updates_chunk.append(result)
-                    
-                    if tmdb_updates_chunk:
-                        logger.info(f"  -> 批次完成，获取到 {len(tmdb_updates_chunk)} 条新信息，准备写入数据库...")
-                        cursor.execute("BEGIN TRANSACTION;")
-                        for update_data in tmdb_updates_chunk:
-                            details = update_data.get("details")
-                            tmdb_id = update_data.get("tmdb_id")
-                            imdb_id = details.get("external_ids", {}).get("imdb_id")
-                            if tmdb_id:
+                            if not result:
+                                continue
+
+                            status = result.get("status")
+                            tmdb_id = result.get("tmdb_id")
+
+                            if status == "found":
+                                # ★★★ 成功找到，准备更新 ★★★
+                                details = result.get("details", {})
+                                imdb_id = details.get("external_ids", {}).get("imdb_id")
                                 if imdb_id:
-                                    actor_db_manager.upsert_person(
-                                        cursor, 
-                                        {"tmdb_id": tmdb_id, "imdb_id": imdb_id}
-                                    )
-                                # ✨✨✨ 核心修复 2：即使没找到IMDb ID，也要更新同步时间 ✨✨✨
-                                cursor.execute("UPDATE person_identity_map SET last_synced_at = CURRENT_TIMESTAMP WHERE tmdb_person_id = ?", (tmdb_id,))
+                                    # ★★★ 优化日志：在这里打印成功信息 ★★★
+                                    logger.info(f"  -> 成功为演员 (TMDb ID: {tmdb_id}) 获取到 IMDb ID: {imdb_id}")
+                                    updates_to_commit.append({"tmdb_id": tmdb_id, "imdb_id": imdb_id})
+                            
+                            elif status == "not_found":
+                                # ★★★ 确认未找到(404)，准备删除 ★★★
+                                logger.warning(f"  -> 演员 (TMDb ID: {tmdb_id}) 在TMDb上已不存在(404)，将从数据库清理。")
+                                deletions_to_commit.append(tmdb_id)
+                    
+                    # ★★★ 在批次结束后，统一执行数据库操作 ★★★
+                    if updates_to_commit or deletions_to_commit:
+                        logger.info(f"  -> 批次完成，准备写入数据库 (更新: {len(updates_to_commit)}, 清理: {len(deletions_to_commit)})...")
+                        cursor.execute("BEGIN TRANSACTION;")
+                        
+                        # 执行更新
+                        for update_data in updates_to_commit:
+                            actor_db_manager.upsert_person(cursor, update_data)
+                        
+                        # 执行删除
+                        if deletions_to_commit:
+                            # 使用 executemany 以提高效率
+                            placeholders = ','.join('?' for _ in deletions_to_commit)
+                            sql_delete = f"DELETE FROM person_identity_map WHERE tmdb_person_id IN ({placeholders})"
+                            cursor.execute(sql_delete, deletions_to_commit)
+
+                        # ★★★ 统一更新所有处理过的ID的同步时间 ★★★
+                        processed_ids_in_chunk = [actor['tmdb_person_id'] for actor in chunk]
+                        placeholders_sync = ','.join('?' for _ in processed_ids_in_chunk)
+                        sql_update_sync = f"UPDATE person_identity_map SET last_synced_at = CURRENT_TIMESTAMP WHERE tmdb_person_id IN ({placeholders_sync})"
+                        cursor.execute(sql_update_sync, processed_ids_in_chunk)
+                        
                         conn.commit()
-                    else:
-                        logger.info("没有需要从 TMDb 补充 IMDb ID 的演员（或都已在近期检查过）。")
             else:
-                logger.info("没有需要从 TMDb 补充 IMDb ID 的演员。")
+                logger.info("没有需要从 TMDb 补充或清理的演员。")
 
             # --- 阶段二：从 豆瓣 补充 IMDb ID (串行执行) ---
             if (stop_event and stop_event.is_set()) or (time.time() >= end_time): raise InterruptedError("任务中止")
