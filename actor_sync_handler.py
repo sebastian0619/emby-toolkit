@@ -9,12 +9,13 @@ import threading
 import emby_handler
 import logging
 from actor_utils import get_db_connection as get_central_db_connection
-
+from actor_utils import ActorDBManager
 logger = logging.getLogger(__name__)
 
 class UnifiedSyncHandler:
     def __init__(self, db_path: str, emby_url: str, emby_api_key: str, emby_user_id: Optional[str], tmdb_api_key: str):
         self.db_path = db_path
+        self.actor_db_manager = ActorDBManager(self.db_path)
         self.emby_url = emby_url
         self.emby_api_key = emby_api_key
         self.emby_user_id = emby_user_id
