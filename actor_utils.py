@@ -683,27 +683,34 @@ def enrich_all_actor_aliases_task(
                     
                     # ★★★ 在批次结束后，统一执行数据库操作 ★★★
                     if updates_to_commit or deletions_to_commit:
-                        logger.info(f"  -> 批次完成，准备写入数据库 (更新: {len(updates_to_commit)}, 清理: {len(deletions_to_commit)})...")
-                        cursor.execute("BEGIN TRANSACTION;")
-                        
-                        # 执行更新
-                        for update_data in updates_to_commit:
-                            actor_db_manager.upsert_person(cursor, update_data)
-                        
-                        # 执行删除
-                        if deletions_to_commit:
-                            # 使用 executemany 以提高效率
-                            placeholders = ','.join('?' for _ in deletions_to_commit)
-                            sql_delete = f"DELETE FROM person_identity_map WHERE tmdb_person_id IN ({placeholders})"
-                            cursor.execute(sql_delete, deletions_to_commit)
+                        try:
+                            logger.info(f"  -> 批次完成，准备写入数据库 (更新: {len(updates_to_commit)}, 清理: {len(deletions_to_commit)})...")
+                            
+                            # 执行更新
+                            for update_data in updates_to_commit:
+                                actor_db_manager.upsert_person(cursor, update_data)
+                            
+                            # 执行删除
+                            if deletions_to_commit:
+                                placeholders = ','.join('?' for _ in deletions_to_commit)
+                                sql_delete = f"DELETE FROM person_identity_map WHERE tmdb_person_id IN ({placeholders})"
+                                cursor.execute(sql_delete, deletions_to_commit)
+                                logger.info(f"已执行对 {len(deletions_to_commit)} 个无效ID的删除操作。")
 
-                        # ★★★ 统一更新所有处理过的ID的同步时间 ★★★
-                        processed_ids_in_chunk = [actor['tmdb_person_id'] for actor in chunk]
-                        placeholders_sync = ','.join('?' for _ in processed_ids_in_chunk)
-                        sql_update_sync = f"UPDATE person_identity_map SET last_synced_at = CURRENT_TIMESTAMP WHERE tmdb_person_id IN ({placeholders_sync})"
-                        cursor.execute(sql_update_sync, processed_ids_in_chunk)
-                        
-                        conn.commit()
+                            # 统一更新所有处理过的ID的同步时间
+                            processed_ids_in_chunk = [actor['tmdb_person_id'] for actor in chunk]
+                            if processed_ids_in_chunk:
+                                placeholders_sync = ','.join('?' for _ in processed_ids_in_chunk)
+                                sql_update_sync = f"UPDATE person_identity_map SET last_synced_at = CURRENT_TIMESTAMP WHERE tmdb_person_id IN ({placeholders_sync})"
+                                cursor.execute(sql_update_sync, processed_ids_in_chunk)
+                            
+                            # ★★★ 在所有数据库操作完成后，提交本次批次的事务 ★★★
+                            conn.commit()
+                            logger.info("数据库更改已成功提交。")
+
+                        except Exception as db_e:
+                            logger.error(f"数据库操作失败: {db_e}", exc_info=True)
+                            conn.rollback() # 如果出错，回滚本次批次的更改
             else:
                 logger.info("没有需要从 TMDb 补充或清理的演员。")
 
