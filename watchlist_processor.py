@@ -15,7 +15,18 @@ import emby_handler
 import logging
 
 logger = logging.getLogger(__name__)
+# ✨✨✨ 状态翻译字典 ✨✨✨
+TMDB_STATUS_TRANSLATION = {
+    "Ended": "已完结",
+    "Canceled": "已取消",
+    "Returning Series": "连载中",
+    "In Production": "制作中",
+    "Planned": "计划中"
+}
 
+def translate_status(status: str) -> str:
+    """一个简单的辅助函数，用于翻译状态，如果找不到翻译则返回原文。"""
+    return TMDB_STATUS_TRANSLATION.get(status, status)
 class WatchlistProcessor:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
@@ -74,6 +85,7 @@ class WatchlistProcessor:
             return
 
         tmdb_status = tmdb_details.get("status")
+        translated_tmdb_status = translate_status(tmdb_status)
         if tmdb_status in ["Returning Series", "In Production", "Planned"]:
             try:
                 with get_central_db_connection(self.db_path) as conn:
@@ -84,13 +96,13 @@ class WatchlistProcessor:
                     """, (item_id, tmdb_id, item_name, "Series"))
                     
                     if cursor.rowcount > 0:
-                        logger.info(f"剧集 '{item_name}' (TMDb状态: {tmdb_status}) 已自动加入追剧列表。")
+                        logger.info(f"剧集 '{item_name}' (TMDb状态: {translated_tmdb_status}) 已自动加入追剧列表。")
                     else:
                         logger.debug(f"剧集 '{item_name}' 已存在于追剧列表，无需重复添加。")
             except Exception as e:
                 logger.error(f"自动添加剧集 '{item_name}' 到追剧列表时发生数据库错误: {e}", exc_info=True)
         else:
-            logger.debug(f"剧集 '{item_name}' 的TMDb状态为 '{tmdb_status}'，不符合自动添加条件。")
+            logger.debug(f"剧集 '{item_name}' 的TMDb状态为 '{translated_tmdb_status}'，不符合自动添加条件。")
 
     # ★★★ 新增：处理单个剧集的核心逻辑，私有方法 ★★★
     def _process_one_series(self, series_data: Dict[str, Any]):
@@ -136,8 +148,10 @@ class WatchlistProcessor:
         # 3. 根据最新状态决定下一步操作
         is_ended = new_status in ["Ended", "Canceled"]
         
+        translated_new_status = translate_status(new_status)
+        
         if is_ended:
-            logger.info(f"剧集 '{item_name}' 的TMDb状态为 '{new_status}'，开始检查元数据完整性...")
+            logger.info(f"剧集 '{item_name}' 的TMDb状态为 '{translated_new_status}'，开始检查元数据完整性...")
             if self._check_all_episodes_have_overview(all_episodes):
                 logger.info(f"'{item_name}' 已完结且所有集信息完整，将从追剧列表移除（状态更新为 'Completed'）。")
                 self._update_watchlist_status(item_id, 'Completed', item_name)
@@ -145,7 +159,7 @@ class WatchlistProcessor:
                 logger.warning(f"'{item_name}' 虽然已完结，但部分集信息不完整。将保留在追剧列表中，下次继续检查。")
                 self._update_watchlist_timestamp(item_id, item_name)
         else:
-            logger.info(f"剧集 '{item_name}' 仍在连载中 (状态: {new_status})，已更新元数据。")
+            logger.info(f"剧集 '{item_name}' 仍在连载中 (状态: {translated_new_status})，已更新元数据。")
             self._update_watchlist_timestamp(item_id, item_name)
 
         # 4. 触发Emby/Jellyfin刷新
