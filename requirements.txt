@@ -19,3 +19,4 @@ croniter
 # --- AI 翻译功能 ---
 openai           # 用于 OpenAI 及兼容的API (如硅基流动)
 zhipuai          # 用于智谱AI
+google-generativeai # 用于Gemini

@@ -58,7 +58,6 @@
               <template #feedback>开启后，处理电视剧时会为每一季/每一集生成单独的元数据文件。</template>
             </n-form-item>
             <n-form-item label="同步图片" path="sync_images">
-                <!-- ★★★ 在这里添加 :disabled 绑定 ★★★ -->
                 <n-switch v-model:value="configModel.sync_images" :disabled="!configModel.use_sa_mode" />
                 <template #feedback>
                   开启后，处理媒体时会下载海报、横幅图等图片文件。
@@ -81,7 +80,6 @@
               <n-input type="password" show-password-on="mousedown" v-model:value="configModel.tmdb_api_key" placeholder="输入你的 TMDB API Key" />
             </n-form-item>
 
-            <!-- ✨✨✨ 在这里添加新代码 ✨✨✨ -->
             <n-form-item label="豆瓣登录 Cookie" path="douban_cookie">
               <n-input
                 type="password"
@@ -95,8 +93,6 @@
                 </n-text>
               </template>
             </n-form-item>
-            <!-- ✨✨✨ 新代码结束 ✨✨✨ -->
-
           </n-card>
         </n-space>
       </n-gi>
@@ -138,7 +134,6 @@
             <template #header-extra>
               <n-space align="center">
                 <n-switch v-model:value="configModel.ai_translation_enabled" />
-                <!-- 新增跳转链接 -->
                 <a
                   href="https://cloud.siliconflow.cn/i/GXIrubbL"
                   target="_blank"
@@ -148,7 +143,6 @@
                 </a>
               </n-space>
             </template>
-            <!-- ✨✨✨ 核心修改区域 START ✨✨✨ -->
             <div class="ai-settings-wrapper" :class="{ 'content-disabled': !configModel.ai_translation_enabled }">
               <n-form-item label="AI 服务商" path="ai_provider">
                 <n-select 
@@ -162,14 +156,14 @@
                   type="password" 
                   show-password-on="mousedown" 
                   v-model:value="configModel.ai_api_key" 
-                  placeholder="sk-" 
+                  placeholder="输入您的 API Key" 
                   :disabled="!configModel.ai_translation_enabled"
                 />
               </n-form-item>
               <n-form-item label="模型名称" path="ai_model_name">
                 <n-input 
                   v-model:value="configModel.ai_model_name" 
-                  placeholder="例如: gpt-3.5-turbo, glm-4" 
+                  placeholder="例如: gpt-3.5-turbo, glm-4, gemini-pro" 
                   :disabled="!configModel.ai_translation_enabled"
                 />
               </n-form-item>
@@ -181,7 +175,6 @@
                 />
               </n-form-item>
             </div>
-            <!-- ✨✨✨ 核心修改区域 END ✨✨✨ -->
           </n-card>
         </n-space>
       </n-gi>
@@ -266,10 +259,13 @@ const removeEngine = (index) => {
 };
 
 // --- AI 服务商逻辑 ---
+// ✨✨✨ 核心修改在这里 ✨✨✨
 const aiProviderOptions = ref([
   { label: 'OpenAI (及兼容服务)', value: 'openai' },
   { label: '智谱AI (ZhipuAI)', value: 'zhipuai' },
+  { label: 'Google Gemini', value: 'gemini' }, // <-- 新增这一行
 ]);
+// ✨✨✨ 修改结束 ✨✨✨
 
 </script>
 
@@ -278,11 +274,6 @@ const aiProviderOptions = ref([
 .ai-settings-wrapper {
   transition: opacity 0.3s ease;
 }
-/* 
-  当使用方案B时，我们不再需要 pointer-events: none，
-  因为组件的 :disabled 属性已经处理了交互。
-  我们只保留一个透明度变化来提供视觉反馈。
-*/
 .content-disabled {
   opacity: 0.6;
 }
