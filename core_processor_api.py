@@ -590,15 +590,34 @@ class MediaProcessorAPI:
             else:
                 logger.info("AI翻译未启用，使用传统翻译引擎（如果配置了）。")
             
+            # ✨✨✨ 核心修改在这里 ✨✨✨
+            # 1. 在循环外准备好所有需要的参数
+            translator_engines_order = self.config.get("translator_engines_order", [])
+            ai_enabled_flag = self.config.get("ai_translation_enabled", False)
+
             # 使用健壮的逐个翻译逻辑作为回退
             for actor_data in final_cast_list:
                 if self.is_stop_requested(): break
                 
                 current_name = actor_data.get("Name")
-                actor_data["Name"] = actor_utils.translate_actor_field(current_name, "演员名", current_name, db_cursor_for_cache=cursor)
+                # 2. 使用新的、正确的参数列表来调用函数
+                actor_data["Name"] = actor_utils.translate_actor_field(
+                    text=current_name,
+                    db_cursor=cursor,
+                    ai_translator=self.ai_translator,
+                    translator_engines=translator_engines_order,
+                    ai_enabled=ai_enabled_flag
+                )
 
                 role_cleaned = utils.clean_character_name_static(actor_data.get("Role"))
-                actor_data["Role"] = actor_utils.translate_actor_field(role_cleaned, "角色名", actor_data.get("Name"), db_cursor_for_cache=cursor)
+                actor_data["Role"] = actor_utils.translate_actor_field(
+                    text=role_cleaned,
+                    db_cursor=cursor,
+                    ai_translator=self.ai_translator,
+                    translator_engines=translator_engines_order,
+                    ai_enabled=ai_enabled_flag
+                )
+            # ✨✨✨ 修改结束 ✨✨✨
 
         # 翻译完成后，进行统一的格式化处理
         is_animation = "Animation" in media_info.get("Genres", []) or "动画" in media_info.get("Genres", [])

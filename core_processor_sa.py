@@ -574,17 +574,35 @@ class MediaProcessorSA:
             else:
                 logger.info("AI翻译未启用，使用传统翻译引擎（如果配置了）。")
 
+            # ✨✨✨ 核心修改在这里 ✨✨✨
+            # 1. 在循环外准备好所有需要的参数，避免重复获取
+            translator_engines_order = self.config.get("translator_engines_order", [])
+            ai_enabled_flag = self.config.get("ai_translation_enabled", False)
+            
             # 使用你原来的、健壮的逐个翻译逻辑作为回退
             for actor in cast_to_process:
                 if self.is_stop_requested():
                     raise InterruptedError("任务在翻译演员列表时被中止")
                 
-                # _translate_actor_field 本身就有缓存和多引擎逻辑，非常适合做降级
-                actor['name'] = actor_utils.translate_actor_field(actor.get('name'), "演员名", actor.get('name'), cursor)
+                # 2. 使用新的、正确的参数列表来调用函数
+                actor['name'] = actor_utils.translate_actor_field(
+                    text=actor.get('name'),
+                    db_cursor=cursor,
+                    ai_translator=self.ai_translator,
+                    translator_engines=translator_engines_order,
+                    ai_enabled=ai_enabled_flag
+                )
                 
                 cleaned_character = utils.clean_character_name_static(actor.get('character'))
-                translated_character = actor_utils.translate_actor_field(cleaned_character, "角色名", actor.get('name'), cursor)
-                actor['character'] = translated_character
+                
+                actor['character'] = actor_utils.translate_actor_field(
+                    text=cleaned_character,
+                    db_cursor=cursor,
+                    ai_translator=self.ai_translator,
+                    translator_engines=translator_engines_order,
+                    ai_enabled=ai_enabled_flag
+                )
+            # ✨✨✨ 修改结束 ✨✨✨
 
         # 返回处理完的、已经截断和翻译的列表
         return cast_to_process
