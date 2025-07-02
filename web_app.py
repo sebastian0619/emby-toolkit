@@ -783,8 +783,7 @@ def setup_scheduled_tasks():
                 submit_task_to_queue(
                     task_process_full_library,
                     "定时全量扫描",
-                    process_episodes=process_episodes,
-                    force_reprocess_all=force_reprocess_scheduled_scan
+                    process_episodes=process_episodes
                 )
 
             scheduler.add_job(
@@ -932,23 +931,10 @@ def enrich_and_match_douban_cast_to_emby(
     return results
 
 # --- 执行全量媒体库扫描 ---
-def task_process_full_library(processor: MediaProcessorSA, process_episodes: bool, force_reprocess_all: bool = False):
-    """
-    【最终确认版】
-    这个函数是任务队列直接调用的函数。
-    它的职责是接收上游的指令，并调用处理器的相应方法。
-    """
-    logger.info(f"进入任务执行层: task_process_full_library, 接收到的 force_reprocess_all = {force_reprocess_all}")
-    
-    # 在这里，我们将上游传来的“强制重处理”意图，
-    # 转换成下游需要的两个指令：
-    # 1. force_reprocess_all -> 决定是否清空日志和跳过检查
-    # 2. force_fetch_from_tmdb -> 决定是否在线获取
+def task_process_full_library(processor: Union[MediaProcessorSA, MediaProcessorAPI], process_episodes: bool):
     processor.process_full_library(
         update_status_callback=update_status_from_thread,
-        process_episodes=process_episodes,
-        force_reprocess_all=force_reprocess_all,      # ★★★ 传递“强制重处理”指令 ★★★
-        force_fetch_from_tmdb=force_reprocess_all   # ★★★ 同时用作“强制在线获取”指令 ★★★
+        process_episodes=process_episodes
     )
 # --- 同步演员映射表 ---
 def task_sync_person_map(processor):
@@ -1768,21 +1754,29 @@ def api_handle_trigger_full_scan():
     force_reprocess = request.form.get('force_reprocess_all') == 'on'
     
 
+    # ★★★ 您的完美逻辑在这里实现 ★★★
+    if force_reprocess:
+        logger.info("API: 检测到“强制重处理”选项，将在任务开始前清空已处理日志。")
+        try:
+            media_processor_instance.clear_processed_log()
+            logger.info("API: 已处理日志已成功清除。")
+        except Exception as e:
+            logger.error(f"API: 清空已处理日志时发生错误: {e}")
+            return jsonify({"error": f"清空日志失败: {e}"}), 500
+
     # 准备任务参数
     action_message = "全量媒体库扫描"
     if force_reprocess:
-        action_message += " (强制在线获取模式)"
+        action_message += " (已清空日志)"
 
     # 从全局配置获取处理深度
     process_episodes = APP_CONFIG.get('process_episodes', True)
     
     # 提交纯粹的扫描任务
     submit_task_to_queue(
-        task_process_full_library,
-        "全量媒体库扫描",
-        # ★★★ 确保这里是关键字参数 ★★★
-        process_episodes=APP_CONFIG.get('process_episodes', True),
-        force_reprocess_all=force_reprocess 
+        task_process_full_library, # 调用简化后的任务函数
+        action_message,
+        process_episodes # 不再需要传递 force_reprocess
     )
     
     return jsonify({"message": f"{action_message} 任务已提交启动。"}), 202
@@ -2284,6 +2278,14 @@ def proxy_emby_image(image_path):
 @task_lock_required
 def api_clear_review_items():
     logger.info("API: 收到清空所有待复核项目并标记为已处理的请求。")
+    # ✨✨✨ 添加防御性检查 ✨✨✨
+    try:
+        with get_central_db_connection(DB_PATH) as pre_check_conn:
+            count = pre_check_conn.execute("SELECT COUNT(*) FROM failed_log").fetchone()[0]
+            logger.info(f"防御性检查：在事务开始前，'failed_log' 表中有 {count} 条记录。")
+    except Exception as e_check:
+        logger.error(f"防御性检查失败: {e_check}")
+    # ✨✨✨ 检查结束 ✨✨✨
     deleted_count = 0 # 在 try 块外部定义
 
     # ✨✨✨ 核心修改在这里 ✨✨✨

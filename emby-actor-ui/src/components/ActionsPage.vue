@@ -35,7 +35,7 @@
             </template>
             <n-space vertical align="start">
               <n-checkbox v-model:checked="forceReprocessAll" :disabled="taskStatus.is_running">
-                强制重新处理所有项目 (将使用TmdbAPI进行在线更新元数据)
+                强制重新处理所有项目 (将清空已处理记录)
               </n-checkbox>
               <n-button
                 type="primary"
