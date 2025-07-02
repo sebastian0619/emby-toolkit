@@ -85,49 +85,53 @@ class AITranslator:
         batch_result = self.batch_translate([text])
         return batch_result.get(text, text)
 
-    # --- 批量翻译核心方法 ---
+    # --- ✨✨✨【新增】批量翻译核心方法✨✨✨ ---
     def batch_translate(self, texts: List[str]) -> Dict[str, str]:
         """
         批量翻译一个字符串列表。
+
+        Args:
+            texts: 需要翻译的字符串列表。
+
+        Returns:
+            一个字典，键是原文，值是译文。对于翻译失败的条目，不会包含在字典中。
         """
         if not texts:
             return {}
         
+        # 去重，避免重复翻译消耗Token
         unique_texts = list(set(texts))
-        logger.info(f"开始批量翻译 {len(unique_texts)} 个独立词条 (使用引擎: {self.provider})...")
+        logger.info(f"开始批量翻译 {len(unique_texts)} 个独立词条...")
 
-        # ✨ 4. 在主分发逻辑中加入 Gemini ✨
+        # 根据提供商调用不同的批量翻译方法
         if self.provider == 'openai':
             return self._batch_translate_with_openai(unique_texts)
         elif self.provider == 'zhipuai':
             return self._batch_translate_with_zhipuai(unique_texts)
-        elif self.provider == 'gemini':
-            return self._batch_translate_with_gemini(unique_texts)
         else:
             logger.error(f"没有为提供商 '{self.provider}' 实现批量翻译方法。")
             return {}
 
-    # --- OpenAI 的批量翻译实现 (保持不变) ---
     def _batch_translate_with_openai(self, texts: List[str]) -> Dict[str, str]:
         if not self.client: return {}
 
         chunk_size = 50
         all_translated_results = {}
-
+        
         # 智能判断是否需要分块和打印相应日志
         if len(texts) > chunk_size:
             logger.info(f"数据量过大 ({len(texts)} > {chunk_size})，已自动分块。")
             text_chunks = [texts[i:i + chunk_size] for i in range(0, len(texts), chunk_size)]
         else:
             text_chunks = [texts]
-
+        
         total_chunks = len(text_chunks)
 
         for i, chunk in enumerate(text_chunks):
             # 智能判断是否需要打印批次进度日志
             if total_chunks > 1:
                 logger.info(f"--- 正在处理批次 {i + 1}/{total_chunks} ---")
-
+            
             # ✨✨✨ 完整的、无法违抗的终极提示词 ✨✨✨
             system_prompt = """
     You are a professional film and television translation expert, acting as a JSON-only API. Your primary goal is to translate English names and roles into Chinese, adhering to the common practices of the Chinese-speaking film community.
@@ -187,9 +191,9 @@ class AITranslator:
                 if not isinstance(translated_dict, dict):
                     logger.error(f"批次 {i + 1} 翻译未返回有效的JSON对象，跳过此批次。")
                     continue
-
+                
                 all_translated_results.update(translated_dict)
-
+                
                 # 智能成功日志
                 if total_chunks > 1:
                     logger.info(f"批次 {i + 1} 处理成功，已翻译 {len(translated_dict)} 个词条。")
@@ -207,7 +211,7 @@ class AITranslator:
             except Exception as e:
                 logger.error(f"批次 {i + 1} 发生未知错误: {e}。跳过此批次。", exc_info=True)
                 continue
-
+        
         logger.info(f"所有批次处理完成，总共成功翻译 {len(all_translated_results)} 个词条。")
         return all_translated_results
 
@@ -271,7 +275,7 @@ class AITranslator:
                     }
                 }]
             )
-
+            
             # 解析智谱AI的工具调用返回
             tool_call = response.choices[0].message.tool_calls[0]
             if tool_call.function.name == "translation_output":
@@ -279,9 +283,9 @@ class AITranslator:
                 translated_dict = arguments.get("translations", {})
 
                 if not isinstance(translated_dict, dict):
-                    logger.error(f"智谱AI 批量翻译未返回有效的JSON对象，而是返回了: {type(translated_dict)}")More actions
+                    logger.error(f"智谱AI 批量翻译未返回有效的JSON对象，而是返回了: {type(translated_dict)}")
                     return {}
-
+                
                 logger.debug(f"(智谱AI) 批量翻译成功，返回 {len(translated_dict)} 个结果。")
                 return translated_dict
             else:
@@ -290,6 +294,7 @@ class AITranslator:
 
         except Exception as e:
             logger.error(f"调用 智谱AI API 进行批量翻译时发生未知错误: {e}", exc_info=True)
+            return {}
         
     # ✨ 5. 新增 Gemini 的批量翻译实现 ✨
     def _batch_translate_with_gemini(self, texts: List[str]) -> Dict[str, str]:
