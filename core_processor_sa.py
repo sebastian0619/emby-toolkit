@@ -365,7 +365,7 @@ class MediaProcessorSA:
                     if entry and entry["tmdb_person_id"]:
                         tmdb_id_from_map = entry["tmdb_person_id"]
                         if tmdb_id_from_map not in final_cast_map:
-                            logger.info(f"  新增成功 (通过豆瓣ID映射): 豆瓣演员 '{d_actor.get('Name')}' -> 新增 TMDbID: {tmdb_id_from_map}")
+                            logger.info(f"  新增成功 (通过 豆瓣ID映射): 豆瓣演员 '{d_actor.get('Name')}' -> 新增 TMDbID: {tmdb_id_from_map}")
                             new_actor_entry = {
                                 "id": tmdb_id_from_map, "name": d_actor.get("Name"), "original_name": d_actor.get("OriginalName"),
                                 "character": d_actor.get("Role"), "adult": False, "gender": 0, "known_for_department": "Acting",

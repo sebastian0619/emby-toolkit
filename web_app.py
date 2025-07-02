@@ -33,6 +33,7 @@ from io import StringIO
 from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
 from actor_utils import ActorDBManager, enrich_all_actor_aliases_task
+from actor_utils import get_db_connection as get_central_db_connection
 from flask import session
 from croniter import croniter
 import logging
@@ -194,15 +195,6 @@ def task_process_single_item(processor: MediaProcessorSA, item_id: str, force_re
     """任务：处理单个媒体项"""
     processor.process_single_item(item_id, force_reprocess, process_episodes)
 
-def get_db_connection() -> sqlite3.Connection:
-    # 确保 DB_PATH 是有效的，并且目录存在
-    # 这个函数本身不应该处理目录创建，那是 init_db 的责任
-    if not os.path.exists(os.path.dirname(DB_PATH)): # 检查数据库文件所在的目录是否存在
-        logger.warning(f"数据库目录 {os.path.dirname(DB_PATH)} 不存在，get_db_connection 可能失败。")
-    conn = sqlite3.connect(DB_PATH, timeout=10.0)
-    conn.row_factory = sqlite3.Row
-    return conn
-
 def init_db():
     """
     【重建版】初始化数据库，创建面向未来的统一表结构。
@@ -215,7 +207,7 @@ def init_db():
             os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
             logger.info(f"持久化数据目录已创建: {PERSISTENT_DATA_PATH}")
 
-        conn = get_db_connection()
+        conn = get_central_db_connection(DB_PATH)
         cursor = conn.cursor()
 
         # --- 2. 性能优化：启用 WAL 模式 ---
@@ -385,7 +377,7 @@ def init_auth():
     # ... 函数的其余部分保持不变 ...
     conn = None
     try:
-        conn = get_db_connection()
+        conn = get_central_db_connection(DB_PATH)
         cursor = conn.cursor()
         
         cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
@@ -1108,7 +1100,7 @@ def task_import_person_map(processor, file_content: str, **kwargs):
         # ✨ 1. 从 processor 获取必要的配置和工具 ✨
         config = processor.config
         tmdb_api_key = config.get("tmdb_api_key")
-        stop_event = processor.get_stop_event() # 假设 processor 有 get_stop_event() 方法
+        stop_event = processor.get_stop_event()
 
         # --- 数据准备 (这部分逻辑不变) ---
         lines = file_content.splitlines()
@@ -1121,19 +1113,21 @@ def task_import_person_map(processor, file_content: str, **kwargs):
         csv_reader = csv.DictReader(stream_for_reader)
         
         stats = {"total": total_lines, "processed": 0, "skipped": 0, "errors": 0}
-        db_manager = ActorDBManager(DB_PATH)
+        
+        # ✨✨✨ 核心修改在这里 ✨✨✨
+        # 1. 创建 ActorDBManager 的实例
+        db_manager = ActorDBManager(DB_PATH) 
 
-        with db_manager.get_db_connection() as conn:
+        # 2. 使用 with 和中央函数获取连接
+        with get_central_db_connection(DB_PATH) as conn:
             cursor = conn.cursor()
             
             for i, row in enumerate(csv_reader):
-                # ✨ 2. 增加停止信号检查 ✨
                 if stop_event and stop_event.is_set():
                     logger.info("导入任务被用户中止。")
                     break
 
-                # ✨ 3. 构建完整的 person_data 字典 ✨
-                #    - 检查所有ID字段
+                # 3. 构建 person_data 字典 (不变)
                 person_data = {
                     "name": row.get('primary_name'),
                     "emby_id": row.get('emby_person_id') or None,
@@ -1142,31 +1136,29 @@ def task_import_person_map(processor, file_content: str, **kwargs):
                     "douban_id": row.get('douban_celebrity_id') or None,
                 }
 
-                
-                # 如果名字或任何一个ID都没有，就跳过这一行
                 if not person_data["name"] and not any([person_data["emby_id"], person_data["tmdb_id"], person_data["imdb_id"], person_data["douban_id"]]):
-                    logger.warning(f"导入时，跳过第 {i+2} 行，因为它缺少名字和所有ID。")
                     stats["skipped"] += 1
                     continue
 
                 try:
-                    # ✨ 4. 调用 upsert_person 时传递 tmdb_api_key ✨
-                    # 注意：我们在这里不开启 enrich_details=True，因为我们假设CSV中的数据是权威的。
-                    # 如果想在导入时也进行补充，可以设为True。
+                    # 4. 通过正确的 db_manager 实例调用方法
                     db_manager.upsert_person(
                         cursor, 
-                        person_data,
-                        tmdb_api_key=tmdb_api_key
+                        person_data
+                        # 注意：upsert_person 的定义里没有 tmdb_api_key 参数，所以这里移除了
                     )
                     stats["processed"] += 1
                 except Exception as e_row:
                     logger.error(f"处理导入文件第 {i+2} 行时发生错误: {e_row}")
                     stats["errors"] += 1
                 
-                # --- 进度汇报 (不变) ---
                 if i > 0 and i % 100 == 0 and total_lines > 0:
                     progress = int(((i + 1) / total_lines) * 100)
                     update_status_from_thread(progress, f"正在导入... ({i+1}/{total_lines})")
+            
+            # 5. 循环结束后提交事务
+            conn.commit()
+        # ✨✨✨ 修改结束 ✨✨✨
 
         message = f"导入完成。总行数: {stats['total']}, 成功处理: {stats['processed']}, 跳过: {stats['skipped']}, 错误: {stats['errors']}"
         logger.info(f"导入任务完成: {message}")
@@ -1513,11 +1505,19 @@ def login():
     if not username_from_req or not password_from_req:
         return jsonify({"error": "缺少用户名或密码"}), 400
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE username = ?", (username_from_req,))
-    user = cursor.fetchone()
-    conn.close()
+    user = None # 先在 with 外部定义 user 变量
+    
+    # ✨✨✨ 核心修改在这里 ✨✨✨
+    try:
+        with get_central_db_connection(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE username = ?", (username_from_req,))
+            user = cursor.fetchone()
+        # with 代码块结束时，conn 会被自动、安全地关闭
+    except Exception as e:
+        logger.error(f"登录时数据库查询失败: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+    # ✨✨✨ 修改结束 ✨✨✨
 
     if user and check_password_hash(user['password_hash'], password_from_req):
         session['user_id'] = user['id']
@@ -1550,21 +1550,36 @@ def change_password():
         return jsonify({"error": "新密码长度不能少于6位"}), 400
 
     user_id = session.get('user_id')
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
-    user = cursor.fetchone()
+    # ✨✨✨ 核心修改在这里 ✨✨✨
+    try:
+        with get_central_db_connection(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            # 1. 查询用户
+            cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+            user = cursor.fetchone()
 
-    if not user or not check_password_hash(user['password_hash'], current_password):
-        conn.close()
-        logger.warning(f"用户 '{session.get('username')}' 修改密码失败：当前密码不正确。")
-        return jsonify({"error": "当前密码不正确"}), 403
+            # 2. 验证当前密码
+            if not user or not check_password_hash(user['password_hash'], current_password):
+                # 注意：这里不需要手动 close() 了，with 语句会在函数返回时处理
+                logger.warning(f"用户 '{session.get('username')}' 修改密码失败：当前密码不正确。")
+                return jsonify({"error": "当前密码不正确"}), 403
 
-    # 更新密码
-    new_password_hash = generate_password_hash(new_password)
-    cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_password_hash, user_id))
-    conn.commit()
-    conn.close()
+            # 3. 更新密码
+            new_password_hash = generate_password_hash(new_password)
+            cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_password_hash, user_id))
+            
+            # 4. 提交事务
+            conn.commit()
+            
+            # with 代码块正常结束，连接会自动关闭
+            
+    except Exception as e:
+        # 如果 try 块中的任何地方（包括数据库操作）发生错误
+        # with 语句会确保连接被关闭
+        logger.error(f"修改密码时发生数据库错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+    # ✨✨✨ 修改结束 ✨✨✨
 
     logger.info(f"用户 '{user['username']}' 成功修改密码。")
     return jsonify({"message": "密码修改成功"})
@@ -1639,58 +1654,51 @@ def api_get_review_items():
     items_to_review = []
     total_matching_items = 0
     
-    conn = None
+    # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        with get_central_db_connection(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row # 确保可以按列名访问，这很重要
+            cursor = conn.cursor()
+            
+            where_clause = ""
+            sql_params = []
+
+            if query_filter:
+                where_clause = "WHERE item_name LIKE ?"
+                sql_params.append(f"%{query_filter}%")
+
+            # 1. 查询总数
+            count_sql = f"SELECT COUNT(*) FROM failed_log {where_clause}"
+            cursor.execute(count_sql, tuple(sql_params))
+            count_row = cursor.fetchone()
+            if count_row:
+                total_matching_items = count_row[0]
+
+            logger.debug(f"DATABASE CHECK: Found a total of {total_matching_items} items.")
+
+            # 2. 查询当前页的数据
+            items_sql = f"""
+                SELECT item_id, item_name, failed_at, reason, item_type, score 
+                FROM failed_log 
+                {where_clause}
+                ORDER BY failed_at DESC 
+                LIMIT ? OFFSET ?
+            """
+            params_for_page_query = sql_params + [per_page, offset]
+            cursor.execute(items_sql, tuple(params_for_page_query))
+            fetched_rows = cursor.fetchall()
+            
+            for row in fetched_rows:
+                items_to_review.append(dict(row))
         
-        # --- 终极简化：移除所有 error_message 筛选 ---
-        # 既然 failed_log 表中的所有记录都需要复核，我们就不需要任何关键词过滤了。
-        
-        where_clause = ""
-        sql_params = []
-
-        # 只在用户输入搜索词时才添加 WHERE 条件
-        if query_filter:
-            where_clause = "WHERE item_name LIKE ?"
-            sql_params.append(f"%{query_filter}%")
-        # --- 简化结束 ---
-
-        # 1. 查询总数 (WHERE 条件要么为空，要么是按名称搜索)
-        count_sql = f"SELECT COUNT(*) FROM failed_log {where_clause}"
-        cursor.execute(count_sql, tuple(sql_params))
-        count_row = cursor.fetchone()
-        if count_row:
-            total_matching_items = count_row[0]
-
-        # --- 在这里加上确认日志 ---
-        print(f"DATABASE CHECK: Found a total of {total_matching_items} items.")
-        logger.debug(f"DATABASE CHECK: Found a total of {total_matching_items} items.")
-        # --- -------------------- ---
-
-        # 2. 查询当前页的数据
-        items_sql = f"""
-            SELECT item_id, item_name, failed_at, reason, item_type, score 
-            FROM failed_log 
-            {where_clause}
-            ORDER BY failed_at DESC 
-            LIMIT ? OFFSET ?
-        """
-        # 将分页参数添加到参数列表
-        params_for_page_query = sql_params + [per_page, offset]
-        cursor.execute(items_sql, tuple(params_for_page_query))
-        fetched_rows = cursor.fetchall()
-        
-        for row in fetched_rows:
-            items_to_review.append(dict(row))
+        # with 代码块结束，数据库连接已安全关闭
 
     except Exception as e:
         logger.error(f"API /api/review_items 获取数据失败: {e}", exc_info=True)
         return jsonify({"error": "获取待复核列表时发生服务器内部错误"}), 500
-    finally:
-        if conn:
-            conn.close()
+    # ✨✨✨ 修改结束 ✨✨✨
             
+    # 这部分代码不需要数据库连接，所以放在 try...except 块外面是完全正确的
     total_pages = (total_matching_items + per_page - 1) // per_page if total_matching_items > 0 else 0
     
     logger.debug(f"API /api/review_items: 返回 {len(items_to_review)} 条待复核项目 (总计: {total_matching_items}, 第 {page}/{total_pages} 页)")
@@ -1706,42 +1714,49 @@ def api_get_review_items():
 def api_mark_item_processed(item_id):
     if task_lock.locked():
         return jsonify({"error": "后台有长时间任务正在运行，请稍后再试。"}), 409
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # 从 failed_log 获取信息，以便存入 processed_log
-        cursor.execute("SELECT item_name, item_type, score FROM failed_log WHERE item_id = ?", (item_id,))
-        failed_item_info = cursor.fetchone()
-        
-        cursor.execute("DELETE FROM failed_log WHERE item_id = ?", (item_id,))
-        deleted_count = cursor.rowcount
-        
-        if deleted_count > 0 and failed_item_info:
-            # 标记为已处理时，可以给一个特殊的高分或标记
-            # 或者，如果原始评分存在，就用那个评分
-            score_to_save = failed_item_info["score"] if failed_item_info["score"] is not None else 10.0 # 假设手动处理给10分
-            item_name = failed_item_info["item_name"]
-            
-            # 添加到 processed_log
-            # 假设 MediaProcessor 实例在这里不可用，我们直接操作数据库
-            # 如果 MediaProcessor 可用，调用其 save_to_processed_log 方法更好
-            cursor.execute(
-                "REPLACE INTO processed_log (item_id, item_name, processed_at, score) VALUES (?, ?, CURRENT_TIMESTAMP, ?)",
-                (item_id, item_name, score_to_save)
-            )
-            logger.info(f"项目 {item_id} ('{item_name}') 已标记为已处理，并移至已处理日志 (评分: {score_to_save})。")
+    
+    deleted_count = 0 # 在 try 块外部定义，以便 finally 之后能访问
 
-        conn.commit()
-        conn.close()
-        
-        if deleted_count > 0:
-            return jsonify({"message": f"项目 {item_id} 已成功标记为已处理。"}), 200
-        else:
-            return jsonify({"error": f"未在待复核列表中找到项目 {item_id}。"}), 404
+    # ✨✨✨ 核心修改在这里 ✨✨✨
+    try:
+        with get_central_db_connection(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row # 确保可以按列名访问
+            cursor = conn.cursor()
+            
+            # 1. 从 failed_log 获取信息
+            cursor.execute("SELECT item_name, item_type, score FROM failed_log WHERE item_id = ?", (item_id,))
+            failed_item_info = cursor.fetchone()
+            
+            # 2. 从 failed_log 删除
+            cursor.execute("DELETE FROM failed_log WHERE item_id = ?", (item_id,))
+            deleted_count = cursor.rowcount
+            
+            # 3. 如果删除成功，则添加到 processed_log
+            if deleted_count > 0 and failed_item_info:
+                score_to_save = failed_item_info["score"] if failed_item_info["score"] is not None else 10.0
+                item_name = failed_item_info["item_name"]
+                
+                cursor.execute(
+                    "REPLACE INTO processed_log (item_id, item_name, processed_at, score) VALUES (?, ?, CURRENT_TIMESTAMP, ?)",
+                    (item_id, item_name, score_to_save)
+                )
+                logger.info(f"项目 {item_id} ('{item_name}') 已标记为已处理，并移至已处理日志 (评分: {score_to_save})。")
+
+            # 4. 所有操作成功，提交事务
+            conn.commit()
+            # with 代码块结束，连接自动关闭
+
     except Exception as e:
+        # 如果 with 块内任何地方出错，未提交的更改会自动回滚
         logger.error(f"标记项目 {item_id} 为已处理时失败: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
+    # ✨✨✨ 修改结束 ✨✨✨
+    
+    # 根据事务执行的结果返回响应
+    if deleted_count > 0:
+        return jsonify({"message": f"项目 {item_id} 已成功标记为已处理。"}), 200
+    else:
+        return jsonify({"error": f"未在待复核列表中找到项目 {item_id}。"}), 404
 # --- 前端全量扫描接口 ---   
 @app.route('/api/trigger_full_scan', methods=['POST'])
 @processor_ready_required # <-- 检查处理器是否就绪
@@ -1901,7 +1916,6 @@ def api_export_person_map():
     【统一版】导出演员身份映射表 (person_identity_map)。
     """
     table_name = 'person_identity_map'
-    # 定义统一的、最完整的表头顺序
     headers = [
         'map_id', 'primary_name', 'emby_person_id', 
         'tmdb_person_id', 'imdb_id', 'douban_celebrity_id'
@@ -1911,7 +1925,10 @@ def api_export_person_map():
     def generate_csv():
         string_io = StringIO()
         try:
-            with get_db_connection() as conn:
+            # ✨✨✨ 核心修改在这里 ✨✨✨
+            with get_central_db_connection(DB_PATH) as conn:
+            # ✨✨✨ 修改结束 ✨✨✨
+                conn.row_factory = sqlite3.Row # 确保可以按列名访问
                 cursor = conn.cursor()
                 writer = csv.DictWriter(string_io, fieldnames=headers, extrasaction='ignore')
                 
@@ -1919,7 +1936,9 @@ def api_export_person_map():
                 yield string_io.getvalue()
                 string_io.seek(0); string_io.truncate(0)
 
-                cursor.execute(f"SELECT {', '.join(headers)} FROM {table_name}")
+                # 使用 f-string 格式化列名，更安全
+                query_columns = ', '.join(f'"{h}"' for h in headers)
+                cursor.execute(f"SELECT {query_columns} FROM {table_name}")
                 
                 for row in cursor:
                     writer.writerow(dict(row))
@@ -2001,19 +2020,25 @@ def api_get_media_for_editing_api(item_id):
         logger.error(f"API: 获取Emby详情失败 for ItemID {item_id}: {e}", exc_info=True)
         return jsonify({"error": "获取Emby详情时发生服务器错误"}), 500
 
-    # 2. 从 failed_log 获取额外信息 (保持不变)
-    conn = None
+    # ✨✨✨ 核心修改在这里 ✨✨✨
+    # 2. 从 failed_log 获取额外信息
     failed_log_info = {}
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT item_name, item_type, error_message, score FROM failed_log WHERE item_id = ?", (item_id,))
-        row = cursor.fetchone()
-        if row:
-            failed_log_info = dict(row)
-    finally:
-        if conn:
-            conn.close()
+        with get_central_db_connection(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT item_name, item_type, error_message, score FROM failed_log WHERE item_id = ?", (item_id,))
+            row = cursor.fetchone()
+            if row:
+                failed_log_info = dict(row)
+        # with 块结束，连接自动关闭
+    except Exception as e:
+        # 捕获数据库操作可能发生的错误
+        logger.error(f"API: 从 failed_log 获取信息失败 for ItemID {item_id}: {e}", exc_info=True)
+        # 即使数据库查询失败，我们也可以选择不中断整个流程，而是继续返回 Emby 的信息
+        # 如果希望数据库失败时整个请求都失败，可以取消下面这行的注释
+        # return jsonify({"error": "获取本地复核信息时发生服务器错误"}), 500
+    # ✨✨✨ 修改结束 ✨✨✨
 
     # ★★★ START: 3. 格式化并补充演员列表 (关键修改) ★★★
     enriched_cast_for_frontend = []
@@ -2259,66 +2284,75 @@ def proxy_emby_image(image_path):
 @task_lock_required
 def api_clear_review_items():
     logger.info("API: 收到清空所有待复核项目并标记为已处理的请求。")
+    deleted_count = 0 # 在 try 块外部定义
+
+    # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # 1. 将所有 failed_log 中的项目信息复制到 processed_log
-        # 使用 REPLACE INTO 来避免主键冲突，如果项目已存在于 processed_log，则会更新它。
-        # 使用 COALESCE(score, 10.0) 来实现逻辑：如果原始评分存在，就用它；如果为NULL，则默认为10.0。
-        # 这条SQL语句高效地完成了所有项目的“标记为已处理”操作。
-        copy_sql = """
-            REPLACE INTO processed_log (item_id, item_name, processed_at, score)
-            SELECT
-                item_id,
-                item_name,
-                CURRENT_TIMESTAMP,
-                COALESCE(score, 10.0)
-            FROM
-                failed_log;
-        """
-        cursor.execute(copy_sql)
-        
-        # 2. 清空 failed_log 表
-        cursor.execute("DELETE FROM failed_log")
-        deleted_count = cursor.rowcount
-        
-        # 3. 提交事务
-        conn.commit()
-        conn.close()
-        
-        if deleted_count > 0:
-            message = f"操作成功！已将 {deleted_count} 个项目从待复核列表移至已处理列表。"
-            logger.info(message)
-            return jsonify({"message": message}), 200
-        else:
-            message = "操作完成，待复核列表本就是空的。"
-            logger.info(message)
-            return jsonify({"message": message}), 200
-        
+        with get_central_db_connection(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            # 1. 将所有 failed_log 中的项目信息复制到 processed_log
+            copy_sql = """
+                REPLACE INTO processed_log (item_id, item_name, processed_at, score)
+                SELECT
+                    item_id,
+                    item_name,
+                    CURRENT_TIMESTAMP,
+                    COALESCE(score, 10.0)
+                FROM
+                    failed_log;
+            """
+            cursor.execute(copy_sql)
+            
+            # 2. 清空 failed_log 表
+            cursor.execute("DELETE FROM failed_log")
+            deleted_count = cursor.rowcount
+            
+            # 3. 提交事务
+            conn.commit()
+            # with 代码块结束，连接自动关闭
+
     except Exception as e:
+        # 如果 with 块内任何地方出错，未提交的更改会自动回滚
         logger.error(f"清空并标记待复核列表时失败: {e}", exc_info=True)
         return jsonify({"error": "服务器在处理数据库时发生内部错误"}), 500
+    # ✨✨✨ 修改结束 ✨✨✨
+    
+    # 根据事务执行的结果返回响应
+    if deleted_count > 0:
+        message = f"操作成功！已将 {deleted_count} 个项目从待复核列表移至已处理列表。"
+        logger.info(message)
+        return jsonify({"message": message}), 200
+    else:
+        message = "操作完成，待复核列表本就是空的。"
+        logger.info(message)
+        return jsonify({"message": message}), 200
 
 # # ★★★ 获取追剧列表的API ★★★
 @app.route('/api/watchlist', methods=['GET']) 
 @login_required
-def api_get_watchlist(): # <-- 函数名改为 api_get_watchlist
+def api_get_watchlist():
     # 模式检查
     if not APP_CONFIG.get(constants.CONFIG_OPTION_USE_SA_MODE, True):
         return jsonify([]) # API模式下返回空列表
 
     logger.info("API: 收到获取追剧列表的请求。")
+    
+    # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM watchlist ORDER BY added_at DESC")
-        items = [dict(row) for row in cursor.fetchall()]
-        conn.close()
+        with get_central_db_connection(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row # 确保可以按列名访问
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM watchlist ORDER BY added_at DESC")
+            items = [dict(row) for row in cursor.fetchall()]
+        # with 代码块结束，连接自动关闭
+        
         return jsonify(items)
+        
     except Exception as e:
         logger.error(f"获取追剧列表时发生错误: {e}", exc_info=True)
         return jsonify({"error": "获取追剧列表时发生服务器内部错误"}), 500
+    # ✨✨✨ 修改结束 ✨✨✨
 # ★★★ 新增：手动添加到追剧列表的API ★★★
 @app.route('/api/watchlist/add', methods=['POST'])
 @login_required
@@ -2336,25 +2370,27 @@ def api_add_to_watchlist():
         return jsonify({"error": "只能将'剧集'类型添加到追剧列表"}), 400
 
     logger.info(f"API: 收到手动添加 '{item_name}' 到追剧列表的请求。")
+    
+    # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        # 我们直接操作数据库，因为 watchlist_processor 主要是为定时任务服务的
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            INSERT OR REPLACE INTO watchlist (item_id, tmdb_id, item_name, item_type, status, last_checked_at)
-            VALUES (?, ?, ?, ?, 'Watching', NULL)
-        """, (item_id, tmdb_id, item_name, item_type))
-        # 使用 INSERT OR REPLACE 确保如果已存在，会更新其状态为 Watching
-
-        conn.commit()
-        conn.close()
+        with get_central_db_connection(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT OR REPLACE INTO watchlist (item_id, tmdb_id, item_name, item_type, status, last_checked_at)
+                VALUES (?, ?, ?, ?, 'Watching', NULL)
+            """, (item_id, tmdb_id, item_name, item_type))
+            
+            conn.commit()
+        # with 代码块结束，连接自动关闭
         
         return jsonify({"message": f"《{item_name}》已成功添加到追剧列表！"}), 200
         
     except Exception as e:
+        # 如果 with 块内任何地方出错，未提交的更改会自动回滚
         logger.error(f"手动添加项目到追剧列表时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在添加时发生内部错误"}), 500
+    # ✨✨✨ 修改结束 ✨✨✨
 
 #★★★ 手动触发追剧列表更新的API ★★★
 @app.route('/api/watchlist/trigger_full_update', methods=['POST']) 
@@ -2387,7 +2423,7 @@ def api_update_watchlist_status():
 
     logger.info(f"API: 收到请求，将项目 {item_id} 的追剧状态更新为 '{new_status}'。")
     try:
-        with get_db_connection() as conn:
+        with get_central_db_connection(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "UPDATE watchlist SET status = ? WHERE item_id = ?",
@@ -2411,41 +2447,40 @@ def api_update_watchlist_status():
 @task_lock_required
 def api_remove_from_watchlist(item_id):
     logger.info(f"API: 收到请求，将项目 {item_id} 从追剧列表移除。")
-    conn = None # ★★★ 将 conn 移到 try 外部
+    
+    # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        # ★★★ 不再使用 'with' 语句，手动管理连接 ★★★
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        logger.debug(f"准备执行 DELETE FROM watchlist WHERE item_id = {item_id}")
-        cursor.execute("DELETE FROM watchlist WHERE item_id = ?", (item_id,))
-        
-        # 检查是否真的有行被影响了
-        if cursor.rowcount > 0:
-            logger.info(f"成功执行 DELETE 语句，影响行数: {cursor.rowcount}。准备提交...")
-            conn.commit() # ★★★ 提交事务 ★★★
-            logger.info("数据库事务已提交。")
-            return jsonify({"message": "已从追剧列表移除"}), 200
-        else:
-            # 如果 rowcount 是 0，说明数据库里本来就没有这个 item_id
-            logger.warning(f"尝试删除项目 {item_id}，但在数据库中未找到匹配项。")
-            return jsonify({"error": "未在追剧列表中找到该项目"}), 404
+        # 1. 将 with 语句放在 try 块内部
+        with get_central_db_connection(DB_PATH) as conn:
+            cursor = conn.cursor()
             
+            logger.debug(f"准备执行 DELETE FROM watchlist WHERE item_id = {item_id}")
+            cursor.execute("DELETE FROM watchlist WHERE item_id = ?", (item_id,))
+            
+            # 2. 检查操作是否成功
+            if cursor.rowcount > 0:
+                logger.info(f"成功执行 DELETE 语句，影响行数: {cursor.rowcount}。准备提交...")
+                conn.commit()
+                logger.info("数据库事务已提交。")
+                return jsonify({"message": "已从追剧列表移除"}), 200
+            else:
+                logger.warning(f"尝试删除项目 {item_id}，但在数据库中未找到匹配项。")
+                return jsonify({"error": "未在追剧列表中找到该项目"}), 404
+            
+    # 3. 保留你精心设计的、精细化的异常处理块
     except sqlite3.OperationalError as e:
-        # ★★★ 专门捕获 OperationalError，它通常与锁定有关 ★★★
         if "database is locked" in str(e).lower():
             logger.error(f"从追剧列表移除项目时发生数据库锁定错误: {e}", exc_info=True)
-            return jsonify({"error": "数据库当前正忙，请稍后再试。"}), 503 # 503 Service Unavailable
+            return jsonify({"error": "数据库当前正忙，请稍后再试。"}), 503
         else:
             logger.error(f"从追剧列表移除项目时发生数据库操作错误: {e}", exc_info=True)
             return jsonify({"error": "移除项目时发生数据库操作错误"}), 500
+            
     except Exception as e:
         logger.error(f"从追剧列表移除项目时发生未知错误: {e}", exc_info=True)
         return jsonify({"error": "移除项目时发生未知的服务器内部错误"}), 500
-    finally:
-        # ★★★ 确保连接总是被关闭 ★★★
-        if conn:
-            conn.close()
+    # 4. 不再需要 finally 块，因为 with 语句已经处理了连接关闭
+    # ✨✨✨ 修改结束 ✨✨✨
 # ★★★ 新增：手动触发单项追剧更新的API ★★★
 @app.route('/api/watchlist/trigger_update/<item_id>/', methods=['POST'])
 @login_required
