@@ -1845,7 +1845,7 @@ def api_update_edited_cast_api(item_id):
         logger.info(f"API: 收到为 ItemID {item_id} 更新演员的请求，共 {len(edited_cast_from_frontend)} 位演员。")
 
         # ✨✨✨ 1. 使用 with 语句，在所有操作开始前获取数据库连接 ✨✨✨
-        with media_processor_instance.actor_db_manager.get_db_connection() as conn:
+        with get_central_db_connection(DB_PATH) as conn:
             cursor = conn.cursor()
 
             # ✨✨✨ 2. 手动开启一个事务 ✨✨✨

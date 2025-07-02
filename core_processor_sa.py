@@ -607,43 +607,6 @@ class MediaProcessorSA:
         # 返回处理完的、已经截断和翻译的列表
         return cast_to_process
         
-    # ✨✨✨格式化演员表✨✨✨
-    def _format_and_complete_cast_list(self, cast_list: List[Dict[str, Any]], is_animation: bool) -> List[Dict[str, Any]]:
-        perfect_cast = []
-        logger.info("格式化演员列表：开始处理角色名和排序。")
-
-        for idx, actor in enumerate(cast_list):
-            # 1. 获取原始角色名
-            raw_role = actor.get("character", "").strip()
-
-            # 2. ★★★ 预处理：调用 utils.clean_character_name_static ★★★
-            cleaned_role = utils.clean_character_name_static(raw_role)
-            logger.debug(f"[角色名清洗] 原始: {repr(raw_role)} → 清洗后: {repr(cleaned_role)}")
-
-            # 3. 如果包含中文，移除所有空格（包括全角空格）
-            if utils.contains_chinese(cleaned_role):
-                cleaned_role = cleaned_role.replace(" ", "").replace("　", "")
-                logger.debug(f"[移除中文空格] → {repr(cleaned_role)}")
-
-            # 4. 根据是否为动画，处理“配音”或默认“演员”
-            if is_animation:
-                if cleaned_role and not cleaned_role.endswith("(配音)"):
-                    final_role = f"{cleaned_role} (配音)"
-                elif not cleaned_role:
-                    final_role = "配音"
-                else:
-                    final_role = cleaned_role
-            else:
-                final_role = cleaned_role if cleaned_role else "演员"
-
-            # 5. 写入角色和排序
-            actor["character"] = final_role
-            actor["order"] = idx
-            perfect_cast.append(actor)
-
-            logger.debug(f"[最终角色名] {repr(final_role)}")
-
-        return perfect_cast
     # ✨✨✨API中文化演员表✨✨✨
     def _process_api_track_person_names_only(self, item_details, cursor: sqlite3.Cursor):
         """
@@ -834,7 +797,7 @@ class MediaProcessorSA:
                 genres = item_details_from_emby.get("Genres", [])
                 is_animation = "Animation" in genres or "动画" in genres
                 
-                final_cast_perfect = self._format_and_complete_cast_list(intermediate_cast, is_animation)
+                final_cast_perfect = actor_utils.format_and_complete_cast_list(intermediate_cast, is_animation)
         
                 # --- 阶段2: 文件写入 ---
                 base_json_data_for_override = copy.deepcopy(base_json_data_original)

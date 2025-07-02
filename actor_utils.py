@@ -574,6 +574,20 @@ def format_and_complete_cast_list(cast_list: List[Dict[str, Any]], is_animation:
         actor["order"] = idx
         perfect_cast.append(actor)
             
+    generic_roles = {"演员", "配音"}
+    
+    logger.info(f"对演员列表进行最终排序，将通用角色名（如 {', '.join(generic_roles)}）排到末尾。")
+    
+    # 使用扩展后的 key 函数进行排序
+    perfect_cast.sort(key=lambda actor: (
+        1 if actor.get("character") in generic_roles else 0, 
+        actor.get("order")
+    ))
+    
+    # 排序后，重新更新 order 字段，使其连续
+    for new_idx, actor in enumerate(perfect_cast):
+        actor["order"] = new_idx
+    # ✨✨✨ 修改结束 ✨✨✨    return perfect_cast
     return perfect_cast
 # --- 用于获取单个演员的TMDb详情 ---
 def fetch_tmdb_details_for_actor(actor_info: Dict, tmdb_api_key: str) -> Optional[Dict]:
