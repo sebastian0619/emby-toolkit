@@ -245,7 +245,7 @@ class MediaProcessorSA:
         # 3. 如果本地未找到，回退到在线API
         logger.info("未找到本地豆瓣缓存，将通过在线API获取演员信息。")
         return actor_utils.find_douban_cast(self.douban_api, media_info)
-
+    # --- 通过豆瓣ID查找映射表 ---
     def _find_person_in_map_by_douban_id(self, douban_id: str, cursor: sqlite3.Cursor) -> Optional[sqlite3.Row]:
         """
         根据豆瓣名人ID在 person_identity_map 表中查找对应的记录。
@@ -261,7 +261,23 @@ class MediaProcessorSA:
         except sqlite3.Error as e:
             logger.error(f"通过豆瓣ID '{douban_id}' 查询 person_identity_map 时出错: {e}")
             return None
-            
+    # --- 通过ImbdID查找映射表 ---
+    def _find_person_in_map_by_imdb_id(self, imdb_id: str, cursor: sqlite3.Cursor) -> Optional[sqlite3.Row]:
+        """
+        根据 IMDb ID 在 person_identity_map 表中查找对应的记录。
+        """
+        if not imdb_id:
+            return None
+        try:
+            # 核心改动：将查询字段从 douban_celebrity_id 改为 imdb_id
+            cursor.execute(
+                "SELECT * FROM person_identity_map WHERE imdb_id = ?",
+                (imdb_id,)
+            )
+            return cursor.fetchone()
+        except sqlite3.Error as e:
+            logger.error(f"通过 IMDb ID '{imdb_id}' 查询 person_identity_map 时出错: {e}")
+            return None
     # --- 核心处理流程 ---
     def _process_cast_list_from_local(self, local_cast_list: List[Dict[str, Any]], emby_item_info: Dict[str, Any], cursor: sqlite3.Cursor, tmdb_api_key: Optional[str], stop_event: Optional[threading.Event]) -> List[Dict[str, Any]]:
         """
@@ -349,7 +365,7 @@ class MediaProcessorSA:
                     if entry and entry["tmdb_person_id"]:
                         tmdb_id_from_map = entry["tmdb_person_id"]
                         if tmdb_id_from_map not in final_cast_map:
-                            logger.info(f"  新增成功 (数据库映射): 豆瓣演员 '{d_actor.get('Name')}' -> 新增 TMDbID: {tmdb_id_from_map}")
+                            logger.info(f"  新增成功 (通过豆瓣ID映射): 豆瓣演员 '{d_actor.get('Name')}' -> 新增 TMDbID: {tmdb_id_from_map}")
                             new_actor_entry = {
                                 "id": tmdb_id_from_map, "name": d_actor.get("Name"), "original_name": d_actor.get("OriginalName"),
                                 "character": d_actor.get("Role"), "adult": False, "gender": 0, "known_for_department": "Acting",
@@ -395,22 +411,57 @@ class MediaProcessorSA:
                             logger.warning(f"    -> 解析 IMDb ID 时发生意外错误: {e_parse}")
                     
                     if d_imdb_id:
-                        logger.debug(f"    -> 为 '{d_actor.get('Name')}' 获取到 IMDb ID: {d_imdb_id}，开始反查...")
-                        if self.is_stop_requested():
-                            logger.info("任务在处理豆瓣演员时被中止 (TMDb API调用前)。")
-                            raise InterruptedError("任务中止")
-                        person_from_tmdb = tmdb_handler.find_person_by_external_id(d_imdb_id, self.tmdb_api_key, "imdb_id")
-                        if person_from_tmdb and person_from_tmdb.get("id"):
-                            tmdb_id_from_find = str(person_from_tmdb.get("id"))
-                            logger.info(f"  新增成功 (TMDb反查): 豆瓣演员 '{d_actor.get('Name')}' -> 新增 TMDbID: {tmdb_id_from_find}")
-                            new_actor_entry = {
-                                "id": tmdb_id_from_find, "name": d_actor.get("Name"), "original_name": d_actor.get("OriginalName"),
-                                "character": d_actor.get("Role"), "adult": False, "gender": 0, "known_for_department": "Acting",
-                                "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": -1,
-                                "imdb_id": d_imdb_id, "douban_id": d_douban_id, "_is_newly_added": True
-                            }
-                            final_cast_map[tmdb_id_from_find] = new_actor_entry
+                        logger.debug(f"    -> 为 '{d_actor.get('Name')}' 获取到 IMDb ID: {d_imdb_id}，开始匹配...")
+                        
+                        # ✨✨✨ 1. 优先调用新的辅助函数查询本地数据库 ✨✨✨
+                        entry_from_map = self._find_person_in_map_by_imdb_id(d_imdb_id, cursor)
+                        
+                        if entry_from_map and entry_from_map["tmdb_person_id"]:
+                            tmdb_id_from_map = str(entry_from_map["tmdb_person_id"])
+                            
+                            if tmdb_id_from_map not in final_cast_map:
+                                logger.info(f"  新增成功 (通过 IMDb映射): 豆瓣演员 '{d_actor.get('Name')}' -> 新增 TMDbID: {tmdb_id_from_map}")
+                                new_actor_entry = {
+                                    "id": tmdb_id_from_map, "name": d_actor.get("Name"), "original_name": d_actor.get("OriginalName"),
+                                    "character": d_actor.get("Role"), "adult": False, "gender": 0, "known_for_department": "Acting",
+                                    "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": -1,
+                                    "imdb_id": d_imdb_id, "douban_id": d_douban_id, "_is_newly_added": True
+                                }
+                                final_cast_map[tmdb_id_from_map] = new_actor_entry
                             match_found = True
+
+                        # ✨✨✨ 2. 如果数据库未命中，才去调用在线 API ✨✨✨
+                        if not match_found:
+                            logger.debug(f"    -> 数据库未找到 {d_imdb_id} 的映射，开始通过 TMDb API 反查...")
+                            if self.is_stop_requested():
+                                logger.info("任务在处理豆瓣演员时被中止 (TMDb API调用前)。")
+                                raise InterruptedError("任务中止")
+                            
+                            person_from_tmdb = tmdb_handler.find_person_by_external_id(d_imdb_id, self.tmdb_api_key, "imdb_id")
+                            if person_from_tmdb and person_from_tmdb.get("id"):
+                                tmdb_id_from_find = str(person_from_tmdb.get("id"))
+                                
+                                if tmdb_id_from_find not in final_cast_map:
+                                    logger.info(f"  新增成功 (通过 TMDb反查): 豆瓣演员 '{d_actor.get('Name')}' -> 新增 TMDbID: {tmdb_id_from_find}")
+                                    new_actor_entry = {
+                                        "id": tmdb_id_from_find, "name": d_actor.get("Name"), "original_name": d_actor.get("OriginalName"),
+                                        "character": d_actor.get("Role"), "adult": False, "gender": 0, "known_for_department": "Acting",
+                                        "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": -1,
+                                        "imdb_id": d_imdb_id, "douban_id": d_douban_id, "_is_newly_added": True
+                                    }
+                                    final_cast_map[tmdb_id_from_find] = new_actor_entry
+                                    
+                                    # ✨✨✨ 3. 重要：将新获取的映射关系存回数据库！✨✨✨
+                                    self.actor_db_manager.upsert_person(
+                                        cursor,
+                                        {
+                                            "tmdb_id": tmdb_id_from_find,
+                                            "imdb_id": d_imdb_id,
+                                            "douban_id": d_douban_id,
+                                            "name": d_actor.get("Name")
+                                        }
+                                    )
+                                match_found = True
                 if not match_found:
                     still_unmatched_final.append(d_actor)
 
