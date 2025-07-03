@@ -1910,8 +1910,8 @@ def api_export_person_map():
     """
     table_name = 'person_identity_map'
     headers = [
-        'map_id', 'primary_name', 
-        'tmdb_person_id', 'imdb_id', 'douban_celebrity_id'
+    'primary_name', 
+    'tmdb_person_id', 'imdb_id', 'douban_celebrity_id'
     ]
     logger.info(f"API: 收到导出演员映射表 '{table_name}' 的请求。")
 
