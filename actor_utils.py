@@ -566,20 +566,26 @@ def format_and_complete_cast_list(cast_list: List[Dict[str, Any]], is_animation:
     logger.info(f"格式化演员列表：开始处理角色名和排序 (角色名前缀开关: {'开' if add_role_prefix else '关'})。")
 
     # ... 后续逻辑完全不变 ...
+    generic_roles = {"演员", "配音"}
     for idx, actor in enumerate(cast_list):
         final_role = actor.get("character", "").strip()
         if utils.contains_chinese(final_role):
             final_role = final_role.replace(" ", "").replace("　", "")
         
         if add_role_prefix:
-            if final_role:
+            # 只有当角色名存在，并且它不是一个通用角色名时，才添加前缀
+            if final_role and final_role not in generic_roles:
                 prefix = "配 " if is_animation else "饰 "
                 final_role = f"{prefix}{final_role}"
-            else:
+            # 如果角色名是空的，就设置为通用角色名（不加前缀）
+            elif not final_role:
                 final_role = "配音" if is_animation else "演员"
+            # 如果角色名本身就是 "演员" 或 "配音"，则什么都不做，保持原样
         else:
+            # 开关关闭时，逻辑不变
             if not final_role:
                 final_role = "配音" if is_animation else "演员"
+        # =================================================================
         
         actor["character"] = final_role
         actor["order"] = idx
