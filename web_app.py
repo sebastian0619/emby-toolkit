@@ -1116,7 +1116,6 @@ def task_import_person_map(processor, file_content: str, **kwargs):
                 # 3. 构建 person_data 字典 (不变)
                 person_data = {
                     "name": row.get('primary_name'),
-                    "emby_id": row.get('emby_person_id') or None,
                     "tmdb_id": row.get('tmdb_person_id') or None,
                     "imdb_id": row.get('imdb_id') or None,
                     "douban_id": row.get('douban_celebrity_id') or None,
@@ -1911,7 +1910,7 @@ def api_export_person_map():
     """
     table_name = 'person_identity_map'
     headers = [
-        'map_id', 'primary_name', 'emby_person_id', 
+        'map_id', 'primary_name', 
         'tmdb_person_id', 'imdb_id', 'douban_celebrity_id'
     ]
     logger.info(f"API: 收到导出演员映射表 '{table_name}' 的请求。")
