@@ -7,7 +7,7 @@ import sqlite3 # 用于数据库操作
 from typing import Dict, List, Optional, Any, Tuple
 import threading
 import tmdb_handler
-from douban import DoubanApi, clean_character_name_static
+from douban import DoubanApi
 # 假设 emby_handler.py, utils.py, logger_setup.py, constants.py 都在同一级别或Python路径中
 import emby_handler
 import utils # 导入我们上面修改的 utils.py
@@ -622,7 +622,8 @@ class MediaProcessorAPI:
 
         formatted_cast_list = actor_utils.format_and_complete_cast_list(
             cast_list=final_cast_list,
-            is_animation=is_animation
+            is_animation=is_animation,
+            config=self.config
         )
 
         logger.info(f"演员列表最终处理完成，返回 {len(final_cast_list)} 位演员。")

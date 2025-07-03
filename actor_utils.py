@@ -5,6 +5,7 @@ import json
 import threading
 import concurrent.futures
 import time
+import constants
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple, Set
 # 导入底层工具箱和日志
@@ -552,42 +553,49 @@ def batch_translate_cast(cast_list: List[Dict[str, Any]], db_cursor: sqlite3.Cur
 
     return cast_list
 # ✨✨✨格式化演员表✨✨✨
-def format_and_complete_cast_list(cast_list: List[Dict[str, Any]], is_animation: bool) -> List[Dict[str, Any]]:
-    """【共享工具】对最终的演员列表进行格式化（角色名、排序）。"""
+def format_and_complete_cast_list(cast_list: List[Dict[str, Any]], is_animation: bool, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    【共享工具 V7 - 依赖注入版】对最终的演员列表进行格式化（角色名、排序）。
+    配置通过参数传入，不再依赖任何全局变量。
+    """
     perfect_cast = []
-    logger.info("格式化演员列表：开始处理角色名和排序。")
+    
+    # ▼▼▼ 核心修改：从传入的 config 参数中获取配置 ▼▼▼
+    add_role_prefix = config.get(constants.CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX, False)
 
+    logger.info(f"格式化演员列表：开始处理角色名和排序 (角色名前缀开关: {'开' if add_role_prefix else '关'})。")
+
+    # ... 后续逻辑完全不变 ...
     for idx, actor in enumerate(cast_list):
         final_role = actor.get("character", "").strip()
         if utils.contains_chinese(final_role):
             final_role = final_role.replace(" ", "").replace("　", "")
         
-        if is_animation:
-            if final_role and not final_role.endswith("(配音)"):
-                final_role = f"{final_role} (配音)"
-            elif not final_role:
-                final_role = "配音"
-        elif not final_role:
-            final_role = "演员"
-
+        if add_role_prefix:
+            if final_role:
+                prefix = "配 " if is_animation else "饰 "
+                final_role = f"{prefix}{final_role}"
+            else:
+                final_role = "配音" if is_animation else "演员"
+        else:
+            if not final_role:
+                final_role = "配音" if is_animation else "演员"
+        
         actor["character"] = final_role
         actor["order"] = idx
         perfect_cast.append(actor)
             
     generic_roles = {"演员", "配音"}
-    
     logger.info(f"对演员列表进行最终排序，将通用角色名（如 {', '.join(generic_roles)}）排到末尾。")
     
-    # 使用扩展后的 key 函数进行排序
     perfect_cast.sort(key=lambda actor: (
         1 if actor.get("character") in generic_roles else 0, 
         actor.get("order")
     ))
     
-    # 排序后，重新更新 order 字段，使其连续
     for new_idx, actor in enumerate(perfect_cast):
         actor["order"] = new_idx
-    # ✨✨✨ 修改结束 ✨✨✨    return perfect_cast
+        
     return perfect_cast
 # --- 用于获取单个演员的TMDb详情 ---
 def fetch_tmdb_details_for_actor(actor_info: Dict, tmdb_api_key: str) -> Optional[Dict]:

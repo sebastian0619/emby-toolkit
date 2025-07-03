@@ -21,7 +21,7 @@ from actor_utils import get_db_connection as get_central_db_connection
 from ai_translator import AITranslator
 from utils import LogDBManager, get_override_path_for_item
 from watchlist_processor import WatchlistProcessor
-from douban import DoubanApi, clean_character_name_static
+from douban import DoubanApi
 logger = logging.getLogger(__name__)
 try:
     from douban import DoubanApi
@@ -813,7 +813,7 @@ class MediaProcessorSA:
                 genres = item_details_from_emby.get("Genres", [])
                 is_animation = "Animation" in genres or "动画" in genres
                 
-                final_cast_perfect = actor_utils.format_and_complete_cast_list(intermediate_cast, is_animation)
+                final_cast_perfect = actor_utils.format_and_complete_cast_list(intermediate_cast, is_animation, self.config)
         
                 # --- 阶段2: 文件写入 ---
                 base_json_data_for_override = copy.deepcopy(base_json_data_original)

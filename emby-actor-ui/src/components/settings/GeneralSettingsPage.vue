@@ -50,6 +50,14 @@
               <n-text depth="3" style="font-size:0.8em;">设置最终写入元数据的演员数量上限，避免列表过长。</n-text>
             </template>
           </n-form-item-grid-item>
+          <n-form-item-grid-item label="为角色名添加前缀" path="actor_role_add_prefix">
+            <n-switch v-model:value="configModel.actor_role_add_prefix" />
+            <template #feedback>
+              <n-text depth="3" style="font-size:0.8em;">
+                开启后，角色名前会加上“饰 ”或“配 ”，例如“饰 凌凌漆”。关闭则直接显示角色名。
+              </n-text>
+            </template>
+          </n-form-item-grid-item>
             <n-form-item-grid-item label="更新后刷新 Emby 媒体项">
               <n-switch v-model:value="configModel.refresh_emby_after_update" />
             </n-form-item-grid-item>

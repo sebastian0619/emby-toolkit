@@ -12,6 +12,7 @@ import base64
 import hashlib
 import hmac
 import time
+from utils import clean_character_name_static
 from urllib import parse
 from datetime import datetime
 from random import choice
@@ -20,22 +21,6 @@ import threading
 
 logger = logging.getLogger(__name__)
 
-# --- 辅助函数 ---
-def clean_character_name_static(character_name: Optional[str]) -> str:
-    if not character_name:
-        return ""
-    name = str(character_name).strip()
-    if name.startswith("饰 "): name = name[2:].strip()
-    elif name.startswith("饰"): name = name[1:].strip()
-    if '/' in name: name = name.split('/')[0].strip()
-    voice_patterns = [
-        r'\s*\((voice|Voice|VOICE)\)\s*$', r'\s*\[voice\]\s*$',
-        r'\s*\(v\.o\.\)\s*$', r'\s*\(V\.O\.\)\s*$',
-    ]
-    for pattern in voice_patterns:
-        name = re.sub(pattern, '', name, flags=re.IGNORECASE).strip()
-    return name
-# --- 辅助函数结束 ---
 
 class DoubanApi:
     _session: Optional[requests.Session] = None

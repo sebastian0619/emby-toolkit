@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "2.6.3"  # 建议更新版本号，因为我们做了很多重要重构
+APP_VERSION = "2.6.3.1"  # 建议更新版本号，因为我们做了很多重要重构
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 CONFIG_FILE_NAME = "config.ini" # 主配置文件名
@@ -92,6 +92,12 @@ CONFIG_OPTION_SCHEDULE_SYNC_MAP_CRON = "schedule_sync_map_cron"       # 同步�
 CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED = "schedule_watchlist_enabled" # 是否启用智能追剧任务
 CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON = "schedule_watchlist_cron"       # 智能追剧的CRON表达式
 DEFAULT_SCHEDULE_WATCHLIST_CRON = "0 */6 * * *" # 默认每6小时执行一次
+
+# ==============================================================================
+# ✨ 演员处理相关配置 (Actor Processing)
+# ==============================================================================
+CONFIG_SECTION_ACTOR = "Actor"
+CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX = "actor_role_add_prefix"
 
 # ★★★ 外部ID补充任务 ★★★
 CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED = "schedule_enrich_aliases_enabled" # 是否启用外部ID补充任务
