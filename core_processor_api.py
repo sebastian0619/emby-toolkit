@@ -1016,7 +1016,10 @@ class MediaProcessorAPI:
                         logger.warning("一键翻译：AI批量翻译未返回结果，将降级。")
                 except Exception as e:
                     logger.error(f"一键翻译：调用AI批量翻译时出错: {e}，将降级。", exc_info=True)
-
+            else:
+                # ✨✨✨ 加上这个 else 分支 ✨✨✨
+                logger.info("一键翻译：所有词条均为中文或无需翻译，跳过AI调用。")
+                ai_translation_succeeded = True # 告诉程序这种情况是成功的
         # 如果AI翻译未启用或失败，则降级到传统引擎
         if not ai_translation_succeeded:
             if self.config.get("ai_translation_enabled", False):
