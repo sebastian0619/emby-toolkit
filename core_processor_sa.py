@@ -737,7 +737,6 @@ class MediaProcessorSA:
                 if self.is_stop_requested(): raise InterruptedError("任务被中止")
 
                 # ★★★ 轨道二：JSON 轨道 (神医模式核心) ★★★
-                logger.info(f"{log_prefix} 开始处理JSON元数据并生成到覆盖缓存目录 ---")
                 if not tmdb_id or not self.local_data_path:
                     error_msg = "缺少TMDbID" if not tmdb_id else "未配置本地数据路径"
                     logger.warning(f"【JSON轨道】跳过处理 '{item_name_for_log}'，原因: {error_msg}。")
@@ -755,19 +754,36 @@ class MediaProcessorSA:
                 # 【★★★ 逻辑分岔点 ★★★】
                 # =================================================================
                 base_json_data_original = None
+                # 1. 先决策：确定最终要执行的模式
+                should_fetch_online = force_fetch_from_tmdb
+                json_file_path = os.path.join(base_cache_dir, base_json_filename)
+
+                if not should_fetch_online and not os.path.exists(json_file_path):
+                    logger.warning(f"本地元数据文件不存在: {json_file_path}。将自动切换到在线模式进行获取。")
+                    should_fetch_online = True # 强制切换
+
+                # 2. 后定调：根据最终决策，生成本次处理的日志前缀
+                mode_str = "本地模式"
+                if should_fetch_online:
+                    # 如果最初不是强制在线，说明是自动切换的
+                    mode_str = "在线模式(自动切换)" if not force_fetch_from_tmdb else "在线模式"
+                log_prefix = f"[{mode_str}]"
+
+                # 3. 再执行：使用正确的日志前缀开始记录和处理
+                logger.info(f"{log_prefix} 开始处理JSON元数据并生成到覆盖缓存目录 ---")
                 
-                if force_fetch_from_tmdb:
-                    # 【新路径】强制在线获取
-                    # ★★★ 核心修正：将 item_name_for_log 传递给 item_name 参数 ★★★
+                base_json_data_original = None
+                if should_fetch_online:
+                    # 【在线路径】
+                    logger.debug(f"{log_prefix} 开始从TMDb在线获取元数据。")
                     base_json_data_original = self._fetch_and_build_tmdb_base_json(
                         tmdb_id=tmdb_id, 
                         item_type=item_type, 
-                        item_name=item_name_for_log  # <--- 就是这里！
+                        item_name=item_name_for_log
                     )
                 else:
-                    # 【旧路径】从本地文件读取
-                    logger.debug("标准模式：从本地缓存文件读取元数据。")
-                    json_file_path = os.path.join(base_cache_dir, base_json_filename)
+                    # 【本地路径】
+                    logger.debug(f"{log_prefix} 从本地缓存文件读取元数据: {json_file_path}")
                     base_json_data_original = _read_local_json(json_file_path)
 
                 if not base_json_data_original:
