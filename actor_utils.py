@@ -567,6 +567,33 @@ def format_and_complete_cast_list(cast_list: List[Dict[str, Any]], is_animation:
     【共享工具 V7 - 依赖注入版】对最终的演员列表进行格式化（角色名、排序）。
     配置通过参数传入，不再依赖任何全局变量。
     """
+    # ▼▼▼ Emby同名BUG防撞处理 ▼▼▼
+    logger.debug("开始执行Emby同名防撞处理...")
+    name_counts = {}
+    
+    # 关键一步：先按order排序，确保每次处理的顺序一致，这样哪个演员被加空格也是固定的
+    cast_list.sort(key=lambda x: x.get('order', 999))
+    
+    for actor in cast_list:
+        name = actor.get("name")
+        if not name:
+            continue
+        
+        # 使用小写和去除空格的名字作为key，更健壮
+        normalized_name = name.lower().strip()
+        
+        if normalized_name in name_counts:
+            # 这不是第一次看到这个名字了
+            name_counts[normalized_name] += 1
+            # 为第二个及以后的同名演员添加一个或多个零宽度空格
+            suffix = '\u200b' * name_counts[normalized_name]
+            new_name = f"{name}{suffix}"
+            logger.warning(f"检测到同名演员 '{name}'，为防止Emby BUG，将其名字修改为 '{new_name}' (添加了零宽度空格)。")
+            actor["name"] = new_name
+        else:
+            # 第一次看到这个名字
+            name_counts[normalized_name] = 0
+    # ▲▲▲ 防撞处理结束 ▲▲▲
     perfect_cast = []
     
     # ▼▼▼ 核心修改：从传入的 config 参数中获取配置 ▼▼▼
