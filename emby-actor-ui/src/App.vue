@@ -3,7 +3,7 @@
   <div :class="isDarkTheme ? 'dark-mode' : 'light-mode'">
     <n-config-provider :theme="isDarkTheme ? darkTheme : undefined" :theme-overrides="themeOverridesComputed" :locale="zhCN" :date-locale="dateZhCN">
       <n-message-provider>
-        
+        <n-dialog-provider>
         <!-- 1. 如果需要登录，则显示全屏的登录页面 -->
         <div v-if="authStore.isAuthEnabled && !authStore.isLoggedIn" class="fullscreen-container">
           <Login />
@@ -100,7 +100,7 @@
           >
             <ChangePassword @password-changed="showPasswordModal = false" />
           </n-modal>
-
+         </n-dialog-provider>
         </n-message-provider>
     </n-config-provider>
   </div>

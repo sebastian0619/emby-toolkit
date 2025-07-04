@@ -930,7 +930,81 @@ def enrich_and_match_douban_cast_to_emby(
 
     logger.info(f"enrich_and_match_douban_cast_to_emby: 处理完成，返回 {len(results)} 个匹配/增强的演员信息。")
     return results
+# --- 一键重构演员数据 ---
+def run_full_rebuild_task(self, update_status_callback: Optional[callable] = None, stop_event: Optional[threading.Event] = None):
+    """
+    【总指挥 - 最终版】执行完整的一键重构演员数据库任务。
+    编排所有步骤，并向前端汇报进度。
+    'self' 在这里就是 media_processor_instance。
+    """
+    def _update_status(progress, message):
+        """内部辅助函数，用于安全地调用回调并检查中止信号。"""
+        if update_status_callback:
+            # 确保进度在0-100之间
+            safe_progress = max(0, min(100, int(progress)))
+            update_status_callback(safe_progress, message)
+        if stop_event and stop_event.is_set():
+            raise InterruptedError("任务被用户中止")
 
+    try:
+        _update_status(0, "任务已启动，正在准备执行阶段 1...")
+        # ======================================================================
+        # 阶段一：通过API解除所有演员关联 (占总进度的 0% -> 60%)
+        # ======================================================================
+        _update_status(0, "阶段 1/3: 正在解除所有媒体的演员关联...")
+        
+        clear_success = emby_handler.clear_all_persons_via_api(
+            base_url=self.emby_url,
+            api_key=self.emby_api_key,
+            user_id=self.emby_user_id,
+            # 将此阶段的内部进度(0-100)映射到总进度的0-60
+            update_status_callback=lambda p, m: _update_status(int(p * 0.6), f"阶段 1/3: {m}"),
+            stop_event=stop_event
+        )
+        if not clear_success:
+            raise RuntimeError("解除演员关联失败，任务中止。")
+
+        # ======================================================================
+        # 阶段二：清理本地映射表的EmbyID (占总进度的 60% -> 65%)
+        # ======================================================================
+        _update_status(60, "阶段 2/3: 正在清空本地映射表中的EmbyID...")
+        with get_central_db_connection(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE person_identity_map SET emby_person_id = NULL;")
+            conn.commit()
+        logger.info("本地映射表中的EmbyID已全部清空。")
+        _update_status(65, "本地映射表清理完成。")
+
+        # ======================================================================
+        # 阶段三：触发并监控Emby刷新 (占总进度的 65% -> 85%)
+        # ======================================================================
+        _update_status(90, "阶段 3/3: 正在触发所有媒体库的深度刷新...")
+        
+        refresh_success = emby_handler.start_library_scan( # 使用你最可靠的那个触发函数
+            base_url=self.emby_url,
+            api_key=self.emby_api_key,
+            user_id=self.emby_user_id 
+        )
+        
+        if not refresh_success:
+            logger.warning("部分或全部媒体库的深度刷新请求可能发送失败，请稍后手动检查Emby。")
+        
+        # ★★★ 最终的用户提示 ★★★
+        final_message = (
+            "第一阶段完成！已触发Emby后台刷新。\n"
+            "请在Emby中确认媒体库刷新完成后，再执行【同步演员映射表】以完成重新链接EmbyID。"
+        )
+        _update_status(100, final_message)
+        logger.info(final_message)
+
+    except InterruptedError:
+        logger.info("一键重构任务被用户中止。")
+        raise
+    except Exception as e:
+        logger.error(f"执行一键重构任务时发生严重错误: {e}", exc_info=True)
+        if update_status_callback:
+            update_status_callback(-1, f"任务失败: {e}")
+        raise
 # --- 执行全量媒体库扫描 ---
 def task_process_full_library(processor: Union[MediaProcessorSA, MediaProcessorAPI], process_episodes: bool):
     processor.process_full_library(
@@ -2549,6 +2623,31 @@ def api_trigger_full_image_sync():
     )
     
     return jsonify({"message": "全量海报同步任务已成功提交。"}), 202
+# --- 一键重构演员数据端点 ---
+@app.route('/api/tasks/rebuild-actors', methods=['POST'])
+@login_required
+@task_lock_required
+@processor_ready_required
+@sa_mode_required
+def trigger_rebuild_actors_task():
+    """
+    API端点，用于触发“一键重构演员数据库”的后台任务。
+    """
+    try:
+        # 假设你的处理器实例是全局可访问的，或者通过某种方式获取
+        # 我们需要把这个函数本身，以及它的名字，提交到队列
+        submit_task_to_queue(
+            run_full_rebuild_task, # <--- 传递函数本身
+            "一键重构演员数据库" # <--- 任务名
+            # 注意：这里不需要传递 processor 实例，因为 task_worker_function 会自动选择
+        )
+        return jsonify({"status": "success", "message": "一键重构任务已成功提交到后台队列。"}), 202
+    except RuntimeError as e:
+        # submit_task_to_queue 在有任务运行时会抛出 RuntimeError
+        return jsonify({"status": "error", "message": str(e)}), 409 # 409 Conflict
+    except Exception as e:
+        logger.error(f"提交一键重构任务时发生错误: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": "提交任务失败，请查看后端日志。"}), 500
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})

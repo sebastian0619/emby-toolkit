@@ -314,7 +314,7 @@ class MediaProcessorSA:
                     is_match, match_reason = True, "精确匹配 (豆瓣外文名)"
 
                 if is_match:
-                    logger.info(f"  匹配成功 (一对一): 豆瓣演员 '{d_actor.get('Name')}' -> 本地演员 '{l_actor.get('name')}' (ID: {l_actor.get('id')})")
+                    logger.info(f"  匹配成功 (对号入座): 豆瓣演员 '{d_actor.get('Name')}' -> 本地演员 '{l_actor.get('name')}' (ID: {l_actor.get('id')})")
                     
                     # 合并信息
                     l_actor["name"] = d_actor.get("Name")

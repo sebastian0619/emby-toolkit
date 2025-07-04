@@ -59,8 +59,21 @@
                   :loading="taskStatus.is_running && currentActionIncludesSyncMap"
                   :disabled="taskStatus.is_running && !currentActionIncludesSyncMap"
                 >
-                  启动同步 <!-- 按钮文本已固定 -->
+                  启动同步
                 </n-button>
+                
+                <!-- ★★★ 新增：一键重构按钮 ★★★ -->
+                <n-button
+                  type="warning"
+                  @click="triggerRebuildActors"
+                  :loading="taskStatus.is_running && currentActionIncludesRebuild"
+                  :disabled="taskStatus.is_running && !currentActionIncludesRebuild"
+                  ghost
+                >
+                  重构演员库
+                </n-button>
+                <!-- ★★★ 新增结束 ★★★ -->
+
                 <n-button @click="exportMap" :loading="isExporting" class="action-button">
                   <template #icon><n-icon :component="ExportIcon" /></template>
                   导出
@@ -81,6 +94,8 @@
               </n-space>
               <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">
                 <b>同步：</b>读取所有演员信息为后续创建各数据源ID映射表。<br>
+                <!-- ★★★ 新增：对重构功能的说明 ★★★ -->
+                <b>一键重构：</b><span style="color: var(--n-warning-color);">【高危】</span>清空并重建Emby演员数据库，解决数据污染、索引损坏等疑难杂症。<br>
                 <b>导出/导入：</b>用于备份或迁移演员映射数据。导入会追加更新现有演员的记录。
               </p>
             </n-space>
@@ -149,7 +164,8 @@ import { ref, computed, watch, nextTick } from 'vue'; // 重新引入 nextTick
 import axios from 'axios';
 import { 
   NCard, NButton, NCheckbox, NSpace, NAlert, NLog, NIcon, useMessage, 
-  NUpload, NGrid, NGi, NSwitch
+  NUpload, NGrid, NGi, NSwitch,
+  useDialog
 } from 'naive-ui';
 import { 
   TrashOutline as TrashIcon,
@@ -160,6 +176,7 @@ import {
 // --- Refs and Props (保持不变) ---
 const logRef = ref(null);
 const message = useMessage();
+const dialog = useDialog();
 const props = defineProps({
   taskStatus: {
     type: Object,
@@ -193,7 +210,9 @@ const currentActionIncludesScan = computed(() =>
 const currentActionIncludesSyncMap = computed(() => 
   props.taskStatus.current_action && props.taskStatus.current_action.toLowerCase().includes('sync')
 );
-
+const currentActionIncludesRebuild = computed(() => 
+  props.taskStatus.current_action && props.taskStatus.current_action.toLowerCase().includes('rebuild')
+);
 // ★★★ 3. 修改 watch 监听器 ★★★
 watch(() => props.taskStatus.logs, async (newLogs, oldLogs) => {
   // 如果没有新的日志内容，或者 log 组件的 ref 还不存在，则不执行任何操作
@@ -341,5 +360,23 @@ const triggerFullImageSync = async () => {
     console.error('启动全量海报同步失败:', error);
     message.error(error.response?.data?.error || '启动任务失败，请查看日志。');
   }
+};
+// ★★★ 4. 添加触发一键重构的函数 ★★★
+const triggerRebuildActors = () => {
+  dialog.warning({
+    title: '高危操作确认',
+    content: '此操作将彻底清空并重建Emby中的所有演员数据，用于解决数据污染、索引损坏等疑难杂症。过程可能需要较长时间，期间请勿关闭浏览器。您确定要继续吗？',
+    positiveText: '我意已决，开始重构',
+    negativeText: '我再想想',
+    onPositiveClick: async () => {
+      try {
+        const response = await axios.post('/api/tasks/rebuild-actors');
+        message.success(response.data.message || '重构任务已成功提交！');
+      } catch (error) {
+        console.error('启动一键重构任务失败:', error);
+        message.error(error.response?.data?.message || '启动任务失败，请查看日志。');
+      }
+    },
+  });
 };
 </script>

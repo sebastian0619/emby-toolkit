@@ -727,6 +727,219 @@ def download_emby_image(
     except Exception as e:
         logger.error(f"保存图片到 '{save_path}' 时发生未知错误: {e}")
         return False
+# ======================================================================
+# ✨✨✨ 新增：一键重构所需的核心API函数 ✨✨✨
+# ======================================================================
+def clear_all_persons_via_api(base_url: str, api_key: str, user_id: str,
+                              update_status_callback: Optional[callable] = None,
+                              stop_event: Optional[threading.Event] = None) -> bool:
+    """
+    【V6 - 终极优雅版】通过API解除所有演员关联，并让Emby自动清理。
+    1. 遍历所有电影/剧集，清空其People列表。
+    2. 对每个剧集，获取其所有子项目（季/集），并清空它们的People列表。
+    3. 最后触发一次全库扫描，Emby的内置维护任务会自动清理掉所有未被引用的演员。
+    """
+    def _update_status(progress, message):
+        if update_status_callback:
+            update_status_callback(progress, message)
+        if stop_event and stop_event.is_set():
+            raise InterruptedError("任务被用户中止")
+
+    logger.warning("【一键重构】将解除所有演员关联，并通知Emby自动清理...")
+    
+    try:
+        _update_status(0, "正在获取所有媒体库...")
+        libraries = get_emby_libraries(base_url, api_key, user_id)
+        if not libraries:
+            logger.warning("未找到任何媒体库，任务完成。")
+            _update_status(100, "未找到媒体库")
+            return True
+
+        library_ids = [lib['Id'] for lib in libraries]
+        
+        _update_status(5, "正在获取所有电影和剧集...")
+        top_level_items = get_emby_library_items(base_url, api_key, user_id=user_id, library_ids=library_ids, media_type_filter="Movie,Series")
+        
+        if not top_level_items:
+            logger.info("媒体库中没有找到电影或剧集。")
+            _update_status(100, "媒体库为空")
+            return True
+
+        items_to_process = list(top_level_items)
+        
+        # --- 动态获取所有分集并加入处理列表 ---
+        _update_status(10, "正在获取所有剧集的分集信息...")
+        series_items = [item for item in top_level_items if item.get("Type") == "Series"]
+        if series_items:
+            total_series = len(series_items)
+            for i, series in enumerate(series_items):
+                _update_status(10 + int((i / total_series) * 20), f"获取分集: {series.get('Name', '')[:20]}...")
+                children = get_series_children(series['Id'], base_url, api_key, user_id)
+                if children:
+                    items_to_process.extend(children)
+        
+        # --- 统一解除所有项目的关联 ---
+        total_items = len(items_to_process)
+        logger.info(f"总共需要处理 {total_items} 个媒体项（包括电影、剧集和分集），请耐心等待...")
+        _update_status(30, f"开始解除 {total_items} 个媒体项的演员关联...")
+
+        for i, item in enumerate(items_to_process):
+            # 将总进度的 30%-100% 分配给这个核心步骤
+            _update_status(30 + int((i / total_items) * 70), f"处理中: {item.get('Name', '')[:20]}... ({i+1}/{total_items})")
+            
+            # 只有当项目详情里确实有演员时，才发送更新请求，减少不必要的API调用
+            item_details = get_emby_item_details(item['Id'], base_url, api_key, user_id, fields="People")
+            if item_details and item_details.get("People"):
+                update_payload = item_details.copy()
+                update_payload["People"] = []
+                
+                update_url = f"{base_url.rstrip('/')}/Items/{item['Id']}"
+                params = {"api_key": api_key}
+                response = requests.post(update_url, json=update_payload, params=params, timeout=15)
+                response.raise_for_status()
+                logger.debug(f"已清空项目 '{item.get('Name')}' (ID: {item['Id']}) 的演员关联。")
+
+        logger.info("✅ 所有媒体项的演员关联已全部解除。")
+        _update_status(100, "所有演员关联已解除！")
+        # 我们不再需要手动删除演员，后续的Emby刷新会自动完成清理
+        return True
+
+    except InterruptedError:
+        logger.info("演员关联解除任务被用户中止。")
+        return False
+    except Exception as e:
+        logger.error(f"通过【纯API】解除演员关联时发生严重错误: {e}", exc_info=True)
+        _update_status(-1, f"错误: 解除关联失败 - {e}")
+        return False
+
+def start_library_scan(base_url: str, api_key: str, user_id: str) -> bool:
+    """
+    【V4 - 借鉴成功经验版】遍历所有媒体库，并对每个库单独触发一次
+    带有精确控制参数的深度刷新。
+    """
+    if not all([base_url, api_key, user_id]):
+        logger.error("start_library_scan: 缺少必要的参数。")
+        return False
+
+    try:
+        # --- 步骤 1: 获取所有媒体库的列表 ---
+        logger.info("正在获取所有媒体库，准备逐个触发深度刷新...")
+        libraries = get_emby_libraries(base_url, api_key, user_id)
+        if not libraries:
+            logger.error("未能获取到任何媒体库，无法触发刷新。")
+            return False
+        
+        logger.info(f"将对以下 {len(libraries)} 个媒体库触发深度刷新: {[lib['Name'] for lib in libraries]}")
+
+        # --- 步骤 2: 遍历每个库，调用带参数的刷新API ---
+        all_success = True
+        for library in libraries:
+            library_id = library.get("Id")
+            library_name = library.get("Name")
+            if not library_id:
+                continue
+
+            # 这就是我们借鉴的、针对单个项目的刷新API，现在用在了媒体库上
+            refresh_url = f"{base_url.rstrip('/')}/Items/{library_id}/Refresh"
+            
+            # ★★★ 使用与你成功的函数完全相同的、强大的刷新参数 ★★★
+            params = {
+                "api_key": api_key,
+                "Recursive": "true", # 确保递归刷新整个库
+                "MetadataRefreshMode": "Default",
+                "ImageRefreshMode": "Default",
+                "ReplaceAllMetadata": "true", # ★★★ 核心：强制替换所有元数据
+                "ReplaceAllImages": "false"
+            }
+            
+            logger.info(f"  -> 正在为媒体库 '{library_name}' (ID: {library_id}) 发送深度刷新请求...")
+            logger.debug(f"     刷新URL: {refresh_url}")
+            logger.debug(f"     刷新参数: {params}")
+            
+            try:
+                response = requests.post(refresh_url, params=params, timeout=30)
+                if response.status_code == 204:
+                    logger.info(f"  ✅ 成功为媒体库 '{library_name}' 发送刷新请求。")
+                else:
+                    logger.error(f"  ❌ 为媒体库 '{library_name}' 发送刷新请求失败: HTTP {response.status_code}")
+                    all_success = False
+            except requests.exceptions.RequestException as e:
+                logger.error(f"  ❌ 请求刷新媒体库 '{library_name}' 时发生网络错误: {e}")
+                all_success = False
+            
+            # 在每个库之间稍微延时，避免请求过于密集
+            time.sleep(2)
+
+        return all_success
+
+    except Exception as e:
+        logger.error(f"在触发Emby全库扫描时发生未知严重错误: {e}", exc_info=True)
+        return False
+
+def get_task_status(base_url: str, api_key: str, task_id: str) -> Optional[Dict[str, Any]]:
+    """
+    根据任务ID，获取一个正在运行或已完成的任务的状态。
+    """
+    if not all([base_url, api_key, task_id]):
+        logger.error("get_task_status: 缺少必要的参数。")
+        return None
+        
+    api_url = f"{base_url.rstrip('/')}/ScheduledTasks/{task_id}"
+    params = {"api_key": api_key}
+    
+    try:
+        response = requests.get(api_url, params=params, timeout=10)
+        response.raise_for_status()
+        task_info = response.json()
+        # 返回的关键信息包括 'State', 'CurrentProgressPercentage', 'Id', 'Name'
+        return task_info
+        
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            # 如果任务完成，它可能会从这个端点消失，这可以被认为是“已完成”
+            logger.info(f"任务ID '{task_id}' 查询返回404，可能已完成并被清理。")
+            return {"State": "Completed"}
+        logger.error(f"查询任务状态时发生HTTP错误: {e}", exc_info=True)
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"查询任务状态时发生网络错误: {e}", exc_info=True)
+        return None
+
+def get_scan_progress(base_url: str, api_key: str) -> Optional[float]:
+    """
+    【最终正确版】通过查询计划任务API，获取媒体库扫描的实时进度。
+    
+    返回:
+        - 0.0 到 100.0 之间的浮点数，如果扫描正在进行。
+        - None，如果未找到正在运行的扫描任务。
+    """
+    api_url = f"{base_url.rstrip('/')}/ScheduledTasks"
+    params = {"api_key": api_key, "IsEnabled": "true"}
+    
+    # 媒体库扫描任务在不同版本或配置中可能有不同的Key
+    SCAN_TASK_KEYS = ["ScanMediaLibrary", "LibraryScan"]
+
+    try:
+        response = requests.get(api_url, params=params, timeout=10)
+        response.raise_for_status()
+        all_tasks = response.json()
+        
+        # 寻找那个正在运行的扫描任务
+        for task in all_tasks:
+            if task.get("State") == "Running" and task.get("Key") in SCAN_TASK_KEYS:
+                progress = task.get("Progress")
+                logger.info(f"检测到扫描任务 '{task.get('Name')}' 正在运行，进度: {progress:.2f}%")
+                return progress
+
+        # 如果循环结束都没有找到，说明没有在运行
+        return None
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"查询计划任务时发生网络错误: {e}")
+        return None # 出错时，保守地认为没有在运行
+    except Exception as e:
+        logger.error(f"解析计划任务时出错: {e}")
+        return None
 # if __name__ == '__main__':
 #     TEST_EMBY_SERVER_URL = "http://192.168.31.163:8096"
 #     TEST_EMBY_API_KEY = "eaa73b828ac04b1bb6d3687a0117572c"
