@@ -286,60 +286,67 @@ class MediaProcessorSA:
         douban_candidates_raw = self._get_douban_cast_with_local_cache(emby_item_info)
         douban_candidates = actor_utils.format_douban_cast(douban_candidates_raw)
         
-        final_cast_map = {actor['id']: actor for actor in local_cast_list if actor.get('id')}
-        for actor in local_cast_list:
-            if not actor.get('id'):
-                name_key = f"name_{actor.get('name', '').lower()}"
-                if name_key not in final_cast_map:
-                    final_cast_map[name_key] = actor
+        # --- 步骤 1: 执行消耗型一对一匹配 ---
+        logger.debug("--- 匹配阶段 1: 执行消耗型一对一匹配 ---")
 
-        unmatched_douban_candidates = []
+        # 1. 创建一个可被消耗的本地演员列表副本
+        unmatched_local_actors = list(local_cast_list)
+        # 2. 创建用于存放结果的列表
+        merged_actors = []
+        unmatched_douban_actors = []
 
-        # --- 步骤 1: 用豆瓣演员名和原始演员表匹配 ---
-        logger.debug("--- 匹配阶段 1: 按名字匹配 ---")
-        matched_douban_indices = set()
-        for i, d_actor in enumerate(douban_candidates):
-            # ✨✨✨ 严格使用 format_douban_cast 输出的标准键名 (大写开头) ✨✨✨
-            douban_name_zh = d_actor.get("Name")
-            douban_name_en = d_actor.get("OriginalName")
-            douban_id = d_actor.get("DoubanCelebrityId")
+        # 3. 遍历豆瓣演员，尝试在“未匹配”的本地演员中寻找配对
+        for d_actor in douban_candidates:
+            douban_name_zh = d_actor.get("Name", "").lower().strip()
+            douban_name_en = d_actor.get("OriginalName", "").lower().strip()
+            
+            match_found_for_this_douban_actor = False
+            
+            # 在【未匹配】的本地演员中寻找第一个同名者
+            for i, l_actor in enumerate(unmatched_local_actors):
+                local_name = str(l_actor.get("name") or "").lower().strip()
+                local_original_name = str(l_actor.get("original_name") or "").lower().strip()
 
-            for l_actor in final_cast_map.values():
-        
-                # ✨✨✨ 统一使用经过验证的、简单直接的匹配逻辑 ✨✨✨
                 is_match, match_reason = False, ""
-        
-                # --- 引擎1: 简单直接的精确匹配 (高优先级) ---
-                dc_name_lower = str(d_actor.get("Name") or "").lower().strip()
-                dc_orig_name_lower = str(d_actor.get("OriginalName") or "").lower().strip()
-                local_name_lower = str(l_actor.get("name") or "").lower().strip()
-                local_original_name_lower = str(l_actor.get("original_name") or "").lower().strip()
-
-                if dc_name_lower and (dc_name_lower == local_name_lower or dc_name_lower == local_original_name_lower):
-                    is_match, match_reason = True, f"精确匹配 (豆瓣中文名)"
-                elif dc_orig_name_lower and (dc_orig_name_lower == local_name_lower or dc_orig_name_lower == local_original_name_lower):
-                    is_match, match_reason = True, f"精确匹配 (豆瓣外文名)"
-
+                if douban_name_zh and (douban_name_zh == local_name or douban_name_zh == local_original_name):
+                    is_match, match_reason = True, "精确匹配 (豆瓣中文名)"
+                elif douban_name_en and (douban_name_en == local_name or douban_name_en == local_original_name):
+                    is_match, match_reason = True, "精确匹配 (豆瓣外文名)"
 
                 if is_match:
-                    logger.info(f"  匹配成功 ({match_reason}): 豆瓣演员 '{d_actor.get('Name')}' -> 本地演员 '{l_actor.get('name')}'")
+                    logger.info(f"  匹配成功 (一对一): 豆瓣演员 '{d_actor.get('Name')}' -> 本地演员 '{l_actor.get('name')}' (ID: {l_actor.get('id')})")
                     
-                    # 匹配成功后的逻辑 (保持不变)
+                    # 合并信息
                     l_actor["name"] = d_actor.get("Name")
                     cleaned_douban_character = utils.clean_character_name_static(d_actor.get("Role"))
-                    l_actor["character"] = actor_utils.select_best_role(
-                        l_actor.get("character"), 
-                        cleaned_douban_character 
-                    )
-                    if d_actor.get("DoubanCelebrityId"): 
+                    l_actor["character"] = actor_utils.select_best_role(l_actor.get("character"), cleaned_douban_character)
+                    if d_actor.get("DoubanCelebrityId"):
                         l_actor["douban_id"] = d_actor.get("DoubanCelebrityId")
                     
-                    matched_douban_indices.add(i)
-                    break # 找到匹配就跳出内层循环
+                    # 4. 从“未匹配”列表中【移除】这个本地演员，并加入到“已合并”列表
+                    merged_actors.append(unmatched_local_actors.pop(i))
+                    
+                    match_found_for_this_douban_actor = True
+                    # 5. 立即中断内层循环，处理下一个豆瓣演员
+                    break
+            
+            # 如果这个豆瓣演员没找到任何匹配，则加入到“未匹配豆瓣演员”列表
+            if not match_found_for_this_douban_actor:
+                unmatched_douban_actors.append(d_actor)
+
+        # 此时，我们得到三个列表：
+        # - merged_actors: 已成功与豆瓣匹配并合并信息的演员
+        # - unmatched_local_actors: TMDB有，但豆瓣没有的演员
+        # - unmatched_douban_actors: 豆瓣有，但TMDB没有的演员
         
-        unmatched_douban_candidates = [d for i, d in enumerate(douban_candidates) if i not in matched_douban_indices]
+        # 将前两个列表合并，作为我们处理的基础
+        current_cast_list = merged_actors + unmatched_local_actors
+        # 为了后续方便，我们再创建一个 map
+        final_cast_map = {actor['id']: actor for actor in current_cast_list if actor.get('id')}
+
+        # --- 后续处理流程（新增、翻译等）基于新的、干净的数据进行 ---
         
-        # --- ★★★ V-Final 核心修改：条件化处理流程 ★★★ ---
+        # (这部分代码与你原有的逻辑基本一致，只是现在它工作在一个正确的数据基础上)
         limit = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
         try:
             limit = int(limit)
@@ -352,11 +359,11 @@ class MediaProcessorSA:
         if current_actor_count >= limit:
             logger.info(f"当前演员数 ({current_actor_count}) 已达上限 ({limit})，跳过所有新增演员的流程。")
         else:
-            logger.info(f"当前演员数 ({current_actor_count}) 低于上限 ({limit})，进入补充模式（继续新增）。")
+            logger.info(f"当前演员数 ({current_actor_count}) 低于上限 ({limit})，进入补充模式（处理来自豆瓣的新增演员）。")
             
-            logger.debug(f"--- 匹配阶段 2: 用豆瓣ID查 person_identity_map ({len(unmatched_douban_candidates)} 位演员) ---")
+            logger.debug(f"--- 匹配阶段 2: 用豆瓣ID查 person_identity_map ({len(unmatched_douban_actors)} 位演员) ---")
             still_unmatched = []
-            for d_actor in unmatched_douban_candidates:
+            for d_actor in unmatched_douban_actors:
                 if self.is_stop_requested(): raise InterruptedError("任务中止")
                 d_douban_id = d_actor.get("DoubanCelebrityId")
                 match_found = False
@@ -376,18 +383,18 @@ class MediaProcessorSA:
                         match_found = True
                 if not match_found:
                     still_unmatched.append(d_actor)
-            unmatched_douban_candidates = still_unmatched
+            unmatched_douban_actors = still_unmatched
 
             # --- 步骤 3 & 4: 查询IMDbID -> TMDb反查 -> 新增 ---
-            logger.debug(f"--- 匹配阶段 3 & 4: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_candidates)} 位演员) ---")
+            logger.debug(f"--- 匹配阶段 3 & 4: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员) ---")
             still_unmatched_final = []
-            for d_actor in unmatched_douban_candidates:
+            for d_actor in unmatched_douban_actors:
                 if self.is_stop_requested(): raise InterruptedError("任务中止")
                 # ✨ 核心修改：在每次循环开始时检查上限
                 if len(final_cast_map) >= limit:
-                    logger.info(f"演员数已达上限 ({limit})，跳过剩余 {len(unmatched_douban_candidates) - i} 位演员的API查询。")
+                    logger.info(f"演员数已达上限 ({limit})，跳过剩余 {len(unmatched_douban_actors) - i} 位演员的API查询。")
                     # 将所有剩下的演员直接加入 still_unmatched_final
-                    still_unmatched_final.extend(unmatched_douban_candidates[i:])
+                    still_unmatched_final.extend(unmatched_douban_actors[i:])
                     break # 彻底结束新增流程
                 d_douban_id = d_actor.get("DoubanCelebrityId")
                 match_found = False
@@ -470,8 +477,8 @@ class MediaProcessorSA:
                 logger.info(f"--- 最终丢弃 {len(still_unmatched_final)} 位无匹配的豆瓣演员 ---")
 
 
-        intermediate_cast_list = list(final_cast_map.values())
         # ★★★ 在截断前进行一次全量反哺 ★★★
+        intermediate_cast_list = list(final_cast_map.values())
         logger.debug(f"截断前：将 {len(intermediate_cast_list)} 位演员的完整映射关系反哺到数据库...")
         for actor_data in intermediate_cast_list:
             self.actor_db_manager.upsert_person(
@@ -794,7 +801,7 @@ class MediaProcessorSA:
                 if item_type == "Movie":
                     full_tmdb_cast_as_base = base_json_data_original.get("credits", {}).get("cast", []) or base_json_data_original.get("casts", {}).get("cast", []) or []
                 elif item_type == "Series":
-                    if force_fetch_from_tmdb:
+                    if should_fetch_online:
                          full_tmdb_cast_as_base = base_json_data_original.get("credits", {}).get("cast", []) or base_json_data_original.get("casts", {}).get("cast", []) or []
                     else:
                          full_tmdb_cast_as_base = self._get_full_tv_cast_from_cache(base_cache_dir)
@@ -838,7 +845,7 @@ class MediaProcessorSA:
                 if item_type == "Series" and should_process_episodes_this_run:
                     logger.info(f"{log_prefix} 开始为 '{item_name_for_log}' 的所有分集注入演员表...")
                     # 在线模式下，我们没有本地分集文件，所以这个逻辑只在本地模式下运行
-                    if not force_fetch_from_tmdb:
+                    if not should_fetch_online:
                         for filename in os.listdir(base_cache_dir):
                             if filename.startswith("season-") and filename.endswith(".json"):
                                 child_json_original = _read_local_json(os.path.join(base_cache_dir, filename))
@@ -1499,15 +1506,13 @@ class MediaProcessorSA:
     # --- 从本地 cache 获取完整演员表 ---
     def _get_full_tv_cast_from_cache(self, base_cache_dir: str) -> List[Dict[str, Any]]:
         """
-        【终极方案 - 本地全量聚合+缓存】从本地缓存中聚合电视剧的所有演员。
-        1. 检查是否存在聚合缓存 `_cast_aggregated.json`，存在则直接使用。
+        【V2 - 读写分离版】从本地缓存中聚合电视剧的所有演员。
+        1. 检查是否存在聚合缓存，存在则直接使用。
         2. 若不存在，则遍历所有json文件进行全量聚合，并将结果写入缓存。
         """
-        # 确保 re 和 glob 已导入
         import re
         import glob
         
-        # 定义聚合缓存文件的名字，用下划线开头以示其为生成文件
         aggregated_cache_file = os.path.join(base_cache_dir, "_cast_aggregated.json")
 
         # 1. 快速通道：检查并使用聚合缓存
@@ -1526,36 +1531,49 @@ class MediaProcessorSA:
                 if isinstance(actor_data, dict) and actor_id and actor_id not in cast_map:
                     cast_map[actor_id] = actor_data
         
-        # 使用 glob 查找当前目录下的所有 .json 文件
         all_json_files = glob.glob(os.path.join(base_cache_dir, '*.json'))
-        
-        # ★★★ 关键一步：排除我们即将生成的聚合缓存文件本身，防止下次重复读取 ★★★
         all_json_files = [f for f in all_json_files if os.path.basename(f) != "_cast_aggregated.json"]
         
+        # 如果没有任何源json文件，直接返回空，避免生成空的聚合文件
+        if not all_json_files:
+            logger.warning(f"在 {base_cache_dir} 中未找到任何源数据文件，无法执行聚合。")
+            return []
+
         logger.debug(f"找到 {len(all_json_files)} 个源数据文件进行全量聚合。")
 
         for file_path in all_json_files:
             data = _read_local_json(file_path)
             if data:
-                # 兼容所有可能的演员键
                 cast = data.get("credits", {}).get("cast", []) or data.get("casts", {}).get("cast", [])
                 guest_stars = data.get("guest_stars", [])
-                
                 _add_cast_to_map(cast, full_cast_map)
                 _add_cast_to_map(guest_stars, full_cast_map)
 
         full_cast_list = list(full_cast_map.values())
         logger.info(f"全量聚合完成，共获得 {len(full_cast_list)} 个独立演员。")
 
-        # 3. 将聚合结果写入缓存文件，供下次使用
-        try:
-            with open(aggregated_cache_file, 'w', encoding='utf-8') as f:
-                json.dump(full_cast_list, f, ensure_ascii=False, indent=4)
-            logger.info(f"已将聚合结果写入新缓存: {aggregated_cache_file}")
-        except IOError as e:
-            logger.error(f"写入聚合演员缓存失败: {e}")
+        # 3. 调用新的写入函数来保存结果
+        self._write_aggregated_cast_cache(base_cache_dir, full_cast_list)
 
         return full_cast_list
+    # --- 写入聚合缓存 ---
+    def _write_aggregated_cast_cache(self, base_cache_dir: str, cast_list: List[Dict[str, Any]]):
+        """专门用于写入聚合演员缓存的函数，会确保目录存在。"""
+        if not cast_list:
+            logger.debug("传入的演员列表为空，不创建聚合缓存文件。")
+            return
+
+        aggregated_cache_file = os.path.join(base_cache_dir, "_cast_aggregated.json")
+        
+        try:
+            # ★★★ 关键修复：在写入前，确保父目录存在 ★★★
+            os.makedirs(base_cache_dir, exist_ok=True)
+            
+            with open(aggregated_cache_file, 'w', encoding='utf-8') as f:
+                json.dump(cast_list, f, ensure_ascii=False, indent=4)
+            logger.info(f"已将 {len(cast_list)} 位演员的聚合结果写入缓存: {aggregated_cache_file}")
+        except IOError as e:
+            logger.error(f"写入聚合演员缓存失败: {e}")
     # --- 通过tmdb获取演员表 ---
     def _fetch_and_build_tmdb_base_json(self, tmdb_id: str, item_type: str, item_name: str) -> Optional[Dict[str, Any]]:
         """
