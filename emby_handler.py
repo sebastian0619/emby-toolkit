@@ -28,7 +28,7 @@ YOUR_EMBY_USER_ID_FOR_TESTING = "e274948e690043c9a86c9067ead73af4"  # 已用您�
 _emby_id_cache = {}
 _emby_season_cache = {}
 _emby_episode_cache = {}
-
+# ✨✨✨ 快速获取指定类型的项目总数，不获取项目本身 ✨✨✨
 def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_type: str) -> Optional[int]:
     """
     【新】快速获取指定类型的项目总数，不获取项目本身。
@@ -64,6 +64,7 @@ def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_typ
     except Exception as e:
         logger.error(f"通过 API 获取 {item_type} 总数时失败: {e}")
         return None
+# ✨✨✨ 专门用于高效获取单个 Person 的主图片 ✨✨✨
 def get_person_image_tag(person_id: str, base_url: str, api_key: str, user_id: Optional[str]) -> Optional[str]:
     """
     【新】专门用于高效获取单个 Person 的主图片 Tag。
@@ -85,7 +86,7 @@ def get_person_image_tag(person_id: str, base_url: str, api_key: str, user_id: O
         return person_details.get("ImageTags", {}).get("Primary")
     
     return None
-
+# ✨✨✨ 获取Emby项目详情 ✨✨✨
 def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str, fields: Optional[str] = None) -> Optional[Dict[str, Any]]:
     if not all([item_id, emby_server_url, emby_api_key, user_id]):
         logger.error("获取Emby项目详情参数不足：缺少ItemID、服务器URL、API Key或UserID。")
@@ -152,6 +153,7 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
         logger.error(
             f"获取Emby项目详情时发生未知错误 (ItemID: {item_id}, UserID: {user_id}): {e}\n{traceback.format_exc()}")
         return None
+# ✨✨✨ 更新一个 Person 条目本身的信息 ✨✨✨
 def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
     """
     更新一个 Person 条目本身的信息 (例如，只更新名字)。
@@ -193,7 +195,7 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
     except requests.exceptions.RequestException as e:
         logger.error(f"更新 Person (ID: {person_id}) 时发生错误: {e}")
         return False
-
+# ✨✨✨ 更新 Emby 媒体项目的演员列表 ✨✨✨
 def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str, Any]],
                           emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
     """
@@ -335,8 +337,7 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
     except Exception as e:  # 捕获其他所有未知异常
         logger.error(f"更新Emby项目 {item_name_for_log} 演员信息时发生未知错误: {e}", exc_info=True)
         return False
-
-
+# ✨✨✨ 获取 Emby 用户可见的所有顶层媒体库列表 ✨✨✨
 def get_emby_libraries(base_url: str, api_key: str, user_id: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
     """
     【V2 - 修复版】获取 Emby 用户可见的所有顶层媒体库列表。
@@ -387,8 +388,7 @@ def get_emby_libraries(base_url: str, api_key: str, user_id: Optional[str] = Non
     except json.JSONDecodeError as e:
         logger.error(f"get_emby_libraries: 解析 Emby 用户视图响应失败: {e}", exc_info=True)
         return None
-
-
+# ✨✨✨ 获取项目，并为每个项目添加来源库ID ✨✨✨
 def get_emby_library_items(
     base_url: str,
     api_key: str,
@@ -473,8 +473,7 @@ def get_emby_library_items(
     logger.debug(f"总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
     
     return all_items_from_selected_libraries
-
-
+# ✨✨✨ 刷新Emby元数据 ✨✨✨
 def refresh_emby_item_metadata(item_emby_id: str,
                                emby_server_url: str,
                                emby_api_key: str,
@@ -533,7 +532,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
         import traceback
         logger.error(f"  - 刷新请求时发生未知错误: {e}\n{traceback.format_exc()}")
         return False
-
+# ✨✨✨ 分批次地从 Emby 获取所有 Person 条目 ✨✨✨
 def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str], stop_event: Optional[threading.Event] = None) -> Generator[List[Dict[str, Any]], None, None]:
     """
     【健壮修复版】分批次地从 Emby 获取所有 Person 条目。
@@ -603,7 +602,6 @@ def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str
         except Exception as e:
             logger.error(f"处理 Emby 响应时发生未知错误 (批次 StartIndex={start_index}): {e}", exc_info=True)
             return
-
 # ✨✨✨ 新增：获取剧集下所有剧集的函数 ✨✨✨
 def get_series_children(series_id: str, base_url: str, api_key: str, user_id: str, series_name_for_log: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
     """
@@ -636,7 +634,7 @@ def get_series_children(series_id: str, base_url: str, api_key: str, user_id: st
     except requests.exceptions.RequestException as e:
         logger.error(f"获取剧集 {log_identifier} 的子项目列表时发生错误: {e}", exc_info=True)
         return None
-    
+# ✨✨✨ 根据子项目ID（如分集或季）获取其所属的剧集（Series）的ID ✨✨✨    
 def get_series_id_from_child_id(item_id: str, base_url: str, api_key: str, user_id: Optional[str]) -> Optional[str]:
     """
     【修复版】根据子项目ID（如分集或季）获取其所属的剧集（Series）的ID。
@@ -686,7 +684,7 @@ def get_series_id_from_child_id(item_id: str, base_url: str, api_key: str, user_
     # 4. 如果是其他类型，或者详情中没有 SeriesId，记录日志并返回None
     logger.warning(f"项目 {item_id} (类型: {item_type}) 的详情中未找到 'SeriesId' 字段，无法确定所属剧集。")
     return None
-
+# ✨✨✨ 从 Emby 下载指定类型的图片并保存到本地 ✨✨✨
 def download_emby_image(
     item_id: str,
     image_type: str,
@@ -727,9 +725,7 @@ def download_emby_image(
     except Exception as e:
         logger.error(f"保存图片到 '{save_path}' 时发生未知错误: {e}")
         return False
-# ======================================================================
-# ✨✨✨ 新增：一键重构所需的核心API函数 ✨✨✨
-# ======================================================================
+# ✨✨✨ 通过API解除所有演员关联 ✨✨✨
 def clear_all_persons_via_api(base_url: str, api_key: str, user_id: str,
                               update_status_callback: Optional[callable] = None,
                               stop_event: Optional[threading.Event] = None) -> bool:
@@ -745,7 +741,7 @@ def clear_all_persons_via_api(base_url: str, api_key: str, user_id: str,
         if stop_event and stop_event.is_set():
             raise InterruptedError("任务被用户中止")
 
-    logger.warning("【一键重构】将解除所有演员关联，并通知Emby自动清理...")
+    logger.warning("将解除所有演员关联，并通知Emby自动清理...")
     
     try:
         _update_status(0, "正在获取所有媒体库...")
@@ -811,7 +807,7 @@ def clear_all_persons_via_api(base_url: str, api_key: str, user_id: str,
         logger.error(f"通过【纯API】解除演员关联时发生严重错误: {e}", exc_info=True)
         _update_status(-1, f"错误: 解除关联失败 - {e}")
         return False
-
+# ✨✨✨ 遍历所有媒体库，并对每个库单独触发一次刷新 ✨✨✨
 def start_library_scan(base_url: str, api_key: str, user_id: str) -> bool:
     """
     【V4 - 借鉴成功经验版】遍历所有媒体库，并对每个库单独触发一次
@@ -848,7 +844,7 @@ def start_library_scan(base_url: str, api_key: str, user_id: str) -> bool:
                 "Recursive": "true", # 确保递归刷新整个库
                 "MetadataRefreshMode": "Default",
                 "ImageRefreshMode": "Default",
-                "ReplaceAllMetadata": "true", # ★★★ 核心：强制替换所有元数据
+                "ReplaceAllMetadata": "false", # ★★★ 核心：强制替换所有元数据
                 "ReplaceAllImages": "false"
             }
             
@@ -876,70 +872,6 @@ def start_library_scan(base_url: str, api_key: str, user_id: str) -> bool:
         logger.error(f"在触发Emby全库扫描时发生未知严重错误: {e}", exc_info=True)
         return False
 
-def get_task_status(base_url: str, api_key: str, task_id: str) -> Optional[Dict[str, Any]]:
-    """
-    根据任务ID，获取一个正在运行或已完成的任务的状态。
-    """
-    if not all([base_url, api_key, task_id]):
-        logger.error("get_task_status: 缺少必要的参数。")
-        return None
-        
-    api_url = f"{base_url.rstrip('/')}/ScheduledTasks/{task_id}"
-    params = {"api_key": api_key}
-    
-    try:
-        response = requests.get(api_url, params=params, timeout=10)
-        response.raise_for_status()
-        task_info = response.json()
-        # 返回的关键信息包括 'State', 'CurrentProgressPercentage', 'Id', 'Name'
-        return task_info
-        
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-            # 如果任务完成，它可能会从这个端点消失，这可以被认为是“已完成”
-            logger.info(f"任务ID '{task_id}' 查询返回404，可能已完成并被清理。")
-            return {"State": "Completed"}
-        logger.error(f"查询任务状态时发生HTTP错误: {e}", exc_info=True)
-        return None
-    except requests.exceptions.RequestException as e:
-        logger.error(f"查询任务状态时发生网络错误: {e}", exc_info=True)
-        return None
-
-def get_scan_progress(base_url: str, api_key: str) -> Optional[float]:
-    """
-    【最终正确版】通过查询计划任务API，获取媒体库扫描的实时进度。
-    
-    返回:
-        - 0.0 到 100.0 之间的浮点数，如果扫描正在进行。
-        - None，如果未找到正在运行的扫描任务。
-    """
-    api_url = f"{base_url.rstrip('/')}/ScheduledTasks"
-    params = {"api_key": api_key, "IsEnabled": "true"}
-    
-    # 媒体库扫描任务在不同版本或配置中可能有不同的Key
-    SCAN_TASK_KEYS = ["ScanMediaLibrary", "LibraryScan"]
-
-    try:
-        response = requests.get(api_url, params=params, timeout=10)
-        response.raise_for_status()
-        all_tasks = response.json()
-        
-        # 寻找那个正在运行的扫描任务
-        for task in all_tasks:
-            if task.get("State") == "Running" and task.get("Key") in SCAN_TASK_KEYS:
-                progress = task.get("Progress")
-                logger.info(f"检测到扫描任务 '{task.get('Name')}' 正在运行，进度: {progress:.2f}%")
-                return progress
-
-        # 如果循环结束都没有找到，说明没有在运行
-        return None
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"查询计划任务时发生网络错误: {e}")
-        return None # 出错时，保守地认为没有在运行
-    except Exception as e:
-        logger.error(f"解析计划任务时出错: {e}")
-        return None
 # if __name__ == '__main__':
 #     TEST_EMBY_SERVER_URL = "http://192.168.31.163:8096"
 #     TEST_EMBY_API_KEY = "eaa73b828ac04b1bb6d3687a0117572c"

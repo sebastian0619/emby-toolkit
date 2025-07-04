@@ -373,7 +373,7 @@ const triggerRebuildActors = () => {
         const response = await axios.post('/api/tasks/rebuild-actors');
         message.success(response.data.message || '重构任务已成功提交！');
       } catch (error) {
-        console.error('启动一键重构任务失败:', error);
+        console.error('启动重构任务失败:', error);
         message.error(error.response?.data?.message || '启动任务失败，请查看日志。');
       }
     },

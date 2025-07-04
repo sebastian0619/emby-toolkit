@@ -998,10 +998,10 @@ def run_full_rebuild_task(self, update_status_callback: Optional[callable] = Non
         logger.info(final_message)
 
     except InterruptedError:
-        logger.info("一键重构任务被用户中止。")
+        logger.info("重构任务被用户中止。")
         raise
     except Exception as e:
-        logger.error(f"执行一键重构任务时发生严重错误: {e}", exc_info=True)
+        logger.error(f"执行重构任务时发生严重错误: {e}", exc_info=True)
         if update_status_callback:
             update_status_callback(-1, f"任务失败: {e}")
         raise
@@ -2638,15 +2638,15 @@ def trigger_rebuild_actors_task():
         # 我们需要把这个函数本身，以及它的名字，提交到队列
         submit_task_to_queue(
             run_full_rebuild_task, # <--- 传递函数本身
-            "一键重构演员数据库" # <--- 任务名
+            "重构演员数据库" # <--- 任务名
             # 注意：这里不需要传递 processor 实例，因为 task_worker_function 会自动选择
         )
-        return jsonify({"status": "success", "message": "一键重构任务已成功提交到后台队列。"}), 202
+        return jsonify({"status": "success", "message": "重构演员数据库任务已成功提交到后台队列。"}), 202
     except RuntimeError as e:
         # submit_task_to_queue 在有任务运行时会抛出 RuntimeError
         return jsonify({"status": "error", "message": str(e)}), 409 # 409 Conflict
     except Exception as e:
-        logger.error(f"提交一键重构任务时发生错误: {e}", exc_info=True)
+        logger.error(f"提交重构任务时发生错误: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "提交任务失败，请查看后端日志。"}), 500
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
