@@ -136,6 +136,29 @@
               </n-space>
             </template>
             <div class="ai-settings-wrapper" :class="{ 'content-disabled': !configModel.ai_translation_enabled }">
+              <n-form-item label="AI翻译模式" path="ai_translation_mode">
+                <n-radio-group 
+                  v-model:value="configModel.ai_translation_mode" 
+                  name="ai_translation_mode"
+                  :disabled="!configModel.ai_translation_enabled"
+                >
+                  <n-space>
+                    <n-radio value="fast">
+                      翻译模式 (速度优先)
+                    </n-radio>
+                    <n-radio value="quality">
+                      顾问模式 (质量优先)
+                    </n-radio>
+                  </n-space>
+                </n-radio-group>
+                <template #feedback>
+                  <n-text depth="3" style="font-size:0.8em;">
+                    <b>翻译模式：</b>纯翻译，全局共享缓存，速度快成本低。
+                    <br>
+                    <b>顾问模式：</b>作为“影视顾问”，结合上下文翻译，准确率更高，但无缓存，专片专译，耗时且成本高。
+                  </n-text>
+                </template>
+              </n-form-item>
               <n-form-item label="AI 服务商" path="ai_provider">
                 <n-select 
                   v-model:value="configModel.ai_provider" 

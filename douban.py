@@ -496,46 +496,6 @@ class DoubanApi:
         details = self.__invoke(detail_url)
         return details
 
-      
-    @classmethod
-    def _save_translation_to_db(cls, original_text: str, translated_text: Optional[str], 
-                                engine_used: Optional[str], cursor: Optional[sqlite3.Cursor] = None): # <--- 添加可选的 cursor 参数
-        
-        conn_was_provided = cursor is not None
-        internal_conn: Optional[sqlite3.Connection] = None # 明确类型
-
-        try:
-            if not cursor: # 如果外部没有提供游标，则自己管理连接和游标
-                if not cls._db_path: 
-                    logger.warning("DoubanApi._save_translation_to_db: DB path not set, cannot save cache.")
-                    return
-                logger.debug(f"DoubanApi._save_translation_to_db: No external cursor, creating internal connection to {cls._db_path}")
-                internal_conn = sqlite3.connect(cls._db_path, timeout=10.0) # 可以设置超时
-                cursor = internal_conn.cursor()
-            
-            # 现在 cursor 肯定不是 None
-            logger.debug(f"DoubanApi._save_translation_to_db: Executing REPLACE with cursor. Original: '{original_text}', Translated: '{translated_text}', Engine: '{engine_used}'")
-            cursor.execute(
-                "REPLACE INTO translation_cache (original_text, translated_text, engine_used, last_updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
-                (original_text, translated_text, engine_used)
-            )
-            
-            if not conn_was_provided and internal_conn: # 如果是自己创建的连接，则自己提交
-                internal_conn.commit()
-                logger.debug(f"DoubanApi._save_translation_to_db: Internal connection committed for '{original_text}'.")
-            
-            # logger.debug(f"翻译缓存存DB: '{original_text}' -> '{translated_text}' (引擎: {engine_used}) (External cursor: {conn_was_provided})")
-
-        except Exception as e:
-            logger.error(f"DB保存翻译缓存失败 for '{original_text}': {e}", exc_info=True)
-            if not conn_was_provided and internal_conn:
-                try: internal_conn.rollback()
-                except Exception as rb_e: logger.error(f"DoubanApi: 翻译缓存保存回滚失败 (internal conn): {rb_e}")
-        finally:
-            if not conn_was_provided and internal_conn: # 如果是自己创建的连接，则自己关闭
-                try: internal_conn.close()
-                except Exception as cl_e: logger.error(f"DoubanApi: 关闭内部翻译缓存DB连接失败: {cl_e}")
-
 if __name__ == '__main__':
     # (测试代码与之前版本类似，确保 TEST_DB_PATH 和表结构正确)
     TEST_DB_PATH = "test_douban_api_cache.sqlite"

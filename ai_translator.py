@@ -22,7 +22,31 @@ try:
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
+# ★★★ 说明书一：给“翻译官”看的（翻译模式） ★★★
+FAST_MODE_SYSTEM_PROMPT = """
+You are a translation API that only returns JSON.
+Your task is to translate a list of English terms into Chinese.
+You MUST return a single, valid JSON object mapping each original English term to its Chinese translation.
+If a term cannot be translated, use the original term as its value.
+Do not add any explanations or text outside the JSON object.
+"""
 
+# ★★★ 说明书二：给“影视顾问”看的（顾问模式） ★★★
+QUALITY_MODE_SYSTEM_PROMPT = """
+You are a world-class film and television expert, acting as a JSON-only API.
+Your mission is to accurately translate English or Pinyin names of actors and characters into standard Chinese, using the provided movie/series context.
+
+**Input Format:**
+You will receive a JSON object with `context` (containing `title` and `year`) and `terms` (a list of strings to translate).
+
+**Your Strategy:**
+1.  **Use Context:** Use the `title` and `year` to identify the show. Find the official or most recognized Chinese translation for the `terms` in that specific show's context. This is crucial for character names.
+2.  **Translate Pinyin:** If a term is Pinyin (e.g., "Zhang San"), translate it to Chinese characters ("张三").
+3.  **Fallback:** If a term cannot or should not be translated, you MUST use the original string as its value.
+
+**Output Format (MANDATORY):**
+You MUST return a single, valid JSON object mapping each original term to its Chinese translation. NO other text or markdown.
+"""
 class AITranslator:
     def __init__(self, config: Dict[str, Any]):
         self.provider = config.get("ai_provider", "openai").lower()
@@ -72,133 +96,102 @@ class AITranslator:
         batch_result = self.batch_translate([text])
         return batch_result.get(text, text)
 
-    # --- ✨✨✨【新增】批量翻译核心方法✨✨✨ ---
+    # --- ✨✨✨ 翻译调度 ✨✨✨ ---
     def batch_translate(self, 
                         texts: List[str], 
+                        mode: str = 'fast', # 新增一个“模式”参数，默认是“快速度”
                         title: Optional[str] = None, 
                         year: Optional[int] = None) -> Dict[str, str]:
-        if not texts: return {}
+        
+        if not texts: 
+            return {}
         
         unique_texts = list(set(texts))
         
-        # 构造日志信息，包含上下文
-        context_log = f" (上下文: {title}"
-        if year:
-            context_log += f" {year}"
-        context_log += ")" if title else ""
-        
-        logger.info(f"开始批量翻译 {len(unique_texts)} 个独立词条 (提供商: {self.provider}){context_log}...")
-
-        # 总调度室，将上下文信息传递给具体实现
-        if self.provider == 'openai':
-            return self._batch_translate_with_openai(unique_texts, title, year)
-        elif self.provider == 'zhipuai':
-            return self._batch_translate_with_zhipuai(unique_texts, title, year)
-        elif self.provider == 'gemini':
-            return self._batch_translate_with_gemini(unique_texts, title, year)
+        # 调度员开始看指令
+        if mode == 'quality':
+            # 如果指令是“高质量”，就喊“顾问组”来干活
+            logger.info(f"[顾问模式] 开始上下文翻译 {len(unique_texts)} 个词条...")
+            return self._translate_quality_mode(unique_texts, title, year)
         else:
-            logger.error(f"没有为提供商 '{self.provider}' 实现批量翻译方法。")
+            # 其他所有情况（包括默认的'fast'），都喊“翻译组”来干活
+            logger.info(f"[翻译模式] 开始快速翻译 {len(unique_texts)} 个词条...")
+            return self._translate_fast_mode(unique_texts)
+    # ★★★ “翻译快做”小组长 ★★★
+    def _translate_fast_mode(self, texts: List[str]) -> Dict[str, str]:
+        # 小组长根据公司（provider）选择不同的员工干活
+        if self.provider == 'openai':
+            return self._fast_openai(texts)
+        elif self.provider == 'zhipuai':
+            return self._fast_zhipuai(texts)
+        elif self.provider == 'gemini':
+            return self._fast_gemini(texts)
+        else:
+            logger.error(f"未知的提供商: {self.provider}")
             return {}
 
-    # --- ✨✨✨【核心改造】重写 System Prompt，并适配所有实现✨✨✨ ---
-    def _get_system_prompt(self) -> str:
-        """
-        生成统一的、面向“影视顾问”角色的系统提示词。
-        """
-        return """
-You are a world-class film and television expert, acting as a JSON-only API. Your primary goal is to accurately identify and translate English or Pinyin names of actors and characters into standard Chinese, leveraging the provided movie/series context.
-
-**Your Task & Strict Rules:**
-
-1.  **Input Format:** You will receive a JSON object containing:
-    -   `context`: An object with `title` and `year` of the movie/series.
-    -   `terms`: A JSON array of strings (names/roles) to be translated.
-
-2.  **Your Core Mission (Translation Strategy):**
-    -   **Step 1: Contextual Lookup (Highest Priority):** Use the `title` and `year` to identify the specific film or TV show. First, try to find the **official or most recognized Chinese translation** for the `terms` within the context of that specific show. This is crucial for character names that are common words (e.g., "Riddler" in "The Batman" vs. a generic "riddler").
-    -   **Step 2: Pinyin/Romanization Translation:** If a term is clearly Pinyin or another romanization of a Chinese name (e.g., "Yoon Se-ri", "Zhang San"), translate it into the correct Chinese characters ("尹世理", "张三"). This is a major pain point to solve.
-    -   **Step 3: Standard Translation:** If the above steps fail, perform a high-quality, standard translation for famous individuals or general terms (e.g., "Peter Parker" -> "彼得·帕克", "The Night King" -> "夜王").
-    -   **Step 4: Preserve Context:** For mixed content (e.g., "Maj. Sophie E. Jean"), translate correctly while preserving titles ("苏菲·E·让少校").
-    -   **Step 5: Fallback:** If a term cannot or should not be translated (e.g., it's already in Chinese, or it's a nonsensical string), you **MUST** use the original string as its value in the output.
-
-3.  **Output Format (ABSOLUTELY MANDATORY):**
-    -   You MUST return a single, valid JSON object that maps each original string from the `terms` array to its Chinese translation.
-    -   DO NOT add any explanations, introductory text, markdown formatting (`json` tags), or any text outside of the final JSON object. Your entire response must be only the JSON object itself.
-
-**Example:**
-User Input:
-```json
-{
-  "context": {
-    "title": "The Batman",
-    "year": 2022
-  },
-  "terms": [
-    "Riddler",
-    "Zhang San",
-    "The Night King"
-  ]
-}
-{
-  "Riddler": "谜语人",
-  "Zhang San": "张三",
-  "The Night King": "夜王"
-}
-"""
-    def _batch_translate_with_openai(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
+    # ★★★ “顾问精做”小组长 ★★★
+    def _translate_quality_mode(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
+        # 小组长根据公司（provider）选择不同的员工干活
+        if self.provider == 'openai':
+            return self._quality_openai(texts, title, year)
+        elif self.provider == 'zhipuai':
+            return self._quality_zhipuai(texts, title, year)
+        elif self.provider == 'gemini':
+            return self._quality_gemini(texts, title, year)
+        else:
+            logger.error(f"未知的提供商: {self.provider}")
+            return {}
+    # --- 底层员工：具体实现各种模式和提供商的组合 ---
+    # --- OpenAI 员工 ---
+    def _fast_openai(self, texts: List[str]) -> Dict[str, str]:
         if not self.client: return {}
-        # OpenAI 的实现保持分块逻辑，因为即使上下文不大，输入token也有限制
-        chunk_size = 50
-        all_translated_results = {}
-        text_chunks = [texts[i:i + chunk_size] for i in range(0, len(texts), chunk_size)]
-        if len(text_chunks) > 1: logger.info(f"数据量过大 ({len(texts)} > {chunk_size})，已自动分块。")
-        
-        system_prompt = self._get_system_prompt()
+        system_prompt = FAST_MODE_SYSTEM_PROMPT
+        user_prompt = json.dumps(texts, ensure_ascii=False)
+        try:
+            chat_completion = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                timeout=300
+            )
+            response_content = chat_completion.choices[0].message.content
+            return json.loads(response_content)
+        except Exception as e:
+            logger.error(f"[翻译模式-OpenAI] 翻译时发生错误: {e}", exc_info=True)
+            return {}
 
-        for i, chunk in enumerate(text_chunks):
-            if len(text_chunks) > 1: logger.info(f"--- 正在处理批次 {i + 1}/{len(text_chunks)} ---")
-            
-            # 构建包含上下文的 User Prompt
-            user_payload = {
-                "context": {"title": title, "year": year},
-                "terms": chunk
-            }
-            user_prompt = json.dumps(user_payload, ensure_ascii=False)
-
-            try:
-                chat_completion = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    temperature=0.0,
-                    response_format={"type": "json_object"}, # 请求JSON输出，更可靠
-                    timeout=300, 
-                )
-                # ... (后续的错误处理和解析逻辑与之前基本一致) ...
-                response_content = chat_completion.choices[0].message.content
-                translated_dict = json.loads(response_content)
-                all_translated_results.update(translated_dict)
-
-            except Exception as e:
-                logger.error(f"批次 {i + 1} (OpenAI) 发生错误: {e}", exc_info=True)
-                continue
-        
-        logger.info(f"所有批次处理完成，总共成功翻译 {len(all_translated_results)} 个词条。")
-        return all_translated_results
-
-    def _batch_translate_with_zhipuai(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
-        # 智谱AI的实现可以一次性处理，因为它通常支持更长的上下文
+    def _quality_openai(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
         if not self.client: return {}
-        
-        system_prompt = self._get_system_prompt()
-        user_payload = {
-            "context": {"title": title, "year": year},
-            "terms": texts
-        }
+        system_prompt = QUALITY_MODE_SYSTEM_PROMPT
+        user_payload = {"context": {"title": title, "year": year}, "terms": texts}
         user_prompt = json.dumps(user_payload, ensure_ascii=False)
+        try:
+            chat_completion = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                timeout=300
+            )
+            response_content = chat_completion.choices[0].message.content
+            return json.loads(response_content)
+        except Exception as e:
+            logger.error(f"[顾问模式-OpenAI] 翻译时发生错误: {e}", exc_info=True)
+            return {}
 
+    # --- 智谱AI 员工 ---
+    def _fast_zhipuai(self, texts: List[str]) -> Dict[str, str]:
+        if not self.client: return {}
+        system_prompt = FAST_MODE_SYSTEM_PROMPT
+        user_prompt = json.dumps(texts, ensure_ascii=False)
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -207,41 +200,71 @@ User Input:
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.0,
-                # 请求JSON模式，让模型直接返回JSON字符串
                 response_format={"type": "json_object"}
             )
             response_content = response.choices[0].message.content
-            translated_dict = json.loads(response_content)
-            return translated_dict
+            return json.loads(response_content)
         except Exception as e:
-            logger.error(f"调用 智谱AI API 进行批量翻译时发生未知错误: {e}", exc_info=True)
+            logger.error(f"[翻译模式-智谱AI] 翻译时发生错误: {e}", exc_info=True)
             return {}
 
-    def _batch_translate_with_gemini(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
-        # Gemini 的实现也通常可以一次性处理
+    def _quality_zhipuai(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
         if not self.client: return {}
-        
-        system_prompt = self._get_system_prompt()
-        user_payload = {
-            "context": {"title": title, "year": year},
-            "terms": texts
-        }
+        system_prompt = QUALITY_MODE_SYSTEM_PROMPT
+        user_payload = {"context": {"title": title, "year": year}, "terms": texts}
         user_prompt = json.dumps(user_payload, ensure_ascii=False)
-        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.0,
+                response_format={"type": "json_object"}
+            )
+            response_content = response.choices[0].message.content
+            return json.loads(response_content)
+        except Exception as e:
+            logger.error(f"[顾问模式-智谱AI] 翻译时发生错误: {e}", exc_info=True)
+            return {}
+
+    # --- Gemini 员工 ---
+    def _fast_gemini(self, texts: List[str]) -> Dict[str, str]:
+        if not self.client: return {}
+        system_prompt = FAST_MODE_SYSTEM_PROMPT
+        user_prompt = json.dumps(texts, ensure_ascii=False)
         generation_config = genai.types.GenerationConfig(
             response_mime_type="application/json",
             temperature=0.0
         )
-
         try:
             response = self.client.generate_content(
                 [system_prompt, user_prompt],
                 generation_config=generation_config,
                 request_options={'timeout': 300}
             )
-            response_text = response.text
-            translated_dict = json.loads(response_text)
-            return translated_dict
+            return json.loads(response.text)
         except Exception as e:
-            logger.error(f"调用 Gemini API 进行批量翻译时发生错误: {e}", exc_info=True)
+            logger.error(f"[翻译模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
+            return {}
+
+    def _quality_gemini(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
+        if not self.client: return {}
+        system_prompt = QUALITY_MODE_SYSTEM_PROMPT
+        user_payload = {"context": {"title": title, "year": year}, "terms": texts}
+        user_prompt = json.dumps(user_payload, ensure_ascii=False)
+        generation_config = genai.types.GenerationConfig(
+            response_mime_type="application/json",
+            temperature=0.0
+        )
+        try:
+            response = self.client.generate_content(
+                [system_prompt, user_prompt],
+                generation_config=generation_config,
+                request_options={'timeout': 300}
+            )
+            return json.loads(response.text)
+        except Exception as e:
+            logger.error(f"[顾问模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
             return {}

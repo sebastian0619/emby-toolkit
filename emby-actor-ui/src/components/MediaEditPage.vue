@@ -328,18 +328,13 @@ const handleEnrich = async (newCastFromWeb) => {
 };
 
 const translateAllFields = async () => {
-  if (!editableCast.value?.length) {
-    message.warning("演员列表为空，无需翻译。");
-    return;
-  }
-  isTranslating.value = true;
-  message.info("正在请求AI影视顾问进行智能翻译..."); // 更新提示信息
+  // ...
   try {
-    // 【★★★ 升级点 4：构建包含上下文的 Payload ★★★】
-    const payload = {
+    // 【★★★ 构建包含所有上下文的最终 Payload ★★★】
+    const payload = { 
       cast: editableCast.value,
-      title: mediaDetails.value.name, // 替换为你的真实标题变量
-      year: mediaDetails.value.productionYear // 替换为你的真实年份变量
+      title: mediaDetails.value.name,
+      year: mediaDetails.value.productionYear,
     };
 
     const response = await axios.post('/api/actions/translate_cast_sa', payload);

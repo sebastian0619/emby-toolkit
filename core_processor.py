@@ -539,73 +539,80 @@ class MediaProcessor:
         # ======================================================================
         ai_translation_succeeded = False
 
-        if self.ai_translator and self.config.get("ai_translation_enabled", False):
+        if self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False):
             logger.info("AI翻译已启用，优先尝试批量翻译模式。")
             
-            texts_to_translate = set()
-            translation_cache = {} # 用于存储从DB或API获取的翻译
+            # ★★★ 1. 把 try...except 放在这里，包裹所有可能与AI和缓存交互的逻辑 ★★★
+            try:
+                translation_cache = {}
+                
+                # 从配置中读取模式
+                translation_mode = self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_MODE, "fast")
+                tmdb_id_for_cache = item_details_from_emby.get("ProviderIds", {}).get("Tmdb")
+                
+                # 收集需要翻译的词条
+                texts_to_collect = set()
+                for actor in cast_to_process:
+                    for field_key in ['name', 'character']:
+                        text = actor.get(field_key)
+                        if text and not utils.contains_chinese(text):
+                            texts_to_collect.add(text)
+                
+                texts_to_send_to_api = set()
 
-            # ✨✨✨ 核心修复 1: 在截断后的列表上收集，并检查缓存 ✨✨✨
-            logger.info(f"开始从 {len(cast_to_process)} 位演员中收集需要翻译的词条...")
-            for actor in cast_to_process:
-                for field_key in ['name', 'character']:
-                    text = actor.get(field_key)
-                    if field_key == 'character':
-                        text = utils.clean_character_name_static(text)
-                    
-                    if not text or not text.strip() or utils.contains_chinese(text):
-                        continue
+                # 根据模式决定是否使用缓存
+                if translation_mode == 'fast':
+                    logger.debug("[翻译模式] 正在检查全局翻译缓存...")
+                    for text in texts_to_collect:
+                        cached_entry = DoubanApi._get_translation_from_db(text, cursor=cursor)
+                        if cached_entry:
+                            translation_cache[text] = cached_entry.get("translated_text")
+                        else:
+                            texts_to_send_to_api.add(text)
+                else:
+                    logger.debug("[顾问模式] 跳过缓存检查，直接翻译所有词条。")
+                    texts_to_send_to_api = texts_to_collect
 
-                    # ✨✨✨ 核心修复 2: 强制检查缓存 ✨✨✨
-                    cached_entry = DoubanApi._get_translation_from_db(text, cursor=cursor)
-                    if cached_entry and cached_entry.get("translated_text"):
-                        translation_cache[text] = cached_entry.get("translated_text")
-                    elif cached_entry:
-                        pass # 缓存中有失败记录，不翻译
-                    else:
-                        texts_to_translate.add(text) # 缓存未命中，加入待翻译列表
-            
-            if texts_to_translate:
-                logger.info(f"共收集到 {len(texts_to_translate)} 个独立词条需要通过AI翻译。")
-                try:
-                    # 【★★★ 升级调用方式 ★★★】
-                    # 1. 从 item_details_from_emby 中获取上下文信息
+                # 如果有需要翻译的词条，调用AI
+                if texts_to_send_to_api:
                     item_title = item_details_from_emby.get("Name")
                     item_year = item_details_from_emby.get("ProductionYear")
-
-                    # 2. 在调用 batch_translate 时传入上下文
+                    
+                    logger.info(f"将 {len(texts_to_send_to_api)} 个词条提交给AI (模式: {translation_mode})。")
+                    
                     translation_map_from_api = self.ai_translator.batch_translate(
-                        texts=list(texts_to_translate),
+                        texts=list(texts_to_send_to_api),
+                        mode=translation_mode,
                         title=item_title,
                         year=item_year
                     )
                     
                     if translation_map_from_api:
-                        logger.info(f"AI批量翻译成功，返回 {len(translation_map_from_api)} 个结果。")
                         translation_cache.update(translation_map_from_api)
-                        for original, translated in translation_map_from_api.items():
-                            DoubanApi._save_translation_to_db(original, translated, self.ai_translator.provider, cursor=cursor)
+                        if translation_mode == 'fast':
+                            for original, translated in translation_map_from_api.items():
+                                DoubanApi._save_translation_to_db(original, translated, self.ai_translator.provider, cursor=cursor)
                         
                         ai_translation_succeeded = True
-                    else:
-                        logger.warning("AI批量翻译调用成功，但未返回任何翻译结果。")
-                except Exception as e:
-                    logger.error(f"调用AI批量翻译时发生严重错误: {e}", exc_info=True)
-            else:
-                logger.info("所有需要翻译的词条均在数据库缓存中找到，无需调用API。")
-                ai_translation_succeeded = True
+                else:
+                    logger.info("所有需要翻译的词条均在数据库缓存中找到，无需调用API。")
+                    ai_translation_succeeded = True
 
-            if ai_translation_succeeded:
-                for actor in cast_to_process:
-                    original_name = actor.get('name')
-                    if original_name in translation_cache:
-                        actor['name'] = translation_cache[original_name]
-                    
-                    original_character = utils.clean_character_name_static(actor.get('character'))
-                    if original_character in translation_cache:
-                        actor['character'] = translation_cache[original_character]
-                    else:
-                        actor['character'] = original_character
+                # 回填所有翻译结果
+                if translation_cache:
+                    for actor in cast_to_process:
+                        original_name = actor.get('name')
+                        if original_name in translation_cache:
+                            actor['name'] = translation_cache[original_name]
+                        
+                        original_character = actor.get('character')
+                        if original_character in translation_cache:
+                            actor['character'] = translation_cache[original_character]
+            
+            # ★★★ 2. except 块与 try 对齐 ★★★
+            except Exception as e:
+                logger.error(f"调用AI批量翻译时发生严重错误: {e}", exc_info=True)
+                ai_translation_succeeded = False # 确保出错时标记为失败
 
         # ★★★ 降级逻辑 ★★★
         # 如果AI翻译未启用，或者尝试了但失败了，则执行传统翻译
@@ -654,105 +661,87 @@ class MediaProcessor:
                                          cursor: sqlite3.Cursor, 
                                          item_details_from_emby: Dict[str, Any]):
         """
-        【API轨道 - 批量翻译重构版】
-        此函数负责将指定媒体项目中演员的英文名批量翻译成中文，并更新回Emby。
+        【V2 - 双核AI版】仅中文化演员名，作为前置处理轨道。
+        根据配置，智能选择使用带缓存的翻译模式，或不带缓存的顾问模式。
         """
-        item_id = item_details_from_emby.get("Id")
-        item_name_for_log = item_details_from_emby.get("Name", f"未知媒体(ID:{item_id})")
-        logger.info(f"前置翻译开始为 '{item_name_for_log}' 进行演员名批量中文化...")
-
-        # 1. 从 Emby 获取原始演员列表
-        original_cast = item_details_from_emby.get("People", [])
-        if not original_cast:
-            logger.info("前置翻译：该媒体在Emby中没有演员信息，跳过。")
+        if not (self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False)):
+            logger.debug("前置翻译轨道：AI翻译未启用，跳过。")
             return
 
-        # 检查 AI 翻译器和配置是否就绪
-        if not self.ai_translator or not self.config.get("ai_translation_enabled", False):
-            logger.warning("前置翻译：AI翻译器未配置或未启用，跳过演员名中文化。")
+        logger.info(f"前置翻译开始为 '{item_details_from_emby.get('Name')}' 进行演员名批量中文化...")
+
+        # 1. 收集所有需要翻译的演员名
+        texts_to_translate_collection = set()
+        for person in people_list:
+            name = person.get("Name")
+            if name and not utils.contains_chinese(name):
+                texts_to_translate_collection.add(name)
+
+        if not texts_to_translate_collection:
+            logger.info("前置翻译：所有演员名均无需翻译（已是中文）。")
             return
 
         try:
-            with get_central_db_connection(self.db_path) as conn:
-                cursor = conn.cursor()
+            # 2. 收集所有需要翻译的演员名
+            texts_to_collect = set()
+            for person in people_list:
+                name = person.get("Name")
+                if name and not utils.contains_chinese(name):
+                    texts_to_collect.add(name)
 
-                # --- ★★★ 开始移植批量翻译逻辑 ★★★ ---
+            if not texts_to_collect:
+                logger.info("前置翻译：所有演员名均无需翻译（已是中文）。")
+                return # 正常结束，不需要进入后续逻辑
 
-                # 2. 收集所有需要翻译的演员名
-                texts_to_translate = set()
-                # 同时，我们创建一个从 Emby Person ID 到原始名字的映射，方便后续更新
-                person_id_to_name_map = {} 
+            # 3. 执行我们之前讨论过的“双核翻译逻辑”
+            translation_cache = {}
+            ai_translation_succeeded = False
+            
+            translation_mode = self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_MODE, "fast")
+            
+            texts_to_send_to_api = set()
 
-                for person in original_cast:
-                    emby_person_id = person.get("Id")
-                    current_name = person.get("Name")
+            if translation_mode == 'fast':
+                for text in texts_to_collect:
+                    cached_entry = DoubanApi._get_translation_from_db(text, cursor=cursor)
+                    if cached_entry:
+                        translation_cache[text] = cached_entry.get("translated_text")
+                    else:
+                        texts_to_send_to_api.add(text)
+            else:
+                texts_to_send_to_api = texts_to_collect
 
-                    if not emby_person_id or not current_name:
-                        continue
-                    
-                    person_id_to_name_map[emby_person_id] = current_name
-                    
-                    # 检查数据库缓存，如果缓存未命中且需要翻译，则加入集合
-                    cached_entry = DoubanApi._get_translation_from_db(current_name, cursor=cursor)
-                    if not cached_entry and not utils.contains_chinese(current_name):
-                        texts_to_translate.add(current_name)
+            if texts_to_send_to_api:
+                item_title = item_details_from_emby.get("Name")
+                item_year = item_details_from_emby.get("ProductionYear")
+                
+                translation_map_from_api = self.ai_translator.batch_translate(
+                    texts=list(texts_to_send_to_api),
+                    mode=translation_mode,
+                    title=item_title,
+                    year=item_year
+                )
+                
+                if translation_map_from_api:
+                    translation_cache.update(translation_map_from_api)
+                    if translation_mode == 'fast':
+                        for original, translated in translation_map_from_api.items():
+                            DoubanApi._save_translation_to_db(original, translated, self.ai_translator.provider, cursor=cursor)
+                    ai_translation_succeeded = True
 
-                # 3. 如果有需要翻译的文本，则调用批量API
-                if texts_to_translate:
-                    logger.info(f"前置翻译：发现 {len(texts_to_translate)} 个需要翻译的演员名。")
-                    try:
-                        # 【★★★ 升级调用方式 ★★★】
-                        # 1. 从 item_details_from_emby 中获取上下文信息
-                        item_title = item_details_from_emby.get("Name")
-                        item_year = item_details_from_emby.get("ProductionYear")
+            if translation_cache:
+                for person in people_list:
+                    original_name = person.get("Name")
+                    if original_name in translation_cache:
+                        person["Name"] = translation_cache[original_name]
+                logger.info("前置翻译为演员列表回填翻译结果完成。")
 
-                        # 2. 在调用 batch_translate 时传入上下文
-                        translation_map = self.ai_translator.batch_translate(
-                            texts=list(texts_to_translate),
-                            title=item_title,
-                            year=item_year
-                        )
-
-                        if translation_map:
-                            logger.info(f"AI批量翻译成功，返回 {len(translation_map)} 个结果。")
-                            
-                            # 将新翻译的结果存入数据库缓存
-                            for original, translated in translation_map.items():
-                                DoubanApi._save_translation_to_db(original, translated, self.ai_translator.provider, cursor=cursor)
-                            
-                            # 4. ★★★ 核心：遍历原始映射，执行Emby更新 ★★★
-                            logger.info("开始将翻译结果更新回 Emby...")
-                            for person_id, original_name in person_id_to_name_map.items():
-                                if self.is_stop_requested():
-                                    logger.info("前置翻译：更新Emby时任务被中止。")
-                                    break
-
-                                # 在翻译结果中查找这个演员的译名
-                                translated_name = translation_map.get(original_name)
-                                
-                                # 如果找到了翻译结果，就更新 Emby
-                                if translated_name:
-                                    logger.info(f"更新演员译名: '{original_name}' -> '{translated_name}' (Emby Person ID: {person_id})")
-                                    emby_handler.update_person_details(
-                                        person_id=person_id,
-                                        new_data={"Name": translated_name},
-                                        emby_server_url=self.emby_url,
-                                        emby_api_key=self.emby_api_key,
-                                        user_id=self.emby_user_id
-                                    )
-                                    time.sleep(0.2) # 增加微小延迟
-                        else:
-                            logger.warning("AI批量翻译调用成功，但未返回任何翻译结果。可能是API内部错误。")
-
-                    except Exception as e:
-                        logger.error(f"调用AI批量翻译时发生严重错误: {e}。", exc_info=True)
-                else:
-                    logger.info("前置翻译：所有演员名均无需翻译（已是中文或缓存命中）。")
-
+        # ★★★ 4. except 块与 try 对齐，捕获所有可能的异常 ★★★
         except Exception as e:
-            logger.error(f"前置翻译在为 '{item_name_for_log}' 处理演员中文化时发生严重错误: {e}", exc_info=True)
-        
-        logger.info(f"前置翻译为 '{item_name_for_log}' 的演员中文化处理完成。")
+            logger.error(f"前置翻译轨道在处理 '{item_details_from_emby.get('Name')}' 时发生严重错误: {e}", exc_info=True)
+
+        # 无论成功还是失败，都打印结束日志
+        logger.info(f"前置翻译为 '{item_details_from_emby.get('Name')}' 的演员中文化处理完成。")
 
     def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool, should_process_episodes_this_run: bool, force_fetch_from_tmdb: bool):
         """
@@ -1149,52 +1138,98 @@ class MediaProcessor:
     def translate_cast_list_for_editing(self, 
                                     cast_list: List[Dict[str, Any]], 
                                     title: Optional[str] = None, 
-                                    year: Optional[int] = None) -> List[Dict[str, Any]]:
+                                    year: Optional[int] = None,
+                                    tmdb_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        【V11 - 上下文感知版】为手动编辑页面提供的一键翻译功能。
+        【V13 - 返璞归真双核版】为手动编辑页面提供的一键翻译功能。
+        根据用户配置，智能选择带全局缓存的翻译模式，或无缓存的顾问模式。
         """
         if not cast_list:
             return []
             
-        context_log = f" (上下文: {title} {year})" if title else ""
-        logger.info(f"手动编辑-翻译：开始批量处理 {len(cast_list)} 位演员的姓名和角色{context_log}。")
+        # 从配置中读取模式，这是决定后续所有行为的总开关
+        translation_mode = self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_MODE, "fast")
+        
+        context_log = f" (上下文: {title} {year})" if title and translation_mode == 'quality' else ""
+        logger.info(f"手动编辑-一键翻译：开始批量处理 {len(cast_list)} 位演员 (模式: {translation_mode}){context_log}。")
         
         translated_cast = [dict(actor) for actor in cast_list]
         
         # --- 批量翻译逻辑 ---
         ai_translation_succeeded = False
         
-        if self.ai_translator and self.config.get("ai_translation_enabled", False):
-            texts_to_translate = set()
-            for actor in translated_cast:
-                for field_key in ['name', 'role']:
-                    text = actor.get(field_key, '').strip()
-                    if text and not utils.contains_chinese(text):
-                        texts_to_translate.add(text)
-            
-            if texts_to_translate:
-                logger.info(f"手动编辑-翻译：收集到 {len(texts_to_translate)} 个词条需要AI翻译。")
-                try:
-                    # 【★★★ 升级点 3：将上下文传递给AI顾问 ★★★】
-                    translation_map = self.ai_translator.batch_translate(
-                        texts=list(texts_to_translate),
-                        title=title,
-                        year=year
-                    )
-                    if translation_map:
-                        # ... (后续的回填逻辑保持不变) ...
-                        for i, actor in enumerate(translated_cast):
-                            original_name = actor.get('name', '').strip()
-                            if original_name in translation_map:
-                                translated_cast[i]['name'] = translation_map[original_name]
-                            original_role = actor.get('role', '').strip()
-                            if original_role in translation_map:
-                                translated_cast[i]['role'] = translation_map[original_role]
-                        ai_translation_succeeded = True
-                    else:
-                        logger.warning("手动编辑-翻译：AI批量翻译未返回结果，将降级。")
-                except Exception as e:
-                    logger.error(f"手动编辑-翻译：调用AI批量翻译时出错: {e}，将降级。", exc_info=True)
+        if self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False):
+            with get_central_db_connection(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                translation_cache = {} # 本次运行的内存缓存
+                texts_to_translate = set()
+
+                # 1. 收集所有需要翻译的词条
+                texts_to_collect = set()
+                for actor in translated_cast:
+                    for field_key in ['name', 'role']:
+                        text = actor.get(field_key, '').strip()
+                        if text and not utils.contains_chinese(text):
+                            texts_to_collect.add(text)
+
+                # 2. 根据模式决定是否使用缓存
+                if translation_mode == 'fast':
+                    logger.debug("[翻译模式] 正在检查全局翻译缓存...")
+                    for text in texts_to_collect:
+                        # 翻译模式只读写全局缓存
+                        cached_entry = DoubanApi._get_translation_from_db(text, cursor=cursor)
+                        if cached_entry:
+                            translation_cache[text] = cached_entry.get("translated_text")
+                        else:
+                            texts_to_translate.add(text)
+                else: # 'quality' mode
+                    logger.debug("[顾问模式] 跳过缓存检查，直接翻译所有词条。")
+                    texts_to_translate = texts_to_collect
+
+                # 3. 如果有需要翻译的词条，调用AI
+                if texts_to_translate:
+                    logger.info(f"手动编辑-翻译：将 {len(texts_to_translate)} 个词条提交给AI (模式: {translation_mode})。")
+                    try:
+                        translation_map_from_api = self.ai_translator.batch_translate(
+                            texts=list(texts_to_translate),
+                            mode=translation_mode,
+                            title=title,
+                            year=year
+                        )
+                        if translation_map_from_api:
+                            translation_cache.update(translation_map_from_api)
+                            
+                            # 只有在翻译模式下，才将结果写入全局缓存
+                            if translation_mode == 'fast':
+                                for original, translated in translation_map_from_api.items():
+                                    DoubanApi._save_translation_to_db(
+                                        original, translated, self.ai_translator.provider, cursor=cursor
+                                    )
+                            
+                            ai_translation_succeeded = True
+                        else:
+                            logger.warning("手动编辑-翻译：AI批量翻译未返回结果。")
+                    except Exception as e:
+                        logger.error(f"手动编辑-翻译：调用AI批量翻译时出错: {e}", exc_info=True)
+                else:
+                    logger.info("手动编辑-翻译：所有词条均在缓存中找到，无需调用API。")
+                    ai_translation_succeeded = True
+
+                # 4. 回填所有翻译结果
+                if translation_cache:
+                    for i, actor in enumerate(translated_cast):
+                        original_name = actor.get('name', '').strip()
+                        if original_name in translation_cache:
+                            translated_cast[i]['name'] = translation_cache[original_name]
+                        
+                        original_role = actor.get('role', '').strip()
+                        if original_role in translation_cache:
+                            translated_cast[i]['role'] = translation_cache[original_role]
+                        
+                        # 如果发生了翻译，更新状态以便前端高亮
+                        if translated_cast[i].get('name') != actor.get('name') or translated_cast[i].get('role') != actor.get('role'):
+                            translated_cast[i]['matchStatus'] = '已翻译'
         
         # 如果AI翻译未启用或失败，则降级到传统引擎
         if not ai_translation_succeeded:

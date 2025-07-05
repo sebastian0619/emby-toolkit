@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "2.6.6.3"  # 建议更新版本号，因为我们做了很多重要重构
+APP_VERSION = "2.6.6.4"  # 建议更新版本号，因为我们做了很多重要重构
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 CONFIG_FILE_NAME = "config.ini" # 主配置文件名
@@ -69,6 +69,7 @@ CONFIG_OPTION_AI_PROVIDER = "ai_provider"                       # AI服务提供
 CONFIG_OPTION_AI_API_KEY = "ai_api_key"                         # AI服务的API密钥
 CONFIG_OPTION_AI_MODEL_NAME = "ai_model_name"                   # 使用的AI模型名称 (如 'Qwen/Qwen2-7B-Instruct')
 CONFIG_OPTION_AI_BASE_URL = "ai_base_url"                       # AI服务的API基础URL
+CONFIG_OPTION_AI_TRANSLATION_MODE = "ai_translation_mode"       # AI翻译模式 ('fast' 或 'quality')
 
 # ==============================================================================
 # ✨ 计划任务配置 (Scheduler)

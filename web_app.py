@@ -101,6 +101,11 @@ CONFIG_DEFINITION = {
     constants.CONFIG_OPTION_AI_API_KEY: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', ""),
     constants.CONFIG_OPTION_AI_MODEL_NAME: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', "deepseek-ai/DeepSeek-V2.5"),
     constants.CONFIG_OPTION_AI_BASE_URL: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', "https://api.siliconflow.cn/v1"),
+    constants.CONFIG_OPTION_AI_TRANSLATION_MODE: (
+        constants.CONFIG_SECTION_AI_TRANSLATION, # 属于 AITranslation 部分
+        'string',                                # 它的值是一个字符串
+        'fast'                                   # 默认值为 'fast' (翻译模式)
+    ),
 
     # [Scheduler]
     constants.CONFIG_OPTION_SCHEDULE_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
@@ -2077,16 +2082,16 @@ def api_translate_cast_sa():
     if not isinstance(current_cast, list):
         return jsonify({"error": "请求体必须包含 'cast' 列表。"}), 400
 
-    # 【★★★ 升级点 1：从请求中获取上下文 ★★★】
+    # 【★★★ 从请求中获取所有需要的上下文信息 ★★★】
     title = data.get('title')
     year = data.get('year')
-    
+
     try:
-        # 【★★★ 升级点 2：调用新的、需要上下文的函数 ★★★】
+        # 【★★★ 调用新的、需要完整上下文的函数 ★★★】
         translated_list = media_processor_instance.translate_cast_list_for_editing(
             cast_list=current_cast,
             title=title,
-            year=year
+            year=year,
         )
         return jsonify(translated_list)
     except Exception as e:
