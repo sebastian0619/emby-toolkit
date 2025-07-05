@@ -173,22 +173,11 @@ const clearAllReviewItems = async () => {
 };
 
 const goToEditPage = (row) => {
-  if (!row || !row.item_id) {
+  if (row && row.item_id) {
+    router.push({ name: 'MediaEditPage', params: { itemId: row.item_id } });
+  } else {
     message.error("无效的媒体项，无法跳转到编辑页面！");
-    return;
   }
-  
-  if (!configModel.value) {
-    message.error("配置尚未加载，请稍后再试。");
-    return;
-  }
-
-  const routeName = configModel.value.use_sa_mode ? 'MediaEditSA' : 'MediaEditAPI';
-
-  router.push({
-    name: routeName,
-    params: { itemId: row.item_id }
-  });
 };
 
 const handleMarkAsProcessed = async (row) => {

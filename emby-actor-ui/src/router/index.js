@@ -63,19 +63,11 @@ const routes = [
   },
   // [修改] 这里是神医模式的编辑页路由
   {
-    path: '/edit-media-sa/:itemId',
-    name: 'MediaEditSA', // ✨✨✨ [修改] 将名字改为 MediaEditSA，以明确区分
-    component: () => import('../components/MediaEditPageSA.vue'),
+    path: '/edit-media/:itemId',
+    name: 'MediaEditPage', // ✨✨✨ [修改] 将名字改为 MediaEditSA，以明确区分
+    component: () => import('../components/MediaEditPage.vue'),
     props: true,
     meta: { requiresAuth: true },
-  },
-  // [新增] 这里是为普通API模式新增的编辑页路由
-  {
-    path: '/edit-media-api/:itemId', // ✨✨✨ [新增] 使用不同的路径以避免冲突
-    name: 'MediaEditAPI', // ✨✨✨ [新增] 给它一个唯一的、清晰的名字
-    component: () => import('../components/MediaEditPageAPI.vue'), // ✨✨✨ [新增] 指向你的新组件
-    props: true, // 允许将路由参数 :itemId 作为 props 传递
-    meta: { requiresAuth: true }, // 同样需要登录
   },
 ];
 

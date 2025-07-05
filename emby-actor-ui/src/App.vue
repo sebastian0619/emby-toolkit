@@ -184,31 +184,15 @@ const handleUserSelect = async (key) => {
 };
 
 // --- [修改] 侧边栏菜单的定义，使其动态化 ---
-const menuOptions = computed(() => {
-  // 基础菜单项，始终显示
-  const options = [
-    { label: 'Emby 配置', key: 'settings-emby', icon: renderIcon(EmbyIcon) },
-    { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
-    { type: 'divider', key: 'd1' },
-    { label: '任务中心', key: 'actions-status', icon: renderIcon(ActionsIcon) },
-    { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
-  ];
-
-  // 仅当配置加载完成且神医Pro模式开启时，才显示相关菜单
-  // 我们需要检查 configModel.value 是否存在，以避免在初始加载时出错
-  if (configModel.value && configModel.value.use_sa_mode) {
-    options.push(
-      { label: '追剧列表', key: 'Watchlist', icon: renderIcon(WatchlistIcon) }
-    );
-  }
-
-  // 添加剩余的固定菜单项
-  options.push(
-    { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) }
-  );
-
-  return options;
-});
+const menuOptions = computed(() => [
+  { label: 'Emby 配置', key: 'settings-emby', icon: renderIcon(EmbyIcon) },
+  { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
+  { type: 'divider', key: 'd1' },
+  { label: '任务中心', key: 'actions-status', icon: renderIcon(ActionsIcon) },
+  { label: '追剧列表', key: 'Watchlist', icon: renderIcon(WatchlistIcon) },
+  { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
+  { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
+]);
 
 
 // --- 菜单点击事件处理 ---

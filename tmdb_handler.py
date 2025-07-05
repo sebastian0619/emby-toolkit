@@ -381,46 +381,59 @@ def get_episode_details_tmdb(tv_id: int, season_number: int, episode_number: int
 # --- 获取完整演员表 ---
 def get_full_tv_details_online(tv_id: int, api_key: str, aggregation_level: str = 'first_episode', item_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
-    【V2 - 友好日志版】在线获取完整的电视剧详情，并聚合演员表。
+    【V3 - 严格去重聚合版】在线获取完整的电视剧详情，并聚合演员表。
+    修改为严格按ID和名字去重，确保没有同名演员。
     """
-    # 如果没有提供 item_name，就用 ID 作为备用
     item_name_for_log = item_name if item_name else f"ID: {tv_id}"
     
-    # ★★★ 由这个高层函数，打印对用户友好的 INFO 日志 ★★★
     logger.info(f"开始为电视剧 '{item_name_for_log}' 进行在线演员聚合 (级别: {aggregation_level})...")
     
-    # 1. 获取剧集根详情
     base_details = get_tv_details_tmdb(tv_id, api_key, append_to_response="credits,casts")
     if not base_details:
         logger.error(f"无法获取电视剧 '{item_name_for_log}' 的基础详情，在线聚合中止。")
         return None
     
-    # 使用字典来高效去重
-    full_cast_map = {}
+    # 【★★★ 核心修复：全新的、严格的去重聚合逻辑 ★★★】
+    aggregated_cast_list = []
+    seen_ids = set()
+    seen_names = set()
 
-    def _add_cast_to_map(cast_list: List[Dict[str, Any]]):
+    def _add_cast_to_list_online(cast_list: List[Dict[str, Any]]):
         if not cast_list: return
         for actor_data in cast_list:
+            if not isinstance(actor_data, dict): continue
+            
             actor_id = actor_data.get('id')
-            if isinstance(actor_data, dict) and actor_id and actor_id not in full_cast_map:
-                full_cast_map[actor_id] = actor_data
+            actor_name = str(actor_data.get('name') or "").strip()
+
+            if not actor_name: continue # 忽略没有名字的演员
+
+            # 1. ID去重
+            if actor_id and actor_id in seen_ids: continue
+            # 2. 名字去重
+            if actor_name in seen_names: continue
+
+            # 唯一演员，添加到列表并记录
+            if actor_id: seen_ids.add(actor_id)
+            seen_names.add(actor_name)
+            aggregated_cast_list.append(actor_data)
 
     # a. 添加根级别的演员
     root_cast = base_details.get("credits", {}).get("cast", []) or base_details.get("casts", {}).get("cast", [])
-    _add_cast_to_map(root_cast)
+    _add_cast_to_list_online(root_cast)
     
     if aggregation_level != 'series':
         number_of_seasons = base_details.get("number_of_seasons", 0)
         for season_num in range(1, number_of_seasons + 1):
-            # ★★★ 在调用底层函数时，也把片名传下去，让 DEBUG 日志也更友好 ★★★
             season_details = get_season_details_tmdb(tv_id, season_num, api_key, append_to_response="credits", item_name=item_name)
             if season_details:
-                _add_cast_to_map(season_details.get("credits", {}).get("cast", []))
+                _add_cast_to_list_online(season_details.get("credits", {}).get("cast", []))
                 if aggregation_level == 'first_episode' and season_details.get("episodes"):
+                    # 只获取第一集
                     ep_details = get_episode_details_tmdb(tv_id, season_num, 1, api_key, append_to_response="credits,guest_stars", item_name=item_name)
                     if ep_details:
-                        _add_cast_to_map(ep_details.get("credits", {}).get("cast", []))
-                        _add_cast_to_map(ep_details.get("guest_stars", []))
+                        _add_cast_to_list_online(ep_details.get("credits", {}).get("cast", []))
+                        _add_cast_to_list_online(ep_details.get("guest_stars", []))
                 
                 elif aggregation_level == 'full':
                     # 获取所有集 (API消耗大)
@@ -429,19 +442,18 @@ def get_full_tv_details_online(tv_id: int, api_key: str, aggregation_level: str 
                         if ep_num:
                             ep_details = get_episode_details_tmdb(tv_id, season_num, ep_num, api_key, append_to_response="credits,guest_stars")
                             if ep_details:
-                                _add_cast_to_map(ep_details.get("credits", {}).get("cast", []))
-                                _add_cast_to_map(ep_details.get("guest_stars", []))
+                                _add_cast_to_list_online(ep_details.get("credits", {}).get("cast", []))
+                                _add_cast_to_list_online(ep_details.get("guest_stars", []))
 
     # 4. 将聚合后的完整演员列表写回基础模板
-    final_cast_list = list(full_cast_map.values())
     # 保持TMDb原始的order排序
-    final_cast_list.sort(key=lambda x: x.get('order') if x.get('order') is not None else 999)
+    aggregated_cast_list.sort(key=lambda x: x.get('order') if x.get('order') is not None else 999)
     
     # 确保 credits.cast 存在
     if "credits" not in base_details: base_details["credits"] = {}
-    base_details["credits"]["cast"] = final_cast_list
+    base_details["credits"]["cast"] = aggregated_cast_list
     
-    logger.info(f"为 '{item_name_for_log}' 在线聚合完成，共获得 {len(final_cast_list)} 位独立演员。")
+    logger.info(f"为 '{item_name_for_log}' 在线聚合完成，共获得 {len(aggregated_cast_list)} 位独立演员。")
     
     return base_details
 def get_person_details_for_cast(person_id: int, api_key: str) -> Optional[Dict[str, Any]]:

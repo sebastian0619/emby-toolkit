@@ -26,8 +26,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz # 用于处理时区
 import atexit # 用于应用退出处理
-from core_processor_sa import MediaProcessorSA
-from core_processor_api import MediaProcessorAPI
+from core_processor import MediaProcessor
 import csv
 from io import StringIO
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -65,9 +64,6 @@ app = Flask(__name__, static_folder='static')
 app.secret_key = os.urandom(24)
 # ✨✨✨ “配置清单” ✨✨✨
 CONFIG_DEFINITION = {
-    # [Features]
-    constants.CONFIG_OPTION_USE_SA_MODE: (constants.CONFIG_SECTION_FEATURES, 'boolean', True),
-    
     # [Emby]
     constants.CONFIG_OPTION_EMBY_SERVER_URL: (constants.CONFIG_SECTION_EMBY, 'string', ""),
     constants.CONFIG_OPTION_EMBY_API_KEY: (constants.CONFIG_SECTION_EMBY, 'string', ""),
@@ -168,7 +164,7 @@ logging.basicConfig(
 )
 
 # --- 全局变量 ---
-media_processor_instance: Optional[Union[MediaProcessorSA, MediaProcessorAPI]] = None
+media_processor_instance: Optional[MediaProcessor] = None
 background_task_status = {
     "is_running": False,
     "current_action": "无",
@@ -177,7 +173,7 @@ background_task_status = {
 }
 task_lock = threading.Lock() # 用于确保后台任务串行执行
 APP_CONFIG: Dict[str, Any] = {} # ✨✨✨ 新增：全局配置字典 ✨✨✨
-media_processor_instance: Optional[MediaProcessorSA] = None
+media_processor_instance: Optional[MediaProcessor] = None
 watchlist_processor_instance: Optional[WatchlistProcessor] = None
 
 # ✨✨✨ 任务队列 ✨✨✨
@@ -192,7 +188,7 @@ JOB_ID_PROCESS_WATCHLIST = "scheduled_process_watchlist"
 # --- 全局变量结束 ---
 
 # --- 数据库辅助函数 ---
-def task_process_single_item(processor: MediaProcessorSA, item_id: str, force_reprocess: bool, process_episodes: bool):
+def task_process_single_item(processor: MediaProcessor, item_id: str, force_reprocess: bool, process_episodes: bool):
     """任务：处理单个媒体项"""
     processor.process_single_item(item_id, force_reprocess, process_episodes)
 
@@ -344,16 +340,6 @@ def processor_ready_required(f):
             return jsonify({"error": "核心处理器未就绪。"}), 503
         return f(*args, **kwargs)
     return decorated_function
-# ✨✨✨ 装饰器：检查是否处于神医模式，并确保处理器已初始化 ✨✨✨
-def sa_mode_required(f):
-    """【守卫3】检查是否处于神医模式。必须在 processor_ready_required 之后使用。"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        # 注意：这里我们假设 processor_ready_required 已经确保了 media_processor_instance 存在
-        if not isinstance(media_processor_instance, MediaProcessorSA):
-            return jsonify({"error": "此功能仅在神医模式下可用。"}), 403
-        return f(*args, **kwargs)
-    return decorated_function
 def init_auth():
     """
     【V2 - 使用全局配置版】初始化认证系统。
@@ -503,25 +489,12 @@ def initialize_processors():
     current_config = APP_CONFIG.copy()
     current_config['db_path'] = DB_PATH
 
-    # --- 初始化 MediaProcessor (您的原有逻辑) ---
+    # --- 初始化 MediaProcessor  ---
     if media_processor_instance:
-        try:
-            media_processor_instance.close()
-        except Exception as e:
-            logger.warning(f"关闭旧的 media_processor_instance 时出错: {e}")
-
-    use_sa_mode = current_config.get(constants.CONFIG_OPTION_USE_SA_MODE, True)
-    
+        media_processor_instance.close()
     try:
-        if use_sa_mode:
-            logger.info("【模式切换】当前为：神医模式")
-            media_processor_instance = MediaProcessorSA(config=current_config)
-        else:
-            logger.info("【模式切换】当前为：普通模式")
-            media_processor_instance = MediaProcessorAPI(config=current_config)
-        
-        logger.debug("MediaProcessor 实例已成功创建/更新。")
-
+        media_processor_instance = MediaProcessor(config=current_config)
+        logger.info("MediaProcessor 实例已创建/更新。")
     except Exception as e:
         logger.error(f"创建 MediaProcessor 实例失败: {e}", exc_info=True)
         media_processor_instance = None
@@ -553,7 +526,7 @@ def update_status_from_thread(progress: int, message: str):
         background_task_status["progress"] = progress
     background_task_status["message"] = message
 # --- 后台任务封装 ---
-def _execute_task_with_lock(task_function, task_name: str, processor: Union[MediaProcessorSA, MediaProcessorAPI, WatchlistProcessor], *args, **kwargs):
+def _execute_task_with_lock(task_function, task_name: str, processor: Union[MediaProcessor, WatchlistProcessor], *args, **kwargs):
     """
     【V2 - 工人专用版】通用后台任务执行器。
     第一个参数必须是 MediaProcessor 实例。
@@ -840,7 +813,6 @@ def setup_scheduled_tasks():
         scheduler.remove_job(JOB_ID_PROCESS_WATCHLIST)
 
     if config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False):
-        if config.get(constants.CONFIG_OPTION_USE_SA_MODE, False):
             cron_expression = config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON)
             if cron_expression:
                 try:
@@ -1006,7 +978,7 @@ def run_full_rebuild_task(self, update_status_callback: Optional[callable] = Non
             update_status_callback(-1, f"任务失败: {e}")
         raise
 # --- 执行全量媒体库扫描 ---
-def task_process_full_library(processor: Union[MediaProcessorSA, MediaProcessorAPI], process_episodes: bool):
+def task_process_full_library(processor: MediaProcessor, process_episodes: bool):
     processor.process_full_library(
         update_status_callback=update_status_from_thread,
         process_episodes=process_episodes
@@ -1045,8 +1017,8 @@ def task_sync_person_map(processor):
     except Exception as e:
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
         update_status_from_thread(-1, f"错误：同步失败 ({str(e)[:50]}...)")
-# ✨✨✨ 补充别名函数 ✨✨✨
-def task_enrich_aliases(processor: Union[MediaProcessorSA, MediaProcessorAPI]):
+# ✨✨✨ 补充外部ID函数 ✨✨✨
+def task_enrich_aliases(processor: MediaProcessor):
     """
     【后台任务】外部ID补充任务的入口点。
     它会调用 actor_utils 中的核心逻辑，并传递运行时长。
@@ -1094,7 +1066,7 @@ def task_enrich_aliases(processor: Union[MediaProcessorSA, MediaProcessorAPI]):
     except Exception as e:
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
         update_status_from_thread(-1, f"错误：任务失败 ({str(e)[:50]}...)")
-def task_manual_update(processor: MediaProcessorSA, item_id: str, manual_cast_list: list, item_name: str):
+def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list: list, item_name: str):
     """任务：使用手动编辑的结果处理媒体项"""
     processor.process_item_with_manual_cast(
         item_id=item_id,
@@ -1103,7 +1075,7 @@ def task_manual_update(processor: MediaProcessorSA, item_id: str, manual_cast_li
     )
 # ★★★ 1. 定义一个webhoo专用追剧、用于编排任务的函数 ★★★
 # 这个函数将作为提交到任务队列的目标
-def webhook_processing_task(processor: MediaProcessorSA, item_id: str, force_reprocess: bool, process_episodes: bool):
+def webhook_processing_task(processor: MediaProcessor, item_id: str, force_reprocess: bool, process_episodes: bool):
     """
     【修复版】这个函数编排了处理新入库项目的完整流程。
     它的第一个参数现在是 MediaProcessor 实例，以匹配任务执行器的调用方式。
@@ -1229,7 +1201,7 @@ def task_import_person_map(processor, file_content: str, **kwargs):
         update_status_from_thread(-1, f"导入失败: {e}")
 
 # ★★★ 重新处理单个项目 ★★★
-def task_reprocess_single_item(processor: MediaProcessorSA, item_id: str):
+def task_reprocess_single_item(processor: MediaProcessor, item_id: str):
     """
     【已升级 - 强制在线获取版】
     后台任务：通过强制在线获取TMDb最新数据的方式，重新处理单个项目。
@@ -1265,7 +1237,7 @@ def task_reprocess_single_item(processor: MediaProcessorSA, item_id: str):
 
 
 # ★★★ 重新处理所有待复核项 ★★★
-def task_reprocess_all_review_items(processor: MediaProcessorSA):
+def task_reprocess_all_review_items(processor: MediaProcessor):
     """
     【已升级】后台任务：遍历所有待复核项并逐一以“强制在线获取”模式重新处理。
     """
@@ -1301,7 +1273,7 @@ def task_reprocess_all_review_items(processor: MediaProcessorSA):
         logger.error(f"重新处理所有待复核项时发生严重错误: {e}", exc_info=True)
         update_status_from_thread(-1, "任务失败")
 # ★★★ 全量图片同步的任务函数 ★★★
-def task_full_image_sync(processor: MediaProcessorSA):
+def task_full_image_sync(processor: MediaProcessor):
     """
     后台任务：调用 processor 的方法来同步所有图片。
     """
@@ -1884,7 +1856,7 @@ def api_handle_trigger_stop_task():
         logger.warning("API: MediaProcessor 未初始化，无法发送停止信号。")
         return jsonify({"error": "核心处理器未就绪"}), 503
     
-# ✨✨✨ 神医保存手动编辑结果的 API ✨✨✨
+# ✨✨✨ 保存手动编辑结果的 API ✨✨✨
 @app.route('/api/update_media_cast_sa/<item_id>', methods=['POST'])
 @login_required
 @processor_ready_required
@@ -2056,7 +2028,7 @@ def api_import_person_map():
     except Exception as e:
         logger.error(f"处理导入文件请求时发生错误: {e}", exc_info=True)
         return jsonify({"error": f"处理上传文件时发生服务器错误"}), 500
-# ✨✨✨ 神医编辑页面的API接口 ✨✨✨
+# ✨✨✨ 编辑页面的API接口 ✨✨✨
 @app.route('/api/media_for_editing_sa/<item_id>', methods=['GET'])
 @login_required
 @processor_ready_required
@@ -2068,127 +2040,6 @@ def api_get_media_for_editing_sa(item_id):
         return jsonify(data_for_editing)
     else:
         return jsonify({"error": f"无法获取项目 {item_id} 的编辑数据，请检查日志。"}), 404
-# ✨✨✨ 普通编辑页面的API接口 ✨✨✨
-@app.route('/api/media_api_edit_details/<item_id>', methods=['GET'])
-@login_required # ✨ 2. 确保依赖存在
-@processor_ready_required
-def api_get_media_for_editing_api(item_id):
-    logger.info(f"API: 收到为 ItemID {item_id} 获取编辑详情的请求。")
-    # 1. 从 Emby 获取详情 (保持不变)
-    try:
-        emby_details = emby_handler.get_emby_item_details(
-            item_id,
-            media_processor_instance.emby_url,
-            media_processor_instance.emby_api_key,
-            media_processor_instance.emby_user_id
-        )
-        if not emby_details:
-            return jsonify({"error": f"在Emby中未找到项目 {item_id}"}), 404
-    except Exception as e:
-        logger.error(f"API: 获取Emby详情失败 for ItemID {item_id}: {e}", exc_info=True)
-        return jsonify({"error": "获取Emby详情时发生服务器错误"}), 500
-
-    # ✨✨✨ 核心修改在这里 ✨✨✨
-    # 2. 从 failed_log 获取额外信息
-    failed_log_info = {}
-    try:
-        with get_central_db_connection(DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("SELECT item_name, item_type, error_message, score FROM failed_log WHERE item_id = ?", (item_id,))
-            row = cursor.fetchone()
-            if row:
-                failed_log_info = dict(row)
-        # with 块结束，连接自动关闭
-    except Exception as e:
-        # 捕获数据库操作可能发生的错误
-        logger.error(f"API: 从 failed_log 获取信息失败 for ItemID {item_id}: {e}", exc_info=True)
-        # 即使数据库查询失败，我们也可以选择不中断整个流程，而是继续返回 Emby 的信息
-        # 如果希望数据库失败时整个请求都失败，可以取消下面这行的注释
-        # return jsonify({"error": "获取本地复核信息时发生服务器错误"}), 500
-    # ✨✨✨ 修改结束 ✨✨✨
-
-    # ★★★ START: 3. 格式化并补充演员列表 (关键修改) ★★★
-    enriched_cast_for_frontend = []
-    if emby_details.get("People"):
-        for person in emby_details.get("People", []):
-            person_id = person.get("Id")
-            if person_id and person.get("Name"):
-                provider_ids = person.get("ProviderIds", {})
-                
-                # 为每个演员单独获取其详细信息以获得 image_tag
-                actor_image_tag = person.get('PrimaryImageTag')
-                try:
-                    # 调用您现有的 emby_handler 方法来获取演员详情
-                    fields_to_request = "People,ProviderIds,PrimaryImageAspectRatio,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines"
-    
-                    # 调用 emby_handler 的函数，并把 fields 参数传进去
-                    emby_details = emby_handler.get_emby_item_details(
-                        item_id,
-                        media_processor_instance.emby_url,
-                        media_processor_instance.emby_api_key,
-                        media_processor_instance.emby_user_id,
-                        fields=fields_to_request  # <--- 把我们需要的字段列表传给它
-                    )
-                    if not emby_details:
-                        return jsonify({"error": f"在Emby中未找到项目 {item_id}"}), 404
-                except Exception as e:
-                    logger.error(f"API: 获取Emby详情失败 for ItemID {item_id}: {e}", exc_info=True)
-                    return jsonify({"error": "获取Emby详情时发生服务器错误"}), 500
-                
-                enriched_cast_for_frontend.append({
-                    "embyPersonId": str(person_id),
-                    "name": person["Name"],
-                    "role": person.get("Role", ""),
-                    "imdbId": provider_ids.get("Imdb"),
-                    "doubanId": provider_ids.get("Douban"),
-                    "tmdbId": provider_ids.get("Tmdb"),
-                    "image_tag": actor_image_tag  # 加入演员的 image_tag
-                })
-    # ★★★ END: 3. ★★★
-
-    # 4. 生成搜索链接 (保持不变)
-    google_search_for_wiki_url = None
-    title = emby_details.get("Name")
-    year = emby_details.get("ProductionYear")
-    
-    if title:
-        logger.info(f"准备为标题 '{title}' (年份: {year}) 生成搜索链接。")
-        try:
-            google_search_for_wiki_url = utils.generate_search_url('wikipedia', title, year)
-            if google_search_for_wiki_url:
-                logger.info(f"成功生成搜索链接: {google_search_for_wiki_url}")
-            else:
-                logger.warning(f"generate_search_url 函数为标题 '{title}' 返回了一个空值或 None。")
-        except Exception as e:
-            logger.error(f"为 '{title}' 生成维基百科搜索链接时发生异常: {e}", exc_info=True)
-    else:
-        logger.warning("无法生成搜索链接，因为 Emby 详情中缺少标题 (Name)。")
-
-    # ★★★ START: 5. 组合最终的响应数据 (关键修改) ★★★
-    response_data = {
-        "item_id": item_id,
-        "item_name": emby_details.get("Name"),
-        "item_type": emby_details.get("Type"),
-        
-        # 加入媒体海报的 image_tag
-        "image_tag": emby_details.get('ImageTags', {}).get('Primary'),
-        
-        "original_score": failed_log_info.get("score"),
-        "review_reason": failed_log_info.get("error_message"),
-        
-        # 使用我们新生成的、包含 image_tag 的演员列表
-        "current_emby_cast": enriched_cast_for_frontend,
-        
-        "search_links": {
-            "google_search_wiki": google_search_for_wiki_url
-        }
-    }
-    # ★★★ END: 5. ★★★
-    
-    logger.info(f"API: 成功为项目 {item_id} 构建编辑详情，准备返回。")
-    return jsonify(response_data)
-
 # ✨✨✨   生成外部搜索链接 ✨✨✨
 @app.route('/api/parse_cast_from_url', methods=['POST'])
 def api_parse_cast_from_url():
@@ -2216,7 +2067,7 @@ def api_parse_cast_from_url():
     except Exception as e:
         logger.error(f"解析 URL '{url_to_parse}' 时发生未知错误: {e}", exc_info=True)
         return jsonify({"error": "解析时发生未知的服务器错误"}), 500
-# ✨✨✨ 神医一键翻译 ✨✨✨
+# ✨✨✨ 一键翻译 ✨✨✨
 @app.route('/api/actions/translate_cast_sa', methods=['POST']) # 注意路径不同
 @login_required
 @processor_ready_required
@@ -2230,25 +2081,6 @@ def api_translate_cast_sa():
         # 调用 core_processor 的新方法
         translated_list = media_processor_instance.translate_cast_list_for_editing(current_cast)
         return jsonify(translated_list)
-    except Exception as e:
-        logger.error(f"一键翻译演员列表时发生错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器在翻译时发生内部错误。"}), 500
-# ✨✨✨ 普通一键翻译 ✨✨✨
-@app.route('/api/actions/translate_cast_api', methods=['POST']) # 注意路径不同
-@login_required
-@processor_ready_required
-def api_translate_cast_api():
-    data = request.json
-    current_cast = data.get('cast')
-
-    if not isinstance(current_cast, list):
-        return jsonify({"error": "请求体必须包含 'cast' 列表。"}), 400
-
-    try:
-        # 调用新的、功能更全的翻译方法
-        translated_list = media_processor_instance.translate_cast_list(current_cast)
-        return jsonify(translated_list)
-        
     except Exception as e:
         logger.error(f"一键翻译演员列表时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在翻译时发生内部错误。"}), 500
@@ -2409,8 +2241,6 @@ def api_clear_review_items():
 @login_required
 def api_get_watchlist():
     # 模式检查
-    if not APP_CONFIG.get(constants.CONFIG_OPTION_USE_SA_MODE, True):
-        return jsonify([]) # API模式下返回空列表
 
     logger.info("API: 收到获取追剧列表的请求。")
     
@@ -2473,8 +2303,6 @@ def api_add_to_watchlist():
 @login_required
 def api_trigger_watchlist_update(): # <-- 函数名可以不变，因为它和路径无关了
     # 模式检查
-    if not APP_CONFIG.get(constants.CONFIG_OPTION_USE_SA_MODE, True):
-        return jsonify({"error": "此功能仅在神医模式下可用。"}), 403
 
     # ... (这个函数的内部逻辑完全不变) ...
     
@@ -2578,7 +2406,6 @@ def api_trigger_single_watchlist_update(item_id):
 # ★★★ 重新处理单个项目 ★★★
 @app.route('/api/actions/reprocess_item/<item_id>', methods=['POST'])
 @login_required
-@sa_mode_required  # <-- 一个顶俩！同时检查了实例存在和模式
 @task_lock_required # <-- 检查任务锁
 def api_reprocess_item(item_id):
     logger.info(f"API: 收到重新处理项目 '{item_id}' 的请求。")
@@ -2594,7 +2421,6 @@ def api_reprocess_item(item_id):
 @login_required
 @task_lock_required
 @processor_ready_required
-@sa_mode_required
 def api_reprocess_all_review_items():
     """
     提交一个任务，用于重新处理所有待复核列表中的项目。
@@ -2612,7 +2438,6 @@ def api_reprocess_all_review_items():
 @login_required
 @task_lock_required
 @processor_ready_required
-@sa_mode_required
 def api_trigger_full_image_sync():
     """
     提交一个任务，用于全量同步所有已处理项目的海报。
@@ -2628,7 +2453,6 @@ def api_trigger_full_image_sync():
 @login_required
 @task_lock_required
 @processor_ready_required
-@sa_mode_required
 def trigger_rebuild_actors_task():
     """
     API端点，用于触发“一键重构演员数据库”的后台任务。
