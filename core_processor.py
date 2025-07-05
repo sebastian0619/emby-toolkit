@@ -287,64 +287,67 @@ class MediaProcessor:
         douban_candidates_raw = self._get_douban_cast_with_local_cache(item_details_from_emby)
         douban_candidates = actor_utils.format_douban_cast(douban_candidates_raw)
         
-        # 这从根本上杜绝了后续所有因“二次匹配”导致的数据覆盖和排序问题。
-        final_cast_map = {str(actor['id']): actor for actor in local_cast_list if actor.get('id')}
-    
-        # 保留对无ID演员的 fallback 处理，以防万一
-        for actor in local_cast_list:
-            if not actor.get('id'):
-                # 使用名字作为 key，确保它不会覆盖有ID的演员
-                name_key = f"name_{str(actor.get('name', '')).lower()}"
-                if name_key not in final_cast_map:
-                    final_cast_map[name_key] = actor
+        # --- 步骤 1: 执行消耗型一对一匹配 ---
+        logger.debug("--- 匹配阶段 1: 执行消耗型一对一匹配 ---")
 
-        unmatched_douban_candidates = []
-        matched_douban_indices = set()
-        # --- 步骤 1: 用豆瓣演员名和原始演员表匹配 ---
-        logger.debug("--- 匹配阶段 1: 按名字匹配 ---")
-        matched_douban_indices = set()
-        for i, d_actor in enumerate(douban_candidates):
-            # ✨✨✨ 严格使用 format_douban_cast 输出的标准键名 (大写开头) ✨✨✨
-            douban_name_zh = d_actor.get("Name")
-            douban_name_en = d_actor.get("OriginalName")
-            douban_id = d_actor.get("DoubanCelebrityId")
+        # 1. 创建一个可被消耗的本地演员列表副本
+        unmatched_local_actors = list(local_cast_list)
+        # 2. 创建用于存放结果的列表
+        merged_actors = []
+        unmatched_douban_actors = []
 
-            for l_actor in final_cast_map.values():
-        
-                # ✨✨✨ 统一使用经过验证的、简单直接的匹配逻辑 ✨✨✨
+        # 3. 遍历豆瓣演员，尝试在“未匹配”的本地演员中寻找配对
+        for d_actor in douban_candidates:
+            douban_name_zh = d_actor.get("Name", "").lower().strip()
+            douban_name_en = d_actor.get("OriginalName", "").lower().strip()
+            
+            match_found_for_this_douban_actor = False
+            
+            # 在【未匹配】的本地演员中寻找第一个同名者
+            for i, l_actor in enumerate(unmatched_local_actors):
+                local_name = str(l_actor.get("name") or "").lower().strip()
+                local_original_name = str(l_actor.get("original_name") or "").lower().strip()
+
                 is_match, match_reason = False, ""
-        
-                # --- 引擎1: 简单直接的精确匹配 (高优先级) ---
-                dc_name_lower = str(d_actor.get("Name") or "").lower().strip()
-                dc_orig_name_lower = str(d_actor.get("OriginalName") or "").lower().strip()
-                local_name_lower = str(l_actor.get("name") or "").lower().strip()
-                local_original_name_lower = str(l_actor.get("original_name") or "").lower().strip()
-
-                if dc_name_lower and (dc_name_lower == local_name_lower or dc_name_lower == local_original_name_lower):
-                    is_match, match_reason = True, f"精确匹配 (豆瓣中文名)"
-                elif dc_orig_name_lower and (dc_orig_name_lower == local_name_lower or dc_orig_name_lower == local_original_name_lower):
-                    is_match, match_reason = True, f"精确匹配 (豆瓣外文名)"
-
+                if douban_name_zh and (douban_name_zh == local_name or douban_name_zh == local_original_name):
+                    is_match, match_reason = True, "精确匹配 (豆瓣中文名)"
+                elif douban_name_en and (douban_name_en == local_name or douban_name_en == local_original_name):
+                    is_match, match_reason = True, "精确匹配 (豆瓣外文名)"
 
                 if is_match:
-                    logger.info(f"  匹配成功 ({match_reason}): 豆瓣演员 '{d_actor.get('Name')}' -> 本地演员 '{l_actor.get('name')}'")
+                    logger.info(f"  匹配成功 (对号入座): 豆瓣演员 '{d_actor.get('Name')}' -> 本地演员 '{l_actor.get('name')}' (ID: {l_actor.get('id')})")
                     
-                    # 匹配成功后的逻辑 (保持不变)
+                    # 合并信息
                     l_actor["name"] = d_actor.get("Name")
                     cleaned_douban_character = utils.clean_character_name_static(d_actor.get("Role"))
-                    l_actor["character"] = actor_utils.select_best_role(
-                        l_actor.get("character"), 
-                        cleaned_douban_character 
-                    )
-                    if d_actor.get("DoubanCelebrityId"): 
+                    l_actor["character"] = actor_utils.select_best_role(l_actor.get("character"), cleaned_douban_character)
+                    if d_actor.get("DoubanCelebrityId"):
                         l_actor["douban_id"] = d_actor.get("DoubanCelebrityId")
                     
-                    matched_douban_indices.add(i)
-                    break # 找到匹配就跳出内层循环
+                    # 4. 从“未匹配”列表中【移除】这个本地演员，并加入到“已合并”列表
+                    merged_actors.append(unmatched_local_actors.pop(i))
+                    
+                    match_found_for_this_douban_actor = True
+                    # 5. 立即中断内层循环，处理下一个豆瓣演员
+                    break
+            
+            # 如果这个豆瓣演员没找到任何匹配，则加入到“未匹配豆瓣演员”列表
+            if not match_found_for_this_douban_actor:
+                unmatched_douban_actors.append(d_actor)
+
+        # 此时，我们得到三个列表：
+        # - merged_actors: 已成功与豆瓣匹配并合并信息的演员
+        # - unmatched_local_actors: TMDB有，但豆瓣没有的演员
+        # - unmatched_douban_actors: 豆瓣有，但TMDB没有的演员
         
-        unmatched_douban_candidates = [d for i, d in enumerate(douban_candidates) if i not in matched_douban_indices]
+        # 将前两个列表合并，作为我们处理的基础
+        current_cast_list = merged_actors + unmatched_local_actors
+        # 为了后续方便，我们再创建一个 map
+        final_cast_map = {actor['id']: actor for actor in current_cast_list if actor.get('id')}
+
+        # --- 后续处理流程（新增、翻译等）基于新的、干净的数据进行 ---
         
-        # --- ★★★ V-Final 核心修改：条件化处理流程 ★★★ ---
+        # (这部分代码与你原有的逻辑基本一致，只是现在它工作在一个正确的数据基础上)
         limit = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
         try:
             limit = int(limit)
@@ -357,16 +360,11 @@ class MediaProcessor:
         if current_actor_count >= limit:
             logger.info(f"当前演员数 ({current_actor_count}) 已达上限 ({limit})，跳过所有新增演员的流程。")
         else:
-            logger.info(f"当前演员数 ({current_actor_count}) 低于上限 ({limit})，进入补充模式（继续新增）。")
-            if final_cast_map:
-                max_order = max(actor.get('order', -1) for actor in final_cast_map.values() if actor.get('order') is not None)
-                next_order_index = max_order + 1
-            else:
-                next_order_index = 0
-            logger.debug(f"--- 匹配阶段 2: 用豆瓣ID查 person_identity_map ({len(unmatched_douban_candidates)} 位演员) ---")
-            unmatched_douban_candidates = [d for i, d in enumerate(douban_candidates) if i not in matched_douban_indices]
+            logger.info(f"当前演员数 ({current_actor_count}) 低于上限 ({limit})，进入补充模式（处理来自豆瓣的新增演员）。")
+            
+            logger.debug(f"--- 匹配阶段 2: 用豆瓣ID查 person_identity_map ({len(unmatched_douban_actors)} 位演员) ---")
             still_unmatched = []
-            for d_actor in unmatched_douban_candidates:
+            for d_actor in unmatched_douban_actors:
                 if self.is_stop_requested(): raise InterruptedError("任务中止")
                 d_douban_id = d_actor.get("DoubanCelebrityId")
                 match_found = False
@@ -380,25 +378,24 @@ class MediaProcessor:
                                 "id": tmdb_id_from_map, "name": d_actor.get("Name"), "original_name": d_actor.get("OriginalName"),
                                 "character": d_actor.get("Role"), "adult": False, "gender": 0, "known_for_department": "Acting",
                                 "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": -1,
-                                "order": next_order_index,
                                 "imdb_id": entry["imdb_id"], "douban_id": d_douban_id, "_is_newly_added": True
                             }
                             final_cast_map[tmdb_id_from_map] = new_actor_entry
                         match_found = True
                 if not match_found:
                     still_unmatched.append(d_actor)
-            unmatched_douban_candidates = still_unmatched
+            unmatched_douban_actors = still_unmatched
 
             # --- 步骤 3 & 4: 查询IMDbID -> TMDb反查 -> 新增 ---
-            logger.debug(f"--- 匹配阶段 3 & 4: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_candidates)} 位演员) ---")
+            logger.debug(f"--- 匹配阶段 3 & 4: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员) ---")
             still_unmatched_final = []
-            for d_actor in unmatched_douban_candidates:
+            for d_actor in unmatched_douban_actors:
                 if self.is_stop_requested(): raise InterruptedError("任务中止")
                 # ✨ 核心修改：在每次循环开始时检查上限
                 if len(final_cast_map) >= limit:
-                    logger.info(f"演员数已达上限 ({limit})，跳过剩余 {len(unmatched_douban_candidates) - i} 位演员的API查询。")
+                    logger.info(f"演员数已达上限 ({limit})，跳过剩余 {len(unmatched_douban_actors) - i} 位演员的API查询。")
                     # 将所有剩下的演员直接加入 still_unmatched_final
-                    still_unmatched_final.extend(unmatched_douban_candidates[i:])
+                    still_unmatched_final.extend(unmatched_douban_actors[i:])
                     break # 彻底结束新增流程
                 d_douban_id = d_actor.get("DoubanCelebrityId")
                 match_found = False
@@ -436,7 +433,6 @@ class MediaProcessor:
                                     "id": tmdb_id_from_map, "name": d_actor.get("Name"), "original_name": d_actor.get("OriginalName"),
                                     "character": d_actor.get("Role"), "adult": False, "gender": 0, "known_for_department": "Acting",
                                     "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": -1,
-                                    "order": next_order_index,
                                     "imdb_id": d_imdb_id, "douban_id": d_douban_id, "_is_newly_added": True
                                 }
                                 final_cast_map[tmdb_id_from_map] = new_actor_entry
@@ -459,7 +455,6 @@ class MediaProcessor:
                                         "id": tmdb_id_from_find, "name": d_actor.get("Name"), "original_name": d_actor.get("OriginalName"),
                                         "character": d_actor.get("Role"), "adult": False, "gender": 0, "known_for_department": "Acting",
                                         "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": -1,
-                                        "order": next_order_index,
                                         "imdb_id": d_imdb_id, "douban_id": d_douban_id, "_is_newly_added": True
                                     }
                                     final_cast_map[tmdb_id_from_find] = new_actor_entry
@@ -483,8 +478,8 @@ class MediaProcessor:
                 logger.info(f"--- 最终丢弃 {len(still_unmatched_final)} 位无匹配的豆瓣演员 ---")
 
 
-        intermediate_cast_list = list(final_cast_map.values())
         # ★★★ 在截断前进行一次全量反哺 ★★★
+        intermediate_cast_list = list(final_cast_map.values())
         logger.debug(f"截断前：将 {len(intermediate_cast_list)} 位演员的完整映射关系反哺到数据库...")
         for actor_data in intermediate_cast_list:
             self.actor_db_manager.upsert_person(
@@ -497,24 +492,6 @@ class MediaProcessor:
                 },
             )
         logger.info("所有演员的ID映射关系已保存。")
-        # 【★★★ 终极安检门：在函数出口强制去重 ★★★】
-        logger.debug("执行最终出口检查，强制移除所有同名演员...")
-        final_unique_list = []
-        seen_final_names = set()
-        
-        # 先按 order 排序，确保我们保留的是最重要的那个
-        intermediate_cast_list.sort(key=lambda x: x.get('order') if x.get('order') is not None else 999)
-        
-        for actor in intermediate_cast_list:
-            actor_name = actor.get('name')
-            if actor_name not in seen_final_names:
-                final_unique_list.append(actor)
-                seen_final_names.add(actor_name)
-            else:
-                logger.warning(f"出口安检：发现并拦截了重复的演员 '{actor_name}'。")
-                
-        # 用绝对干净的列表进行后续的截断和翻译
-        cast_to_process = final_unique_list
         # 步骤 演员列表截断 (先截断！)
         # ======================================================================
         max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
@@ -538,31 +515,30 @@ class MediaProcessor:
         # 步骤 B: 翻译准备与执行 (后收集，并检查缓存！)
         # ======================================================================
         ai_translation_succeeded = False
+        translation_cache = {} # ★★★ 核心修正1：将缓存初始化在最外面
 
         if self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False):
             logger.info("AI翻译已启用，优先尝试批量翻译模式。")
             
-            # ★★★ 1. 把 try...except 放在这里，包裹所有可能与AI和缓存交互的逻辑 ★★★
             try:
-                translation_cache = {}
-                
-                # 从配置中读取模式
                 translation_mode = self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_MODE, "fast")
-                tmdb_id_for_cache = item_details_from_emby.get("ProviderIds", {}).get("Tmdb")
                 
-                # 收集需要翻译的词条
                 texts_to_collect = set()
                 for actor in cast_to_process:
-                    for field_key in ['name', 'character']:
-                        text = actor.get(field_key)
-                        if text and not utils.contains_chinese(text):
-                            texts_to_collect.add(text)
+                    name = actor.get('name')
+                    if name and not utils.contains_chinese(name):
+                        texts_to_collect.add(name)
+                    
+                    character = actor.get('character')
+                    if character:
+                        cleaned_character = utils.clean_character_name_static(character)
+                        if cleaned_character and not utils.contains_chinese(cleaned_character):
+                            texts_to_collect.add(cleaned_character)
                 
                 texts_to_send_to_api = set()
 
-                # 根据模式决定是否使用缓存
                 if translation_mode == 'fast':
-                    logger.debug("[翻译模式] 正在检查全局翻译缓存...")
+                    logger.debug("[低配模式] 正在检查全局翻译缓存...")
                     for text in texts_to_collect:
                         cached_entry = DoubanApi._get_translation_from_db(text, cursor=cursor)
                         if cached_entry:
@@ -570,10 +546,9 @@ class MediaProcessor:
                         else:
                             texts_to_send_to_api.add(text)
                 else:
-                    logger.debug("[顾问模式] 跳过缓存检查，直接翻译所有词条。")
+                    logger.debug("[高配模式] 跳过缓存检查，直接翻译所有词条。")
                     texts_to_send_to_api = texts_to_collect
 
-                # 如果有需要翻译的词条，调用AI
                 if texts_to_send_to_api:
                     item_title = item_details_from_emby.get("Name")
                     item_year = item_details_from_emby.get("ProductionYear")
@@ -592,69 +567,67 @@ class MediaProcessor:
                         if translation_mode == 'fast':
                             for original, translated in translation_map_from_api.items():
                                 DoubanApi._save_translation_to_db(original, translated, self.ai_translator.provider, cursor=cursor)
-                        
-                        ai_translation_succeeded = True
-                else:
-                    logger.info("所有需要翻译的词条均在数据库缓存中找到，无需调用API。")
-                    ai_translation_succeeded = True
+                
+                # 无论API是否被调用，只要这个流程没出错，就认为AI部分成功了
+                # （即使只是成功使用了缓存或确认了无需翻译）
+                ai_translation_succeeded = True
 
-                # 回填所有翻译结果
-                if translation_cache:
-                    logger.info("------ AI翻译工作报告 ------") # ★★★ 新增：一个清晰的标题 ★★★
-                    for actor in cast_to_process:
-                        # 处理演员名
-                        original_name = actor.get('name')
-                        if original_name in translation_cache:
-                            translated_name = translation_cache[original_name]
-                            if original_name != translated_name:
-                                logger.info(f"  演员名: '{original_name}' -> '{translated_name}'")
-                            actor['name'] = translated_name
-                        
-                        # 处理角色名
-                        original_character = actor.get('character')
-                        if original_character in translation_cache:
-                            translated_character = translation_cache[original_character]
-                            if original_character != translated_character:
-                                # 为了对齐，我们可以找到这个角色对应的演员名
-                                actor_name_for_log = actor.get('name', '未知演员')
-                                logger.info(f"  角色名 ({actor_name_for_log}): '{original_character}' -> '{translated_character}'")
-                            actor['character'] = translated_character
-                    logger.info("--------------------------") # ★★★ 新增：一个清晰的结尾 ★★★
-            
-            # ★★★ 2. except 块与 try 对齐 ★★★
             except Exception as e:
                 logger.error(f"调用AI批量翻译时发生严重错误: {e}", exc_info=True)
-                ai_translation_succeeded = False # 确保出错时标记为失败
+                ai_translation_succeeded = False
 
-        # ★★★ 降级逻辑 ★★★
-        # 如果AI翻译未启用，或者尝试了但失败了，则执行传统翻译
-        if not ai_translation_succeeded:
+        # --- ★★★ 核心修正2：无论AI是否成功，都执行清理与回填，降级逻辑只在AI失败时触发 ★★★
+        
+        if ai_translation_succeeded:
+            logger.info("--- AI流程结束，开始最终的清理与回填 ---")
+            for actor in cast_to_process:
+                # 1. 处理演员名
+                original_name = actor.get('name')
+                if original_name in translation_cache:
+                    translated_name = translation_cache[original_name]
+                    if original_name != translated_name:
+                        logger.info(f"  演员名: '{original_name}' -> '{translated_name}'")
+                    actor['name'] = translated_name
+
+                # 2. 处理角色名 (这个逻辑现在总会执行)
+                original_character = actor.get('character')
+                if original_character:
+                    cleaned_character = utils.clean_character_name_static(original_character)
+                    translated_character = translation_cache.get(cleaned_character)
+                    final_character = translated_character if translated_character else cleaned_character
+                    
+                    if final_character != original_character:
+                        actor_name_for_log = actor.get('name', '未知演员')
+                        logger.info(f"  角色名 ({actor_name_for_log}): '{original_character}' -> '{final_character}'")
+                    
+                    actor['character'] = final_character
+            logger.info("------------------------------------")
+        else:
+            # AI翻译未启用或执行失败，启动降级程序
             if self.config.get("ai_translation_enabled", False):
                 logger.info("AI翻译失败，正在启动降级程序，使用传统翻译引擎...")
             else:
                 logger.info("AI翻译未启用，使用传统翻译引擎（如果配置了）。")
 
-            # ✨✨✨ 核心修改在这里 ✨✨✨
-            # 1. 在循环外准备好所有需要的参数，避免重复获取
             translator_engines_order = self.config.get("translator_engines_order", [])
             ai_enabled_flag = self.config.get("ai_translation_enabled", False)
             
-            # 使用你原来的、健壮的逐个翻译逻辑作为回退
             for actor in cast_to_process:
                 if self.is_stop_requested():
                     raise InterruptedError("任务在翻译演员列表时被中止")
                 
-                # 2. 使用新的、正确的参数列表来调用函数
+                # 降级逻辑也需要先清理！
+                cleaned_name = actor.get('name') # 名字一般不用清理，但角色名必须
                 actor['name'] = actor_utils.translate_actor_field(
-                    text=actor.get('name'),
+                    text=cleaned_name,
                     db_cursor=cursor,
                     ai_translator=self.ai_translator,
                     translator_engines=translator_engines_order,
                     ai_enabled=ai_enabled_flag
                 )
                 
+                # 关键：在降级逻辑中，也要先清理，再翻译
                 cleaned_character = utils.clean_character_name_static(actor.get('character'))
-                
                 actor['character'] = actor_utils.translate_actor_field(
                     text=cleaned_character,
                     db_cursor=cursor,
@@ -662,7 +635,6 @@ class MediaProcessor:
                     translator_engines=translator_engines_order,
                     ai_enabled=ai_enabled_flag
                 )
-            # ✨✨✨ 修改结束 ✨✨✨
 
         # 返回处理完的、已经截断和翻译的列表
         return cast_to_process
@@ -1187,6 +1159,10 @@ class MediaProcessor:
                 for actor in translated_cast:
                     for field_key in ['name', 'role']:
                         text = actor.get(field_key, '').strip()
+                        if field_key == 'character':
+                            # 无论是演员名还是角色名，都先清洗一遍，确保拿到的是核心文本
+                            # 对于演员名，这个清洗通常无影响，但对于角色名至关重要
+                            text = utils.clean_character_name_static(text)
                         if text and not utils.contains_chinese(text):
                             texts_to_collect.add(text)
 
