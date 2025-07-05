@@ -579,7 +579,7 @@ class MediaProcessor:
         # --- ★★★ 核心修正2：无论AI是否成功，都执行清理与回填，降级逻辑只在AI失败时触发 ★★★
         
         if ai_translation_succeeded:
-            logger.info("--- AI流程结束，开始最终的清理与回填 ---")
+            logger.info("------------ 翻译/清理结束 ------------")
             for actor in cast_to_process:
                 # 1. 处理演员名
                 original_name = actor.get('name')
@@ -598,7 +598,7 @@ class MediaProcessor:
                     
                     if final_character != original_character:
                         actor_name_for_log = actor.get('name', '未知演员')
-                        logger.info(f"  角色名 ({actor_name_for_log}): '{original_character}' -> '{final_character}'")
+                        logger.info(f"  角色名: '{original_character}' -> '{final_character}'")
                     
                     actor['character'] = final_character
             logger.info("------------------------------------")
