@@ -497,49 +497,6 @@ def format_and_complete_cast_list(cast_list: List[Dict[str, Any]], is_animation:
     【共享工具 V7 - 依赖注入版】对最终的演员列表进行格式化（角色名、排序）。
     配置通过参数传入，不再依赖任何全局变量。
     """
-    # ▼▼▼ Emby同名BUG防撞处理 ▼▼▼
-    logger.debug("开始执行Emby同名防撞处理...")
-    name_counts = {}
-    
-    # 关键一步：先按order排序，确保每次处理的顺序一致
-    cast_list.sort(key=lambda x: x.get('order', 999))
-    
-    # ★★★ 核心修复：创建一个用于检测的、绝对干净的名字到演员对象的映射 ★★★
-    # 这个映射的键是清除了所有零宽度空格的干净名字
-    clean_name_map = {}
-    for actor in cast_list:
-        name = actor.get("name")
-        if not name:
-            continue
-        
-        # 1. 先把演员名字中的零宽度空格彻底清理干净
-        clean_name = name.replace('\u200b', '')
-        
-        # 2. 将干净的名字作为key，把所有同名演员放到一个列表里
-        if clean_name not in clean_name_map:
-            clean_name_map[clean_name] = []
-        clean_name_map[clean_name].append(actor)
-
-    # ★★★ 现在，我们遍历这个干净的映射，来重新应用零宽度空格 ★★★
-    for clean_name, actors_with_same_name in clean_name_map.items():
-        # 如果某个名字下只有一个演员，那他不需要任何处理
-        if len(actors_with_same_name) <= 1:
-            # 确保即使是单个演员，其名字也是干净的（移除了可能从Emby带回的空格）
-            actors_with_same_name[0]['name'] = clean_name
-            continue
-
-        # 如果有多个同名演员，我们需要重新应用防撞逻辑
-        logger.warning(f"检测到 {len(actors_with_same_name)} 位同名演员 '{clean_name}'，将添加防撞空格。")
-        for i, actor in enumerate(actors_with_same_name):
-            if i == 0:
-                # 第一个演员，使用干净的名字
-                actor['name'] = clean_name
-            else:
-                # 后续的演员，在干净名字的基础上添加i个零宽度空格
-                suffix = '\u200b' * i
-                actor['name'] = f"{clean_name}{suffix}"
-
-    # ▲▲▲ 防撞处理结束 ▲▲▲
     perfect_cast = []
     
     # ▼▼▼ 核心修改：从传入的 config 参数中获取配置 ▼▼▼
