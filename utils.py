@@ -57,10 +57,12 @@ def clean_character_name_static(character_name: Optional[str]) -> str:
     name = re.sub(r'^(as\s+)', '', name, flags=re.IGNORECASE).strip()
 
     # 清理前缀中的“饰演/饰/配音/配”（不加判断，直接清理）
-    name = re.sub(r'^(饰演|饰|配音|配)\s*', '', name).strip()
+    prefix_pattern = r'^((?:饰演|饰|配音|配|as)\s*)+'
+    name = re.sub(prefix_pattern, '', name, flags=re.IGNORECASE).strip()
 
     # 清理后缀中的“饰演/饰/配音/配”
-    name = re.sub(r'\s*(饰演|饰|配音|配)$', '', name).strip()
+    suffix_pattern = r'(\s*(?:饰演|饰|配音|配))+$'
+    name = re.sub(suffix_pattern, '', name).strip()
 
     # 处理中外对照：“中文 + 英文”形式，只保留中文部分
     match = re.search(r'[a-zA-Z]', name)
