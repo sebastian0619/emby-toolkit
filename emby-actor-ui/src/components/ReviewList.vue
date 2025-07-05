@@ -1,4 +1,3 @@
-<!-- src/components/ReviewList.vue -->
 <template>
   <n-layout content-style="padding: 24px;">
   <n-card title="媒体库浏览器" class="glass-section" :bordered="false" size="small">
@@ -31,7 +30,7 @@
           :positive-button-props="{ type: 'error' }"
         >
           <template #trigger>
-            <n-button type="error" ghost :disabled="tableData.length === 0 || loading">
+            <n-button type="error" ghost :disabled="tableData.length === 0 || loading || isShowingSearchResults">
               <template #icon><n-icon :component="TrashIcon" /></template>
               清空所有待复核项
             </n-button>
@@ -239,7 +238,7 @@ const columns = computed(() => [
     key: 'failed_at',
     width: 170,
     resizable: true,
-    render(row) { return formatDate(row.failed_at); }
+    render(row) { return isShowingSearchResults.value ? 'N/A' : formatDate(row.failed_at); }
   },
   // ✅【关键修复】将 key 从 'error_message' 改为 'reason'
   { title: '原因', key: 'reason', resizable: true, ellipsis: { tooltip: true } },
@@ -259,26 +258,24 @@ const columns = computed(() => [
     align: 'center',
     fixed: 'right',
     render(row) {
-      // ... render 函数内部逻辑保持不变 ...
       const actionButtons = [];
       
-      if (!isShowingSearchResults.value) {
-        actionButtons.push(
-          h(NPopconfirm, { onPositiveClick: () => handleReprocessItem(row) }, {
-              trigger: () => h(NButton, {
-                  size: 'small',
-                  type: 'warning',
-                  ghost: true,
-                  loading: loadingAction.value[row.item_id] && currentRowId.value === row.item_id,
-                  disabled: loadingAction.value[row.item_id] || props.taskStatus?.is_running
-              }, {
-                  icon: () => h(NIcon, { component: ReprocessIcon }),
-                  default: () => '重新处理'
-              }),
-              default: () => `确定要重新处理 "${row.item_name}" 吗？`
-          })
-        );
-      }
+      // ✅ [修改] 将“重新处理”按钮移出条件判断，使其在搜索结果中也显示
+      actionButtons.push(
+        h(NPopconfirm, { onPositiveClick: () => handleReprocessItem(row) }, {
+            trigger: () => h(NButton, {
+                size: 'small',
+                type: 'warning',
+                ghost: true,
+                loading: loadingAction.value[row.item_id] && currentRowId.value === row.item_id,
+                disabled: loadingAction.value[row.item_id] || props.taskStatus?.is_running
+            }, {
+                icon: () => h(NIcon, { component: ReprocessIcon }),
+                default: () => '重新处理'
+            }),
+            default: () => `确定要重新处理 "${row.item_name}" 吗？`
+        })
+      );
 
       actionButtons.push(
         h(NButton, {
@@ -288,6 +285,7 @@ const columns = computed(() => [
         }, { default: () => '手动编辑' })
       );
 
+      // “标记为已处理”按钮仅在待复核列表视图中显示
       if (!isShowingSearchResults.value) {
         actionButtons.push(
           h(NPopconfirm, { onPositiveClick: () => handleMarkAsProcessed(row) }, {
@@ -370,7 +368,12 @@ const searchEmbyLibrary = async () => {
     const response = await axios.get(`/api/search_emby_library`, {
         params: { query: searchQuery.value }
     });
-    tableData.value = response.data.items;
+    // 为搜索结果补充一些待复核列表才有的字段，防止渲染时出错
+    tableData.value = response.data.items.map(item => ({
+        ...item,
+        failed_at: null,
+        reason: 'N/A',
+    }));
     totalItems.value = response.data.total_items;
   } catch (err) {
     handleFetchError(err, "搜索 Emby 媒体库失败。");
@@ -385,7 +388,10 @@ const handleReprocessItem = async (row) => {
   try {
     const response = await axios.post(`/api/actions/reprocess_item/${row.item_id}`);
     message.success(response.data.message || `项目 "${row.item_name}" 的重新处理任务已提交。`);
-    await fetchReviewItems();
+    // 如果是在待复核列表操作，则刷新列表
+    if (!isShowingSearchResults.value) {
+        await fetchReviewItems();
+    }
   } catch (err) {
     console.error("重新处理失败:", err);
     message.error(`操作失败: ${err.response?.data?.error || err.message}`);
