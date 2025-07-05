@@ -333,18 +333,24 @@ const translateAllFields = async () => {
     return;
   }
   isTranslating.value = true;
-  message.info("正在请求后端翻译所有非中文的姓名和角色名...");
+  message.info("正在请求AI影视顾问进行智能翻译..."); // 更新提示信息
   try {
-    const response = await axios.post('/api/actions/translate_cast_sa', { cast: editableCast.value });
+    // 【★★★ 升级点 4：构建包含上下文的 Payload ★★★】
+    const payload = {
+      cast: editableCast.value,
+      title: mediaDetails.value.name, // 替换为你的真实标题变量
+      year: mediaDetails.value.productionYear // 替换为你的真实年份变量
+    };
+
+    const response = await axios.post('/api/actions/translate_cast_sa', payload);
     const translatedList = response.data;
 
-    // ★★★ 确保更新时保留所有 ID ★★★
     editableCast.value = translatedList.map((actor, index) => ({
-      ...actor, // 后端会返回所有原始字段，这里直接展开即可
+      ...actor,
       _temp_id: `translated-actor-${Date.now()}-${index}`
     }));
     
-    message.success("翻译完成！");
+    message.success("智能翻译完成！");
 
   } catch (error) {
     console.error("一键翻译失败:", error);

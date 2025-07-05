@@ -2077,9 +2077,17 @@ def api_translate_cast_sa():
     if not isinstance(current_cast, list):
         return jsonify({"error": "请求体必须包含 'cast' 列表。"}), 400
 
+    # 【★★★ 升级点 1：从请求中获取上下文 ★★★】
+    title = data.get('title')
+    year = data.get('year')
+    
     try:
-        # 调用 core_processor 的新方法
-        translated_list = media_processor_instance.translate_cast_list_for_editing(current_cast)
+        # 【★★★ 升级点 2：调用新的、需要上下文的函数 ★★★】
+        translated_list = media_processor_instance.translate_cast_list_for_editing(
+            cast_list=current_cast,
+            title=title,
+            year=year
+        )
         return jsonify(translated_list)
     except Exception as e:
         logger.error(f"一键翻译演员列表时发生错误: {e}", exc_info=True)
@@ -2472,6 +2480,24 @@ def trigger_rebuild_actors_task():
     except Exception as e:
         logger.error(f"提交重构任务时发生错误: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "提交任务失败，请查看后端日志。"}), 500
+# ✨✨✨ 一键删除TMDb缓存 ✨✨✨
+@app.route('/api/actions/clear_tmdb_caches', methods=['POST'])
+@login_required
+@processor_ready_required
+def api_clear_tmdb_caches():
+    """
+    API端点，用于触发清除TMDb相关缓存的功能。
+    """
+    try:
+        result = media_processor_instance.clear_tmdb_caches()
+        if result.get("success"):
+            return jsonify(result), 200
+        else:
+            # 如果部分失败，返回一个服务器错误码，让前端知道事情不妙
+            return jsonify(result), 500
+    except Exception as e:
+        logger.error(f"调用清除TMDb缓存功能时发生意外错误: {e}", exc_info=True)
+        return jsonify({"success": False, "message": "服务器在执行清除操作时发生未知错误。"}), 500
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})

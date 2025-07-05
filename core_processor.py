@@ -3,7 +3,7 @@
 import os
 import json
 import sqlite3
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, shutil
 import threading
 import time
 import requests
@@ -279,11 +279,11 @@ class MediaProcessor:
             logger.error(f"通过 IMDb ID '{imdb_id}' 查询 person_identity_map 时出错: {e}")
             return None
     # --- 核心处理流程 ---
-    def _process_cast_list_from_local(self, local_cast_list: List[Dict[str, Any]], emby_item_info: Dict[str, Any], cursor: sqlite3.Cursor, tmdb_api_key: Optional[str], stop_event: Optional[threading.Event]) -> List[Dict[str, Any]]:
+    def _process_cast_list_from_local(self, local_cast_list: List[Dict[str, Any]], item_details_from_emby: Dict[str, Any], cursor: sqlite3.Cursor, tmdb_api_key: Optional[str], stop_event: Optional[threading.Event]) -> List[Dict[str, Any]]:
         """
         【V10 - 批量翻译优化版】使用本地缓存或在线API获取豆瓣演员，再进行匹配和处理。
         """
-        douban_candidates_raw = self._get_douban_cast_with_local_cache(emby_item_info)
+        douban_candidates_raw = self._get_douban_cast_with_local_cache(item_details_from_emby)
         douban_candidates = actor_utils.format_douban_cast(douban_candidates_raw)
         
         # 这从根本上杜绝了后续所有因“二次匹配”导致的数据覆盖和排序问题。
@@ -567,7 +567,17 @@ class MediaProcessor:
             if texts_to_translate:
                 logger.info(f"共收集到 {len(texts_to_translate)} 个独立词条需要通过AI翻译。")
                 try:
-                    translation_map_from_api = self.ai_translator.batch_translate(list(texts_to_translate))
+                    # 【★★★ 升级调用方式 ★★★】
+                    # 1. 从 item_details_from_emby 中获取上下文信息
+                    item_title = item_details_from_emby.get("Name")
+                    item_year = item_details_from_emby.get("ProductionYear")
+
+                    # 2. 在调用 batch_translate 时传入上下文
+                    translation_map_from_api = self.ai_translator.batch_translate(
+                        texts=list(texts_to_translate),
+                        title=item_title,
+                        year=item_year
+                    )
                     
                     if translation_map_from_api:
                         logger.info(f"AI批量翻译成功，返回 {len(translation_map_from_api)} 个结果。")
@@ -638,17 +648,20 @@ class MediaProcessor:
         return cast_to_process
         
     # ✨✨✨API中文化演员表✨✨✨
-    def _process_api_track_person_names_only(self, item_details, cursor: sqlite3.Cursor):
+    def _process_api_track_person_names_only(self, 
+                                         people_list: List[Dict[str, Any]], 
+                                         cursor: sqlite3.Cursor, 
+                                         item_details_from_emby: Dict[str, Any]):
         """
         【API轨道 - 批量翻译重构版】
         此函数负责将指定媒体项目中演员的英文名批量翻译成中文，并更新回Emby。
         """
-        item_id = item_details.get("Id")
-        item_name_for_log = item_details.get("Name", f"未知媒体(ID:{item_id})")
+        item_id = item_details_from_emby.get("Id")
+        item_name_for_log = item_details_from_emby.get("Name", f"未知媒体(ID:{item_id})")
         logger.info(f"前置翻译开始为 '{item_name_for_log}' 进行演员名批量中文化...")
 
         # 1. 从 Emby 获取原始演员列表
-        original_cast = item_details.get("People", [])
+        original_cast = item_details_from_emby.get("People", [])
         if not original_cast:
             logger.info("前置翻译：该媒体在Emby中没有演员信息，跳过。")
             return
@@ -685,11 +698,20 @@ class MediaProcessor:
 
                 # 3. 如果有需要翻译的文本，则调用批量API
                 if texts_to_translate:
-                    logger.info(f"前置翻译：为 '{item_name_for_log}' 收集到 {len(texts_to_translate)} 个演员名需要通过AI翻译。")
+                    logger.info(f"前置翻译：发现 {len(texts_to_translate)} 个需要翻译的演员名。")
                     try:
-                        # 调用底层的批量翻译方法
-                        translation_map = self.ai_translator.batch_translate(list(texts_to_translate))
-                        
+                        # 【★★★ 升级调用方式 ★★★】
+                        # 1. 从 item_details_from_emby 中获取上下文信息
+                        item_title = item_details_from_emby.get("Name")
+                        item_year = item_details_from_emby.get("ProductionYear")
+
+                        # 2. 在调用 batch_translate 时传入上下文
+                        translation_map = self.ai_translator.batch_translate(
+                            texts=list(texts_to_translate),
+                            title=item_title,
+                            year=item_year
+                        )
+
                         if translation_map:
                             logger.info(f"AI批量翻译成功，返回 {len(translation_map)} 个结果。")
                             
@@ -762,7 +784,12 @@ class MediaProcessor:
                 cursor = conn.cursor()
                 # ★★★ 轨道一：API 轨道 (仅中文化演员名) ★★★
                 if not force_fetch_from_tmdb:
-                    self._process_api_track_person_names_only(item_details_from_emby, cursor)
+                    # 【★★★ 修复点 1：传递上下文 ★★★】
+                    self._process_api_track_person_names_only(
+                        people_list=item_details_from_emby.get("People", []), 
+                        cursor=cursor,
+                        item_details_from_emby=item_details_from_emby
+                    )
                 
                 if self.is_stop_requested(): raise InterruptedError("任务被中止")
 
@@ -1118,50 +1145,50 @@ class MediaProcessor:
         if not self.is_stop_requested() and update_status_callback:
             update_status_callback(100, "全量处理完成")
     # --- 一键翻译 ---
-    def translate_cast_list_for_editing(self, cast_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def translate_cast_list_for_editing(self, 
+                                    cast_list: List[Dict[str, Any]], 
+                                    title: Optional[str] = None, 
+                                    year: Optional[int] = None) -> List[Dict[str, Any]]:
         """
-        【新 - 批量优化版】为手动编辑页面提供的一键翻译功能。
+        【V11 - 上下文感知版】为手动编辑页面提供的一键翻译功能。
         """
         if not cast_list:
             return []
             
-        logger.info(f"手动编辑-翻译：开始批量处理 {len(cast_list)} 位演员的姓名和角色。")
+        context_log = f" (上下文: {title} {year})" if title else ""
+        logger.info(f"手动编辑-翻译：开始批量处理 {len(cast_list)} 位演员的姓名和角色{context_log}。")
+        
         translated_cast = [dict(actor) for actor in cast_list]
         
         # --- 批量翻译逻辑 ---
         ai_translation_succeeded = False
         
-        # 优先尝试AI批量翻译
         if self.ai_translator and self.config.get("ai_translation_enabled", False):
             texts_to_translate = set()
-            
-            # 1. 收集所有需要翻译的文本
             for actor in translated_cast:
                 for field_key in ['name', 'role']:
                     text = actor.get(field_key, '').strip()
                     if text and not utils.contains_chinese(text):
                         texts_to_translate.add(text)
             
-            # 2. 如果有需要翻译的文本，则调用批量API
             if texts_to_translate:
                 logger.info(f"手动编辑-翻译：收集到 {len(texts_to_translate)} 个词条需要AI翻译。")
                 try:
-                    translation_map = self.ai_translator.batch_translate(list(texts_to_translate))
+                    # 【★★★ 升级点 3：将上下文传递给AI顾问 ★★★】
+                    translation_map = self.ai_translator.batch_translate(
+                        texts=list(texts_to_translate),
+                        title=title,
+                        year=year
+                    )
                     if translation_map:
-                        logger.info(f"手动编辑-翻译：AI批量翻译成功，返回 {len(translation_map)} 个结果。")
-                        
-                        # 3. 回填翻译结果
+                        # ... (后续的回填逻辑保持不变) ...
                         for i, actor in enumerate(translated_cast):
-                            # 更新演员名
                             original_name = actor.get('name', '').strip()
                             if original_name in translation_map:
                                 translated_cast[i]['name'] = translation_map[original_name]
-                            
-                            # 更新角色名
                             original_role = actor.get('role', '').strip()
                             if original_role in translation_map:
                                 translated_cast[i]['role'] = translation_map[original_role]
-                        
                         ai_translation_succeeded = True
                     else:
                         logger.warning("手动编辑-翻译：AI批量翻译未返回结果，将降级。")
@@ -1720,6 +1747,65 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"在线获取TMDb数据时发生错误: {e}", exc_info=True)
             return None
+    # --- 一键删除本地TMDB缓存 ---
+    def clear_tmdb_caches(self) -> Dict[str, Any]:
+        """
+        【新功能】一键清除所有TMDb相关的缓存和覆盖目录。
+        这是一个高风险操作，会强制所有项目在下次处理时重新从在线获取。
+        """
+        if not self.local_data_path:
+            msg = "未配置本地数据路径 (local_data_path)，无法执行清除操作。"
+            logger.error(msg)
+            return {"success": False, "message": msg, "details": {}}
+
+        # 定义需要被清空的目标目录
+        # 我们只清空这四个目录的 *内容*，而不删除目录本身
+        target_subdirs = {
+            "cache": ["tmdb-movies2", "tmdb-tv"],
+            "override": ["tmdb-movies2", "tmdb-tv"]
+        }
+
+        report = {"success": True, "message": "TMDb缓存清除成功！", "details": {}}
+        base_path = self.local_data_path
+        
+        logger.warning("!!! 开始执行高风险操作：清除TMDb缓存 !!!")
+
+        for dir_type, subdirs in target_subdirs.items():
+            report["details"][dir_type] = []
+            for subdir_name in subdirs:
+                full_path = os.path.join(base_path, dir_type, subdir_name)
+                
+                if os.path.isdir(full_path):
+                    try:
+                        # 遍历目录下的所有文件和子目录并删除
+                        for item in os.listdir(full_path):
+                            item_path = os.path.join(full_path, item)
+                            if os.path.isdir(item_path):
+                                shutil.rmtree(item_path) # 递归删除子目录
+                            else:
+                                os.remove(item_path) # 删除文件
+                        
+                        msg = f"成功清空目录: {full_path}"
+                        logger.info(msg)
+                        report["details"][dir_type].append(msg)
+
+                    except Exception as e:
+                        msg = f"清空目录 {full_path} 时发生错误: {e}"
+                        logger.error(msg, exc_info=True)
+                        report["details"][dir_type].append(msg)
+                        report["success"] = False # 标记整个操作为失败
+                        report["message"] = "清除过程中发生错误，部分缓存可能未被清除。"
+                else:
+                    msg = f"目录不存在，跳过: {full_path}"
+                    logger.info(msg)
+                    report["details"][dir_type].append(msg)
+        
+        if report["success"]:
+            logger.info("✅ 所有指定的TMDb缓存目录已成功清空。")
+        else:
+            logger.error("❌ 清除TMDb缓存操作未完全成功，请检查日志。")
+            
+        return report
     def close(self):
         if self.douban_api: self.douban_api.close()
         logger.debug("MediaProcessor closed.")
