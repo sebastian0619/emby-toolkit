@@ -600,14 +600,26 @@ class MediaProcessor:
 
                 # 回填所有翻译结果
                 if translation_cache:
+                    logger.info("------ AI翻译工作报告 ------") # ★★★ 新增：一个清晰的标题 ★★★
                     for actor in cast_to_process:
+                        # 处理演员名
                         original_name = actor.get('name')
                         if original_name in translation_cache:
-                            actor['name'] = translation_cache[original_name]
+                            translated_name = translation_cache[original_name]
+                            if original_name != translated_name:
+                                logger.info(f"  演员名: '{original_name}' -> '{translated_name}'")
+                            actor['name'] = translated_name
                         
+                        # 处理角色名
                         original_character = actor.get('character')
                         if original_character in translation_cache:
-                            actor['character'] = translation_cache[original_character]
+                            translated_character = translation_cache[original_character]
+                            if original_character != translated_character:
+                                # 为了对齐，我们可以找到这个角色对应的演员名
+                                actor_name_for_log = actor.get('name', '未知演员')
+                                logger.info(f"  角色名 ({actor_name_for_log}): '{original_character}' -> '{translated_character}'")
+                            actor['character'] = translated_character
+                    logger.info("--------------------------") # ★★★ 新增：一个清晰的结尾 ★★★
             
             # ★★★ 2. except 块与 try 对齐 ★★★
             except Exception as e:
@@ -730,11 +742,16 @@ class MediaProcessor:
                     ai_translation_succeeded = True
 
             if translation_cache:
+                logger.info("--- 演员翻译结果 ---") # ★★★ 新增：一个清晰的标题 ★★★
                 for person in people_list:
                     original_name = person.get("Name")
                     if original_name in translation_cache:
-                        person["Name"] = translation_cache[original_name]
-                logger.info("前置翻译为演员列表回填翻译结果完成。")
+                        translated_name = translation_cache[original_name]
+                        # ★★★ 新增：只有当翻译结果和原文不同时才打印 ★★★
+                        if original_name != translated_name:
+                            logger.info(f"  演员名: '{original_name}' -> '{translated_name}'")
+                        person["Name"] = translated_name
+                logger.info("--------------------") # ★★★ 新增：一个清晰的结尾 ★★★
 
         # ★★★ 4. except 块与 try 对齐，捕获所有可能的异常 ★★★
         except Exception as e:

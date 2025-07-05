@@ -1,9 +1,74 @@
 # ai_translator.py
 import json
+import re
 from typing import Optional, Dict, Any, List
 import logging
 
 logger = logging.getLogger(__name__)
+def _safe_json_loads(text: str) -> Optional[Dict]:
+    """
+    一个更安全的 JSON 解析函数，能处理一些常见的AI返回错误。
+    """
+    if not text:
+        return None
+    
+    try:
+        # 1. 尝试直接解析
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        logger.warning(f"JSON直接解析失败: {e}。将尝试进行智能修复...")
+        logger.debug(f"  -> 待修复的原始文本: ```\n{text}\n```")
+
+        # 2. 尝试从 markdown 代码块中提取 JSON
+        # AI 经常会返回 ```json ... ``` 这样的格式
+        match = re.search(r'```(json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+        if match:
+            json_str = match.group(2)
+            logger.info("成功从Markdown代码块中提取出JSON内容，正在重新解析...")
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError as inner_e:
+                logger.error(f"提取出的JSON仍然解析失败: {inner_e}")
+                # 即使提取失败，我们依然可以尝试最后的修复
+                text = json_str # 用提取出的内容进行后续修复
+
+        # 3. 尝试修复未闭合的 JSON
+        # 找到最后一个 " 或 }，然后截断并尝试补全
+        last_quote = text.rfind('"')
+        last_brace = text.rfind('}')
+        
+        if last_brace > last_quote:
+            # 如果 } 是最后一个关键字符，说明结构可能没问题，只是被截断了
+            # 我们直接截取到最后一个 }
+            fixed_text = text[:last_brace + 1]
+        elif last_quote != -1:
+            # 如果 " 是最后一个，说明一个字符串没闭合
+            # 我们找到这个字符串开始的地方，然后把它整个删掉
+            prev_quote = text.rfind('"', 0, last_quote)
+            if prev_quote != -1:
+                # 找到 "key": "value... 这种模式，把它删掉
+                comma_before = text.rfind(',', 0, prev_quote)
+                if comma_before != -1:
+                    fixed_text = text[:comma_before] + "\n}" # 删掉最后半个键值对，并补上结尾
+                else: # 如果是第一个键值对
+                    fixed_text = "{}"
+            else:
+                fixed_text = text # 无法修复
+        else:
+            fixed_text = text
+
+        if fixed_text != text:
+            logger.info("尝试进行截断和补全修复...")
+            try:
+                # 再试一次！
+                result = json.loads(fixed_text)
+                logger.info("JSON 修复成功！返回部分解析结果。")
+                return result
+            except json.JSONDecodeError:
+                logger.error("最终修复失败，放弃解析。")
+                return None
+        
+        return None
 # --- 动态导入所有需要的 SDK ---
 try:
     from openai import OpenAI, APIError, APITimeoutError
@@ -160,7 +225,7 @@ class AITranslator:
                 timeout=300
             )
             response_content = chat_completion.choices[0].message.content
-            return json.loads(response_content)
+            return _safe_json_loads(response_content) or {} # 如果抢救失败，返回一个空字典
         except Exception as e:
             logger.error(f"[翻译模式-OpenAI] 翻译时发生错误: {e}", exc_info=True)
             return {}
@@ -182,7 +247,7 @@ class AITranslator:
                 timeout=300
             )
             response_content = chat_completion.choices[0].message.content
-            return json.loads(response_content)
+            return _safe_json_loads(response_content) or {} # 如果抢救失败，返回一个空字典
         except Exception as e:
             logger.error(f"[顾问模式-OpenAI] 翻译时发生错误: {e}", exc_info=True)
             return {}
@@ -203,7 +268,7 @@ class AITranslator:
                 response_format={"type": "json_object"}
             )
             response_content = response.choices[0].message.content
-            return json.loads(response_content)
+            return _safe_json_loads(response_content) or {} # 如果抢救失败，返回一个空字典
         except Exception as e:
             logger.error(f"[翻译模式-智谱AI] 翻译时发生错误: {e}", exc_info=True)
             return {}
@@ -224,7 +289,7 @@ class AITranslator:
                 response_format={"type": "json_object"}
             )
             response_content = response.choices[0].message.content
-            return json.loads(response_content)
+            return _safe_json_loads(response_content) or {} # 如果抢救失败，返回一个空字典
         except Exception as e:
             logger.error(f"[顾问模式-智谱AI] 翻译时发生错误: {e}", exc_info=True)
             return {}
