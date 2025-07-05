@@ -3,7 +3,8 @@
 import os
 import json
 import sqlite3
-from typing import Dict, List, Optional, Any, Tuple, shutil
+from typing import Dict, List, Optional, Any, Tuple
+import shutil
 import threading
 import time
 import requests
