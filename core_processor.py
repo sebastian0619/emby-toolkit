@@ -648,12 +648,12 @@ class MediaProcessor:
         """
         item_id = item_details_from_emby.get("Id")
         item_name_for_log = item_details_from_emby.get("Name", f"未知媒体(ID:{item_id})")
-        logger.info(f"【API轨道-威力加强版】开始为 '{item_name_for_log}' 进行演员名批量中文化...")
+        logger.info(f"【演员专用翻译】开始为 '{item_name_for_log}' 进行演员名批量中文化...")
 
         # 1. 从传入的 item_details 中获取原始演员列表
         original_cast = item_details_from_emby.get("People", [])
         if not original_cast:
-            logger.info("【API轨道】该媒体在Emby中没有演员信息，跳过。")
+            logger.info("【演员专用翻译】该媒体在Emby中没有演员信息，跳过。")
             return
 
         # 2. 收集所有需要翻译的英文名
@@ -670,7 +670,7 @@ class MediaProcessor:
                 name_to_person_map[name] = person
 
         if not names_to_translate:
-            logger.info("【API轨道】所有演员名均无需翻译。")
+            logger.info("【演员专用翻译】所有演员名均无需翻译。")
             return
 
         # 3. 执行批量翻译 (这里借用代码2的逻辑)
@@ -678,7 +678,7 @@ class MediaProcessor:
         try:
             # 假设 self.ai_translator.batch_translate 是您的高效批量翻译函数
             # 它可以是任何实现，比如查数据库缓存或调用AI
-            logger.info(f"【API轨道】准备批量翻译 {len(names_to_translate)} 个演员名...")
+            logger.info(f"【演员专用翻译】准备批量翻译 {len(names_to_translate)} 个演员名...")
             translation_map = self.ai_translator.batch_translate(
                 texts=list(names_to_translate),
                 # 可以传递上下文以提高准确率
@@ -687,18 +687,18 @@ class MediaProcessor:
                 year=item_details_from_emby.get("ProductionYear")
             )
             if not translation_map:
-                logger.warning("【API轨道】批量翻译未能返回任何结果。")
+                logger.warning("【演员专用翻译】批量翻译未能返回任何结果。")
                 return
 
         except Exception as e:
-            logger.error(f"【API轨道】在为 '{item_name_for_log}' 批量翻译演员名时发生错误: {e}", exc_info=True)
+            logger.error(f"【演员专用翻译】在为 '{item_name_for_log}' 批量翻译演员名时发生错误: {e}", exc_info=True)
             return # 翻译步骤失败，直接中止
 
         # 4. 遍历翻译结果，逐个安全地更新回Emby
         update_count = 0
         for original_name, translated_name in translation_map.items():
             if self.is_stop_requested():
-                logger.info("【API轨道】任务被中止。")
+                logger.info("【演员专用翻译】任务被中止。")
                 break
 
             # 如果翻译结果为空或与原文相同，则跳过
@@ -710,7 +710,7 @@ class MediaProcessor:
             if person_to_update:
                 emby_person_id = person_to_update.get("Id")
                 
-                logger.info(f"  【API轨道】准备更新: '{original_name}' -> '{translated_name}' (Emby Person ID: {emby_person_id})")
+                logger.info(f"  【演员专用翻译】准备更新: '{original_name}' -> '{translated_name}' (Emby Person ID: {emby_person_id})")
                 
                 # ★★★ 核心：仍然使用您原有的、安全的单点更新函数 ★★★
                 emby_handler.update_person_details(
@@ -723,7 +723,7 @@ class MediaProcessor:
                 update_count += 1
                 time.sleep(0.2) # 保留延迟，避免API请求过快
 
-        logger.info(f"【API轨道】为 '{item_name_for_log}' 的演员中文化处理完成，共更新了 {update_count} 个演员名。")
+        logger.info(f"【演员专用翻译】为 '{item_name_for_log}' 的演员中文化处理完成，共更新了 {update_count} 个演员名。")
 
     def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool, should_process_episodes_this_run: bool, force_fetch_from_tmdb: bool):
         """
