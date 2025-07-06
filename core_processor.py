@@ -872,63 +872,85 @@ class MediaProcessor:
                     raise e_write
 
                 # 【处理分集】
-                if item_type == "Series" and should_process_episodes_this_run:
-                    logger.info(f"{log_prefix} 开始为 '{item_name_for_log}' 的所有分集创建/覆盖元数据...")
-                    
-                    # 1. 从 Emby 获取真实的季结构，这是决定我们要创建哪些文件的唯一依据。
-                    children = emby_handler.get_series_children(
-                        item_id, 
-                        self.emby_url, 
-                        self.emby_api_key, 
-                        self.emby_user_id, 
-                        series_name_for_log=item_name_for_log
-                    ) or []
-                    
-                    if not children:
-                        logger.warning(f"未能从Emby获取到 '{item_name_for_log}' 的任何季/集信息，跳过分集处理。")
-                    else:
-                        season_files_to_process = set()
-                        
-                        # 2. 根据Emby的子项，构建出我们需要处理的季文件名列表。
-                        for child in children:
-                            season_number = None
-                            if child.get("Type") == "Season":
-                                season_number = child.get("IndexNumber")
-                            elif child.get("Type") == "Episode":
-                                season_number = child.get("ParentIndexNumber")
-                            
-                            if season_number is not None:
-                                season_files_to_process.add(f"season-{season_number}.json")
-                        
-                        if not season_files_to_process:
-                             logger.info("在Emby子项中未找到有效的季信息，不处理分集文件。")
-                        else:
-                            logger.info(f"根据Emby结构，将为 {len(season_files_to_process)} 个季文件创建/覆盖元数据。")
+                if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
+                    logger.info(f"{log_prefix} [逐集JSON模式] 开始为 '{item_name_for_log}' 的所有分集生成覆盖元数据...")
 
-                            # 3. 为每一个需要处理的季文件，生成一个最小化的、但包含完美演员表的覆盖JSON。
-                            for filename in season_files_to_process:
-                                # 我们不关心任何原始文件是否存在，我们只管创建/覆盖。
-                                override_content = {
-                                    "credits": {
-                                        "cast": final_cast_perfect # <-- 使用我们流程中生成的、最完美的演员表
-                                    }
-                                    # 注意：这里只包含了演员表。神医插件在读取时，
-                                    # 会将这个文件的内容与从TMDb获取的其他分集信息进行合并。
-                                    # 这确保了我们只覆盖我们想覆盖的部分。
-                                }
-                                
-                                override_child_path = os.path.join(base_override_dir, filename)
-                                try:
-                                    # 使用原子写入，确保文件写入的完整性
-                                    temp_child_path = f"{override_child_path}.{random.randint(1000, 9999)}.tmp"
-                                    with open(temp_child_path, 'w', encoding='utf-8') as f:
-                                        json.dump(override_content, f, ensure_ascii=False, indent=4)
-                                    os.replace(temp_child_path, override_child_path)
-                                    logger.debug(f"成功创建/覆盖分集元数据: {filename}")
-                                except Exception as e:
-                                    logger.error(f"写入分集覆盖JSON失败: {override_child_path}, {e}")
-                                    if os.path.exists(temp_child_path): 
-                                        os.remove(temp_child_path)
+                    # --- 步骤1: 确定需要处理的所有分集 (季号, 集号) 的列表 ---
+                    episodes_to_process = set()
+                    
+                    if not should_fetch_online:
+                        # 【本地模式】: 主要依据是扫描 cache 目录
+                        logger.debug(f"{log_prefix} 正在扫描本地缓存目录以确定分集列表...")
+                        if os.path.exists(base_cache_dir):
+                            for filename in os.listdir(base_cache_dir):
+                                if filename.startswith("season-") and "-episode-" in filename and filename.endswith(".json"):
+                                    try:
+                                        parts = filename.split('.')[0].split('-')
+                                        season_num = int(parts[1])
+                                        episode_num = int(parts[3])
+                                        episodes_to_process.add((season_num, episode_num))
+                                    except (IndexError, ValueError):
+                                        continue
+                    else:
+                        # 【在线模式】: 必须主动从TMDb获取季和集的信息
+                        logger.debug(f"{log_prefix} 正在从TMDb在线获取剧集结构以确定分集列表...")
+                        if base_json_data_original and base_json_data_original.get("seasons"):
+                            for season_summary in base_json_data_original.get("seasons", []):
+                                season_num = season_summary.get("season_number")
+                                # TMDb的季详情通常包含该季所有集的列表
+                                season_details = tmdb_handler.get_season_details_tmdb(
+                                    tv_id=tmdb_id, season_number=season_num, api_key=self.tmdb_api_key
+                                )
+                                if season_details and season_details.get("episodes"):
+                                    for episode_summary in season_details.get("episodes", []):
+                                        episode_num = episode_summary.get("episode_number")
+                                        if season_num is not None and episode_num is not None:
+                                            episodes_to_process.add((season_num, episode_num))
+
+                    if not episodes_to_process:
+                        logger.warning(f"未能确定 '{item_name_for_log}' 的任何分集文件，跳过处理。")
+                    else:
+                        logger.info(f"将为 {len(episodes_to_process)} 个分集文件生成覆盖元数据...")
+
+                        # --- 步骤2: 遍历所有确定的分集并执行修改 ---
+                        for season_num, episode_num in sorted(list(episodes_to_process)):
+                            filename = f"season-{season_num}-episode-{episode_num}.json"
+                            child_json_original = None
+                            
+                            # --- 步骤3: 获取原始分集JSON ---
+                            local_child_path = os.path.join(base_cache_dir, filename)
+                            # 优先从本地缓存读取，即使是在线模式（可能之前缓存过）
+                            if os.path.exists(local_child_path):
+                                child_json_original = _read_local_json(local_child_path)
+                            elif self.tmdb_api_key:
+                                # 如果本地没有，才在线获取
+                                child_json_original = tmdb_handler.get_episode_details_tmdb(
+                                    tv_id=tmdb_id, season_number=season_num, episode_number=episode_num,
+                                    api_key=self.tmdb_api_key,
+                                    append_to_response="credits,guest_stars",
+                                    item_name=item_name_for_log
+                                )
+                            
+                            if not child_json_original:
+                                logger.warning(f"无法获取 S{season_num:02d}E{episode_num:02d} 的基础数据，跳过。")
+                                continue
+
+                            # --- 步骤4: 在副本上替换演员表 ---
+                            child_json_for_override = copy.deepcopy(child_json_original)
+                            child_json_for_override.setdefault("credits", {})["cast"] = final_cast_perfect
+                            child_json_for_override["guest_stars"] = []
+                            
+                            # --- 步骤5: 写入覆盖文件 ---
+                            override_child_path = os.path.join(base_override_dir, filename)
+                            try:
+                                temp_child_path = f"{override_child_path}.{random.randint(1000, 9999)}.tmp"
+                                with open(temp_child_path, 'w', encoding='utf-8') as f:
+                                    json.dump(child_json_for_override, f, ensure_ascii=False, indent=4)
+                                os.replace(temp_child_path, override_child_path)
+                                logger.debug(f"成功为 {filename} 生成了覆盖文件。")
+                            except Exception as e:
+                                logger.error(f"写入分集JSON失败: {override_child_path}, {e}")
+                                if os.path.exists(temp_child_path): os.remove(temp_child_path)
 
 
                 # 【同步图片】

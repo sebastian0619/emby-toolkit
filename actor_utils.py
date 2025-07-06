@@ -143,6 +143,28 @@ class ActorDBManager:
 
         # 情况 B.1: 找到了一个可以安全合并的同名记录 (通常是只有名字没有ID的占位符)
         if potential_merge_target:
+            # ▼▼▼【安全阀：在更新前进行反向检查】▼▼▼
+            if provided_ids:
+                # 检查这些即将被更新的ID，是否已经被数据库中【任何其他】记录占用了
+                conflict_check_parts = [f"{col} = ?" for col in provided_ids.keys()]
+                conflict_check_values = list(provided_ids.values())
+                
+                # 查找的范围是除了我们正要更新的目标之外的所有记录
+                sql_conflict_check = f"SELECT map_id FROM person_identity_map WHERE ({' OR '.join(conflict_check_parts)}) AND map_id != ?"
+                cursor.execute(sql_conflict_check, tuple(conflict_check_values + [potential_merge_target['map_id']]))
+                
+                conflicting_record = cursor.fetchone()
+                if conflicting_record:
+                    # 找到了冲突！这意味着同名但不同人。
+                    # 此时，我们必须放弃合并，让流程走到最后的“创建新人”逻辑。
+                    logger.warning(
+                        f"检测到同名不同人：尝试为'{data_to_process['primary_name']}' (目标 map_id: {potential_merge_target['map_id']}) 更新ID时，"
+                        f"发现ID {provided_ids} 已被另一条记录 (map_id: {conflicting_record['map_id']}) 占用。将创建新记录。"
+                    )
+                    # 将 potential_merge_target 设为 None，以跳过更新，进入创建流程
+                    potential_merge_target = None 
+            # ▲▲▲【安全阀结束】▲▲▲
+        if potential_merge_target:
             logger.debug(f"找到同名记录 '{data_to_process['primary_name']}' (Map ID: {potential_merge_target['map_id']})，且无ID冲突，将更新信息。")
             # 将新ID更新到这个记录上
             update_cols = list(provided_ids.keys())
