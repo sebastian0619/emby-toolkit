@@ -640,97 +640,90 @@ class MediaProcessor:
         return cast_to_process
         
     # ✨✨✨API中文化演员表✨✨✨
-    def _process_api_track_person_names_only(self, 
-                                         people_list: List[Dict[str, Any]], 
-                                         cursor: sqlite3.Cursor, 
-                                         item_details_from_emby: Dict[str, Any]):
+    def _process_api_track_person_names_only(self, item_details_from_emby: Dict[str, Any]):
         """
-        【V2 - 双核AI版】仅中文化演员名，作为前置处理轨道。
-        根据配置，智能选择使用带缓存的翻译模式，或不带缓存的顾问模式。
+        【API轨道 - 威力加强版】
+        此函数在您原版代码基础上进行优化，目标不变：将演员的英文名翻译成中文并更新回Emby。
+        它结合了批量处理的效率和您原版代码的安全性与完整性。
         """
-        if not (self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False)):
-            logger.debug("前置翻译轨道：AI翻译未启用，跳过。")
+        item_id = item_details_from_emby.get("Id")
+        item_name_for_log = item_details_from_emby.get("Name", f"未知媒体(ID:{item_id})")
+        logger.info(f"【API轨道-威力加强版】开始为 '{item_name_for_log}' 进行演员名批量中文化...")
+
+        # 1. 从传入的 item_details 中获取原始演员列表
+        original_cast = item_details_from_emby.get("People", [])
+        if not original_cast:
+            logger.info("【API轨道】该媒体在Emby中没有演员信息，跳过。")
             return
 
-        logger.info(f"前置翻译开始为 '{item_details_from_emby.get('Name')}' 进行演员名批量中文化...")
-
-        # 1. 收集所有需要翻译的演员名
-        texts_to_translate_collection = set()
-        for person in people_list:
+        # 2. 收集所有需要翻译的英文名
+        names_to_translate = set()
+        # 使用一个字典来快速通过名字找到对应的Emby Person ID
+        name_to_person_map = {} 
+        
+        for person in original_cast:
             name = person.get("Name")
-            if name and not utils.contains_chinese(name):
-                texts_to_translate_collection.add(name)
+            person_id = person.get("Id")
+            if name and person_id and not utils.contains_chinese(name):
+                names_to_translate.add(name)
+                # 如果有重名演员，这里会以后面的为准，但通常Emby Person ID是唯一的
+                name_to_person_map[name] = person
 
-        if not texts_to_translate_collection:
-            logger.info("前置翻译：所有演员名均无需翻译（已是中文）。")
+        if not names_to_translate:
+            logger.info("【API轨道】所有演员名均无需翻译。")
             return
 
+        # 3. 执行批量翻译 (这里借用代码2的逻辑)
+        translation_map = {}
         try:
-            # 2. 收集所有需要翻译的演员名
-            texts_to_collect = set()
-            for person in people_list:
-                name = person.get("Name")
-                if name and not utils.contains_chinese(name):
-                    texts_to_collect.add(name)
+            # 假设 self.ai_translator.batch_translate 是您的高效批量翻译函数
+            # 它可以是任何实现，比如查数据库缓存或调用AI
+            logger.info(f"【API轨道】准备批量翻译 {len(names_to_translate)} 个演员名...")
+            translation_map = self.ai_translator.batch_translate(
+                texts=list(names_to_translate),
+                # 可以传递上下文以提高准确率
+                mode="fast", # 或者 "accurate"
+                title=item_name_for_log,
+                year=item_details_from_emby.get("ProductionYear")
+            )
+            if not translation_map:
+                logger.warning("【API轨道】批量翻译未能返回任何结果。")
+                return
 
-            if not texts_to_collect:
-                logger.info("前置翻译：所有演员名均无需翻译（已是中文）。")
-                return # 正常结束，不需要进入后续逻辑
-
-            # 3. 执行我们之前讨论过的“双核翻译逻辑”
-            translation_cache = {}
-            ai_translation_succeeded = False
-            
-            translation_mode = self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_MODE, "fast")
-            
-            texts_to_send_to_api = set()
-
-            if translation_mode == 'fast':
-                for text in texts_to_collect:
-                    cached_entry = DoubanApi._get_translation_from_db(text, cursor=cursor)
-                    if cached_entry:
-                        translation_cache[text] = cached_entry.get("translated_text")
-                    else:
-                        texts_to_send_to_api.add(text)
-            else:
-                texts_to_send_to_api = texts_to_collect
-
-            if texts_to_send_to_api:
-                item_title = item_details_from_emby.get("Name")
-                item_year = item_details_from_emby.get("ProductionYear")
-                
-                translation_map_from_api = self.ai_translator.batch_translate(
-                    texts=list(texts_to_send_to_api),
-                    mode=translation_mode,
-                    title=item_title,
-                    year=item_year
-                )
-                
-                if translation_map_from_api:
-                    translation_cache.update(translation_map_from_api)
-                    if translation_mode == 'fast':
-                        for original, translated in translation_map_from_api.items():
-                            DoubanApi._save_translation_to_db(original, translated, self.ai_translator.provider, cursor=cursor)
-                    ai_translation_succeeded = True
-
-            if translation_cache:
-                logger.info("--- 演员翻译结果 ---") # ★★★ 新增：一个清晰的标题 ★★★
-                for person in people_list:
-                    original_name = person.get("Name")
-                    if original_name in translation_cache:
-                        translated_name = translation_cache[original_name]
-                        # ★★★ 新增：只有当翻译结果和原文不同时才打印 ★★★
-                        if original_name != translated_name:
-                            logger.info(f"  演员名: '{original_name}' -> '{translated_name}'")
-                        person["Name"] = translated_name
-                logger.info("--------------------") # ★★★ 新增：一个清晰的结尾 ★★★
-
-        # ★★★ 4. except 块与 try 对齐，捕获所有可能的异常 ★★★
         except Exception as e:
-            logger.error(f"前置翻译轨道在处理 '{item_details_from_emby.get('Name')}' 时发生严重错误: {e}", exc_info=True)
+            logger.error(f"【API轨道】在为 '{item_name_for_log}' 批量翻译演员名时发生错误: {e}", exc_info=True)
+            return # 翻译步骤失败，直接中止
 
-        # 无论成功还是失败，都打印结束日志
-        logger.info(f"前置翻译为 '{item_details_from_emby.get('Name')}' 的演员中文化处理完成。")
+        # 4. 遍历翻译结果，逐个安全地更新回Emby
+        update_count = 0
+        for original_name, translated_name in translation_map.items():
+            if self.is_stop_requested():
+                logger.info("【API轨道】任务被中止。")
+                break
+
+            # 如果翻译结果为空或与原文相同，则跳过
+            if not translated_name or original_name == translated_name:
+                continue
+
+            # 从我们之前构建的映射中找到对应的person信息
+            person_to_update = name_to_person_map.get(original_name)
+            if person_to_update:
+                emby_person_id = person_to_update.get("Id")
+                
+                logger.info(f"  【API轨道】准备更新: '{original_name}' -> '{translated_name}' (Emby Person ID: {emby_person_id})")
+                
+                # ★★★ 核心：仍然使用您原有的、安全的单点更新函数 ★★★
+                emby_handler.update_person_details(
+                    person_id=emby_person_id,
+                    new_data={"Name": translated_name}, # 只传递Name，确保安全
+                    emby_server_url=self.emby_url,
+                    emby_api_key=self.emby_api_key,
+                    user_id=self.emby_user_id
+                )
+                update_count += 1
+                time.sleep(0.2) # 保留延迟，避免API请求过快
+
+        logger.info(f"【API轨道】为 '{item_name_for_log}' 的演员中文化处理完成，共更新了 {update_count} 个演员名。")
 
     def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool, should_process_episodes_this_run: bool, force_fetch_from_tmdb: bool):
         """
@@ -765,8 +758,6 @@ class MediaProcessor:
                 if not force_fetch_from_tmdb:
                     # 【★★★ 修复点 1：传递上下文 ★★★】
                     self._process_api_track_person_names_only(
-                        people_list=item_details_from_emby.get("People", []), 
-                        cursor=cursor,
                         item_details_from_emby=item_details_from_emby
                     )
                 
