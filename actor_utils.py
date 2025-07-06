@@ -105,20 +105,35 @@ class ActorDBManager:
                     primary_record['primary_name'] = data_to_process['primary_name']
 
             # 更新主记录
-            update_cols = ["primary_name"] + id_fields
-            params = [primary_record.get(col) for col in update_cols]
-            set_clauses = [f"{col} = ?" for col in update_cols] + ["last_updated_at = CURRENT_TIMESTAMP"]
-            sql_update = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = ?"
-            cursor.execute(sql_update, tuple(params + [primary_record['map_id']]))
+            try:
+                # ★★★ 核心改动点 ① ★★★
+                # 将可能导致冲突的数据库操作包裹在 try...except 中
 
-            # 删除被合并的记录
-            if other_records:
-                ids_to_delete = [r['map_id'] for r in other_records]
-                placeholders = ','.join('?' * len(ids_to_delete))
-                cursor.execute(f"DELETE FROM person_identity_map WHERE map_id IN ({placeholders})", ids_to_delete)
-                logger.info(f"已成功合并并删除了旧记录: {ids_to_delete}")
-            
-            return primary_record['map_id']
+                # 1. 先更新主记录
+                update_cols = ["primary_name"] + id_fields
+                params = [primary_record.get(col) for col in update_cols]
+                set_clauses = [f"{col} = ?" for col in update_cols] + ["last_updated_at = CURRENT_TIMESTAMP"]
+                sql_update = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = ?"
+                cursor.execute(sql_update, tuple(params + [primary_record['map_id']]))
+
+                # 2. 再删除被合并的记录
+                if other_records:
+                    ids_to_delete = [r['map_id'] for r in other_records]
+                    logger.info(f"准备合并记录，将删除 Map IDs {ids_to_delete} 并将信息并入主记录 {primary_record['map_id']}.")
+                    placeholders = ','.join('?' * len(ids_to_delete))
+                    cursor.execute(f"DELETE FROM person_identity_map WHERE map_id IN ({placeholders})", tuple(ids_to_delete))
+                
+                return primary_record['map_id']
+
+            except sqlite3.IntegrityError as e:
+                # 捕获到唯一性约束错误！
+                logger.warning(
+                    f"在尝试合并演员 '{primary_record['primary_name']}' (Map ID: {primary_record['map_id']}) 时，"
+                    f"遇到数据库唯一性冲突: {e}。这通常意味着数据存在不一致。为保证程序稳定，已跳过对此演员的本次操作。"
+                )
+                # 可以在这里选择回滚事务，如果是在一个事务中的话
+                # conn.rollback() 
+                return -1
 
         # --- 情况 B: 未找到任何基于ID的匹配，现在谨慎处理名字 ---
         if not data_to_process["primary_name"]: # 如果没有ID匹配，又没有名字，则无法处理
