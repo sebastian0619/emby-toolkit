@@ -1111,7 +1111,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
         process_episodes=process_episodes
     )
     
-    logger.info(f"Webhook 任务完成: {item_id}")
+    logger.debug(f"Webhook 任务完成: {item_id}")
 # --- 追剧 ---    
 def task_process_watchlist(processor: WatchlistProcessor):
     """
