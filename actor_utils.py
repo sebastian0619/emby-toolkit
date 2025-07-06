@@ -180,26 +180,41 @@ class ActorDBManager:
                     potential_merge_target = None 
             # ▲▲▲【安全阀结束】▲▲▲
         if potential_merge_target:
-            logger.debug(f"找到同名记录 '{data_to_process['primary_name']}' (Map ID: {potential_merge_target['map_id']})，且无ID冲突，将更新信息。")
-            # 将新ID更新到这个记录上
-            update_cols = list(provided_ids.keys())
-            if not update_cols: # 只是同名，没有新ID，啥也不用做
-                return potential_merge_target['map_id']
+            try:
+                # ★★★ 核心改动点 ② ★★★
+                logger.debug(f"找到同名记录 '{data_to_process['primary_name']}' (Map ID: {potential_merge_target['map_id']})，准备更新信息。")
+                update_cols = list(provided_ids.keys())
+                if not update_cols:
+                    return potential_merge_target['map_id']
                 
-            params = list(provided_ids.values())
-            set_clauses = [f"{col} = ?" for col in update_cols] + ["last_updated_at = CURRENT_TIMESTAMP"]
-            sql_update = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = ?"
-            cursor.execute(sql_update, tuple(params + [potential_merge_target['map_id']]))
-            return potential_merge_target['map_id']
+                params = list(provided_ids.values())
+                set_clauses = [f"{col} = ?" for col in update_cols] + ["last_updated_at = CURRENT_TIMESTAMP"]
+                sql_update = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = ?"
+                cursor.execute(sql_update, tuple(params + [potential_merge_target['map_id']]))
+                return potential_merge_target['map_id']
+            except sqlite3.IntegrityError as e:
+                logger.warning(
+                    f"在尝试为同名演员 '{data_to_process['primary_name']}' 更新ID时，"
+                    f"遇到数据库唯一性冲突: {e}。已跳过本次更新。"
+                )
+                return -1
 
-        # --- 情况 C: 全新的人 (没有ID匹配，也没有可以安全合并的同名记录) ---
-        logger.debug(f"未找到任何匹配项，将为 '{data_to_process['primary_name']}' 创建新的演员记录。")
-        cols = ["primary_name"] + id_fields + ["last_synced_at", "last_updated_at"]
-        vals = [data_to_process.get(col) for col in cols if "last_" not in col]
-        placeholders = ["?" for _ in vals] + ["CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP"]
-        sql = f"INSERT INTO person_identity_map ({', '.join(cols)}) VALUES ({', '.join(placeholders)})"
-        cursor.execute(sql, tuple(vals))
-        return cursor.lastrowid
+        # --- 情况 C: 全新的人 (创建新记录) ---
+        try:
+            # ★★★ 核心改动点 ③ ★★★
+            logger.debug(f"未找到任何匹配项，将为 '{data_to_process['primary_name']}' 创建新的演员记录。")
+            cols = ["primary_name"] + id_fields + ["last_synced_at", "last_updated_at"]
+            vals = [data_to_process.get(col) for col in cols if "last_" not in col]
+            placeholders = ["?" for _ in vals] + ["CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP"]
+            sql = f"INSERT INTO person_identity_map ({', '.join(cols)}) VALUES ({', '.join(placeholders)})"
+            cursor.execute(sql, tuple(vals))
+            return cursor.lastrowid
+        except sqlite3.IntegrityError as e:
+            logger.warning(
+                f"在尝试为 '{data_to_process['primary_name']}' 创建新记录时，"
+                f"遇到数据库唯一性冲突: {e}。这表明可能存在一个同名但ID不同的演员记录。已跳过本次创建。"
+            )
+            return -1
 # ======================================================================
 # 模块 2: 通用的业务逻辑函数 (Business Logic Helpers)
 # ======================================================================
