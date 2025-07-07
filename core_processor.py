@@ -579,74 +579,76 @@ class MediaProcessor:
         # --- ★★★ 核心修正2：无论AI是否成功，都执行清理与回填，降级逻辑只在AI失败时触发 ★★★
         
         if ai_translation_succeeded:
-            logger.info("------------ 翻译/清理结束 ------------")
-            # ✨ 1. 增加一个判断，看这次到底有没有进行实际的翻译 ✨
-        if not translation_cache:
-            # 如果 translation_cache 是空的，说明所有词条要么来自数据库缓存，要么本身就是中文
-            # 我们需要检查一下是不是所有词条都无需翻译
-            if not texts_to_collect: # texts_to_collect 是在最开始收集的
+            logger.info("------------ AI翻译流程成功，开始应用结果 ------------")
+            
+            # 优化日志：根据实际情况报告翻译来源
+            if not texts_to_collect:
                 logger.info("  所有演员名和角色名均已是中文，无需翻译。")
+            elif not texts_to_send_to_api:
+                logger.info(f"  所有 {len(texts_to_collect)} 个待翻译词条均从数据库缓存中获取，无需调用AI。")
             else:
-                logger.info("  所有待翻译词条均从数据库缓存中获取，无需调用AI。")
+                logger.info(f"  AI翻译完成，共处理 {len(translation_cache)} 个词条（部分可能来自缓存）。")
+
+            # 【修正核心】: 无条件执行回填，因为只要ai_translation_succeeded=True，
+            # translation_cache 就包含了所有需要的数据（来自缓存或API）。
             for actor in cast_to_process:
                 # 1. 处理演员名
                 original_name = actor.get('name')
                 # 使用 .get(key, default_value) 来安全地处理，如果没在缓存里，就用原文
                 translated_name = translation_cache.get(original_name, original_name)
                 if original_name != translated_name:
-                    logger.info(f"  演员名: '{original_name}' -> '{translated_name}'")
+                    logger.debug(f"  演员名翻译: '{original_name}' -> '{translated_name}'")
                 actor['name'] = translated_name
 
                 # 2. 处理角色名
                 original_character = actor.get('character')
                 if original_character:
+                    # 角色名总是先清理，再从缓存中查找翻译
                     cleaned_character = utils.clean_character_name_static(original_character)
                     translated_character = translation_cache.get(cleaned_character, cleaned_character)
                     
-                    # 这里的 final_character 就是 translated_character
-                    # 我们不再需要 if/else 判断了
-                    final_character = translated_character
-                    
-                    if final_character != original_character:
+                    if translated_character != original_character:
                         actor_name_for_log = actor.get('name', '未知演员')
-                        logger.info(f"  角色名: '{original_character}' -> '{final_character}' (演员: {actor_name_for_log})")
+                        logger.debug(f"  角色名翻译: '{original_character}' -> '{translated_character}' (演员: {actor_name_for_log})")
                     
-                    actor['character'] = final_character
+                    actor['character'] = translated_character
                     
-            logger.info("--------------------------------------")
+            logger.info("----------------------------------------------------")
         else:
             # AI翻译未启用或执行失败，启动降级程序
-            if self.config.get("ai_translation_enabled", False):
-                logger.info("AI翻译失败，正在启动降级程序，使用传统翻译引擎...")
+            if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False):
+                logger.warning("AI批量翻译失败，启动降级程序，将使用传统翻译引擎逐个翻译...")
             else:
                 logger.info("AI翻译未启用，使用传统翻译引擎（如果配置了）。")
 
             translator_engines_order = self.config.get("translator_engines_order", [])
-            ai_enabled_flag = self.config.get("ai_translation_enabled", False)
             
             for actor in cast_to_process:
                 if self.is_stop_requested():
                     raise InterruptedError("任务在翻译演员列表时被中止")
                 
-                # 降级逻辑也需要先清理！
-                cleaned_name = actor.get('name') # 名字一般不用清理，但角色名必须
+                # 翻译演员名
+                cleaned_name = actor.get('name')
                 actor['name'] = actor_utils.translate_actor_field(
                     text=cleaned_name,
                     db_cursor=cursor,
-                    ai_translator=self.ai_translator,
                     translator_engines=translator_engines_order,
-                    ai_enabled=ai_enabled_flag
+                    # ★★★ 核心修正：在降级路径中，明确禁用AI ★★★
+                    ai_translator=None,  # 传递None来关闭AI
+                    ai_enabled=False     # 传递False来关闭AI
                 )
                 
-                # 关键：在降级逻辑中，也要先清理，再翻译
+                # 翻译角色名
                 cleaned_character = utils.clean_character_name_static(actor.get('character'))
-                actor['character'] = actor_utils.translate_actor_field(
-                    text=cleaned_character,
-                    db_cursor=cursor,
-                    ai_translator=self.ai_translator,
-                    translator_engines=translator_engines_order,
-                    ai_enabled=ai_enabled_flag
-                )
+                if cleaned_character:
+                    actor['character'] = actor_utils.translate_actor_field(
+                        text=cleaned_character,
+                        db_cursor=cursor,
+                        translator_engines=translator_engines_order,
+                        # ★★★ 核心修正：同样在此处禁用AI ★★★
+                        ai_translator=None,
+                        ai_enabled=False
+                    )
 
         # 返回处理完的、已经截断和翻译的列表
         return cast_to_process
