@@ -4,6 +4,8 @@
   <n-space vertical :size="24" style="margin-top: 15px;">
   <div v-if="configModel">
   <n-form
+    ref="formRef"  
+    :rules="formRules"
     v-if="configModel"
     @submit.prevent="save"
     label-placement="left"
@@ -65,7 +67,7 @@
 
           <!-- 卡片: 数据源与 API -->
           <n-card title="数据源与 API" size="small" class="glass-section">
-            <n-form-item label="本地数据源路径" path="local_data_path">
+            <n-form-item label="本地数据源路径" path="local_data_path" required>
               <n-input v-model:value="configModel.local_data_path" placeholder="神医TMDB缓存目录 (cache和override的上层)" />
             </n-form-item>
             <n-form-item label="TMDB API Key" path="tmdb_api_key">
@@ -224,18 +226,36 @@ import {
 import { MoveOutline as DragHandleIcon } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import { useAuthStore } from '../../stores/auth';
-
+const formRef = ref(null); // 1. 创建一个表单引用
+const formRules = {      // 2. 定义验证规则
+  local_data_path: {
+    required: true,
+    message: '本地数据源路径是必填项，不能为空！',
+    trigger: ['input', 'blur'] // 当输入或失去焦点时触发验证
+  }
+};
 const { configModel, loadingConfig, savingConfig, configError, handleSaveConfig } = useConfig();
 const authStore = useAuthStore();
 const message = useMessage();
 
 // --- 保存逻辑 ---
 async function save() {
-  const success = await handleSaveConfig();
-  if (success) {
-    message.success('所有设置已成功保存！');
-  } else {
-    message.error(configError.value || '配置保存失败，请检查后端日志。');
+  try {
+    // 在这里调用验证！
+    await formRef.value?.validate();
+
+    // 如果验证通过 (没有抛出错误)，则继续执行保存逻辑
+    const success = await handleSaveConfig();
+    if (success) {
+      message.success('所有设置已成功保存！');
+    } else {
+      message.error(configError.value || '配置保存失败，请检查后端日志。');
+    }
+  } catch (errors) {
+    // 如果验证失败，Naive UI 会自动在表单项下显示错误信息
+    // 我们可以在控制台打印错误，并提示用户
+    console.log('表单验证失败:', errors);
+    message.error('请检查表单中的必填项或错误项！');
   }
 }
 loadingConfig.value = false;
