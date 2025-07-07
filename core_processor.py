@@ -580,28 +580,40 @@ class MediaProcessor:
         
         if ai_translation_succeeded:
             logger.info("------------ 翻译/清理结束 ------------")
+            # ✨ 1. 增加一个判断，看这次到底有没有进行实际的翻译 ✨
+        if not translation_cache:
+            # 如果 translation_cache 是空的，说明所有词条要么来自数据库缓存，要么本身就是中文
+            # 我们需要检查一下是不是所有词条都无需翻译
+            if not texts_to_collect: # texts_to_collect 是在最开始收集的
+                logger.info("  所有演员名和角色名均已是中文，无需翻译。")
+            else:
+                logger.info("  所有待翻译词条均从数据库缓存中获取，无需调用AI。")
             for actor in cast_to_process:
                 # 1. 处理演员名
                 original_name = actor.get('name')
-                if original_name in translation_cache:
-                    translated_name = translation_cache[original_name]
-                    if original_name != translated_name:
-                        logger.info(f"  演员名: '{original_name}' -> '{translated_name}'")
-                    actor['name'] = translated_name
+                # 使用 .get(key, default_value) 来安全地处理，如果没在缓存里，就用原文
+                translated_name = translation_cache.get(original_name, original_name)
+                if original_name != translated_name:
+                    logger.info(f"  演员名: '{original_name}' -> '{translated_name}'")
+                actor['name'] = translated_name
 
-                # 2. 处理角色名 (这个逻辑现在总会执行)
+                # 2. 处理角色名
                 original_character = actor.get('character')
                 if original_character:
                     cleaned_character = utils.clean_character_name_static(original_character)
-                    translated_character = translation_cache.get(cleaned_character)
-                    final_character = translated_character if translated_character else cleaned_character
+                    translated_character = translation_cache.get(cleaned_character, cleaned_character)
+                    
+                    # 这里的 final_character 就是 translated_character
+                    # 我们不再需要 if/else 判断了
+                    final_character = translated_character
                     
                     if final_character != original_character:
                         actor_name_for_log = actor.get('name', '未知演员')
-                        logger.info(f"  角色名: '{original_character}' -> '{final_character}'")
+                        logger.info(f"  角色名: '{original_character}' -> '{final_character}' (演员: {actor_name_for_log})")
                     
                     actor['character'] = final_character
-            logger.info("------------------------------------")
+                    
+            logger.info("--------------------------------------")
         else:
             # AI翻译未启用或执行失败，启动降级程序
             if self.config.get("ai_translation_enabled", False):
@@ -823,9 +835,13 @@ class MediaProcessor:
                     full_tmdb_cast_as_base = base_json_data_original.get("credits", {}).get("cast", []) or base_json_data_original.get("casts", {}).get("cast", []) or []
                 elif item_type == "Series":
                     if should_fetch_online:
-                         full_tmdb_cast_as_base = base_json_data_original.get("credits", {}).get("cast", []) or base_json_data_original.get("casts", {}).get("cast", []) or []
+                        # 【在线模式】电视剧的演员表也从刚获取的基础JSON里拿
+                        logger.debug("在线模式，从TMDb返回的JSON中提取演员表。")
+                        full_tmdb_cast_as_base = base_json_data_original.get("credits", {}).get("cast", []) or []
                     else:
-                         full_tmdb_cast_as_base = self._get_full_tv_cast_from_cache(base_cache_dir)
+                        # 【本地模式】才从聚合缓存或分集文件里获取
+                        logger.debug("本地模式，开始从缓存/分集文件聚合演员表。")
+                        full_tmdb_cast_as_base = self._get_full_tv_cast_from_cache(base_cache_dir)
                 
                 initial_actor_count = len(full_tmdb_cast_as_base)
                 logger.info(f"{log_prefix} 成功获取了 {initial_actor_count} 位基准演员。")
@@ -837,7 +853,9 @@ class MediaProcessor:
                     self.tmdb_api_key,
                     self.get_stop_event()
                 )
-                
+                if item_type == "Series":
+                # 只有电视剧需要这个聚合缓存
+                    self._write_aggregated_cast_cache(base_cache_dir, intermediate_cast)
                 genres = item_details_from_emby.get("Genres", [])
                 is_animation = "Animation" in genres or "动画" in genres
                 
@@ -1342,6 +1360,9 @@ class MediaProcessor:
                     
                     cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
                     base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
+                    if item_type == "Series":
+                        # 调用我们现有的、可靠的写入函数
+                        self._write_aggregated_cast_cache(base_cache_dir, final_cast_for_json)
                     base_json_filename = "all.json" if item_type == "Movie" else "series.json"
                     base_json_data_original = _read_local_json(os.path.join(base_cache_dir, base_json_filename)) or {}
                     base_json_data_for_override = copy.deepcopy(base_json_data_original)
@@ -1720,7 +1741,7 @@ class MediaProcessor:
 
         logger.info(f"全量聚合完成，共获得 {len(full_cast_list)} 位独立演员。")
 
-        self._write_aggregated_cast_cache(base_cache_dir, full_cast_list)
+        # self._write_aggregated_cast_cache(base_cache_dir, full_cast_list)
 
         return full_cast_list
     # --- 写入聚合缓存 ---
