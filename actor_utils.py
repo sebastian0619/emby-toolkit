@@ -52,10 +52,11 @@ class ActorDBManager:
     
     def upsert_person(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any], **kwargs):
         """
-        【V-Safe 安全版】
-        优先通过ID进行匹配和合并。只有在ID无法匹配时，才谨慎处理同名情况，避免错误合并。
+        【V5 - Create New ID 最终版】
+        根据业务流程定制：person_identity_map 是一个独立的ID转换器，map_id不被外部引用。
+        因此，采用“融合-删除-创建”策略，逻辑最简单且能从根本上避免所有合并冲突。
         """
-        # 1. 标准化和清理输入数据
+        # 1. 标准化和清理输入数据 (不变)
         data_to_process = {
             "primary_name": str(person_data.get("name") or '').strip(),
             "emby_person_id": str(person_data.get("emby_id") or '').strip() or None,
@@ -69,151 +70,85 @@ class ActorDBManager:
         if not data_to_process["primary_name"] and not provided_ids:
             return -1
 
-        # 2. 优先通过 ID 查找强关联记录
-        id_based_matches = []
+        # 2. 收集所有潜在关联记录 (不变)
+        query_parts = []
+        query_values = []
         if provided_ids:
-            query_parts = [f"{col} = ?" for col in provided_ids.keys()]
-            query_values = list(provided_ids.values())
-            sql_find_by_id = f"SELECT * FROM person_identity_map WHERE {' OR '.join(query_parts)}"
-            cursor.execute(sql_find_by_id, tuple(query_values))
-            
-            unique_map_ids = set()
-            for row in cursor.fetchall():
-                entry = dict(row)
-                if entry['map_id'] not in unique_map_ids:
-                    id_based_matches.append(entry)
-                    unique_map_ids.add(entry['map_id'])
+            for key, value in provided_ids.items():
+                query_parts.append(f"{key} = ?")
+                query_values.append(value)
+        
+        if not provided_ids and data_to_process["primary_name"]:
+            query_parts.append("primary_name = ?")
+            query_values.append(data_to_process["primary_name"])
 
-        # --- 情况 A: 找到了基于ID的强关联记录，执行合并 ---
-        if id_based_matches:
-            # 这部分合并逻辑和原来类似，但只针对ID匹配到的记录
-            id_based_matches.sort(key=lambda x: x['map_id'])
-            primary_record = id_based_matches[0]
-            other_records = id_based_matches[1:]
-
-            if other_records:
-                logger.warning(f"检测到多条记录共享同一ID，将合并 Map IDs {[r['map_id'] for r in other_records]} 到主记录 {primary_record['map_id']} ('{primary_record['primary_name']}')。")
-
-            # 信息大融合 (将新数据和待合并的旧数据融合到主记录)
-            all_sources = [data_to_process] + other_records
-            for source in all_sources:
-                for key in id_fields:
-                    if source.get(key) and not primary_record.get(key):
-                        primary_record[key] = source.get(key)
-                # 主名选择逻辑可以保留或简化
-                if data_to_process.get('primary_name'): # 优先使用本次传入的名字
-                    primary_record['primary_name'] = data_to_process['primary_name']
-
-            # 更新主记录
-            try:
-                # ★★★ 核心改动点 ① ★★★
-                # 将可能导致冲突的数据库操作包裹在 try...except 中
-
-                # 1. 先更新主记录
-                update_cols = ["primary_name"] + id_fields
-                params = [primary_record.get(col) for col in update_cols]
-                set_clauses = [f"{col} = ?" for col in update_cols] + ["last_updated_at = CURRENT_TIMESTAMP"]
-                sql_update = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = ?"
-                cursor.execute(sql_update, tuple(params + [primary_record['map_id']]))
-
-                # 2. 再删除被合并的记录
-                if other_records:
-                    ids_to_delete = [r['map_id'] for r in other_records]
-                    logger.info(f"准备合并记录，将删除 Map IDs {ids_to_delete} 并将信息并入主记录 {primary_record['map_id']}.")
-                    placeholders = ','.join('?' * len(ids_to_delete))
-                    cursor.execute(f"DELETE FROM person_identity_map WHERE map_id IN ({placeholders})", tuple(ids_to_delete))
-                
-                return primary_record['map_id']
-
-            except sqlite3.IntegrityError as e:
-                # 捕获到唯一性约束错误！
-                logger.warning(
-                    f"在尝试合并演员 '{primary_record['primary_name']}' (Map ID: {primary_record['map_id']}) 时，"
-                    f"遇到数据库唯一性冲突: {e}。这通常意味着数据存在不一致。为保证程序稳定，已跳过对此演员的本次操作。"
-                )
-                # 可以在这里选择回滚事务，如果是在一个事务中的话
-                # conn.rollback() 
-                return -1
-
-        # --- 情况 B: 未找到任何基于ID的匹配，现在谨慎处理名字 ---
-        if not data_to_process["primary_name"]: # 如果没有ID匹配，又没有名字，则无法处理
-            logger.warning(f"传入的数据没有可用于查找的ID，且名字为空，无法处理。数据: {person_data}")
+        if not query_parts:
             return -1
 
-        # 按名字查找
-        cursor.execute("SELECT * FROM person_identity_map WHERE primary_name = ?", (data_to_process["primary_name"],))
-        name_based_matches = [dict(row) for row in cursor.fetchall()]
+        sql_find_candidates = f"SELECT * FROM person_identity_map WHERE {' OR '.join(query_parts)}"
+        cursor.execute(sql_find_candidates, tuple(query_values))
+        candidate_records = [dict(row) for row in cursor.fetchall()]
 
-        # 筛选出那些与新数据ID不冲突的同名记录
-        # “不冲突”意味着：这条记录要么没有ID，要么它的ID和我们新传入的ID不矛盾
-        potential_merge_target = None
-        for record in name_based_matches:
-            has_any_id = any(record.get(k) for k in id_fields)
-            # 如果我们有新ID，而找到的记录也有ID，这很可能是同名异人，跳过
-            if provided_ids and has_any_id:
-                continue
-            # 如果找到的记录没有ID，或者我们没有新ID，可以考虑合并
-            potential_merge_target = record
-            break # 找到第一个可合并的就够了
-
-        # 情况 B.1: 找到了一个可以安全合并的同名记录 (通常是只有名字没有ID的占位符)
-        if potential_merge_target:
-            # ▼▼▼【安全阀：在更新前进行反向检查】▼▼▼
-            if provided_ids:
-                # 检查这些即将被更新的ID，是否已经被数据库中【任何其他】记录占用了
-                conflict_check_parts = [f"{col} = ?" for col in provided_ids.keys()]
-                conflict_check_values = list(provided_ids.values())
-                
-                # 查找的范围是除了我们正要更新的目标之外的所有记录
-                sql_conflict_check = f"SELECT map_id FROM person_identity_map WHERE ({' OR '.join(conflict_check_parts)}) AND map_id != ?"
-                cursor.execute(sql_conflict_check, tuple(conflict_check_values + [potential_merge_target['map_id']]))
-                
-                conflicting_record = cursor.fetchone()
-                if conflicting_record:
-                    # 找到了冲突！这意味着同名但不同人。
-                    # 此时，我们必须放弃合并，让流程走到最后的“创建新人”逻辑。
-                    logger.warning(
-                        f"检测到同名不同人：尝试为'{data_to_process['primary_name']}' (目标 map_id: {potential_merge_target['map_id']}) 更新ID时，"
-                        f"发现ID {provided_ids} 已被另一条记录 (map_id: {conflicting_record['map_id']}) 占用。将创建新记录。"
-                    )
-                    # 将 potential_merge_target 设为 None，以跳过更新，进入创建流程
-                    potential_merge_target = None 
-            # ▲▲▲【安全阀结束】▲▲▲
-        if potential_merge_target:
-            try:
-                # ★★★ 核心改动点 ② ★★★
-                logger.debug(f"找到同名记录 '{data_to_process['primary_name']}' (Map ID: {potential_merge_target['map_id']})，准备更新信息。")
-                update_cols = list(provided_ids.keys())
-                if not update_cols:
-                    return potential_merge_target['map_id']
-                
-                params = list(provided_ids.values())
-                set_clauses = [f"{col} = ?" for col in update_cols] + ["last_updated_at = CURRENT_TIMESTAMP"]
-                sql_update = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = ?"
-                cursor.execute(sql_update, tuple(params + [potential_merge_target['map_id']]))
-                return potential_merge_target['map_id']
-            except sqlite3.IntegrityError as e:
-                logger.warning(
-                    f"在尝试为同名演员 '{data_to_process['primary_name']}' 更新ID时，"
-                    f"遇到数据库唯一性冲突: {e}。已跳过本次更新。"
-                )
-                return -1
-
-        # --- 情况 C: 全新的人 (创建新记录) ---
+        # --- 核心逻辑：融合、删除、创建 ---
         try:
-            # ★★★ 核心改动点 ③ ★★★
-            logger.debug(f"未找到任何匹配项，将为 '{data_to_process['primary_name']}' 创建新的演员记录。")
-            cols = ["primary_name"] + id_fields + ["last_synced_at", "last_updated_at"]
-            vals = [data_to_process.get(col) for col in cols if "last_" not in col]
-            placeholders = ["?" for _ in vals] + ["CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP"]
-            sql = f"INSERT INTO person_identity_map ({', '.join(cols)}) VALUES ({', '.join(placeholders)})"
-            cursor.execute(sql, tuple(vals))
-            return cursor.lastrowid
+            all_sources = candidate_records + [data_to_process]
+            
+            # 3. 融合所有信息，并在比较前进行类型标准化
+            final_merged_data = {}
+            for key in id_fields:
+                # ▼▼▼ 核心修复：在放入集合前，将所有值转换为字符串！ ▼▼▼
+                all_values_for_key = {
+                    str(source.get(key)) 
+                    for source in all_sources 
+                    if source.get(key) is not None and str(source.get(key)).strip()
+                }
+                # ▲▲▲ 这样可以确保 17401 和 '17401' 都变成 '17401'，从而被集合正确去重 ▲▲▲
+                
+                if len(all_values_for_key) > 1:
+                    logger.error(
+                        f"数据合并冲突！演员 '{data_to_process.get('name')}' 的 '{key}' 存在多个不同的值: {list(all_values_for_key)}。已中止操作。"
+                    )
+                    return -1
+                elif len(all_values_for_key) == 1:
+                    final_merged_data[key] = all_values_for_key.pop()
+
+            # 确定最终的名字
+            # 优先使用本次传入的、非空的名字，否则从候选记录里找一个
+            all_names = {source.get('primary_name') for source in all_sources if source.get('primary_name')}
+            final_merged_data['primary_name'] = data_to_process.get("primary_name") or (list(all_names)[0] if all_names else "未知演员")
+
+            # 4. 执行数据库操作：先删除，后创建
+            # 4.1 删除所有找到的旧记录
+            if candidate_records:
+                ids_to_delete = [r['map_id'] for r in candidate_records]
+                placeholders = ','.join('?' * len(ids_to_delete))
+                sql_delete = f"DELETE FROM person_identity_map WHERE map_id IN ({placeholders})"
+                cursor.execute(sql_delete, tuple(ids_to_delete))
+                logger.debug(f"为合并准备，已删除旧的关联记录，Map IDs: {ids_to_delete}。")
+
+            # 4.2 插入一条全新的、完美融合的记录
+            cols_to_insert = list(final_merged_data.keys())
+            vals_to_insert = list(final_merged_data.values())
+            
+            # 确保 primary_name 总是存在
+            if 'primary_name' not in cols_to_insert:
+                cols_to_insert.append('primary_name')
+                vals_to_insert.append("未知演员")
+
+            cols_to_insert.extend(["last_synced_at", "last_updated_at"])
+            placeholders = ["?" for _ in vals_to_insert] + ["CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP"]
+            
+            sql_insert = f"INSERT INTO person_identity_map ({', '.join(cols_to_insert)}) VALUES ({', '.join(placeholders)})"
+            cursor.execute(sql_insert, tuple(vals_to_insert))
+            
+            new_map_id = cursor.lastrowid
+            logger.debug(f"已成功将信息融合并创建为新记录 Map ID: {new_map_id} ('{final_merged_data['primary_name']}')。")
+            
+            return new_map_id
+
         except sqlite3.IntegrityError as e:
-            logger.warning(
-                f"在尝试为 '{data_to_process['primary_name']}' 创建新记录时，"
-                f"遇到数据库唯一性冲突: {e}。这表明可能存在一个同名但ID不同的演员记录。已跳过本次创建。"
-            )
+            # 这个异常现在只可能在极端的并发情况下发生，作为最后的保险
+            logger.error(f"为演员 '{data_to_process.get('name')}' 创建新记录时发生意外的数据库唯一性冲突: {e}。")
             return -1
 # ======================================================================
 # 模块 2: 通用的业务逻辑函数 (Business Logic Helpers)

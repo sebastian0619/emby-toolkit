@@ -89,6 +89,10 @@ class UnifiedSyncHandler:
                         # upsert_person 返回-1表示传入数据无效，但我们已经在前面检查过了
                         if map_id > 0: 
                             stats['success'] += 1
+                        elif map_id == -1:
+                            # 当 upsert_person 返回 -1 时，意味着发生了冲突或可预见的错误
+                            # 我们将其计入 'errors' 或 'skipped' 计数器
+                            stats['errors'] += 1
                     except Exception as e_upsert:
                         # 新的 upsert_person 内部会处理 IntegrityError，所以这里只捕获通用异常
                         logger.error(f"同步时写入数据库失败 for EmbyPID {emby_pid}: {e_upsert}")
