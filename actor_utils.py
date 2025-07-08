@@ -169,7 +169,7 @@ def get_db_connection(db_path: str) -> sqlite3.Connection:
         
     try:
         # ★★★ 不再使用 self.db_path，而是使用传入的参数 db_path ★★★
-        conn = sqlite3.connect(db_path, timeout=20.0)
+        conn = sqlite3.connect(db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         return conn
@@ -605,9 +605,8 @@ def enrich_all_actor_aliases_task(
                     chunk = actors_for_tmdb[i:i + CHUNK_SIZE]
                     logger.info(f"--- 开始处理 TMDb 第 {i//CHUNK_SIZE + 1} 批次，共 {len(chunk)} 个演员 ---")
 
-                    tmdb_updates_chunk = []
-                    updates_to_commit = []
-                    deletions_to_commit = []
+                    updates_to_commit = [] # 存储 (imdb_id, tmdb_id)
+                    invalid_tmdb_ids = []  # 存储需要置空的 tmdb_id
                     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_TMDB_WORKERS) as executor:
                         future_to_actor = {executor.submit(fetch_tmdb_details_for_actor, dict(actor), tmdb_api_key): actor for actor in chunk}
                         
@@ -624,34 +623,30 @@ def enrich_all_actor_aliases_task(
                             tmdb_id = result.get("tmdb_id")
 
                             if status == "found":
-                                # ★★★ 成功找到，准备更新 ★★★
-                                details = result.get("details", {})
-                                imdb_id = details.get("external_ids", {}).get("imdb_id")
+                                imdb_id = result.get("details", {}).get("external_ids", {}).get("imdb_id")
                                 if imdb_id:
-                                    # ★★★ 优化日志：在这里打印成功信息 ★★★
                                     logger.info(f"  -> 成功为演员 (TMDb ID: {tmdb_id}) 获取到 IMDb ID: {imdb_id}")
-                                    updates_to_commit.append({"tmdb_id": tmdb_id, "imdb_id": imdb_id})
+                                    updates_to_commit.append((imdb_id, tmdb_id))
                             
                             elif status == "not_found":
-                                # ★★★ 确认未找到(404)，准备删除 ★★★
-                                logger.warning(f"  -> 演员 (TMDb ID: {tmdb_id}) 在TMDb上已不存在(404)，将从数据库清理。")
-                                deletions_to_commit.append(tmdb_id)
+                                logger.warning(f"  -> 演员 (TMDb ID: {tmdb_id}) 在TMDb上已不存在(404)，将清除此无效ID。")
+                                invalid_tmdb_ids.append(tmdb_id)
                     
                     # ★★★ 在批次结束后，统一执行数据库操作 ★★★
-                    if updates_to_commit or deletions_to_commit:
+                    if updates_to_commit or invalid_tmdb_ids:
                         try:
-                            logger.info(f"  -> 批次完成，准备写入数据库 (更新: {len(updates_to_commit)}, 清理: {len(deletions_to_commit)})...")
+                            logger.info(f"  -> 批次完成，准备写入数据库 (更新: {len(updates_to_commit)}, 清理: {len(invalid_tmdb_ids)})...")
                             
-                            # 执行更新
-                            for update_data in updates_to_commit:
-                                actor_db_manager.upsert_person(cursor, update_data)
+                            # ✨ V2-FIX 1: 使用精确、高效的 executemany 进行批量更新
+                            if updates_to_commit:
+                                sql_update_imdb = "UPDATE person_identity_map SET imdb_id = ? WHERE tmdb_person_id = ?"
+                                cursor.executemany(sql_update_imdb, updates_to_commit)
                             
-                            # 执行删除
-                            if deletions_to_commit:
-                                placeholders = ','.join('?' for _ in deletions_to_commit)
-                                sql_delete = f"DELETE FROM person_identity_map WHERE tmdb_person_id IN ({placeholders})"
-                                cursor.execute(sql_delete, deletions_to_commit)
-                                logger.info(f"已执行对 {len(deletions_to_commit)} 个无效ID的删除操作。")
+                            # ✨ V2-FIX 2: 使用安全的 UPDATE ... SET NULL，而不是 DELETE
+                            if invalid_tmdb_ids:
+                                placeholders = ','.join('?' for _ in invalid_tmdb_ids)
+                                sql_clear_tmdb = f"UPDATE person_identity_map SET tmdb_person_id = NULL WHERE tmdb_person_id IN ({placeholders})"
+                                cursor.execute(sql_clear_tmdb, invalid_tmdb_ids)
 
                             # 统一更新所有处理过的ID的同步时间
                             processed_ids_in_chunk = [actor['tmdb_person_id'] for actor in chunk]
@@ -675,6 +670,7 @@ def enrich_all_actor_aliases_task(
             
             douban_api = DoubanApi(db_path=db_path)
             logger.info("--- 阶段二：从 豆瓣 补充 IMDb ID ---")
+            cursor = conn.cursor()
             sql_find_douban_needy = f"""
                 SELECT * FROM person_identity_map 
                 WHERE douban_celebrity_id IS NOT NULL AND imdb_id IS NULL
@@ -684,34 +680,49 @@ def enrich_all_actor_aliases_task(
             actors_for_douban = cursor.execute(sql_find_douban_needy).fetchall()
 
             if actors_for_douban:
-                logger.info(f"找到 {len(actors_for_douban)} 位演员需要从豆瓣补充 IMDb ID。")
-                cursor.execute("BEGIN TRANSACTION;")
-                processed_in_douban_run = 0
+                total_douban = len(actors_for_douban)
+                logger.info(f"找到 {total_douban} 位演员需要从豆瓣补充 IMDb ID。")
+                
                 for i, actor in enumerate(actors_for_douban):
                     if (stop_event and stop_event.is_set()) or (time.time() >= end_time): break
                     
+                    actor_map_id = actor['map_id']
+                    actor_douban_id = actor['douban_celebrity_id']
+                    
                     try:
-                        details = douban_api.celebrity_details(actor['douban_celebrity_id'])
+                        details = douban_api.celebrity_details(actor_douban_id)
+                        
+                        # ✨ V3-FIX: 无论成功与否，只要API调用没抛异常，就更新同步时间
+                        # 这样可以避免因API返回空而反复请求
+                        sql_update_sync = "UPDATE person_identity_map SET last_synced_at = CURRENT_TIMESTAMP WHERE map_id = ?"
+                        cursor.execute(sql_update_sync, (actor_map_id,))
+
                         if details and not details.get("error"):
                             new_imdb_id = None
                             for item in details.get("extra", {}).get("info", []):
                                 if isinstance(item, list) and len(item) == 2 and item[0] == 'IMDb编号':
                                     new_imdb_id = item[1]
                                     break
+                            
+                            # ✨ V3-FIX: 核心修复，只在找到ID时执行精确的UPDATE
                             if new_imdb_id:
-                                logger.info(f"  ({i+1}/{len(actors_for_douban)}) 为演员 '{actor['primary_name']}' (Douban: {actor['douban_celebrity_id']}) 找到 IMDb ID: {new_imdb_id}")
-                                actor_db_manager.upsert_person(cursor, {"douban_id": actor['douban_celebrity_id'], "imdb_id": new_imdb_id})
+                                logger.info(f"  ({i+1}/{total_douban}) 为演员 '{actor['primary_name']}' (Douban: {actor_douban_id}) 找到 IMDb ID: {new_imdb_id}")
+                                
+                                # 使用精确的 UPDATE，彻底抛弃 upsert_person
+                                sql_update_imdb = "UPDATE person_identity_map SET imdb_id = ? WHERE map_id = ?"
+                                cursor.execute(sql_update_imdb, (new_imdb_id, actor_map_id))
                         
-                        cursor.execute("UPDATE person_identity_map SET last_synced_at = CURRENT_TIMESTAMP WHERE map_id = ?", (actor['map_id'],))
-                        processed_in_douban_run += 1
-                        if processed_in_douban_run % 50 == 0:
+                        # ✨ V3-FIX: 采用更简单的分批提交逻辑
+                        if (i + 1) % 50 == 0:
+                            logger.info(f"  -> 已处理50条，提交数据库事务...")
                             conn.commit()
-                            cursor.execute("BEGIN TRANSACTION;")
+
                     except Exception as e:
-                        logger.error(f"从豆瓣获取详情失败 (ID: {actor['douban_celebrity_id']}): {e}")
-                    
+                        logger.error(f"从豆瓣获取详情失败 (ID: {actor_douban_id}): {e}")
+                
+                # 循环结束后，提交剩余的更改
                 conn.commit()
-                logger.info(f"豆瓣信息补充完成，本轮共处理 {processed_in_douban_run} 个。")
+                logger.info(f"豆瓣信息补充完成，本轮共处理 {i + 1} 个。")
             else:
                 logger.info("没有需要从豆瓣补充 IMDb ID 的演员。")
             
