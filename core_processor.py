@@ -436,6 +436,19 @@ class MediaProcessor:
                                     "imdb_id": d_imdb_id, "douban_id": d_douban_id, "_is_newly_added": True
                                 }
                                 final_cast_map[tmdb_id_from_map] = new_actor_entry
+                            # ✨✨✨ 立刻反哺这个新发现的映射关系！ ✨✨✨
+                            logger.debug(f"    -> [实时反哺] 将新发现的映射关系 (Douban ID: {d_douban_id}) 保存回数据库...")
+                            self.actor_db_manager.upsert_person(
+                                cursor,
+                                {
+                                    "tmdb_id": tmdb_id_from_map,
+                                    "imdb_id": d_imdb_id,
+                                    "douban_id": d_douban_id,
+                                    # 传递一个名字以防万一，但ID是关键
+                                    "name": d_actor.get("Name") or entry_from_map.get("primary_name")
+                                }
+                            )
+                            # ✨✨✨ 修复结束 ✨✨✨
                             match_found = True
 
                         # ✨✨✨ 2. 如果数据库未命中，才去调用在线 API ✨✨✨
