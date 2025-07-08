@@ -70,19 +70,23 @@ class ActorDBManager:
         if not data_to_process["primary_name"] and not provided_ids:
             return -1
 
-        # 2. 收集所有潜在关联记录 (不变)
+        # 2. 收集所有潜在关联记录
         query_parts = []
         query_values = []
+
         if provided_ids:
+            # ✨ 如果有任何ID，则只用ID进行查找 ✨
+            logger.debug(f"数据包含ID，将仅使用ID进行查找: {provided_ids}")
             for key, value in provided_ids.items():
                 query_parts.append(f"{key} = ?")
                 query_values.append(value)
-        
-        if not provided_ids and data_to_process["primary_name"]:
+        elif data_to_process["primary_name"]:
+            # ✨ 只有在完全没有ID时，才退而求其次使用名字查找 ✨
+            logger.debug(f"数据无ID，将使用名字 '{data_to_process['primary_name']}' 进行查找。")
             query_parts.append("primary_name = ?")
             query_values.append(data_to_process["primary_name"])
-
-        if not query_parts:
+        else:
+            # 既没ID也没名字，无法处理
             return -1
 
         sql_find_candidates = f"SELECT * FROM person_identity_map WHERE {' OR '.join(query_parts)}"
