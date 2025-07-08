@@ -587,7 +587,7 @@ class MediaProcessor:
             elif not texts_to_send_to_api:
                 logger.info(f"  所有 {len(texts_to_collect)} 个待翻译词条均从数据库缓存中获取，无需调用AI。")
             else:
-                logger.info(f"  AI翻译完成，共处理 {len(translation_cache)} 个词条（部分可能来自缓存）。")
+                logger.info(f"  AI翻译完成，共处理 {len(translation_cache)} 个词条。")
 
             # 【修正核心】: 无条件执行回填，因为只要ai_translation_succeeded=True，
             # translation_cache 就包含了所有需要的数据（来自缓存或API）。

@@ -1,6 +1,7 @@
 # ai_translator.py
 import json
 import re
+import time
 from typing import Optional, Dict, Any, List
 import logging
 
@@ -182,31 +183,83 @@ class AITranslator:
             # 其他所有情况（包括默认的'fast'），都喊“翻译组”来干活
             logger.info(f"[翻译模式] 开始快速翻译 {len(unique_texts)} 个词条...")
             return self._translate_fast_mode(unique_texts)
-    # ★★★ “翻译快做”小组长 ★★★
+    # ★★★ “翻译快做”小组长 (现在负责分批和调度！) ★★★
     def _translate_fast_mode(self, texts: List[str]) -> Dict[str, str]:
-        # 小组长根据公司（provider）选择不同的员工干活
-        if self.provider == 'openai':
-            return self._fast_openai(texts)
-        elif self.provider == 'zhipuai':
-            return self._fast_zhipuai(texts)
-        elif self.provider == 'gemini':
-            return self._fast_gemini(texts)
-        else:
-            logger.error(f"未知的提供商: {self.provider}")
-            return {}
+        CHUNK_SIZE = 50
+        REQUEST_INTERVAL = 1.5
 
-    # ★★★ “顾问精做”小组长 ★★★
-    def _translate_quality_mode(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
-        # 小组长根据公司（provider）选择不同的员工干活
-        if self.provider == 'openai':
-            return self._quality_openai(texts, title, year)
-        elif self.provider == 'zhipuai':
-            return self._quality_zhipuai(texts, title, year)
-        elif self.provider == 'gemini':
-            return self._quality_gemini(texts, title, year)
+        all_results = {}
+        text_chunks = [texts[i:i + CHUNK_SIZE] for i in range(0, len(texts), CHUNK_SIZE)]
+        total_chunks = len(text_chunks)
+
+        # ▼▼▼ 只在真正分块时才打印详细日志 ▼▼▼
+        if total_chunks > 1:
+            logger.info(f"[翻译模式] 数据量较大，已自动分块。共 {len(texts)} 个词条，分为 {total_chunks} 个批次，每批最多 {CHUNK_SIZE} 个。")
         else:
-            logger.error(f"未知的提供商: {self.provider}")
-            return {}
+            logger.info(f"[翻译模式] 开始处理 {len(texts)} 个词条...")
+
+        # 3. 小组长逐个派发任务
+        for i, chunk in enumerate(text_chunks):
+            if total_chunks > 1:
+                logger.info(f"--- [翻译模式] 正在处理批次 {i + 1}/{total_chunks} ---")
+            
+            # 根据公司（provider）选择不同的员工干活
+            result_chunk = {}
+            if self.provider == 'openai':
+                result_chunk = self._fast_openai(chunk)
+            elif self.provider == 'zhipuai':
+                result_chunk = self._fast_zhipuai(chunk)
+            elif self.provider == 'gemini':
+                result_chunk = self._fast_gemini(chunk)
+            
+            if result_chunk:
+                all_results.update(result_chunk)
+            
+            # 4. 安排休息时间（如果不是最后一批）
+            if i < total_chunks - 1:
+                logger.debug(f"批次处理完毕，等待 {REQUEST_INTERVAL} 秒...")
+                time.sleep(REQUEST_INTERVAL)
+        
+        return all_results
+
+    # ★★★ “顾问精做”小组长 (同样负责分批和调度！) ★★★
+    def _translate_quality_mode(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
+        CHUNK_SIZE = 50
+        REQUEST_INTERVAL = 1.5
+
+        all_results = {}
+        text_chunks = [texts[i:i + CHUNK_SIZE] for i in range(0, len(texts), CHUNK_SIZE)]
+        total_chunks = len(text_chunks)
+
+        # ▼▼▼ 只在真正分块时才打印详细日志 ▼▼▼
+        if total_chunks > 1:
+            logger.info(f"[顾问模式] 数据量较大，已自动分块。共 {len(texts)} 个词条，分为 {total_chunks} 个批次，每批最多 {CHUNK_SIZE} 个。")
+        else:
+            # 如果只有一个批次，日志就应该更简洁
+            logger.info(f"[顾问模式] 开始处理 {len(texts)} 个词条 (上下文: '{title}') ...")
+
+        # 3. 小组长逐个派发任务
+        for i, chunk in enumerate(text_chunks):
+            if total_chunks > 1:
+                logger.info(f"--- [顾问模式] 正在处理批次 {i + 1}/{total_chunks} ---")
+            
+            result_chunk = {}
+            if self.provider == 'openai':
+                result_chunk = self._quality_openai(chunk, title, year)
+            elif self.provider == 'zhipuai':
+                result_chunk = self._quality_zhipuai(chunk, title, year)
+            elif self.provider == 'gemini':
+                result_chunk = self._quality_gemini(chunk, title, year)
+
+            if result_chunk:
+                all_results.update(result_chunk)
+
+            # 4. 安排休息时间
+            if i < total_chunks - 1:
+                logger.debug(f"批次处理完毕，等待 {REQUEST_INTERVAL} 秒...")
+                time.sleep(REQUEST_INTERVAL)
+        
+        return all_results
     # --- 底层员工：具体实现各种模式和提供商的组合 ---
     # --- OpenAI 员工 ---
     def _fast_openai(self, texts: List[str]) -> Dict[str, str]:
