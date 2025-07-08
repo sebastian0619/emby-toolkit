@@ -101,3 +101,17 @@ def add_file_handler(log_directory: str):
 
 # 启动时打印一条消息，表示基础 logger 已就绪
 logging.info("基础 Logger (控制台/前端) 已初始化。")
+# ▼▼▼▼▼ 在文件的末尾，或者在所有 handler 添加完毕后，加入这几行 ▼▼▼▼▼
+
+# --- 对第三方库的日志进行降噪处理 ---
+# 这是解决问题的关键！我们直接告诉这些“话痨”的库，让它们保持安静。
+
+# 1. 让 requests 和它底层的 urllib3 只报告警告和错误
+logging.getLogger("requests").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+# 2. （可选）如果您还用了其他比较啰嗦的库，也可以在这里一并设置
+# logging.getLogger("another_verbose_library").setLevel(logging.WARNING)
+
+logger.debug("第三方库日志降噪处理完成。")
+# ▲▲▲▲▲ 修改结束 ▲▲▲▲▲
