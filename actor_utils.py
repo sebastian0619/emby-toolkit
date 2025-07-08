@@ -551,38 +551,36 @@ def format_and_complete_cast_list(cast_list: List[Dict[str, Any]], is_animation:
     """
     perfect_cast = []
     
-    # ▼▼▼ 核心修改：从传入的 config 参数中获取配置 ▼▼▼
+    # ▼▼▼ 从传入的 config 参数中获取配置 ▼▼▼
     add_role_prefix = config.get(constants.CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX, False)
 
     logger.info(f"格式化演员列表：开始处理角色名和排序 (角色名前缀开关: {'开' if add_role_prefix else '关'})。")
 
-    # ... 后续逻辑完全不变 ...
+    # 1. (代码整洁) 将 generic_roles 的定义提前，避免重复
     generic_roles = {"演员", "配音"}
+
     for idx, actor in enumerate(cast_list):
-        final_role = actor.get("character", "").strip()
+        # 2. (核心修复) 安全地处理 character 可能为 None 的情况
+        character_name = actor.get("character")  
+        final_role = character_name.strip() if character_name else ""
+        
         if utils.contains_chinese(final_role):
             final_role = final_role.replace(" ", "").replace("　", "")
         
         if add_role_prefix:
-            # 只有当角色名存在，并且它不是一个通用角色名时，才添加前缀
             if final_role and final_role not in generic_roles:
                 prefix = "配 " if is_animation else "饰 "
                 final_role = f"{prefix}{final_role}"
-            # 如果角色名是空的，就设置为通用角色名（不加前缀）
             elif not final_role:
                 final_role = "配音" if is_animation else "演员"
-            # 如果角色名本身就是 "演员" 或 "配音"，则什么都不做，保持原样
         else:
-            # 开关关闭时，逻辑不变
             if not final_role:
                 final_role = "配音" if is_animation else "演员"
-        # =================================================================
         
         actor["character"] = final_role
         actor["order"] = idx
         perfect_cast.append(actor)
             
-    generic_roles = {"演员", "配音"}
     logger.info(f"对演员列表进行最终排序，将通用角色名（如 {', '.join(generic_roles)}）排到末尾。")
     
     perfect_cast.sort(key=lambda actor: (
