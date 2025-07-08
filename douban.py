@@ -261,6 +261,16 @@ class DoubanApi:
                 return self._make_error_dict("rate_limit", msg, response_json)
             return response_json
         except requests.exceptions.HTTPError as e:
+            # ▼▼▼ 核心修改在这里 ▼▼▼
+            if e.response is not None and e.response.status_code == 404:
+                # 1. 这是一个预期的“未找到”情况，使用 WARNING 级别日志，而不是 ERROR
+                # 2. 日志内容更友好，明确指出是资源未找到
+                # 3. 最关键：不使用 exc_info=True，这样就不会打印 traceback
+                logger.warning(f"请求的资源未找到 (404 Not Found)，URL: {req_url}")
+                
+                # 4. 返回一个特定的错误字典，方便上层调用者判断具体错误类型
+                #    这里的 "movie_not_found" 对应了日志中的 "movie_not_found"
+                return self._make_error_dict("movie_not_found", f"IMDb ID a la que se consulta no encontrada en Douban")
             msg = str(e)
             if e.response is not None:
                 try:
