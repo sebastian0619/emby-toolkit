@@ -1390,7 +1390,14 @@ def task_full_image_sync(processor: MediaProcessor):
     """
     # 直接把回调函数传进去
     processor.sync_all_images(update_status_callback=update_status_from_thread)
-
+# --- 立即执行任务注册表 ---
+TASK_REGISTRY = {
+    'full-scan': (task_process_full_library, "立即执行全量扫描"),
+    'sync-person-map': (task_sync_person_map, "立即执行同步演员映射表"),
+    'process-watchlist': (task_process_watchlist, "立即执行智能追剧更新"),
+    'enrich-aliases': (task_enrich_aliases, "立即执行外部ID补充"),
+    'actor-cleanup': (task_actor_translation_cleanup, "立即执行演员名查漏补缺")
+}
 # --- 路由区 ---
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
@@ -2610,6 +2617,53 @@ def api_clear_tmdb_caches():
     except Exception as e:
         logger.error(f"调用清除TMDb缓存功能时发生意外错误: {e}", exc_info=True)
         return jsonify({"success": False, "message": "服务器在执行清除操作时发生未知错误。"}), 500
+# ✨✨✨ “立即执行”API接口 ✨✨✨
+@app.route('/api/tasks/trigger/<task_identifier>', methods=['POST'])
+def api_trigger_task_now(task_identifier: str):
+    """
+    一个通用的API端点，用于立即触发指定的后台任务。
+    它会响应前端发送的 /api/tasks/trigger/full-scan, /api/tasks/trigger/sync-person-map 等请求。
+    """
+    # 1. 检查是否有任务正在运行 (这是双重保险，防止前端禁用逻辑失效)
+    with task_lock:
+        if background_task_status["is_running"]:
+            return jsonify({
+                "status": "error",
+                "message": "已有其他任务正在运行，请稍后再试。"
+            }), 409 # 409 Conflict
+
+    # 2. 从任务注册表中查找任务
+    task_info = TASK_REGISTRY.get(task_identifier)
+    if not task_info:
+        return jsonify({
+            "status": "error",
+            "message": f"未知的任务标识符: {task_identifier}"
+        }), 404 # Not Found
+
+    task_function, task_name = task_info
+    
+    # 3. 提交任务到队列
+    #    使用您现有的 submit_task_to_queue 函数
+    #    对于需要额外参数的任务（如全量扫描），我们需要特殊处理
+    kwargs = {}
+    if task_identifier == 'full-scan':
+        # 我们可以从请求体中获取参数，或者使用默认值
+        # 这允许前端未来可以传递 '强制重处理' 等选项
+        data = request.get_json() or {}
+        kwargs['process_episodes'] = data.get('process_episodes', True)
+        # 假设 task_process_full_library 接受 process_episodes 参数
+    
+    submit_task_to_queue(
+        task_function,
+        task_name,
+        **kwargs # 使用字典解包来传递命名参数
+    )
+
+    return jsonify({
+        "status": "success",
+        "message": "任务已成功提交到后台队列。",
+        "task_name": task_name
+    }), 202 # 202 Accepted 表示请求已被接受，将在后台处理
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
