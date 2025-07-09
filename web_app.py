@@ -885,7 +885,7 @@ def setup_scheduled_tasks():
     if schedule_enabled:
         try:
             def submit_scheduled_actor_cleanup():
-                logger.info("定时任务触发：准备提交演员名查漏补缺任务到队列。")
+                logger.info("定时任务触发：准备提交演员名翻译查漏补缺任务到队列。")
                 submit_task_to_queue(
                     task_actor_translation_cleanup, # 任务包装函数
                     "定时演员名查漏补缺"
@@ -900,12 +900,12 @@ def setup_scheduled_tasks():
             )
             
             next_run_str = _get_next_run_time_str(cron_expression)
-            logger.info(f"已设置定时任务：演员名查漏补缺，将{next_run_str}")
+            logger.info(f"已设置定时任务：演员名翻译查漏补缺，将{next_run_str}")
 
         except Exception as e:
             logger.error(f"设置定时演员名查漏补缺任务失败: {e}", exc_info=True)
     else:
-        logger.info("定时演员名查漏补缺任务未启用。")
+        logger.info("定时演员名翻译查漏补缺任务未启用。")
 
     # --- 启动调度器逻辑保持不变 ---
     scan_enabled = config.get("schedule_enabled", False)
@@ -1396,7 +1396,7 @@ TASK_REGISTRY = {
     'sync-person-map': (task_sync_person_map, "立即执行同步演员映射表"),
     'process-watchlist': (task_process_watchlist, "立即执行智能追剧更新"),
     'enrich-aliases': (task_enrich_aliases, "立即执行外部ID补充"),
-    'actor-cleanup': (task_actor_translation_cleanup, "立即执行演员名查漏补缺")
+    'actor-cleanup': (task_actor_translation_cleanup, "立即执行演员名翻译查漏补缺")
 }
 # --- 路由区 ---
 # --- webhook通知任务 ---
