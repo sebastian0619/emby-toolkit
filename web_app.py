@@ -1334,7 +1334,7 @@ def task_actor_translation_cleanup(processor):
                     time.sleep(0.2)
 
             # 4. 更新进度
-            progress = 50 + (processed_count / total_to_update) * 50
+            progress = int(50 + (processed_count / total_to_update) * 50)
             update_status_from_thread(progress, f"({processed_count}/{total_to_update}) 正在更新: {original_name} -> {translated_name}")
 
         # 任务结束时，也直接调用全局函数
