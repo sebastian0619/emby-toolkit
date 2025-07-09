@@ -197,7 +197,7 @@ JOB_ID_PROCESS_WATCHLIST = "scheduled_process_watchlist"
 def task_process_single_item(processor: MediaProcessor, item_id: str, force_reprocess: bool, process_episodes: bool):
     """任务：处理单个媒体项"""
     processor.process_single_item(item_id, force_reprocess, process_episodes)
-
+# --- 初始化数据库 ---
 def init_db():
     """
     【重建版】初始化数据库，创建面向未来的统一表结构。
@@ -318,7 +318,7 @@ def init_db():
         if conn:
             conn.close()
             logger.debug("数据库连接已在 init_db 的 finally 块中安全关闭。")
-
+# ✨✨✨ 装饰器：检查登陆状态 ✨✨✨
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -346,6 +346,7 @@ def processor_ready_required(f):
             return jsonify({"error": "核心处理器未就绪。"}), 503
         return f(*args, **kwargs)
     return decorated_function
+# --- 初始化认证系统 ---
 def init_auth():
     """
     【V2 - 使用全局配置版】初始化认证系统。
@@ -402,7 +403,7 @@ def init_auth():
         if conn:
             conn.close()
         logger.info("="*21 + " [基础配置加载完毕] " + "="*21)
-# --- 配置加载与保存 ---
+# --- 加载配置 ---
 def load_config() -> Tuple[Dict[str, Any], bool]:
     """【清单驱动版】从 config.ini 加载配置。"""
     global APP_CONFIG
@@ -441,7 +442,7 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
     APP_CONFIG = app_cfg.copy()
     logger.debug("全局配置 APP_CONFIG 已更新。")
     return app_cfg, is_first_run
-# ---保存配置
+# --- 保存配置 ---
 def save_config(new_config: Dict[str, Any]):
     """【清单驱动版】将配置保存到 config.ini。"""
     global APP_CONFIG
@@ -480,7 +481,7 @@ def save_config(new_config: Dict[str, Any]):
         
     except Exception as e:
         logger.error(f"保存配置文件或重新初始化时失败: {e}", exc_info=True)
-
+# --- 始化所有需要的处理器实例 ---
 def initialize_processors():
     """
     【修复版】初始化所有需要的处理器实例，包括 MediaProcessor 和 WatchlistProcessor。
@@ -601,8 +602,7 @@ def _execute_task_with_lock(task_function, task_name: str, processor: Union[Medi
         if processor:
             processor.clear_stop_signal()
         logger.debug(f"后台任务 '{task_name}' 状态已重置。")
-
-#--- 通用队列 ---
+# --- 通用队列 ---
 def task_worker_function():
     """
     通用工人线程，从队列中获取并处理各种后台任务。
@@ -638,7 +638,7 @@ def task_worker_function():
         except Exception as e:
             logger.error(f"通用工人线程发生未知错误: {e}", exc_info=True)
             time.sleep(5)
-
+# --- 安全地启动通用工人线程 ---
 def start_task_worker_if_not_running():
     """
     安全地启动通用工人线程。
@@ -651,7 +651,7 @@ def start_task_worker_if_not_running():
             task_worker_thread.start()
         else:
             logger.debug("通用任务线程已在运行。")
-#--- 为通用队列添加任务 ---
+# --- 为通用队列添加任务 ---
 def submit_task_to_queue(task_function, task_name: str, *args, **kwargs):
     """
     【修复版】将一个任务提交到通用队列中，并在这里清空日志。
@@ -674,7 +674,7 @@ def submit_task_to_queue(task_function, task_name: str, *args, **kwargs):
         task_info = (task_function, task_name, args, kwargs)
         task_queue.put(task_info)
         start_task_worker_if_not_running()
-
+# --- 将 CRON 表达式转换为人类可读的、干净的执行计划字符串 ---
 def _get_next_run_time_str(cron_expression: str) -> str:
     """
     【V3 - 口齿伶俐版】将 CRON 表达式转换为人类可读的、干净的执行计划字符串。
@@ -1115,6 +1115,7 @@ def task_enrich_aliases(processor: MediaProcessor):
     except Exception as e:
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
         update_status_from_thread(-1, f"错误：任务失败 ({str(e)[:50]}...)")
+# --- 使用手动编辑的结果处理媒体项 ---
 def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list: list, item_name: str):
     """任务：使用手动编辑的结果处理媒体项"""
     processor.process_item_with_manual_cast(
@@ -1123,7 +1124,6 @@ def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list
         item_name=item_name
     )
 # ★★★ 1. 定义一个webhoo专用追剧、用于编排任务的函数 ★★★
-# 这个函数将作为提交到任务队列的目标
 def webhook_processing_task(processor: MediaProcessor, item_id: str, force_reprocess: bool, process_episodes: bool):
     """
     【修复版】这个函数编排了处理新入库项目的完整流程。
@@ -1163,8 +1163,7 @@ def task_process_watchlist(processor: WatchlistProcessor):
     """
     # 不传递 item_id，执行全量更新
     processor.process_watching_list()
-
-# ★★★ 核心修改：让这个任务函数调用改造后的方法 ★★★
+# ★★★ 只更新追剧列表中的一个特定项目 ★★★
 def task_process_single_watchlist_item(processor: WatchlistProcessor, item_id: str):
     """任务：只更新追剧列表中的一个特定项目"""
     # 传递 item_id，执行单项更新
@@ -1248,7 +1247,6 @@ def task_import_person_map(processor, file_content: str, **kwargs):
     except Exception as e:
         logger.error(f"后台导入任务失败: {e}", exc_info=True)
         update_status_from_thread(-1, f"导入失败: {e}")
-
 # ★★★ 重新处理单个项目 ★★★
 def task_reprocess_single_item(processor: MediaProcessor, item_id: str):
     """
@@ -1283,39 +1281,72 @@ def task_reprocess_single_item(processor: MediaProcessor, item_id: str):
     except Exception as e:
         logger.error(f"重新处理 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
         update_status_from_thread(-1, f"重新处理失败: {e}")
-# ---翻译演员任务---
+# --- 翻译演员任务 ---
 def task_actor_translation_cleanup(processor):
     """
-    定时任务包装器：执行演员名翻译的查漏补缺工作。
-    'processor' 参数是为了兼容您现有的 _execute_task_with_lock 框架。
+    【最终修正版】执行演员名翻译的查漏补缺工作，并使用正确的全局状态更新函数。
     """
     try:
-        logger.info("定时任务开始：执行演员名查漏补缺...")
+        # ✨✨✨ 修正：直接调用全局函数，而不是processor的方法 ✨✨✨
+        update_status_from_thread(5, "正在准备需要翻译的演员数据...")
         
-        # 从处理器获取必要的参数
-        emby_url = processor.emby_url
-        emby_api_key = processor.emby_api_key
-        user_id = processor.emby_user_id
-        ai_translator = processor.ai_translator
-        stop_event = processor.get_stop_event()
-
-        # 调用您放在 emby_handler.py 中的函数
-        # 注意：这里我们不使用 dry_run=True，因为这是实际的维护任务
-        emby_handler.translate_all_remaining_actors(
-            emby_url=emby_url,
-            emby_api_key=emby_api_key,
-            user_id=user_id,
-            ai_translator=ai_translator,
-            dry_run=False, # 定时任务总是实际执行
-            stop_event=stop_event
+        # 1. 调用数据准备函数
+        translation_map, name_to_persons_map = emby_handler.prepare_actor_translation_data(
+            emby_url=processor.emby_url,
+            emby_api_key=processor.emby_api_key,
+            user_id=processor.emby_user_id,
+            ai_translator=processor.ai_translator,
+            stop_event=processor.get_stop_event()
         )
-        logger.info("定时任务完成：演员名查漏补缺执行完毕。")
+
+        if not translation_map:
+            update_status_from_thread(100, "任务完成，没有需要翻译的演员。")
+            return
+
+        total_to_update = len(translation_map)
+        update_status_from_thread(50, f"数据准备完毕，开始更新 {total_to_update} 个演员名...")
+        
+        update_count = 0
+        processed_count = 0
+
+        # 2. 主循环
+        for original_name, translated_name in translation_map.items():
+            processed_count += 1
+            if processor.is_stop_requested():
+                logger.info("演员翻译任务被用户中断。")
+                break
+            
+            if not translated_name or original_name == translated_name:
+                continue
+
+            persons_to_update = name_to_persons_map.get(original_name, [])
+            for person in persons_to_update:
+                # 3. 更新单个条目
+                success = emby_handler.update_person_details(
+                    person_id=person.get("Id"),
+                    new_data={"Name": translated_name},
+                    emby_server_url=processor.emby_url,
+                    emby_api_key=processor.emby_api_key,
+                    user_id=processor.emby_user_id
+                )
+                if success:
+                    update_count += 1
+                    time.sleep(0.2)
+
+            # 4. 更新进度
+            progress = 50 + (processed_count / total_to_update) * 50
+            update_status_from_thread(progress, f"({processed_count}/{total_to_update}) 正在更新: {original_name} -> {translated_name}")
+
+        # 任务结束时，也直接调用全局函数
+        final_message = f"任务完成！共更新了 {update_count} 个演员名。"
+        if processor.is_stop_requested():
+            final_message = "任务已中断。"
+        update_status_from_thread(100, final_message)
 
     except Exception as e:
-        logger.error(f"执行定时演员翻译任务时出错: {e}", exc_info=True)
-        if hasattr(processor, 'update_status'):
-            processor.update_status(-1, f"定时任务失败: {e}")
-
+        logger.error(f"执行演员翻译任务时出错: {e}", exc_info=True)
+        # 在异常处理中也直接调用全局函数
+        update_status_from_thread(-1, f"任务失败: {e}")
 # ★★★ 重新处理所有待复核项 ★★★
 def task_reprocess_all_review_items(processor: MediaProcessor):
     """
@@ -1359,6 +1390,7 @@ def task_full_image_sync(processor: MediaProcessor):
     """
     # 直接把回调函数传进去
     processor.sync_all_images(update_status_callback=update_status_from_thread)
+
 # --- 路由区 ---
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])

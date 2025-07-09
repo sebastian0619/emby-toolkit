@@ -7,7 +7,7 @@ import json
 import time
 import utils
 import threading
-from typing import Optional, List, Dict, Any, Generator
+from typing import Optional, List, Dict, Any, Generator, Tuple, Set
 import logging
 logger = logging.getLogger(__name__)
 # (SimpleLogger 和 logger 的导入保持不变)
@@ -872,105 +872,95 @@ def start_library_scan(base_url: str, api_key: str, user_id: str) -> bool:
     except Exception as e:
         logger.error(f"在触发Emby全库扫描时发生未知严重错误: {e}", exc_info=True)
         return False
-# --- 一键翻译演员 ---
-def translate_all_remaining_actors(
+# --- 定时翻译演员 ---
+def prepare_actor_translation_data(
     emby_url: str,
     emby_api_key: str,
     user_id: str,
     ai_translator, # 直接传入已初始化的翻译器实例
-    dry_run: bool = False,
-    stop_event: threading.Event = None # 接受一个停止信号
-):
+    stop_event: threading.Event = None
+) -> Tuple[Dict[str, str], Dict[str, List[Dict[str, Any]]]]:
     """
-    【查漏补缺版】一键翻译Emby库中所有剩余的、非中文名的演员。
-    这是一个独立的维护工具，用于处理流程中的“漏网之鱼”。
+    【数据准备版】采集、筛选并翻译演员名，然后返回待处理的数据。
+    它不再执行写回操作，而是将结果返回给调用者处理。
 
-    :param ...: Emby连接参数和AI翻译器实例。
-    :param dry_run: 预览模式。
+    :param emby_url: Emby 服务器 URL。
+    :param emby_api_key: Emby API Key。
+    :param user_id: Emby 用户 ID。
+    :param ai_translator: 已初始化的AI翻译器实例。
     :param stop_event: 用于从外部中断任务的线程事件。
+    :return: 一个元组，包含两个字典：
+             1. translation_map (Dict[str, str]): {'英文名': '中文名', ...}
+             2. name_to_persons_map (Dict[str, List[Dict[str, Any]]]): {'英文名': [演员信息字典, ...], ...}
     """
-    logger.info("🚀【演员查漏补缺】任务启动！")
-    if dry_run:
-        logger.warning("【演员查漏补缺】当前为“预览模式”(Dry Run)，不会对Emby进行任何修改。")
+    logger.info("【演员数据准备】开始采集、筛选和翻译...")
 
-    # 1. 从Emby获取所有演员
-    # 这里的逻辑和之前一样，但我们把它看作一个独立的步骤
+    # --- 阶段一：数据采集 ---
+    logger.info("【演员数据准备】正在从Emby获取所有演员列表...")
     all_persons = []
     try:
+        # 使用您现有的、高效的 get_all_persons_from_emby 生成器
         person_generator = get_all_persons_from_emby(
-            base_url=emby_url, api_key=emby_api_key, user_id=user_id, stop_event=stop_event
+            base_url=emby_url,
+            api_key=emby_api_key,
+            user_id=user_id,
+            stop_event=stop_event
         )
+        
         for person_batch in person_generator:
-            all_persons.extend(person_batch)
+            # 在处理每批次后检查是否需要停止
             if stop_event and stop_event.is_set():
-                logger.info("【演员查漏补缺】在获取演员阶段任务被中止。")
-                return
-    except Exception as e:
-        logger.error(f"【演员查漏补缺】获取演员列表失败: {e}", exc_info=True)
-        return
+                logger.info("【演员数据准备】在获取演员阶段任务被中止。")
+                return {}, {} # 返回空结果
 
-    # 2. 筛选需要翻译的演员
-    names_to_translate = set()
-    name_to_persons_map = {}
+            all_persons.extend(person_batch)
+
+    except Exception as e:
+        logger.error(f"【演员数据准备】从Emby获取演员列表时发生错误: {e}", exc_info=True)
+        return {}, {} # 发生错误时返回空结果
+
+    # --- 阶段二：数据筛选 ---
+    logger.info(f"【演员数据准备】已获取 {len(all_persons)} 位演员，正在筛选需要翻译的名字...")
+    names_to_translate: Set[str] = set()
+    name_to_persons_map: Dict[str, List[Dict[str, Any]]] = {}
+    
     for person in all_persons:
         name = person.get("Name")
-        if name and not utils.contains_chinese(name):
+        person_id = person.get("Id")
+        # 使用您自己的 utils.contains_chinese
+        if name and person_id and not utils.contains_chinese(name):
             names_to_translate.add(name)
             if name not in name_to_persons_map:
                 name_to_persons_map[name] = []
             name_to_persons_map[name].append(person)
 
     if not names_to_translate:
-        logger.info("【演员查漏补缺】太棒了！没有发现需要翻译的演员名，所有演员都已中文化。")
-        return
+        logger.info("【演员数据准备】任务完成，没有发现需要翻译的演员名。")
+        return {}, {}
 
-    logger.info(f"【演员查漏补缺】发现 {len(names_to_translate)} 个独特的英文名需要翻译。")
+    logger.info(f"【演员数据准备】筛选出 {len(names_to_translate)} 个独特的英文名需要翻译。")
 
-    # 3. 执行批量翻译 (由于数量不多，可以不分批，或者保留小批量逻辑以防万一)
+    # --- 阶段三：批量翻译 ---
+    logger.info(f"【演员数据准备】正在调用AI批量翻译 {len(names_to_translate)} 个名字...")
+    translation_map: Dict[str, str] = {}
     try:
+        # 调用您的AI翻译模块
         translation_map = ai_translator.batch_translate(
-            texts=list(names_to_translate), mode="fast"
+            texts=list(names_to_translate),
+            mode="fast"
         )
+        if not translation_map:
+            logger.warning("【演员数据准备】翻译引擎未能返回任何有效结果。")
+            return {}, name_to_persons_map # 即使翻译失败，也返回映射表，避免上层出错
+
     except Exception as e:
-        logger.error(f"【演员查漏补缺】批量翻译失败: {e}", exc_info=True)
-        return
+        logger.error(f"【演员数据准备】批量翻译时发生错误: {e}", exc_info=True)
+        return {}, name_to_persons_map # 翻译失败
 
-    if not translation_map:
-        logger.warning("【演员查漏补缺】翻译引擎未能返回任何结果。")
-        return
-
-    # 4. 更新回Emby
-    update_count = 0
-    for original_name, translated_name in translation_map.items():
-        if stop_event and stop_event.is_set():
-            logger.info("【演员查漏补缺】在更新阶段任务被中止。")
-            break
-        if not translated_name or original_name == translated_name:
-            continue
-
-        persons_to_update = name_to_persons_map.get(original_name, [])
-        for person in persons_to_update:
-            emby_person_id = person.get("Id")
-            log_msg = f"准备更新: '{original_name}' -> '{translated_name}' (ID: {emby_person_id})"
-            if dry_run:
-                logger.info(f"  [预览] {log_msg}")
-                update_count += 1
-                continue
-
-            logger.info(f"  {log_msg}")
-            success = update_person_details(
-                person_id=emby_person_id,
-                new_data={"Name": translated_name},
-                emby_server_url=emby_url,
-                emby_api_key=emby_api_key,
-                user_id=user_id
-            )
-            if success:
-                update_count += 1
-                time.sleep(0.2)
-
-    final_message = "预览完成" if dry_run else "处理完成"
-    logger.info(f"🎉【演员查漏补缺】任务{final_message}！共更新了 {update_count} 个演员名。")
+    logger.info("【演员数据准备】数据准备完毕，将返回翻译结果给主任务进行处理。")
+    
+    # --- 核心修改：返回两个关键的数据结构，而不是执行写回 ---
+    return translation_map, name_to_persons_map
 # if __name__ == '__main__':
 #     TEST_EMBY_SERVER_URL = "http://192.168.31.163:8096"
 #     TEST_EMBY_API_KEY = "eaa73b828ac04b1bb6d3687a0117572c"

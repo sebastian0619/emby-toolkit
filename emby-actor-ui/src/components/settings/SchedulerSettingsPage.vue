@@ -6,30 +6,40 @@
     <!-- 使用 n-grid 实现响应式两列布局 -->
     <n-grid cols="1 s:2" :x-gap="24" :y-gap="24" responsive="screen">
       
-      <!-- 卡片 1: 全量扫描 (无改动) -->
+      <!-- ✨ 卡片 1: 全量扫描 (内部布局已修改) ✨ -->
       <n-gi>
-        <n-card title="全量扫描定时任务" class="glass-section" :bordered="false">
+        <n-card title="全量扫描定时任务" class="glass-section" :bordered="false" style="height: 100%;">
           <template #header-extra>
             <n-switch v-model:value="configModel.schedule_enabled" />
           </template>
           <n-form :model="configModel" label-placement="top">
-            <n-grid :cols="1" :y-gap="18">
+            <!-- 改为2列网格，将复选框移到右侧 -->
+            <n-grid cols="1 s:2" :x-gap="24" responsive="screen">
               <n-form-item-grid-item label="CRON表达式" path="schedule_cron">
                 <n-input v-model:value="configModel.schedule_cron" :disabled="!configModel.schedule_enabled" placeholder="例如: 0 3 * * *" />
               </n-form-item-grid-item>
+              
               <n-form-item-grid-item>
+                <!-- 使用空的label占位，以实现垂直对齐 -->
+                <template #label> </template>
                 <n-checkbox v-model:checked="configModel.schedule_force_reprocess" :disabled="!configModel.schedule_enabled">
-                  定时任务强制重处理所有项目 (将清空已处理记录)
+                  强制重处理
                 </n-checkbox>
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-icon :component="Info24Regular" class="ms-1 align-middle" style="cursor: help;" />
+                  </template>
+                  定时任务强制重处理所有项目 (将清空已处理记录)
+                </n-tooltip>
               </n-form-item-grid-item>
             </n-grid>
           </n-form>
         </n-card>
       </n-gi>
 
-      <!-- 卡片 2: 同步映射表 (无改动) -->
+      <!-- 卡片 2: 同步映射表 -->
       <n-gi>
-        <n-card title="同步演员映射表定时任务" class="glass-section" :bordered="false">
+        <n-card title="同步演员映射表定时任务" class="glass-section" :bordered="false" style="height: 100%;">
           <template #header-extra>
             <n-switch v-model:value="configModel.schedule_sync_map_enabled" />
           </template>
@@ -43,9 +53,9 @@
         </n-card>
       </n-gi>
 
-      <!-- 卡片 3: 智能追剧 (无改动) -->
+      <!-- 卡片 3: 智能追剧 -->
       <n-gi>
-        <n-card title="智能追剧更新定时任务" class="glass-section" :bordered="false">
+        <n-card title="智能追剧更新定时任务" class="glass-section" :bordered="false" style="height: 100%;">
           <template #header-extra>
             <n-tooltip trigger="hover">
               <template #trigger>
@@ -76,9 +86,9 @@
         </n-card>
       </n-gi>
       
-      <!-- 卡片 4: 演员补充外部ID (无改动) -->
+      <!-- 卡片 4: 演员补充外部ID -->
       <n-gi>
-        <n-card title="演员补充外部ID定时任务" class="glass-section" :bordered="false">
+        <n-card title="演员补充外部ID定时任务" class="glass-section" :bordered="false" style="height: 100%;">
           <template #header-extra>
             <n-switch v-model:value="configModel.schedule_enrich_aliases_enabled" />
           </template>
@@ -142,9 +152,9 @@
         </n-card>
       </n-gi>
 
-      <!-- ✨✨✨ 新增卡片：演员名翻译查漏补缺 ✨✨✨ -->
+      <!-- 新增卡片：演员名翻译查漏补缺 -->
       <n-gi>
-        <n-card title="演员名翻译查漏补缺" class="glass-section" :bordered="false">
+        <n-card title="演员名翻译查漏补缺" class="glass-section" :bordered="false" style="height: 100%;">
           <template #header-extra>
             <n-switch v-model:value="configModel.schedule_actor_cleanup_enabled" />
           </template>
@@ -164,11 +174,10 @@
           </n-form>
         </n-card>
       </n-gi>
-      <!-- ✨✨✨ 新增卡片结束 ✨✨✨ -->
 
     </n-grid>
 
-    <!-- 保存按钮 (无改动) -->
+    <!-- 保存按钮 -->
     <n-button size="medium" type="primary" @click="savePageConfig" :loading="savingConfig" block>
       保存定时任务配置
     </n-button>
@@ -180,10 +189,10 @@
 import { watch } from 'vue';
 import {
   NForm, NFormItemGridItem, NInput, NCheckbox, NGrid, NGi,
-  NButton, NCard, NSpace, NSwitch, NTooltip, NInputNumber, NIcon, NText, // 确保导入了所有用到的组件
+  NButton, NCard, NSpace, NSwitch, NTooltip, NInputNumber, NIcon, NText,
   useMessage
 } from 'naive-ui';
-import { Info24Regular } from '@vicons/fluent'; // 确保导入了图标
+import { Info24Regular } from '@vicons/fluent';
 import { useConfig } from '../../composables/useConfig.js';
 
 const message = useMessage();
@@ -200,7 +209,6 @@ const tasksToWatch = [
   { enabledKey: 'schedule_sync_map_enabled', cronKey: 'schedule_sync_map_cron' },
   { enabledKey: 'schedule_enrich_aliases_enabled', cronKey: 'schedule_enrich_aliases_cron' },
   { enabledKey: 'schedule_watchlist_enabled', cronKey: 'schedule_watchlist_cron' },
-  // ✨✨✨ 新增：将新任务加入自动清理逻辑 ✨✨✨
   { enabledKey: 'schedule_actor_cleanup_enabled', cronKey: 'schedule_actor_cleanup_cron' }
 ];
 
