@@ -115,11 +115,12 @@ CONFIG_DEFINITION = {
     constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "0 1 * * *"),
     constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
     constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', constants.DEFAULT_SCHEDULE_WATCHLIST_CRON),
-    # ★★★ 外部ID补充任务配置 ★★★
     constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
     constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "30 2 * * *"),
     constants.CONFIG_OPTION_SCHEDULE_ENRICH_DURATION_MINUTES: (constants.CONFIG_SECTION_SCHEDULER, 'int', 420), # 默认420分钟 = 7小时
     constants.CONFIG_OPTION_SCHEDULE_ENRICH_SYNC_INTERVAL_DAYS: (constants.CONFIG_SECTION_SCHEDULER, 'int', constants.DEFAULT_ENRICH_ALIASES_SYNC_INTERVAL_DAYS),
+    constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', True),
+    constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', constants.DEFAULT_SCHEDULE_ACTOR_CLEANUP_CRON),
 
     # [Authentication]
     constants.CONFIG_OPTION_AUTH_ENABLED: (constants.CONFIG_SECTION_AUTH, 'boolean', False),
@@ -871,12 +872,55 @@ def setup_scheduled_tasks():
     else:
         logger.info("定时外部ID补充任务未启用。")
 
+    # --- ✨✨✨ 演员名翻译查漏补缺任务 ✨✨✨ ---
+    JOB_ID_ACTOR_CLEANUP = 'scheduled_actor_translation_cleanup'
+
+    if scheduler.get_job(JOB_ID_ACTOR_CLEANUP):
+        scheduler.remove_job(JOB_ID_ACTOR_CLEANUP)
+
+    # 使用常量从配置中读取
+    schedule_enabled = config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED, True)
+    cron_expression = config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_CRON, constants.DEFAULT_SCHEDULE_ACTOR_CLEANUP_CRON)
+
+    if schedule_enabled:
+        try:
+            def submit_scheduled_actor_cleanup():
+                logger.info("定时任务触发：准备提交演员名查漏补缺任务到队列。")
+                submit_task_to_queue(
+                    task_actor_translation_cleanup, # 任务包装函数
+                    "定时演员名查漏补缺"
+                )
+
+            scheduler.add_job(
+                func=submit_scheduled_actor_cleanup,
+                trigger=CronTrigger.from_crontab(cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                id=JOB_ID_ACTOR_CLEANUP,
+                name="定时演员名翻译查漏补缺",
+                replace_existing=True,
+            )
+            
+            next_run_str = _get_next_run_time_str(cron_expression)
+            logger.info(f"已设置定时任务：演员名查漏补缺，将{next_run_str}")
+
+        except Exception as e:
+            logger.error(f"设置定时演员名查漏补缺任务失败: {e}", exc_info=True)
+    else:
+        logger.info("定时演员名查漏补缺任务未启用。")
+
     # --- 启动调度器逻辑保持不变 ---
     scan_enabled = config.get("schedule_enabled", False)
     sync_enabled = config.get("schedule_sync_map_enabled", False)
     watchlist_enabled = config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False)
+    actor_cleanup_enabled = config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED, True)
 
-    if not scheduler.running and (scan_enabled or sync_enabled or watchlist_enabled):
+    # 在 if 条件中加入 actor_cleanup_enabled
+    if not scheduler.running and (
+        config.get(constants.CONFIG_OPTION_SCHEDULE_ENABLED, False) or
+        config.get(constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_ENABLED, False) or
+        config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False) or
+        config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED, False) or
+        actor_cleanup_enabled # ✨ 添加我们的新任务标志
+    ):
         try:
             scheduler.start()
             logger.info("APScheduler 已根据任务需求启动。")
@@ -1239,7 +1283,38 @@ def task_reprocess_single_item(processor: MediaProcessor, item_id: str):
     except Exception as e:
         logger.error(f"重新处理 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
         update_status_from_thread(-1, f"重新处理失败: {e}")
+# ---翻译演员任务---
+def task_actor_translation_cleanup(processor):
+    """
+    定时任务包装器：执行演员名翻译的查漏补缺工作。
+    'processor' 参数是为了兼容您现有的 _execute_task_with_lock 框架。
+    """
+    try:
+        logger.info("定时任务开始：执行演员名查漏补缺...")
+        
+        # 从处理器获取必要的参数
+        emby_url = processor.emby_url
+        emby_api_key = processor.emby_api_key
+        user_id = processor.emby_user_id
+        ai_translator = processor.ai_translator
+        stop_event = processor.get_stop_event()
 
+        # 调用您放在 emby_handler.py 中的函数
+        # 注意：这里我们不使用 dry_run=True，因为这是实际的维护任务
+        emby_handler.translate_all_remaining_actors(
+            emby_url=emby_url,
+            emby_api_key=emby_api_key,
+            user_id=user_id,
+            ai_translator=ai_translator,
+            dry_run=False, # 定时任务总是实际执行
+            stop_event=stop_event
+        )
+        logger.info("定时任务完成：演员名查漏补缺执行完毕。")
+
+    except Exception as e:
+        logger.error(f"执行定时演员翻译任务时出错: {e}", exc_info=True)
+        if hasattr(processor, 'update_status'):
+            processor.update_status(-1, f"定时任务失败: {e}")
 
 # ★★★ 重新处理所有待复核项 ★★★
 def task_reprocess_all_review_items(processor: MediaProcessor):

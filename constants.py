@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "2.7.1.1"  # 建议更新版本号，因为我们做了很多重要重构
+APP_VERSION = "2.7.1.2"  # 建议更新版本号，因为我们做了很多重要重构
 DEBUG_MODE = False     # 开发模式开关，部署时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 CONFIG_FILE_NAME = "config.ini" # 主配置文件名
@@ -102,6 +102,11 @@ CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON = "schedule_enrich_aliases_cron"     
 CONFIG_OPTION_SCHEDULE_ENRICH_DURATION_MINUTES = "schedule_enrich_run_duration_minutes" # 外部ID补充任务的运行时长常量
 CONFIG_OPTION_SCHEDULE_ENRICH_SYNC_INTERVAL_DAYS = "schedule_enrich_sync_interval_days"
 DEFAULT_ENRICH_ALIASES_SYNC_INTERVAL_DAYS = 7 # 默认冷却7天
+
+# --- 演员名翻译查漏补缺任务 ---
+CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED = "schedule_actor_cleanup_enabled" # 是否启用演员名翻译查漏补缺任务
+CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_CRON = "schedule_actor_cleanup_cron"       # 演员名翻译查漏补缺的CRON表达式
+DEFAULT_SCHEDULE_ACTOR_CLEANUP_CRON = "0 4 * * *" # 默认每天凌晨4点执行
 # ==============================================================================
 # ✨ 内部常量与映射 (Internal Constants & Mappings)
 # ==============================================================================

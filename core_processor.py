@@ -1005,7 +1005,7 @@ class MediaProcessor:
                 logger.info(f"  - 原有演员: {original_emby_actor_count} 位")
                 newly_added_count = final_actor_count - original_emby_actor_count
                 if newly_added_count > 0:
-                    logger.info(f"  - 新增演员: {newly_added_count} 位") # 可以换个说法
+                    logger.info(f"  - 新增演员: {newly_added_count} 位") 
                 logger.info(f"  - 最终演员: {final_actor_count} 位")
 
                 if self.is_stop_requested(): raise InterruptedError("任务被中止")

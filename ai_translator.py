@@ -185,7 +185,7 @@ class AITranslator:
             return self._translate_fast_mode(unique_texts)
     # ★★★ “翻译快做”小组长 (现在负责分批和调度！) ★★★
     def _translate_fast_mode(self, texts: List[str]) -> Dict[str, str]:
-        CHUNK_SIZE = 20
+        CHUNK_SIZE = 50
         REQUEST_INTERVAL = 1.5
 
         all_results = {}
@@ -224,7 +224,7 @@ class AITranslator:
 
     # ★★★ “顾问精做”小组长 (同样负责分批和调度！) ★★★
     def _translate_quality_mode(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
-        CHUNK_SIZE = 20
+        CHUNK_SIZE = 30
         REQUEST_INTERVAL = 1.5
 
         all_results = {}

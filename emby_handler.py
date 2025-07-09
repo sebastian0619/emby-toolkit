@@ -5,6 +5,7 @@ import os
 import shutil
 import json
 import time
+import utils
 import threading
 from typing import Optional, List, Dict, Any, Generator
 import logging
@@ -871,7 +872,105 @@ def start_library_scan(base_url: str, api_key: str, user_id: str) -> bool:
     except Exception as e:
         logger.error(f"在触发Emby全库扫描时发生未知严重错误: {e}", exc_info=True)
         return False
+# --- 一键翻译演员 ---
+def translate_all_remaining_actors(
+    emby_url: str,
+    emby_api_key: str,
+    user_id: str,
+    ai_translator, # 直接传入已初始化的翻译器实例
+    dry_run: bool = False,
+    stop_event: threading.Event = None # 接受一个停止信号
+):
+    """
+    【查漏补缺版】一键翻译Emby库中所有剩余的、非中文名的演员。
+    这是一个独立的维护工具，用于处理流程中的“漏网之鱼”。
 
+    :param ...: Emby连接参数和AI翻译器实例。
+    :param dry_run: 预览模式。
+    :param stop_event: 用于从外部中断任务的线程事件。
+    """
+    logger.info("🚀【演员查漏补缺】任务启动！")
+    if dry_run:
+        logger.warning("【演员查漏补缺】当前为“预览模式”(Dry Run)，不会对Emby进行任何修改。")
+
+    # 1. 从Emby获取所有演员
+    # 这里的逻辑和之前一样，但我们把它看作一个独立的步骤
+    all_persons = []
+    try:
+        person_generator = get_all_persons_from_emby(
+            base_url=emby_url, api_key=emby_api_key, user_id=user_id, stop_event=stop_event
+        )
+        for person_batch in person_generator:
+            all_persons.extend(person_batch)
+            if stop_event and stop_event.is_set():
+                logger.info("【演员查漏补缺】在获取演员阶段任务被中止。")
+                return
+    except Exception as e:
+        logger.error(f"【演员查漏补缺】获取演员列表失败: {e}", exc_info=True)
+        return
+
+    # 2. 筛选需要翻译的演员
+    names_to_translate = set()
+    name_to_persons_map = {}
+    for person in all_persons:
+        name = person.get("Name")
+        if name and not utils.contains_chinese(name):
+            names_to_translate.add(name)
+            if name not in name_to_persons_map:
+                name_to_persons_map[name] = []
+            name_to_persons_map[name].append(person)
+
+    if not names_to_translate:
+        logger.info("【演员查漏补缺】太棒了！没有发现需要翻译的演员名，所有演员都已中文化。")
+        return
+
+    logger.info(f"【演员查漏补缺】发现 {len(names_to_translate)} 个独特的英文名需要翻译。")
+
+    # 3. 执行批量翻译 (由于数量不多，可以不分批，或者保留小批量逻辑以防万一)
+    try:
+        translation_map = ai_translator.batch_translate(
+            texts=list(names_to_translate), mode="fast"
+        )
+    except Exception as e:
+        logger.error(f"【演员查漏补缺】批量翻译失败: {e}", exc_info=True)
+        return
+
+    if not translation_map:
+        logger.warning("【演员查漏补缺】翻译引擎未能返回任何结果。")
+        return
+
+    # 4. 更新回Emby
+    update_count = 0
+    for original_name, translated_name in translation_map.items():
+        if stop_event and stop_event.is_set():
+            logger.info("【演员查漏补缺】在更新阶段任务被中止。")
+            break
+        if not translated_name or original_name == translated_name:
+            continue
+
+        persons_to_update = name_to_persons_map.get(original_name, [])
+        for person in persons_to_update:
+            emby_person_id = person.get("Id")
+            log_msg = f"准备更新: '{original_name}' -> '{translated_name}' (ID: {emby_person_id})"
+            if dry_run:
+                logger.info(f"  [预览] {log_msg}")
+                update_count += 1
+                continue
+
+            logger.info(f"  {log_msg}")
+            success = update_person_details(
+                person_id=emby_person_id,
+                new_data={"Name": translated_name},
+                emby_server_url=emby_url,
+                emby_api_key=emby_api_key,
+                user_id=user_id
+            )
+            if success:
+                update_count += 1
+                time.sleep(0.2)
+
+    final_message = "预览完成" if dry_run else "处理完成"
+    logger.info(f"🎉【演员查漏补缺】任务{final_message}！共更新了 {update_count} 个演员名。")
 # if __name__ == '__main__':
 #     TEST_EMBY_SERVER_URL = "http://192.168.31.163:8096"
 #     TEST_EMBY_API_KEY = "eaa73b828ac04b1bb6d3687a0117572c"

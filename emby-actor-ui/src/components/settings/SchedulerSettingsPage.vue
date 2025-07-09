@@ -6,7 +6,7 @@
     <!-- 使用 n-grid 实现响应式两列布局 -->
     <n-grid cols="1 s:2" :x-gap="24" :y-gap="24" responsive="screen">
       
-      <!-- 卡片 1: 全量扫描 -->
+      <!-- 卡片 1: 全量扫描 (无改动) -->
       <n-gi>
         <n-card title="全量扫描定时任务" class="glass-section" :bordered="false">
           <template #header-extra>
@@ -27,7 +27,7 @@
         </n-card>
       </n-gi>
 
-      <!-- 卡片 2: 同步映射表 -->
+      <!-- 卡片 2: 同步映射表 (无改动) -->
       <n-gi>
         <n-card title="同步演员映射表定时任务" class="glass-section" :bordered="false">
           <template #header-extra>
@@ -43,7 +43,7 @@
         </n-card>
       </n-gi>
 
-      <!-- 卡片 3: 智能追剧 -->
+      <!-- 卡片 3: 智能追剧 (无改动) -->
       <n-gi>
         <n-card title="智能追剧更新定时任务" class="glass-section" :bordered="false">
           <template #header-extra>
@@ -76,15 +76,14 @@
         </n-card>
       </n-gi>
       
-      <!-- 卡片 4: 演员补充外部ID -->
+      <!-- 卡片 4: 演员补充外部ID (无改动) -->
       <n-gi>
         <n-card title="演员补充外部ID定时任务" class="glass-section" :bordered="false">
           <template #header-extra>
             <n-switch v-model:value="configModel.schedule_enrich_aliases_enabled" />
           </template>
           <n-form :model="configModel" label-placement="top">
-            <!-- ✨ 使用 n-grid 来更好地布局两个输入框 ✨ -->
-            <n-grid :cols="3" :x-gap="12"> <!-- ✨ 1. 建议将列数改为 3，布局更美观 -->
+            <n-grid :cols="3" :x-gap="12">
               <n-gi>
                 <n-form-item-grid-item label="CRON表达式" path="schedule_enrich_aliases_cron">
                   <n-input 
@@ -104,12 +103,10 @@
                     placeholder="0 表示不限制"
                     style="width: 100%;"
                   >
-                    <template #suffix>分钟</template> <!-- 增加单位，更清晰 -->
+                    <template #suffix>分钟</template>
                   </n-input-number>
                 </n-form-item-grid-item>
               </n-gi>
-              
-              <!-- ✨✨✨ 2. 在这里添加新的 Grid Item ✨✨✨ -->
               <n-gi>
                 <n-form-item-grid-item label="同步冷却时间 (天)" path="schedule_enrich_sync_interval_days">
                   <template #label>
@@ -134,7 +131,6 @@
                 </n-form-item-grid-item>
               </n-gi>
             </n-grid>
-            <!-- ✨✨✨ 新增的帮助文本 ✨✨✨ -->
             <template #feedback>
               <n-text depth="3" style="font-size:0.8em;">
                 在后台扫描数据库，为缺少别名、ImdbID的演员补充信息。这是一个耗时操作，建议在服务器空闲时执行。
@@ -146,9 +142,33 @@
         </n-card>
       </n-gi>
 
+      <!-- ✨✨✨ 新增卡片：演员名翻译查漏补缺 ✨✨✨ -->
+      <n-gi>
+        <n-card title="演员名翻译查漏补缺" class="glass-section" :bordered="false">
+          <template #header-extra>
+            <n-switch v-model:value="configModel.schedule_actor_cleanup_enabled" />
+          </template>
+          <n-form :model="configModel" label-placement="top">
+            <n-grid :cols="1">
+              <n-form-item-grid-item label="CRON表达式" path="schedule_actor_cleanup_cron">
+                <n-input 
+                  v-model:value="configModel.schedule_actor_cleanup_cron" 
+                  :disabled="!configModel.schedule_actor_cleanup_enabled" 
+                  placeholder="例如: 0 4 * * * (每天凌晨4点)" 
+                />
+                <template #feedback>
+                  自动翻译Emby中所有非中文的演员名，用于修正处理流程中的“漏网之鱼”。
+                </template>
+              </n-form-item-grid-item>
+            </n-grid>
+          </n-form>
+        </n-card>
+      </n-gi>
+      <!-- ✨✨✨ 新增卡片结束 ✨✨✨ -->
+
     </n-grid>
 
-    <!-- 保存按钮 -->
+    <!-- 保存按钮 (无改动) -->
     <n-button size="medium" type="primary" @click="savePageConfig" :loading="savingConfig" block>
       保存定时任务配置
     </n-button>
@@ -159,10 +179,11 @@
 <script setup>
 import { watch } from 'vue';
 import {
-  NForm, NFormItemGridItem, NInput, NCheckbox, NGrid, NGi, // 添加了 NGi
-  NButton, NCard, NSpace, NSwitch, NTooltip,
+  NForm, NFormItemGridItem, NInput, NCheckbox, NGrid, NGi,
+  NButton, NCard, NSpace, NSwitch, NTooltip, NInputNumber, NIcon, NText, // 确保导入了所有用到的组件
   useMessage
 } from 'naive-ui';
+import { Info24Regular } from '@vicons/fluent'; // 确保导入了图标
 import { useConfig } from '../../composables/useConfig.js';
 
 const message = useMessage();
@@ -174,12 +195,13 @@ const {
     configError
 } = useConfig();
 
-// 【重构版】为所有任务的CRON输入框添加自动清理逻辑 (这部分逻辑无需改动)
 const tasksToWatch = [
   { enabledKey: 'schedule_enabled', cronKey: 'schedule_cron' },
   { enabledKey: 'schedule_sync_map_enabled', cronKey: 'schedule_sync_map_cron' },
   { enabledKey: 'schedule_enrich_aliases_enabled', cronKey: 'schedule_enrich_aliases_cron' },
-  { enabledKey: 'schedule_watchlist_enabled', cronKey: 'schedule_watchlist_cron' }
+  { enabledKey: 'schedule_watchlist_enabled', cronKey: 'schedule_watchlist_cron' },
+  // ✨✨✨ 新增：将新任务加入自动清理逻辑 ✨✨✨
+  { enabledKey: 'schedule_actor_cleanup_enabled', cronKey: 'schedule_actor_cleanup_cron' }
 ];
 
 tasksToWatch.forEach(({ enabledKey, cronKey }) => {
