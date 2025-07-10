@@ -3,6 +3,7 @@
 import os
 import json
 import sqlite3
+import concurrent.futures
 from typing import Dict, List, Optional, Any, Tuple
 import shutil
 import threading
@@ -899,11 +900,11 @@ class MediaProcessor:
                 if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
                     logger.info(f"{log_prefix} [逐集JSON模式] 开始为 '{item_name_for_log}' 的所有分集生成覆盖元数据...")
 
-                    # --- 步骤1: 确定需要处理的所有分集 (季号, 集号) 的列表 ---
+                    # --- 步骤1: 高效确定需要处理的所有分集 (季号, 集号) 的列表 ---
                     episodes_to_process = set()
                     
                     if not should_fetch_online:
-                        # 【本地模式】: 主要依据是扫描 cache 目录
+                        # 【本地模式】: 速度很快，无需优化
                         logger.debug(f"{log_prefix} 正在扫描本地缓存目录以确定分集列表...")
                         if os.path.exists(base_cache_dir):
                             for filename in os.listdir(base_cache_dir):
@@ -916,65 +917,123 @@ class MediaProcessor:
                                     except (IndexError, ValueError):
                                         continue
                     else:
-                        # 【在线模式】: 必须主动从TMDb获取季和集的信息
-                        logger.debug(f"{log_prefix} 正在从TMDb在线获取剧集结构以确定分集列表...")
+                        # 【在线模式】: 性能优化的核心区域 - 加入分块逻辑
+                        logger.debug(f"{log_prefix} 正在从TMDb分批在线获取剧集完整结构...")
                         if base_json_data_original and base_json_data_original.get("seasons"):
-                            for season_summary in base_json_data_original.get("seasons", []):
-                                season_num = season_summary.get("season_number")
-                                # TMDb的季详情通常包含该季所有集的列表
-                                season_details = tmdb_handler.get_season_details_tmdb(
-                                    tv_id=tmdb_id, season_number=season_num, api_key=self.tmdb_api_key
+                            # 1.1: 从基础信息中获取所有季号
+                            season_numbers = [
+                                s.get("season_number") for s in base_json_data_original.get("seasons", [])
+                                if s.get("season_number") is not None and s.get("season_number") >= 0
+                            ]
+                            
+                            # 1.2: 定义分块大小，TMDb限制为20，我们用19或18以留有余地
+                            CHUNK_SIZE = 18 
+                            
+                            # 1.3: 对季号列表进行分块
+                            season_chunks = [season_numbers[i:i + CHUNK_SIZE] for i in range(0, len(season_numbers), CHUNK_SIZE)]
+                            
+                            logger.info(f"剧集共有 {len(season_numbers)} 个季，将分 {len(season_chunks)} 批次获取详情。")
+
+                            # 1.4: 逐批次请求并解析
+                            for i, chunk in enumerate(season_chunks):
+                                logger.debug(f"正在获取批次 {i+1}/{len(season_chunks)} 的季详情...")
+                                append_str = ",".join([f"season/{s_num}" for s_num in chunk])
+                                
+                                if not append_str:
+                                    continue
+
+                                full_tv_details_chunk = tmdb_handler.get_tv_details_tmdb(
+                                    tv_id=tmdb_id,
+                                    api_key=self.tmdb_api_key,
+                                    append_to_response=append_str
                                 )
-                                if season_details and season_details.get("episodes"):
-                                    for episode_summary in season_details.get("episodes", []):
-                                        episode_num = episode_summary.get("episode_number")
-                                        if season_num is not None and episode_num is not None:
-                                            episodes_to_process.add((season_num, episode_num))
+
+                                if full_tv_details_chunk:
+                                    for s_num in chunk:
+                                        season_details = full_tv_details_chunk.get(f"season/{s_num}")
+                                        if season_details and season_details.get("episodes"):
+                                            for episode_summary in season_details.get("episodes", []):
+                                                episode_num = episode_summary.get("episode_number")
+                                                if episode_num is not None:
+                                                    episodes_to_process.add((s_num, episode_num))
+                                else:
+                                    logger.warning(f"获取批次 {i+1} 的数据失败，跳过该批次的 {len(chunk)} 个季。")
 
                     if not episodes_to_process:
                         logger.warning(f"未能确定 '{item_name_for_log}' 的任何分集文件，跳过处理。")
                     else:
                         logger.info(f"将为 {len(episodes_to_process)} 个分集文件生成覆盖元数据...")
 
-                        # --- 步骤2: 遍历所有确定的分集并执行修改 ---
-                        for season_num, episode_num in sorted(list(episodes_to_process)):
-                            filename = f"season-{season_num}-episode-{episode_num}.json"
-                            child_json_original = None
-                            
-                            # --- 步骤3: 获取原始分集JSON ---
-                            local_child_path = os.path.join(base_cache_dir, filename)
-                            # 优先从本地缓存读取，即使是在线模式（可能之前缓存过）
-                            if os.path.exists(local_child_path):
-                                child_json_original = _read_local_json(local_child_path)
+                        # --- 步骤2 & 3: 并发获取所有分集的基础数据 ---
+                        
+                        # 2.1: 分离本地已有的和需要在线获取的
+                        episodes_data = {}
+                        episodes_to_fetch_online = []
+                        for season_num, episode_num in episodes_to_process:
+                            local_path = os.path.join(base_cache_dir, f"season-{season_num}-episode-{episode_num}.json")
+                            if os.path.exists(local_path):
+                                json_data = _read_local_json(local_path)
+                                if json_data:
+                                    episodes_data[(season_num, episode_num)] = json_data
                             elif self.tmdb_api_key:
-                                # 如果本地没有，才在线获取
-                                child_json_original = tmdb_handler.get_episode_details_tmdb(
-                                    tv_id=tmdb_id, season_number=season_num, episode_number=episode_num,
-                                    api_key=self.tmdb_api_key,
-                                    append_to_response="credits,guest_stars",
-                                    item_name=item_name_for_log
-                                )
+                                episodes_to_fetch_online.append((season_num, episode_num))
+
+                        # 2.2: 使用线程池并发获取所有需要在线下载的数据
+                        if episodes_to_fetch_online:
+                            logger.info(f"本地缓存缺失，需要在线并发获取 {len(episodes_to_fetch_online)} 个分集的元数据...")
                             
+                            # 定义一个独立的获取函数，便于在线程池中调用
+                            def fetch_episode_details(s_num, e_num):
+                                try:
+                                    details = tmdb_handler.get_episode_details_tmdb(
+                                        tv_id=tmdb_id, season_number=s_num, episode_number=e_num,
+                                        api_key=self.tmdb_api_key,
+                                        append_to_response="credits,guest_stars", # credits和guest_stars其实不需要，因为会被覆盖，但保留以防万一
+                                        item_name=item_name_for_log # 用于日志
+                                    )
+                                    return (s_num, e_num), details
+                                except Exception as e:
+                                    logger.error(f"并发获取 S{s_num:02d}E{e_num:02d} 时发生错误: {e}")
+                                    return (s_num, e_num), None
+
+                            # 设置合理的并发数，TMDb API有速率限制（通常是40-50个请求/10秒），设置10-20比较安全
+                            MAX_WORKERS = self.config.get("tmdb_concurrency", 15) 
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                                future_to_episode = {executor.submit(fetch_episode_details, s, e): (s, e) for s, e in episodes_to_fetch_online}
+                                
+                                for future in concurrent.futures.as_completed(future_to_episode):
+                                    key, data = future.result()
+                                    if data:
+                                        episodes_data[key] = data
+                                    else:
+                                        logger.warning(f"无法获取 S{key[0]:02d}E{key[1]:02d} 的基础数据，跳过。")
+
+                        # --- 步骤4 & 5: 遍历已获取的数据并写入文件 ---
+                        logger.info(f"已获取所有分集数据，开始写入覆盖文件...")
+                        for (season_num, episode_num), child_json_original in sorted(episodes_data.items()):
                             if not child_json_original:
-                                logger.warning(f"无法获取 S{season_num:02d}E{episode_num:02d} 的基础数据，跳过。")
                                 continue
 
-                            # --- 步骤4: 在副本上替换演员表 ---
+                            # 4. 在副本上替换演员表
                             child_json_for_override = copy.deepcopy(child_json_original)
                             child_json_for_override.setdefault("credits", {})["cast"] = final_cast_perfect
                             child_json_for_override["guest_stars"] = []
                             
-                            # --- 步骤5: 写入覆盖文件 ---
+                            # 5. 安全地写入覆盖文件
+                            filename = f"season-{season_num}-episode-{episode_num}.json"
                             override_child_path = os.path.join(base_override_dir, filename)
                             try:
                                 temp_child_path = f"{override_child_path}.{random.randint(1000, 9999)}.tmp"
                                 with open(temp_child_path, 'w', encoding='utf-8') as f:
                                     json.dump(child_json_for_override, f, ensure_ascii=False, indent=4)
                                 os.replace(temp_child_path, override_child_path)
-                                logger.debug(f"成功为 {filename} 生成了覆盖文件。")
+                                # 日志可以减少一些，避免刷屏
+                                # logger.debug(f"成功为 {filename} 生成了覆盖文件。")
                             except Exception as e:
                                 logger.error(f"写入分集JSON失败: {override_child_path}, {e}")
                                 if os.path.exists(temp_child_path): os.remove(temp_child_path)
+                        
+                        logger.info("所有分集覆盖文件写入完成。")
 
 
                 # 【同步图片】

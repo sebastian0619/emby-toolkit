@@ -51,7 +51,7 @@ def clean_character_name_static(character_name: Optional[str]) -> str:
     name = str(character_name).strip()
 
     # 移除括号和中括号的内容
-    name = re.sub(r'\(.*?\)|\[.*?\]', '', name).strip()
+    name = re.sub(r'\(.*?\)|\[.*?\]|（.*?）|【.*?】', '', name).strip()
 
     # 移除 as 前缀（如 "as Kevin"）
     name = re.sub(r'^(as\s+)', '', name, flags=re.IGNORECASE).strip()
