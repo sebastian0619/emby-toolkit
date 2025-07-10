@@ -795,7 +795,6 @@ class MediaProcessor:
                 if not tmdb_id or not self.local_data_path:
                     error_msg = "缺少TMDbID" if not tmdb_id else "未配置本地数据路径"
                     logger.warning(f"【JSON轨道】跳过处理 '{item_name_for_log}'，原因: {error_msg}。")
-                    conn.commit()
                     return False
                 
                 cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
@@ -1128,7 +1127,6 @@ class MediaProcessor:
                     self.log_db_manager.remove_from_failed_log(cursor, item_id)
                 
                 logger.info(f"✨✨✨处理完成 '{item_name_for_log}'✨✨✨")
-                conn.commit()
                 return True
 
         except (ValueError, InterruptedError) as e:
