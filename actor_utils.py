@@ -485,22 +485,22 @@ def format_douban_cast(douban_api_actors_raw: List[Dict[str, Any]]) -> List[Dict
 # ✨✨✨格式化演员表✨✨✨
 def format_and_complete_cast_list(cast_list: List[Dict[str, Any]], is_animation: bool, config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    【共享工具 V7 - 依赖注入版】对最终的演员列表进行格式化（角色名、排序）。
-    配置通过参数传入，不再依赖任何全局变量。
+    【最终修正版 - 由您指导】只做角色名格式化，严格保持原始排序。
     """
-    perfect_cast = []
+    # 我们不再需要 perfect_cast 列表，直接在原始列表上修改，或者创建一个新列表
+    final_cast = []
     
-    # ▼▼▼ 从传入的 config 参数中获取配置 ▼▼▼
     add_role_prefix = config.get(constants.CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX, False)
-
-    logger.info(f"格式化演员列表：开始处理角色名和排序 (角色名前缀开关: {'开' if add_role_prefix else '关'})。")
-
-    # 1. (代码整洁) 将 generic_roles 的定义提前，避免重复
+    logger.info(f"格式化演员列表：开始处理角色名 (角色名前缀开关: {'开' if add_role_prefix else '关'})。")
     generic_roles = {"演员", "配音"}
 
-    for idx, actor in enumerate(cast_list):
-        # 2. (核心修复) 安全地处理 character 可能为 None 的情况
-        character_name = actor.get("character")  
+    # 我们只循环，只改角色名，绝对不碰 'order'！
+    for actor in cast_list:
+        # 1. 复制一份演员信息，避免修改原始传入的列表（好习惯）
+        new_actor = actor.copy()
+
+        # 2. 执行您需要的、有用的角色名格式化逻辑
+        character_name = new_actor.get("character")  
         final_role = character_name.strip() if character_name else ""
         
         if utils.contains_chinese(final_role):
@@ -516,21 +516,16 @@ def format_and_complete_cast_list(cast_list: List[Dict[str, Any]], is_animation:
             if not final_role:
                 final_role = "配音" if is_animation else "演员"
         
-        actor["character"] = final_role
-        actor["order"] = idx
-        perfect_cast.append(actor)
-            
-    logger.info(f"对演员列表进行最终排序，将通用角色名（如 {', '.join(generic_roles)}）排到末尾。")
+        new_actor["character"] = final_role
+        
+        final_cast.append(new_actor)
+    logger.info("所有格式化已完成，现在根据原始TMDb顺序进行最终排序。")
+    final_cast.sort(key=lambda actor: actor.get('order', 999))
     
-    perfect_cast.sort(key=lambda actor: (
-        1 if actor.get("character") in generic_roles else 0, 
-        actor.get("order")
-    ))
-    
-    for new_idx, actor in enumerate(perfect_cast):
+    for new_idx, actor in enumerate(final_cast):
         actor["order"] = new_idx
         
-    return perfect_cast
+    return final_cast
 # --- 用于获取单个演员的TMDb详情 ---
 def fetch_tmdb_details_for_actor(actor_info: Dict, tmdb_api_key: str) -> Optional[Dict]:
     """一个独立的、可在线程中运行的函数，用于获取单个演员的TMDb详情。"""
@@ -737,4 +732,3 @@ def enrich_all_actor_aliases_task(
         if conn and conn.in_transaction: conn.rollback()
     finally:
         logger.info("--- “演员ID补充”计划任务已退出 ---")
-

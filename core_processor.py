@@ -378,7 +378,7 @@ class MediaProcessor:
                             new_actor_entry = {
                                 "id": tmdb_id_from_map, "name": d_actor.get("Name"), "original_name": d_actor.get("OriginalName"),
                                 "character": d_actor.get("Role"), "adult": False, "gender": 0, "known_for_department": "Acting",
-                                "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": -1,
+                                "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": 999,
                                 "imdb_id": entry["imdb_id"], "douban_id": d_douban_id, "_is_newly_added": True
                             }
                             final_cast_map[tmdb_id_from_map] = new_actor_entry
@@ -433,7 +433,7 @@ class MediaProcessor:
                                 new_actor_entry = {
                                     "id": tmdb_id_from_map, "name": d_actor.get("Name"), "original_name": d_actor.get("OriginalName"),
                                     "character": d_actor.get("Role"), "adult": False, "gender": 0, "known_for_department": "Acting",
-                                    "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": -1,
+                                    "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": 999,
                                     "imdb_id": d_imdb_id, "douban_id": d_douban_id, "_is_newly_added": True
                                 }
                                 final_cast_map[tmdb_id_from_map] = new_actor_entry
@@ -468,7 +468,7 @@ class MediaProcessor:
                                     new_actor_entry = {
                                         "id": tmdb_id_from_find, "name": d_actor.get("Name"), "original_name": d_actor.get("OriginalName"),
                                         "character": d_actor.get("Role"), "adult": False, "gender": 0, "known_for_department": "Acting",
-                                        "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": -1,
+                                        "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": 999,
                                         "imdb_id": d_imdb_id, "douban_id": d_douban_id, "_is_newly_added": True
                                     }
                                     final_cast_map[tmdb_id_from_find] = new_actor_entry
@@ -611,7 +611,7 @@ class MediaProcessor:
                 # 使用 .get(key, default_value) 来安全地处理，如果没在缓存里，就用原文
                 translated_name = translation_cache.get(original_name, original_name)
                 if original_name != translated_name:
-                    logger.debug(f"  演员名翻译: '{original_name}' -> '{translated_name}'")
+                    logger.info(f"  演员名翻译: '{original_name}' -> '{translated_name}'")
                 actor['name'] = translated_name
 
                 # 2. 处理角色名
@@ -623,7 +623,7 @@ class MediaProcessor:
                     
                     if translated_character != original_character:
                         actor_name_for_log = actor.get('name', '未知演员')
-                        logger.debug(f"  角色名翻译: '{original_character}' -> '{translated_character}' (演员: {actor_name_for_log})")
+                        logger.info(f"  角色名翻译: '{original_character}' -> '{translated_character}' (演员: {actor_name_for_log})")
                     
                     actor['character'] = translated_character
                     
@@ -877,12 +877,41 @@ class MediaProcessor:
                 
                 final_cast_perfect = actor_utils.format_and_complete_cast_list(intermediate_cast, is_animation, self.config)
         
-                # --- 阶段2: 文件写入 ---
-                base_json_data_for_override = copy.deepcopy(base_json_data_original)
+                # --- 阶段2: 文件写入 (最终白纸作画版) ---
+
+                logger.debug("正在创建全新的、干净的JSON结构，避免任何污染...")
+                base_json_data_for_override = {}
+                safe_fields_whitelist = [
+                    "backdrop_path", "episode_run_time", "first_air_date", "genres",
+                    "homepage", "id", "in_production", "languages", "last_air_date",
+                    "name", "networks", "number_of_episodes", "number_of_seasons",
+                    "origin_country", "original_language", "original_name", "overview",
+                    "popularity", "poster_path", "production_companies", "production_countries",
+                    "seasons", "spoken_languages", "status", "tagline", "type",
+                    "vote_average", "vote_count", "english_name"
+                ]
+                for field in safe_fields_whitelist:
+                    if field in base_json_data_original:
+                        base_json_data_for_override[field] = base_json_data_original[field]
+
+                # 2. 【【【【【 最终核心修正：逻辑分岔 】】】】】
+                #    我们根据媒体类型，写入它们各自需要的、专属的演员表结构。
+
                 if item_type == "Movie":
+                    # ==================================================
+                    # ★★★ 电影路径：写入 'casts' 结构 ★★★
+                    # ==================================================
+                    logger.debug("【电影模式】正在准备写入 'casts' 演员表结构...")
                     base_json_data_for_override.setdefault("casts", {})["cast"] = final_cast_perfect
-                else:
+
+                else: # item_type == "Series"
+                    # ==================================================
+                    # ★★★ 电视剧路径：写入 'credits' 结构 ★★★
+                    # ==================================================
+                    logger.debug("【电视剧模式】正在准备写入 'credits' 演员表结构...")
                     base_json_data_for_override.setdefault("credits", {})["cast"] = final_cast_perfect
+
+
                 
                 override_json_path = os.path.join(base_override_dir, base_json_filename)
                 temp_json_path = f"{override_json_path}.{random.randint(1000, 9999)}.tmp"
