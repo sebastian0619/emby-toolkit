@@ -668,7 +668,7 @@ def enrich_all_actor_aliases_task(
             cursor = conn.cursor()
             sql_find_douban_needy = f"""
                 SELECT * FROM person_identity_map 
-                WHERE douban_celebrity_id IS NOT NULL AND imdb_id IS NULL
+                WHERE douban_celebrity_id IS NOT NULL AND imdb_id IS NULL AND tmdb_person_id IS NULL
                 AND (last_synced_at IS NULL OR last_synced_at < datetime('now', '-{SYNC_INTERVAL_DAYS} days'))
                 ORDER BY last_synced_at ASC
             """
@@ -678,20 +678,22 @@ def enrich_all_actor_aliases_task(
                 total_douban = len(actors_for_douban)
                 logger.info(f"找到 {total_douban} 位演员需要从豆瓣补充 IMDb ID。")
                 
+                processed_count = 0
                 for i, actor in enumerate(actors_for_douban):
                     if (stop_event and stop_event.is_set()) or (time.time() >= end_time): break
                     
+                    processed_count = i + 1
                     actor_map_id = actor['map_id']
                     actor_douban_id = actor['douban_celebrity_id']
+                    actor_primary_name = actor['primary_name']
                     
                     try:
-                        details = douban_api.celebrity_details(actor_douban_id)
-                        
-                        # ✨ V3-FIX: 无论成功与否，只要API调用没抛异常，就更新同步时间
-                        # 这样可以避免因API返回空而反复请求
+                        # 无论如何，先更新同步时间，避免因任何错误导致反复请求
                         sql_update_sync = "UPDATE person_identity_map SET last_synced_at = CURRENT_TIMESTAMP WHERE map_id = ?"
                         cursor.execute(sql_update_sync, (actor_map_id,))
 
+                        details = douban_api.celebrity_details(actor_douban_id)
+                        
                         if details and not details.get("error"):
                             new_imdb_id = None
                             for item in details.get("extra", {}).get("info", []):
@@ -699,25 +701,54 @@ def enrich_all_actor_aliases_task(
                                     new_imdb_id = item[1]
                                     break
                             
-                            # ✨ V3-FIX: 核心修复，只在找到ID时执行精确的UPDATE
                             if new_imdb_id:
-                                logger.info(f"  ({i+1}/{total_douban}) 为演员 '{actor['primary_name']}' (Douban: {actor_douban_id}) 找到 IMDb ID: {new_imdb_id}")
+                                logger.info(f"  ({i+1}/{total_douban}) 为演员 '{actor_primary_name}' (Douban: {actor_douban_id}) 找到 IMDb ID: {new_imdb_id}")
                                 
-                                # 使用精确的 UPDATE，彻底抛弃 upsert_person
-                                sql_update_imdb = "UPDATE person_identity_map SET imdb_id = ? WHERE map_id = ?"
-                                cursor.execute(sql_update_imdb, (new_imdb_id, actor_map_id))
-                        
-                        # ✨ V3-FIX: 采用更简单的分批提交逻辑
+                                try:
+                                    # 尝试直接更新
+                                    sql_update_imdb = "UPDATE person_identity_map SET imdb_id = ? WHERE map_id = ?"
+                                    cursor.execute(sql_update_imdb, (new_imdb_id, actor_map_id))
+                                
+                                # ★★★ 核心修复：捕获唯一性约束冲突的特定异常 ★★★
+                                except sqlite3.IntegrityError as ie:
+                                    if "UNIQUE constraint failed" in str(ie):
+                                        logger.warning(f"  -> 检测到 IMDb ID '{new_imdb_id}' 冲突。将尝试合并记录。")
+                                        
+                                        # 1. 找到已存在该 IMDb ID 的目标记录
+                                        sql_find_target = "SELECT map_id FROM person_identity_map WHERE imdb_id = ?"
+                                        target_actor = cursor.execute(sql_find_target, (new_imdb_id,)).fetchone()
+                                        
+                                        if target_actor:
+                                            target_map_id = target_actor['map_id']
+                                            
+                                            # 2. 将当前记录的 douban_id 合并到目标记录
+                                            sql_merge_douban = "UPDATE person_identity_map SET douban_celebrity_id = ? WHERE map_id = ?"
+                                            cursor.execute(sql_merge_douban, (actor_douban_id, target_map_id))
+                                            
+                                            # 3. 删除当前这条重复的记录
+                                            sql_delete_source = "DELETE FROM person_identity_map WHERE map_id = ?"
+                                            cursor.execute(sql_delete_source, (actor_map_id,))
+                                            
+                                            logger.info(f"  -> 成功将 '{actor_primary_name}' (map_id: {actor_map_id}) 的豆瓣ID合并到记录 (map_id: {target_map_id}) 并删除原记录。")
+                                        else:
+                                            # 理论上不应该发生，但作为保护
+                                            logger.error(f"  -> 发生冲突但未能找到 IMDb ID '{new_imdb_id}' 的目标记录，合并失败。")
+                                    else:
+                                        # 如果是其他完整性错误，则重新抛出
+                                        raise ie
+
+                        # 每处理50条提交一次事务
                         if (i + 1) % 50 == 0:
                             logger.info(f"  -> 已处理50条，提交数据库事务...")
                             conn.commit()
 
                     except Exception as e:
-                        logger.error(f"从豆瓣获取详情失败 (ID: {actor_douban_id}): {e}")
+                        # 修改这里的日志，使其更准确
+                        logger.error(f"处理演员 '{actor_primary_name}' (Douban: {actor_douban_id}) 时发生错误: {e}")
                 
                 # 循环结束后，提交剩余的更改
                 conn.commit()
-                logger.info(f"豆瓣信息补充完成，本轮共处理 {i + 1} 个。")
+                logger.info(f"豆瓣信息补充完成，本轮共处理 {processed_count} 个。")
             else:
                 logger.info("没有需要从豆瓣补充 IMDb ID 的演员。")
             
