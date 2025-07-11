@@ -1445,8 +1445,11 @@ class MediaProcessor:
                             continue
                         
                         updated_actor_data = copy.deepcopy(original_actor_data)
+                        role_from_frontend = actor_from_frontend.get('role')
+                        cleaned_role = utils.clean_character_name_static(role_from_frontend)
+                        
                         updated_actor_data['name'] = actor_from_frontend.get('name')
-                        updated_actor_data['character'] = actor_from_frontend.get('role')
+                        updated_actor_data['character'] = cleaned_role
                         
                         intermediate_cast.append(updated_actor_data)
 
