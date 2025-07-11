@@ -1405,20 +1405,17 @@ class MediaProcessor:
     # ✨✨✨手动处理✨✨✨
     def process_item_with_manual_cast(self, item_id: str, manual_cast_list: List[Dict[str, Any]], item_name: str) -> bool:
         """
-        【V5 - 格式化增强版】使用前端提交的轻量级修改，与内存中的完整数据合并，并应用最终的格式化步骤。
+        【V6 - API同步最终版】在手动处理中，增加API轨道，确保用户修改的演员名能实时同步到Emby。
         """
-        logger.info(f"手动处理流程启动 (后端缓存模式)：ItemID: {item_id} ('{item_name}')")
+        logger.info(f"手动处理流程启动 (API同步模式)：ItemID: {item_id} ('{item_name}')")
         try:
-            # ✨✨✨ 1. 使用 with 语句，在所有操作开始前获取数据库连接 ✨✨✨
             with get_central_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
-
-                # ✨✨✨ 2. 手动开启一个事务 ✨✨✨
                 cursor.execute("BEGIN TRANSACTION;")
                 logger.debug(f"手动处理 (ItemID: {item_id}) 的数据库事务已开启。")
             
                 try:
-                    # ★★★ 1. 从内存缓存中获取这个会话的完整原始演员列表 ★★★
+                    # 1. 从内存缓存中获取这个会话的完整原始演员列表
                     original_full_cast = self.manual_edit_cache.get(item_id)
                     if not original_full_cast:
                         raise ValueError(f"在内存缓存中找不到 ItemID {item_id} 的原始演员数据。请重新进入编辑页面。")
@@ -1430,10 +1427,34 @@ class MediaProcessor:
                     item_type = item_details.get("Type")
                     if not tmdb_id: raise ValueError(f"项目 {item_id} 缺少 TMDb ID。")
 
-                    # 3. 构建一个以 TMDb ID 为键的原始数据映射表，方便查找
+                    # =================================================================
+                    # ★★★ 3.【【【 新增核心：API轨道 & 持久化用户选择 】】】★★★
+                    # =================================================================
+                    logger.info("手动处理：开始将前端修改的演员名持久化到本地数据库...")
+                    # 3.1. 将用户在前端的修改，更新到我们的 person_name_cache 数据库中
+                    for actor_from_frontend in manual_cast_list:
+                        frontend_tmdb_id = actor_from_frontend.get("tmdbId")
+                        new_name = actor_from_frontend.get("name")
+                        if frontend_tmdb_id and new_name:
+                            # 使用 INSERT OR REPLACE 来确保数据是最新的
+                            cursor.execute(
+                                "INSERT OR REPLACE INTO person_name_cache (tmdb_id, name) VALUES (?, ?)",
+                                (str(frontend_tmdb_id), new_name)
+                            )
+                    logger.debug("前端演员名已全部同步到数据库缓存。")
+
+                    # 3.2. 调用与自动流程相同的API轨道，让Emby立即更新演员名
+                    logger.info("手动处理：启动API轨道，直接更新Emby中的演员名称...")
+                    self._process_api_track_person_names_only(
+                        item_details_from_emby=item_details
+                    )
+                    logger.info("API轨道执行完毕。")
+                    # =================================================================
+
+                    # 4. 构建一个以 TMDb ID 为键的原始数据映射表，方便查找
                     reliable_cast_map = {str(actor['id']): actor for actor in original_full_cast if actor.get('id')}
 
-                    # 4. 遍历前端传来的轻量级列表，安全地合并修改，生成一个中间状态的列表
+                    # 5. 遍历前端传来的轻量级列表，安全地合并修改
                     intermediate_cast = []
                     for actor_from_frontend in manual_cast_list:
                         frontend_tmdb_id = actor_from_frontend.get("tmdbId")
@@ -1450,10 +1471,7 @@ class MediaProcessor:
                         
                         intermediate_cast.append(updated_actor_data)
 
-                    # =================================================================
-                    # ★★★ 4.5.【【【 新增核心步骤 】】】★★★
-                    #      应用与自动处理流程完全相同的最终格式化和补全逻辑
-                    # =================================================================
+                    # 6. 应用最终的格式化和补全逻辑
                     genres = item_details.get("Genres", [])
                     is_animation = "Animation" in genres or "动画" in genres
                     
@@ -1466,19 +1484,15 @@ class MediaProcessor:
                     logger.info(f"手动格式化与补全完成，最终演员数量: {len(final_cast_perfect)}。")
 
 
-                    # ★★★ 5. 后续的文件写入和刷新流程，现在使用的是100%格式化后的完美演员数据 ★★★
+                    # 7. 后续的文件写入和刷新流程
                     cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
                     base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
                     if item_type == "Series":
-                        # 调用我们现有的、可靠的写入函数
                         self._write_aggregated_cast_cache(base_cache_dir, final_cast_perfect)
 
                     base_json_filename = "all.json" if item_type == "Movie" else "series.json"
-                    # 注意：这里我们不再需要读取原始的 all.json/series.json，因为我们只关心写入演员表
-                    # 但为了安全和逻辑完整，我们依然可以读取它，然后只覆盖演员部分
                     base_json_data_original = _read_local_json(os.path.join(base_cache_dir, base_json_filename)) or {}
                     
-                    # 使用一个全新的、干净的字典来构建覆盖文件，避免污染
                     base_json_data_for_override = {}
                     safe_fields_whitelist = [
                         "backdrop_path", "episode_run_time", "first_air_date", "genres",
@@ -1565,28 +1579,23 @@ class MediaProcessor:
                     if not refresh_success:
                         logger.warning(f"手动处理：文件已生成，但触发 Emby 刷新失败。你可能需要稍后在 Emby 中手动刷新。")
 
-                    # 更新处理日志
-                    self.log_db_manager.save_to_processed_log(cursor, item_id, item_name, score=10.0) # 手动处理直接给满分
+                    self.log_db_manager.save_to_processed_log(cursor, item_id, item_name, score=10.0)
                     self.log_db_manager.remove_from_failed_log(cursor, item_id)
                     
-                    # ✨✨✨ 提交事务 ✨✨✨
                     conn.commit()
                     logger.info(f"✅ 手动处理 '{item_name}' 流程完成，数据库事务已提交。")
                     return True
                 
                 except Exception as inner_e:
-                    # 如果在事务中发生任何错误，回滚
                     logger.error(f"手动处理事务中发生错误 for {item_name}: {inner_e}", exc_info=True)
                     conn.rollback()
                     logger.warning(f"由于发生错误，针对 '{item_name}' 的数据库更改已回滚。")
-                    # 重新抛出，让外层捕获
                     raise
 
         except Exception as outer_e:
             logger.error(f"手动处理 '{item_name}' 时发生顶层错误: {outer_e}", exc_info=True)
             return False
         finally:
-            # ★★★ 清理本次编辑会话的缓存 ★★★
             if item_id in self.manual_edit_cache:
                 del self.manual_edit_cache[item_id]
                 logger.debug(f"已清理 ItemID {item_id} 的内存缓存。")
