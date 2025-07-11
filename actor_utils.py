@@ -483,29 +483,32 @@ def format_douban_cast(douban_api_actors_raw: List[Dict[str, Any]]) -> List[Dict
         
     return formatted_candidates
 # ✨✨✨格式化演员表✨✨✨
-def format_and_complete_cast_list(cast_list: List[Dict[str, Any]], is_animation: bool, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+def format_and_complete_cast_list(
+    cast_list: List[Dict[str, Any]], 
+    is_animation: bool, 
+    config: Dict[str, Any],
+    mode: str = 'auto'  # ★★★ 核心参数: 'auto' 或 'manual' ★★★
+) -> List[Dict[str, Any]]:
     """
-    【最终修正版 - 由您指导】只做角色名格式化，严格保持原始排序。
+    【V9 - 最终策略版】根据调用模式格式化并排序演员列表。
+    - 'auto': 自动处理流程。严格按原始TMDb的 'order' 字段排序。
+    - 'manual': 手动编辑流程。以传入列表的顺序为基准，并将通用角色排到末尾。
     """
-    # 我们不再需要 perfect_cast 列表，直接在原始列表上修改，或者创建一个新列表
-    final_cast = []
-    
+    processed_cast = []
     add_role_prefix = config.get(constants.CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX, False)
-    logger.info(f"格式化演员列表：开始处理角色名 (角色名前缀开关: {'开' if add_role_prefix else '关'})。")
     generic_roles = {"演员", "配音"}
 
-    # 我们只循环，只改角色名，绝对不碰 'order'！
-    for actor in cast_list:
-        # 1. 复制一份演员信息，避免修改原始传入的列表（好习惯）
-        new_actor = actor.copy()
+    logger.info(f"格式化演员列表，调用模式: '{mode}' (前缀开关: {'开' if add_role_prefix else '关'})")
 
-        # 2. 执行您需要的、有用的角色名格式化逻辑
-        character_name = new_actor.get("character")  
-        final_role = character_name.strip() if character_name else ""
+    # --- 阶段1: 统一的角色名格式化 (所有模式通用) ---
+    for idx, actor in enumerate(cast_list):
+        new_actor = actor.copy()
         
+        # (角色名处理逻辑保持不变)
+        character_name = new_actor.get("character")
+        final_role = character_name.strip() if character_name else ""
         if utils.contains_chinese(final_role):
             final_role = final_role.replace(" ", "").replace("　", "")
-        
         if add_role_prefix:
             if final_role and final_role not in generic_roles:
                 prefix = "配 " if is_animation else "饰 "
@@ -515,17 +518,33 @@ def format_and_complete_cast_list(cast_list: List[Dict[str, Any]], is_animation:
         else:
             if not final_role:
                 final_role = "配音" if is_animation else "演员"
-        
         new_actor["character"] = final_role
         
-        final_cast.append(new_actor)
-    logger.info("所有格式化已完成，现在根据原始TMDb顺序进行最终排序。")
-    final_cast.sort(key=lambda actor: actor.get('order', 999))
-    
-    for new_idx, actor in enumerate(final_cast):
-        actor["order"] = new_idx
+        # 为 'manual' 模式记录原始顺序
+        new_actor['original_index'] = idx
         
-    return final_cast
+        processed_cast.append(new_actor)
+
+    # --- 阶段2: 根据模式执行不同的排序策略 ---
+    if mode == 'manual':
+        # 【手动模式】：以用户自定义顺序为基础，并增强（通用角色后置）
+        logger.debug("应用 'manual' 排序策略：保留用户自定义顺序，并将通用角色后置。")
+        processed_cast.sort(key=lambda actor: (
+            1 if actor.get("character") in generic_roles else 0,  # 1. 通用角色排在后面
+            actor.get("original_index")                          # 2. 在此基础上，保持原始手动顺序
+        ))
+    else: # mode == 'auto' 或其他任何默认情况
+        # 【自动模式】：严格按照TMDb原始的 'order' 字段排序
+        logger.debug("应用 'auto' 排序策略：严格按原始TMDb 'order' 字段排序。")
+        processed_cast.sort(key=lambda actor: actor.get('order', 999))
+        
+    # --- 阶段3: 最终重置 order 索引 (所有模式通用) ---
+    for new_idx, actor in enumerate(processed_cast):
+        actor["order"] = new_idx
+        if 'original_index' in actor:
+            del actor['original_index'] # 清理临时key
+            
+    return processed_cast
 # --- 用于获取单个演员的TMDb详情 ---
 def fetch_tmdb_details_for_actor(actor_info: Dict, tmdb_api_key: str) -> Optional[Dict]:
     """一个独立的、可在线程中运行的函数，用于获取单个演员的TMDb详情。"""

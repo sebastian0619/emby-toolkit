@@ -874,7 +874,7 @@ class MediaProcessor:
                 genres = item_details_from_emby.get("Genres", [])
                 is_animation = "Animation" in genres or "动画" in genres
                 
-                final_cast_perfect = actor_utils.format_and_complete_cast_list(intermediate_cast, is_animation, self.config)
+                final_cast_perfect = actor_utils.format_and_complete_cast_list(intermediate_cast, is_animation, self.config, mode='auto')
         
                 # --- 阶段2: 文件写入 (最终白纸作画版) ---
 
@@ -1515,7 +1515,8 @@ class MediaProcessor:
                     final_cast_perfect = actor_utils.format_and_complete_cast_list(
                         intermediate_cast, 
                         is_animation, 
-                        self.config
+                        self.config,
+                        mode='manual'
                     )
                     logger.info(f"手动格式化与补全完成，最终演员数量: {len(final_cast_perfect)}。")
 
