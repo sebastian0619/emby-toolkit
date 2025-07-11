@@ -57,7 +57,7 @@ def clean_character_name_static(character_name: Optional[str]) -> str:
     name = re.sub(r'^(as\s+)', '', name, flags=re.IGNORECASE).strip()
 
     # 清理前缀中的“饰演/饰/配音/配”（不加判断，直接清理）
-    prefix_pattern = r'^((?:饰演|饰|配音|配|as)\s*)+'
+    prefix_pattern = r'^((?:饰演|饰|配音|配|as\b)\s*)+'
     name = re.sub(prefix_pattern, '', name, flags=re.IGNORECASE).strip()
 
     # 清理后缀中的“饰演/饰/配音/配”
