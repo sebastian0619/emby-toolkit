@@ -997,14 +997,23 @@ class MediaProcessor:
                         # 2.1: 分离本地已有的和需要在线获取的
                         episodes_data = {}
                         episodes_to_fetch_online = []
-                        for season_num, episode_num in episodes_to_process:
-                            local_path = os.path.join(base_cache_dir, f"season-{season_num}-episode-{episode_num}.json")
-                            if os.path.exists(local_path):
-                                json_data = _read_local_json(local_path)
-                                if json_data:
-                                    episodes_data[(season_num, episode_num)] = json_data
-                            elif self.tmdb_api_key:
-                                episodes_to_fetch_online.append((season_num, episode_num))
+
+                        # 【【【【【 修复方案 】】】】】
+                        if should_fetch_online:
+                            # 如果是在线模式（包括强制在线），则将所有分集都加入在线获取列表
+                            logger.info(f"在线模式已激活，将为所有 {len(episodes_to_process)} 个分集在线获取最新数据。")
+                            episodes_to_fetch_online.extend(list(episodes_to_process))
+                        else:
+                            # 保持原有逻辑：仅在本地模式下才优先读取本地缓存
+                            logger.info(f"本地模式，将检查并优先使用本地缓存的分集元数据。")
+                            for season_num, episode_num in episodes_to_process:
+                                local_path = os.path.join(base_cache_dir, f"season-{season_num}-episode-{episode_num}.json")
+                                if os.path.exists(local_path):
+                                    json_data = _read_local_json(local_path)
+                                    if json_data:
+                                        episodes_data[(season_num, episode_num)] = json_data
+                                elif self.tmdb_api_key:
+                                    episodes_to_fetch_online.append((season_num, episode_num))
 
                         # 2.2: 使用线程池并发获取所有需要在线下载的数据
                         if episodes_to_fetch_online:
