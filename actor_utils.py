@@ -612,7 +612,9 @@ def enrich_all_actor_aliases_task(
                 WHERE p.tmdb_person_id IS NOT NULL
                 AND (
                     p.imdb_id IS NULL OR      -- 条件1: 缺少IMDb ID
-                    m.tmdb_id IS NULL         -- 条件2: 缺少元数据缓存
+                    m.tmdb_id IS NULL OR      -- 条件2: 缺少元数据缓存
+                    m.profile_path IS NULL OR -- 条件3: 缺少演员头像
+                    m.gender IS NULL          -- 条件4: 缺少演员性别 
                 )
                 AND (p.last_synced_at IS NULL OR p.last_synced_at < datetime('now', '-{SYNC_INTERVAL_DAYS} days'))
                 ORDER BY p.last_synced_at ASC
