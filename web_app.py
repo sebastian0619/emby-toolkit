@@ -1093,15 +1093,15 @@ def task_sync_person_map(processor):
     except Exception as e:
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
         update_status_from_thread(-1, f"错误：同步失败 ({str(e)[:50]}...)")
-# ✨✨✨ 补充外部ID函数 ✨✨✨
+# ✨✨✨ 演员元数据增强函数 ✨✨✨
 def task_enrich_aliases(processor: MediaProcessor):
     """
-    【后台任务】外部ID补充任务的入口点。
+    【后台任务】演员元数据增强任务的入口点。
     它会调用 actor_utils 中的核心逻辑，并传递运行时长。
     """
-    task_name = "演员外部ID补充"
+    task_name = "演员元数据增强"
     logger.info(f"后台任务 '{task_name}' 开始执行...")
-    update_status_from_thread(0, "准备开始补充演员别名...")
+    update_status_from_thread(0, "准备开始演员元数据增强...")
 
     try:
         # 从传入的 processor 对象中获取配置字典
@@ -1137,7 +1137,7 @@ def task_enrich_aliases(processor: MediaProcessor):
         )
         
         logger.info(f"'{task_name}' 任务执行完毕。")
-        update_status_from_thread(100, "外部ID补充任务完成。")
+        update_status_from_thread(100, "演员元数据增强任务完成。")
 
     except Exception as e:
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
@@ -1454,7 +1454,7 @@ TASK_REGISTRY = {
     'full-scan': (task_process_full_library, "立即执行全量扫描"),
     'sync-person-map': (task_sync_person_map, "立即执行同步演员映射表"),
     'process-watchlist': (task_process_watchlist, "立即执行智能追剧更新"),
-    'enrich-aliases': (task_enrich_aliases, "立即执行外部ID补充"),
+    'enrich-aliases': (task_enrich_aliases, "立即执行演员元数据增强"),
     'actor-cleanup': (task_actor_translation_cleanup, "立即执行演员名翻译查漏补缺")
 }
 # --- 路由区 ---
