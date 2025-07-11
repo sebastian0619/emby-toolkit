@@ -96,9 +96,9 @@
           </n-card>
         </n-gi>
         
-        <!-- 卡片 4: 演员补充外部ID -->
+        <!-- 卡片 4: 演员元数据增强 -->
         <n-gi>
-          <n-card title="演员补充外部ID定时任务" class="glass-section" :bordered="false" style="height: 100%;">
+          <n-card title="演员元数据增强定时任务" class="glass-section" :bordered="false" style="height: 100%;">
             <template #header-extra>
               <n-switch v-model:value="configModel.schedule_enrich_aliases_enabled" />
             </template>
@@ -108,7 +108,7 @@
                 <n-gi><n-form-item-grid-item label="每次运行时长 (分钟)" path="schedule_enrich_run_duration_minutes"><n-input-number v-model:value="configModel.schedule_enrich_run_duration_minutes" :disabled="!configModel.schedule_enrich_aliases_enabled" :min="0" :step="60" placeholder="0 表示不限制" style="width: 100%;"><template #suffix>分钟</template></n-input-number></n-form-item-grid-item></n-gi>
                 <n-gi><n-form-item-grid-item path="schedule_enrich_sync_interval_days"><template #label>同步冷却时间 (天)<n-tooltip trigger="hover"><template #trigger><n-icon :component="Info24Regular" class="ms-1 align-middle" /></template>设置在多少天内不重复检查同一个演员。对于新数据库，可设置为 0 以立即处理所有演员。</n-tooltip></template><n-input-number v-model:value="configModel.schedule_enrich_sync_interval_days" :disabled="!configModel.schedule_enrich_aliases_enabled" :min="0" :step="1" placeholder="建议值为 7" style="width: 100%;"><template #suffix>天</template></n-input-number></n-form-item-grid-item></n-gi>
               </n-grid>
-              <template #feedback><n-text depth="3" style="font-size:0.8em;">在后台扫描数据库，为缺少别名、ImdbID的演员补充信息。这是一个耗时操作，建议在服务器空闲时执行。<br/><strong>设置一个大于0的“每次运行时长”，任务到点后会自动停止，下次从断点继续。设为0则不限制时长。</strong></n-text></template>
+              <template #feedback><n-text depth="3" style="font-size:0.8em;">在后台扫描数据库，为演员补充IMDbID、头像等信息。这是一个耗时操作，建议在服务器空闲时执行。<br/><strong>设置一个大于0的“每次运行时长”，任务到点后会自动停止，下次从断点继续。设为0则不限制时长。</strong></n-text></template>
             </n-form>
             <!-- ✨ 立即执行按钮 ✨ -->
             <template #action>

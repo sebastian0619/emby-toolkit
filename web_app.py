@@ -869,7 +869,7 @@ def setup_scheduled_tasks():
                     logger.error(f"设置定时智能追剧更新任务失败: {e}", exc_info=True)
     else:
         logger.info("定时智能追剧更新任务未启用。")
-    # ✨✨✨ 处理外部ID补充任务 ✨✨✨
+    # ✨✨✨ 处理演员元数据增强任务 ✨✨✨
     job_id_enrich = 'scheduled_enrich_aliases' # 给它一个唯一的ID
     if scheduler.get_job(job_id_enrich):
         scheduler.remove_job(job_id_enrich)
@@ -879,25 +879,25 @@ def setup_scheduled_tasks():
         if cron_expression:
             try:
                 def scheduled_enrich_task_submitter():
-                    logger.debug("定时任务触发：准备提交外部ID补充任务到队列。")
+                    logger.debug("定时任务触发：准备提交演员元数据增强任务到队列。")
                     submit_task_to_queue(
                         task_enrich_aliases, # <--- 调用我们刚刚创建的任务函数
-                        "定时外部ID补充"
+                        "演员元数据增强"
                     )
 
                 scheduler.add_job(
                     func=scheduled_enrich_task_submitter, # 调度器调用这个提交者
                     trigger=CronTrigger.from_crontab(cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
                     id=job_id_enrich,
-                    name="定时补充演员外部ID",
+                    name="定时补充演员元数据",
                     replace_existing=True,
                 )
                 next_run_str = _get_next_run_time_str(cron_expression)
-                logger.info(f"已设置定时任务：外部ID补充，将{next_run_str}")
+                logger.info(f"已设置定时任务：演员元数据增强，将{next_run_str}")
             except Exception as e:
-                logger.error(f"设置定时外部ID补充任务失败: {e}", exc_info=True)
+                logger.error(f"设置定时演员元数据增强任务失败: {e}", exc_info=True)
     else:
-        logger.info("定时外部ID补充任务未启用。")
+        logger.info("定时演员元数据增强任务未启用。")
 
     # --- ✨✨✨ 演员名翻译查漏补缺任务 ✨✨✨ ---
     JOB_ID_ACTOR_CLEANUP = 'scheduled_actor_translation_cleanup'
