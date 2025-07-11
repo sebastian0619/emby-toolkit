@@ -1291,7 +1291,7 @@ class MediaProcessor:
                 for actor in translated_cast:
                     for field_key in ['name', 'role']:
                         text = actor.get(field_key, '').strip()
-                        if field_key == 'character':
+                        if field_key == 'role':
                             # 无论是演员名还是角色名，都先清洗一遍，确保拿到的是核心文本
                             # 对于演员名，这个清洗通常无影响，但对于角色名至关重要
                             text = utils.clean_character_name_static(text)
@@ -1348,9 +1348,13 @@ class MediaProcessor:
                         if original_name in translation_cache:
                             translated_cast[i]['name'] = translation_cache[original_name]
                         
-                        original_role = actor.get('role', '').strip()
-                        if original_role in translation_cache:
-                            translated_cast[i]['role'] = translation_cache[original_role]
+                        original_role_raw = actor.get('role', '').strip()
+                        # 使用与收集时完全相同的清理逻辑
+                        cleaned_original_role = utils.clean_character_name_static(original_role_raw)
+                        
+                        # 用清理后的名字作为key去查找
+                        if cleaned_original_role in translation_cache:
+                            translated_cast[i]['role'] = translation_cache[cleaned_original_role]
                         
                         # 如果发生了翻译，更新状态以便前端高亮
                         if translated_cast[i].get('name') != actor.get('name') or translated_cast[i].get('role') != actor.get('role'):
@@ -1443,6 +1447,45 @@ class MediaProcessor:
                         if not original_actor_data:
                             logger.warning(f"在原始缓存中找不到 TMDb ID {frontend_tmdb_id}，跳过此演员。")
                             continue
+                        # 3.1 获取并清理原始角色名和新角色名
+                        new_role = actor_from_frontend.get('role', '')      # 从前端数据中获取新角色名
+                        original_role = original_actor_data.get('character', '') # 从原始数据中获取旧角色名
+                        if new_role != original_role:
+                            # 清洗新旧角色名
+                            cleaned_original_role = utils.clean_character_name_static(original_role)
+                            cleaned_new_role = utils.clean_character_name_static(new_role)
+
+                            # 只有在清洗后的新角色名有效，且与清洗后的旧角色名确实不同时，才进行操作
+                            if cleaned_new_role and cleaned_new_role != cleaned_original_role:
+                                try:
+                                    # ★★★ 核心修改：调用您现有的函数并开启反查模式 ★★★
+                                    # 使用“修改前的中文名”（例如 "杰克萨利"）进行反向查找
+                                    cache_entry = DoubanApi._get_translation_from_db(
+                                        text=cleaned_original_role,
+                                        by_translated_text=True,  # <--- 关键！开启反查模式
+                                        cursor=cursor
+                                    )
+
+                                    # 函数会返回一个包含原文和译文的字典，或者 None
+                                    if cache_entry and 'original_text' in cache_entry:
+                                        # 如果成功找到了缓存记录，就从中提取出原始的英文 Key
+                                        original_text_key = cache_entry['original_text']
+
+                                        # 现在，我们用正确的 Key ("Jake Sully") 和新的 Value ("杰克") 去更新缓存
+                                        DoubanApi._save_translation_to_db(
+                                            original_text=original_text_key,
+                                            translated_text=cleaned_new_role,
+                                            engine_used="manual",
+                                            cursor=cursor
+                                        )
+                                        logger.debug(f"  AI缓存通过反查更新: '{original_text_key}' -> '{cleaned_new_role}'")
+                                        cache_update_succeeded = True
+                                    else:
+                                        # 如果反查失败（未找到或有其他问题），记录日志并继续
+                                        logger.warning(f"无法为修改 '{cleaned_original_role}' -> '{cleaned_new_role}' 更新缓存，因为在缓存中未找到其对应的原文。")
+
+                                except Exception as e_cache:
+                                    logger.warning(f"更新AI翻译缓存失败: {e_cache}")
                         
                         updated_actor_data = copy.deepcopy(original_actor_data)
                         role_from_frontend = actor_from_frontend.get('role')
@@ -1593,6 +1636,8 @@ class MediaProcessor:
             if item_id in self.manual_edit_cache:
                 del self.manual_edit_cache[item_id]
                 logger.debug(f"已清理 ItemID {item_id} 的内存缓存。")
+        if cache_update_succeeded:
+            updated_cache_count += 1
     # --- 从本地 cache 文件获取演员列表用于编辑 ---
     def get_cast_for_editing(self, item_id: str) -> Optional[Dict[str, Any]]:
         """

@@ -333,8 +333,8 @@ const translateAllFields = async () => {
     // 【★★★ 构建包含所有上下文的最终 Payload ★★★】
     const payload = { 
       cast: editableCast.value,
-      title: mediaDetails.value.name,
-      year: mediaDetails.value.productionYear,
+      title: itemDetails.value.item_name,
+      year: itemDetails.value.production_year,
     };
 
     const response = await axios.post('/api/actions/translate_cast_sa', payload);
