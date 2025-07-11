@@ -998,7 +998,6 @@ class MediaProcessor:
                         episodes_data = {}
                         episodes_to_fetch_online = []
 
-                        # 【【【【【 修复方案 】】】】】
                         if should_fetch_online:
                             # 如果是在线模式（包括强制在线），则将所有分集都加入在线获取列表
                             logger.info(f"在线模式已激活，将为所有 {len(episodes_to_process)} 个分集在线获取最新数据。")
@@ -1017,7 +1016,7 @@ class MediaProcessor:
 
                         # 2.2: 使用线程池并发获取所有需要在线下载的数据
                         if episodes_to_fetch_online:
-                            logger.info(f"本地缓存缺失，需要在线并发获取 {len(episodes_to_fetch_online)} 个分集的元数据...")
+                            logger.info(f"在线并发获取 {len(episodes_to_fetch_online)} 个分集的元数据...")
                             
                             # 定义一个独立的获取函数，便于在线程池中调用
                             def fetch_episode_details(s_num, e_num):
