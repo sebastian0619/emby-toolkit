@@ -552,7 +552,11 @@ def fetch_tmdb_details_for_actor(actor_info: Dict, tmdb_api_key: str) -> Optiona
     if not tmdb_id:
         return None
     try:
-        details = tmdb_handler.get_person_details_tmdb(int(tmdb_id), tmdb_api_key, "external_ids,also_known_as")
+        details = tmdb_handler.get_person_details_tmdb(
+            person_id=int(tmdb_id), 
+            api_key=tmdb_api_key, 
+            append_to_response="external_ids" 
+        )
         if details:
             # 成功获取，返回详情
             return {"tmdb_id": tmdb_id, "status": "found", "details": details}
@@ -576,7 +580,11 @@ def enrich_all_actor_aliases_task(
     sync_interval_days: int,
     stop_event: Optional[threading.Event] = None
 ):
-    logger.info("--- 开始执行“演员外部ID补充”计划任务 ---")
+    """
+    【V3 - 元数据增强版】
+    在补充IMDb ID的同时，从TMDb获取演员的详细元数据（头像、性别等）并存入 ActorMetadata 表。
+    """
+    logger.info("--- 开始执行“演员元数据增强”计划任务 ---")
     
     start_time = time.time()
     if run_duration_minutes > 0:
@@ -587,29 +595,36 @@ def enrich_all_actor_aliases_task(
         end_time = float('inf')
         logger.info("任务未设置运行时长，将持续运行。")
 
-    actor_db_manager = ActorDBManager(db_path)
-    SYNC_INTERVAL_DAYS = sync_interval_days # ✨ 3. 使用传入的参数
-    logger.info(f"同步冷却时间设置为 {SYNC_INTERVAL_DAYS} 天。") # 添加日志，方便调试
+    SYNC_INTERVAL_DAYS = sync_interval_days
+    logger.info(f"同步冷却时间设置为 {SYNC_INTERVAL_DAYS} 天。")
 
     try:
         with get_db_connection(db_path) as conn:
-            # --- 阶段一：从 TMDb 补充 IMDb ID (并发执行) ---
-            logger.info("--- 阶段一：从 TMDb 补充 IMDb ID ---")
+            # --- 阶段一：从 TMDb 补充元数据 (并发执行) ---
+            logger.info("--- 阶段一：从 TMDb 补充演员元数据 (IMDb ID, 头像等) ---")
             cursor = conn.cursor()
+            
+            # ★★★ 1. 改造SQL查询：现在我们的目标是所有需要同步的演员 ★★★
+            #    我们不仅关心 imdb_id 为空的，也关心 ActorMetadata 表中没有记录的。
             sql_find_tmdb_needy = f"""
-                SELECT * FROM person_identity_map 
-                WHERE tmdb_person_id IS NOT NULL AND imdb_id IS NULL 
-                AND (last_synced_at IS NULL OR last_synced_at < datetime('now', '-{SYNC_INTERVAL_DAYS} days'))
-                ORDER BY last_synced_at ASC
+                SELECT p.* FROM person_identity_map p
+                LEFT JOIN ActorMetadata m ON p.tmdb_person_id = m.tmdb_id
+                WHERE p.tmdb_person_id IS NOT NULL
+                AND (
+                    p.imdb_id IS NULL OR      -- 条件1: 缺少IMDb ID
+                    m.tmdb_id IS NULL         -- 条件2: 缺少元数据缓存
+                )
+                AND (p.last_synced_at IS NULL OR p.last_synced_at < datetime('now', '-{SYNC_INTERVAL_DAYS} days'))
+                ORDER BY p.last_synced_at ASC
             """
             actors_for_tmdb = cursor.execute(sql_find_tmdb_needy).fetchall()
             
             if actors_for_tmdb:
                 total_tmdb = len(actors_for_tmdb)
-                logger.info(f"找到 {total_tmdb} 位演员需要从 TMDb 补充 IMDb ID。")
+                logger.info(f"找到 {total_tmdb} 位演员需要从 TMDb 补充元数据。")
                 
-                CHUNK_SIZE = 200  # 每批处理500个
-                MAX_TMDB_WORKERS = 5 # 最多10个并发线程
+                CHUNK_SIZE = 200
+                MAX_TMDB_WORKERS = 5
 
                 for i in range(0, total_tmdb, CHUNK_SIZE):
                     if (stop_event and stop_event.is_set()) or (time.time() >= end_time):
@@ -619,9 +634,13 @@ def enrich_all_actor_aliases_task(
                     chunk = actors_for_tmdb[i:i + CHUNK_SIZE]
                     logger.info(f"--- 开始处理 TMDb 第 {i//CHUNK_SIZE + 1} 批次，共 {len(chunk)} 个演员 ---")
 
-                    updates_to_commit = [] # 存储 (imdb_id, tmdb_id)
-                    invalid_tmdb_ids = []  # 存储需要置空的 tmdb_id
+                    # ★★★ 2. 改造数据容器：我们需要为两个表准备数据 ★★★
+                    imdb_updates_to_commit = []      # 存储 (imdb_id, tmdb_id)
+                    metadata_to_commit = []          # 存储元数据字典列表
+                    invalid_tmdb_ids = []            # 存储需要置空的 tmdb_id
+
                     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_TMDB_WORKERS) as executor:
+                        # 假设 fetch_tmdb_details_for_actor 现在会返回更完整的详情
                         future_to_actor = {executor.submit(fetch_tmdb_details_for_actor, dict(actor), tmdb_api_key): actor for actor in chunk}
                         
                         for future in concurrent.futures.as_completed(future_to_actor):
@@ -630,52 +649,73 @@ def enrich_all_actor_aliases_task(
                                 raise InterruptedError("任务在TMDb处理批次中被中止")
 
                             result = future.result()
-                            if not result:
-                                continue
+                            if not result: continue
 
                             status = result.get("status")
                             tmdb_id = result.get("tmdb_id")
+                            details = result.get("details", {})
 
-                            if status == "found":
-                                imdb_id = result.get("details", {}).get("external_ids", {}).get("imdb_id")
+                            if status == "found" and details:
+                                # 2.1 准备 IMDb ID 更新数据
+                                imdb_id = details.get("external_ids", {}).get("imdb_id")
                                 if imdb_id:
                                     logger.info(f"  -> 成功为演员 (TMDb ID: {tmdb_id}) 获取到 IMDb ID: {imdb_id}")
-                                    updates_to_commit.append((imdb_id, tmdb_id))
+                                    imdb_updates_to_commit.append((imdb_id, tmdb_id))
+                                
+                                # 2.2 准备 ActorMetadata 更新数据
+                                metadata_entry = {
+                                    "tmdb_id": tmdb_id,
+                                    "profile_path": details.get("profile_path"),
+                                    "gender": details.get("gender"),
+                                    "adult": details.get("adult", False),
+                                    "popularity": details.get("popularity"),
+                                    "original_name": details.get("original_name")
+                                }
+                                metadata_to_commit.append(metadata_entry)
+                                logger.debug(f"  -> 已为演员 (TMDb ID: {tmdb_id}) 准备好元数据。")
                             
                             elif status == "not_found":
                                 logger.warning(f"  -> 演员 (TMDb ID: {tmdb_id}) 在TMDb上已不存在(404)，将清除此无效ID。")
                                 invalid_tmdb_ids.append(tmdb_id)
                     
-                    # ★★★ 在批次结束后，统一执行数据库操作 ★★★
-                    if updates_to_commit or invalid_tmdb_ids:
+                    # ★★★ 3. 改造数据库写入：同时操作两个表 ★★★
+                    if imdb_updates_to_commit or metadata_to_commit or invalid_tmdb_ids:
                         try:
-                            logger.info(f"  -> 批次完成，准备写入数据库 (更新: {len(updates_to_commit)}, 清理: {len(invalid_tmdb_ids)})...")
+                            logger.info(f"  -> 批次完成，准备写入数据库 (IMDb更新: {len(imdb_updates_to_commit)}, 元数据更新: {len(metadata_to_commit)}, 清理: {len(invalid_tmdb_ids)})...")
                             
-                            # ✨ V2-FIX 1: 使用精确、高效的 executemany 进行批量更新
-                            if updates_to_commit:
+                            # 3.1 更新 IMDb ID
+                            if imdb_updates_to_commit:
                                 sql_update_imdb = "UPDATE person_identity_map SET imdb_id = ? WHERE tmdb_person_id = ?"
-                                cursor.executemany(sql_update_imdb, updates_to_commit)
+                                cursor.executemany(sql_update_imdb, imdb_updates_to_commit)
                             
-                            # ✨ V2-FIX 2: 使用安全的 UPDATE ... SET NULL，而不是 DELETE
+                            # 3.2 插入或替换元数据
+                            if metadata_to_commit:
+                                sql_upsert_metadata = """
+                                    INSERT OR REPLACE INTO ActorMetadata 
+                                    (tmdb_id, profile_path, gender, adult, popularity, original_name, last_updated_at)
+                                    VALUES (:tmdb_id, :profile_path, :gender, :adult, :popularity, :original_name, CURRENT_TIMESTAMP)
+                                """
+                                cursor.executemany(sql_upsert_metadata, metadata_to_commit)
+
+                            # 3.3 清理无效ID
                             if invalid_tmdb_ids:
                                 placeholders = ','.join('?' for _ in invalid_tmdb_ids)
                                 sql_clear_tmdb = f"UPDATE person_identity_map SET tmdb_person_id = NULL WHERE tmdb_person_id IN ({placeholders})"
                                 cursor.execute(sql_clear_tmdb, invalid_tmdb_ids)
 
-                            # 统一更新所有处理过的ID的同步时间
+                            # 3.4 统一更新同步时间
                             processed_ids_in_chunk = [actor['tmdb_person_id'] for actor in chunk]
                             if processed_ids_in_chunk:
                                 placeholders_sync = ','.join('?' for _ in processed_ids_in_chunk)
                                 sql_update_sync = f"UPDATE person_identity_map SET last_synced_at = CURRENT_TIMESTAMP WHERE tmdb_person_id IN ({placeholders_sync})"
                                 cursor.execute(sql_update_sync, processed_ids_in_chunk)
                             
-                            # ★★★ 在所有数据库操作完成后，提交本次批次的事务 ★★★
                             conn.commit()
                             logger.info("数据库更改已成功提交。")
 
                         except Exception as db_e:
                             logger.error(f"数据库操作失败: {db_e}", exc_info=True)
-                            conn.rollback() # 如果出错，回滚本次批次的更改
+                            conn.rollback()
             else:
                 logger.info("没有需要从 TMDb 补充或清理的演员。")
 
@@ -775,10 +815,10 @@ def enrich_all_actor_aliases_task(
                 douban_api.close()
 
     except InterruptedError:
-        logger.info("演员ID补充任务被中止。")
+        logger.info("演员元数据增强任务被中止。")
         if conn and conn.in_transaction: conn.rollback()
     except Exception as e:
-        logger.error(f"演员ID补充任务发生严重错误: {e}", exc_info=True)
+        logger.error(f"演员元数据增强任务发生严重错误: {e}", exc_info=True)
         if conn and conn.in_transaction: conn.rollback()
     finally:
-        logger.info("--- “演员ID补充”计划任务已退出 ---")
+        logger.info("--- “演员元数据增强”计划任务已退出 ---")

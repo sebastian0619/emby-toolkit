@@ -300,6 +300,33 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_id ON person_identity_map (douban_celebrity_id)")
         logger.debug("  -> [核心] 'person_identity_map' 表已创建。")
 
+        # =================================================================
+        # ★★★ 5.2 新增核心表：ActorMetadata (TMDb元数据缓存) ★★★
+        # =================================================================
+        # 职责：专门存储从TMDb获取的、用于增强显示的演员元数据。
+        logger.debug("正在确认/创建 'ActorMetadata' 表...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ActorMetadata (
+                -- 主键，并与 person_identity_map 表建立外键关系
+                tmdb_id INTEGER PRIMARY KEY,
+                
+                -- 需要缓存的核心元数据字段
+                profile_path TEXT,
+                gender INTEGER,
+                adult BOOLEAN,
+                popularity REAL,
+                original_name TEXT,
+                
+                -- 时间戳，方便管理缓存刷新
+                last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                
+                -- 外键约束：确保这里的演员在身份映射表中存在
+                -- ON DELETE CASCADE: 如果身份映射记录被删除，这里的元数据也自动删除
+                FOREIGN KEY(tmdb_id) REFERENCES person_identity_map(tmdb_person_id) ON DELETE CASCADE
+            )
+        """)
+        logger.debug("  -> [核心] 'ActorMetadata' 表已确认。")
+
         # --- 6. 提交事务 ---
         conn.commit()
         logger.info(f"数据库重建完成！所有表结构已在 '{DB_PATH}' 中创建。")
@@ -1168,12 +1195,12 @@ def task_process_single_watchlist_item(processor: WatchlistProcessor, item_id: s
     """任务：只更新追剧列表中的一个特定项目"""
     # 传递 item_id，执行单项更新
     processor.process_watching_list(item_id=item_id)
-# ★★★ 导入映射表 ★★★
+# ★★★ 导入映射表 + 元数据 ★★★
 def task_import_person_map(processor, file_content: str, **kwargs):
     """
-    【V2 - 功能完整版】从一个CSV文件字符串内容中，导入演员映射表。
+    【V3 - 元数据增强版】从CSV文件字符串中，导入演员映射表和元数据。
     """
-    task_name = "导入演员映射表"
+    task_name = "导入完整演员数据"
     logger.info(f"后台任务 '{task_name}' 开始执行...")
     update_status_from_thread(0, "准备开始导入...")
 
@@ -1208,37 +1235,69 @@ def task_import_person_map(processor, file_content: str, **kwargs):
                     logger.info("导入任务被用户中止。")
                     break
 
-                # 3. 构建 person_data 字典 (不变)
-                person_data = {
+                # ★★★ 1. 拆分数据：为两个表分别准备数据字典 ★★★
+                
+                # 1.1 准备 person_identity_map 的数据
+                person_map_data = {
                     "name": row.get('primary_name'),
                     "tmdb_id": row.get('tmdb_person_id') or None,
                     "imdb_id": row.get('imdb_id') or None,
                     "douban_id": row.get('douban_celebrity_id') or None,
                 }
 
-                if not person_data["name"] and not any([person_data["emby_id"], person_data["tmdb_id"], person_data["imdb_id"], person_data["douban_id"]]):
+                # 1.2 准备 ActorMetadata 的数据
+                actor_metadata = {
+                    "tmdb_id": row.get('tmdb_person_id'),
+                    "profile_path": row.get('profile_path') or None,
+                    "gender": row.get('gender') or None,
+                    "adult": row.get('adult') or None,
+                    "popularity": row.get('popularity') or None,
+                    "original_name": row.get('original_name') or None,
+                }
+
+                # 如果连最基本的ID都没有，就跳过
+                if not person_map_data["name"] and not person_map_data["tmdb_id"]:
                     stats["skipped"] += 1
                     continue
 
                 try:
-                    # 4. 通过正确的 db_manager 实例调用方法
-                    db_manager.upsert_person(
-                        cursor, 
-                        person_data
-                        # 注意：upsert_person 的定义里没有 tmdb_api_key 参数，所以这里移除了
-                    )
+                    # ★★★ 2. 执行数据库操作：分两步走 ★★★
+                    
+                    # 2.1 先插入或更新身份映射表
+                    db_manager.upsert_person(cursor, person_map_data)
+                    
+                    # 2.2 如果有元数据，再插入或更新元数据表
+                    #     我们只在有 tmdb_id 的情况下才操作元数据表
+                    if actor_metadata["tmdb_id"]:
+                        # 为了健壮性，将 None 转换为空字符串或0
+                        # 注意：SQLite对布尔值的处理，通常是 1 和 0
+                        adult_val = row.get('adult')
+                        is_adult = 1 if adult_val and str(adult_val).lower() in ['true', '1', 'yes'] else 0
+
+                        sql_upsert_metadata = """
+                            INSERT OR REPLACE INTO ActorMetadata 
+                            (tmdb_id, profile_path, gender, adult, popularity, original_name, last_updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """
+                        cursor.execute(sql_upsert_metadata, (
+                            actor_metadata["tmdb_id"],
+                            actor_metadata["profile_path"],
+                            actor_metadata["gender"],
+                            is_adult,
+                            actor_metadata["popularity"],
+                            actor_metadata["original_name"]
+                        ))
+
                     stats["processed"] += 1
                 except Exception as e_row:
-                    logger.error(f"处理导入文件第 {i+2} 行时发生错误: {e_row}")
+                    logger.error(f"处理导入文件第 {i+2} 行时发生错误: {e_row}", exc_info=True)
                     stats["errors"] += 1
                 
                 if i > 0 and i % 100 == 0 and total_lines > 0:
                     progress = int(((i + 1) / total_lines) * 100)
                     update_status_from_thread(progress, f"正在导入... ({i+1}/{total_lines})")
             
-            # 5. 循环结束后提交事务
             conn.commit()
-        # ✨✨✨ 修改结束 ✨✨✨
 
         message = f"导入完成。总行数: {stats['total']}, 成功处理: {stats['processed']}, 跳过: {stats['skipped']}, 错误: {stats['errors']}"
         logger.info(f"导入任务完成: {message}")
@@ -2067,27 +2126,26 @@ def api_update_edited_cast_api(item_id):
     except Exception as outer_e:
         logger.error(f"API /api/update_media_cast 顶层错误 for {item_id}: {outer_e}", exc_info=True)
         return jsonify({"error": "保存演员信息时发生服务器内部错误"}), 500
-# ★★★ 导出演员映射表 ★★★
+# ★★★ 导出演员映射表 + 元数据 ★★★
 @app.route('/api/actors/export', methods=['GET'])
 @login_required
 def api_export_person_map():
     """
-    【统一版】导出演员身份映射表 (person_identity_map)。
+    【V2 - 元数据增强版】导出演员身份映射表和TMDb元数据缓存。
     """
-    table_name = 'person_identity_map'
+    # ★★★ 1. 扩展表头，加入 ActorMetadata 的字段 ★★★
     headers = [
-    'primary_name', 
-    'tmdb_person_id', 'imdb_id', 'douban_celebrity_id'
+        'primary_name', 
+        'tmdb_person_id', 'imdb_id', 'douban_celebrity_id',
+        'profile_path', 'gender', 'adult', 'popularity', 'original_name'
     ]
-    logger.info(f"API: 收到导出演员映射表 '{table_name}' 的请求。")
+    logger.info(f"API: 收到导出完整演员数据 (map + metadata) 的请求。")
 
     def generate_csv():
         string_io = StringIO()
         try:
-            # ✨✨✨ 核心修改在这里 ✨✨✨
             with get_central_db_connection(DB_PATH) as conn:
-            # ✨✨✨ 修改结束 ✨✨✨
-                conn.row_factory = sqlite3.Row # 确保可以按列名访问
+                conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 writer = csv.DictWriter(string_io, fieldnames=headers, extrasaction='ignore')
                 
@@ -2095,20 +2153,35 @@ def api_export_person_map():
                 yield string_io.getvalue()
                 string_io.seek(0); string_io.truncate(0)
 
-                # 使用 f-string 格式化列名，更安全
-                query_columns = ', '.join(f'"{h}"' for h in headers)
-                cursor.execute(f"SELECT {query_columns} FROM {table_name}")
+                # ★★★ 2. 改造SQL查询，使用 LEFT JOIN 合并两张表 ★★★
+                query = """
+                    SELECT
+                        p.primary_name,
+                        p.tmdb_person_id,
+                        p.imdb_id,
+                        p.douban_celebrity_id,
+                        m.profile_path,
+                        m.gender,
+                        m.adult,
+                        m.popularity,
+                        m.original_name
+                    FROM
+                        person_identity_map AS p
+                    LEFT JOIN
+                        ActorMetadata AS m ON p.tmdb_person_id = m.tmdb_id
+                """
+                cursor.execute(query)
                 
                 for row in cursor:
                     writer.writerow(dict(row))
                     yield string_io.getvalue()
                     string_io.seek(0); string_io.truncate(0)
         except Exception as e:
-            logger.error(f"导出映射表时发生错误: {e}", exc_info=True)
+            logger.error(f"导出完整演员数据时发生错误: {e}", exc_info=True)
             yield f"Error: {e}"
 
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    filename = f"person_identity_map_backup_{timestamp}.csv"
+    filename = f"full_actor_data_backup_{timestamp}.csv" # 文件名也更新一下
     
     response = Response(stream_with_context(generate_csv()), mimetype='text/csv; charset=utf-8')
     response.headers.set("Content-Disposition", "attachment", filename=filename)

@@ -280,6 +280,16 @@ class MediaProcessor:
         except sqlite3.Error as e:
             logger.error(f"通过 IMDb ID '{imdb_id}' 查询 person_identity_map 时出错: {e}")
             return None
+    # --- 补充新增演员额外数据 ---
+    def _get_actor_metadata_from_cache(self, tmdb_id: int, cursor: sqlite3.Cursor) -> Optional[Dict]:
+        """根据TMDb ID从ActorMetadata缓存表中获取演员的元数据。"""
+        if not tmdb_id:
+            return None
+        cursor.execute("SELECT * FROM ActorMetadata WHERE tmdb_id = ?", (tmdb_id,))
+        metadata_row = cursor.fetchone()  # fetchone() 返回一个 sqlite3.Row 对象或 None
+        if metadata_row:
+            return dict(metadata_row)  # 将其转换为字典，方便使用
+        return None
     # --- 核心处理流程 ---
     def _process_cast_list_from_local(self, local_cast_list: List[Dict[str, Any]], item_details_from_emby: Dict[str, Any], cursor: sqlite3.Cursor, tmdb_api_key: Optional[str], stop_event: Optional[threading.Event]) -> List[Dict[str, Any]]:
         """
@@ -375,11 +385,24 @@ class MediaProcessor:
                         tmdb_id_from_map = entry["tmdb_person_id"]
                         if tmdb_id_from_map not in final_cast_map:
                             logger.info(f"  新增成功 (通过 豆瓣ID映射): 豆瓣演员 '{d_actor.get('Name')}' -> 新增 TMDbID: {tmdb_id_from_map}")
+                            # ★★★ 1. 查询预先缓存的元数据 ★★★
+                            cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_map, cursor) or {}
+
+                            # ★★★ 2. 使用缓存数据或默认值来创建新演员条目 ★★★
                             new_actor_entry = {
-                                "id": tmdb_id_from_map, "name": d_actor.get("Name"), "original_name": d_actor.get("OriginalName"),
-                                "character": d_actor.get("Role"), "adult": False, "gender": 0, "known_for_department": "Acting",
-                                "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": 999,
-                                "imdb_id": entry["imdb_id"], "douban_id": d_douban_id, "_is_newly_added": True
+                                "id": tmdb_id_from_map,
+                                "name": d_actor.get("Name"),
+                                "original_name": cached_metadata.get("original_name") or d_actor.get("OriginalName"),
+                                "character": d_actor.get("Role"),
+                                "adult": cached_metadata.get("adult", False),
+                                "gender": cached_metadata.get("gender", 0),
+                                "known_for_department": "Acting",
+                                "popularity": cached_metadata.get("popularity", 0.0),
+                                "profile_path": cached_metadata.get("profile_path"), # <-- 关键！
+                                "cast_id": None, "credit_id": None, "order": 999,
+                                "imdb_id": entry["imdb_id"],
+                                "douban_id": d_douban_id,
+                                "_is_newly_added": True
                             }
                             final_cast_map[tmdb_id_from_map] = new_actor_entry
                         match_found = True
@@ -430,11 +453,24 @@ class MediaProcessor:
                             
                             if tmdb_id_from_map not in final_cast_map:
                                 logger.info(f"  新增成功 (通过 IMDb映射): 豆瓣演员 '{d_actor.get('Name')}' -> 新增 TMDbID: {tmdb_id_from_map}")
+                                # ★★★ 查询预先缓存的元数据 ★★★
+                                cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_find, cursor) or {}
+
+                                # ★★★ 使用缓存数据或默认值来创建 ★★★
                                 new_actor_entry = {
-                                    "id": tmdb_id_from_map, "name": d_actor.get("Name"), "original_name": d_actor.get("OriginalName"),
-                                    "character": d_actor.get("Role"), "adult": False, "gender": 0, "known_for_department": "Acting",
-                                    "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": 999,
-                                    "imdb_id": d_imdb_id, "douban_id": d_douban_id, "_is_newly_added": True
+                                    "id": tmdb_id_from_find,
+                                    "name": d_actor.get("Name"),
+                                    "original_name": cached_metadata.get("original_name") or d_actor.get("OriginalName"),
+                                    "character": d_actor.get("Role"),
+                                    "adult": cached_metadata.get("adult", False),
+                                    "gender": cached_metadata.get("gender", 0),
+                                    "known_for_department": "Acting",
+                                    "popularity": cached_metadata.get("popularity", 0.0),
+                                    "profile_path": cached_metadata.get("profile_path"), # <-- 关键！
+                                    "cast_id": None, "credit_id": None, "order": 999,
+                                    "imdb_id": d_imdb_id,
+                                    "douban_id": d_douban_id,
+                                    "_is_newly_added": True
                                 }
                                 final_cast_map[tmdb_id_from_map] = new_actor_entry
                             # ✨✨✨ 立刻反哺这个新发现的映射关系！ ✨✨✨
@@ -465,11 +501,24 @@ class MediaProcessor:
                                 
                                 if tmdb_id_from_find not in final_cast_map:
                                     logger.info(f"  新增成功 (通过 TMDb反查): 豆瓣演员 '{d_actor.get('Name')}' -> 新增 TMDbID: {tmdb_id_from_find}")
+                                    # ★★★ 1. 再次查询预先缓存的元数据 ★★★
+                                    cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_find, cursor) or {}
+
+                                    # ★★★ 2. 同样使用缓存数据或默认值来创建 ★★★
                                     new_actor_entry = {
-                                        "id": tmdb_id_from_find, "name": d_actor.get("Name"), "original_name": d_actor.get("OriginalName"),
-                                        "character": d_actor.get("Role"), "adult": False, "gender": 0, "known_for_department": "Acting",
-                                        "popularity": 0.0, "profile_path": None, "cast_id": None, "credit_id": None, "order": 999,
-                                        "imdb_id": d_imdb_id, "douban_id": d_douban_id, "_is_newly_added": True
+                                        "id": tmdb_id_from_find,
+                                        "name": d_actor.get("Name"),
+                                        "original_name": cached_metadata.get("original_name") or d_actor.get("OriginalName"),
+                                        "character": d_actor.get("Role"),
+                                        "adult": cached_metadata.get("adult", False),
+                                        "gender": cached_metadata.get("gender", 0),
+                                        "known_for_department": "Acting",
+                                        "popularity": cached_metadata.get("popularity", 0.0),
+                                        "profile_path": cached_metadata.get("profile_path"), # <-- 关键！
+                                        "cast_id": None, "credit_id": None, "order": 999,
+                                        "imdb_id": d_imdb_id,
+                                        "douban_id": d_douban_id,
+                                        "_is_newly_added": True
                                     }
                                     final_cast_map[tmdb_id_from_find] = new_actor_entry
                                     
