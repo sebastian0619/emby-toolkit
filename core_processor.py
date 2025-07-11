@@ -1405,7 +1405,7 @@ class MediaProcessor:
     # ✨✨✨手动处理✨✨✨
     def process_item_with_manual_cast(self, item_id: str, manual_cast_list: List[Dict[str, Any]], item_name: str) -> bool:
         """
-        【V4 - 后端缓存最终版】使用前端提交的轻量级修改，与内存中的完整数据合并。
+        【V5 - 格式化增强版】使用前端提交的轻量级修改，与内存中的完整数据合并，并应用最终的格式化步骤。
         """
         logger.info(f"手动处理流程启动 (后端缓存模式)：ItemID: {item_id} ('{item_name}')")
         try:
@@ -1433,45 +1433,70 @@ class MediaProcessor:
                     # 3. 构建一个以 TMDb ID 为键的原始数据映射表，方便查找
                     reliable_cast_map = {str(actor['id']): actor for actor in original_full_cast if actor.get('id')}
 
-                    # 4. 遍历前端传来的轻量级列表，安全地合并修改
-                    final_cast_for_json = []
+                    # 4. 遍历前端传来的轻量级列表，安全地合并修改，生成一个中间状态的列表
+                    intermediate_cast = []
                     for actor_from_frontend in manual_cast_list:
                         frontend_tmdb_id = actor_from_frontend.get("tmdbId")
                         if not frontend_tmdb_id: continue
 
-                        # 从我们的“真理之源”中找到对应的完整原始数据
                         original_actor_data = reliable_cast_map.get(str(frontend_tmdb_id))
                         if not original_actor_data:
                             logger.warning(f"在原始缓存中找不到 TMDb ID {frontend_tmdb_id}，跳过此演员。")
                             continue
                         
-                        # 创建一个副本，并只更新 name 和 role
                         updated_actor_data = copy.deepcopy(original_actor_data)
                         updated_actor_data['name'] = actor_from_frontend.get('name')
                         updated_actor_data['character'] = actor_from_frontend.get('role')
                         
-                        final_cast_for_json.append(updated_actor_data)
-                    
-                    # 为最终列表设置正确的顺序
-                    for idx, actor in enumerate(final_cast_for_json):
-                        actor['order'] = idx
+                        intermediate_cast.append(updated_actor_data)
 
-                    # ★★★ 5. 后续的文件写入和刷新流程，现在使用的是100%完整的演员数据 ★★★
-                    # ... (这部分逻辑与你之前的版本完全相同，我将它补全) ...
+                    # =================================================================
+                    # ★★★ 4.5.【【【 新增核心步骤 】】】★★★
+                    #      应用与自动处理流程完全相同的最终格式化和补全逻辑
+                    # =================================================================
+                    genres = item_details.get("Genres", [])
+                    is_animation = "Animation" in genres or "动画" in genres
                     
+                    logger.debug("正在对合并后的演员列表应用最终的格式化、补全和排序...")
+                    final_cast_perfect = actor_utils.format_and_complete_cast_list(
+                        intermediate_cast, 
+                        is_animation, 
+                        self.config
+                    )
+                    logger.info(f"手动格式化与补全完成，最终演员数量: {len(final_cast_perfect)}。")
+
+
+                    # ★★★ 5. 后续的文件写入和刷新流程，现在使用的是100%格式化后的完美演员数据 ★★★
                     cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
                     base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
                     if item_type == "Series":
                         # 调用我们现有的、可靠的写入函数
-                        self._write_aggregated_cast_cache(base_cache_dir, final_cast_for_json)
+                        self._write_aggregated_cast_cache(base_cache_dir, final_cast_perfect)
+
                     base_json_filename = "all.json" if item_type == "Movie" else "series.json"
+                    # 注意：这里我们不再需要读取原始的 all.json/series.json，因为我们只关心写入演员表
+                    # 但为了安全和逻辑完整，我们依然可以读取它，然后只覆盖演员部分
                     base_json_data_original = _read_local_json(os.path.join(base_cache_dir, base_json_filename)) or {}
-                    base_json_data_for_override = copy.deepcopy(base_json_data_original)
+                    
+                    # 使用一个全新的、干净的字典来构建覆盖文件，避免污染
+                    base_json_data_for_override = {}
+                    safe_fields_whitelist = [
+                        "backdrop_path", "episode_run_time", "first_air_date", "genres",
+                        "homepage", "id", "in_production", "languages", "last_air_date",
+                        "name", "networks", "number_of_episodes", "number_of_seasons",
+                        "origin_country", "original_language", "original_name", "overview",
+                        "popularity", "poster_path", "production_companies", "production_countries",
+                        "seasons", "spoken_languages", "status", "tagline", "type",
+                        "vote_average", "vote_count", "english_name"
+                    ]
+                    for field in safe_fields_whitelist:
+                        if field in base_json_data_original:
+                            base_json_data_for_override[field] = base_json_data_original[field]
 
                     if item_type == "Movie":
-                        base_json_data_for_override.setdefault("casts", {})["cast"] = final_cast_for_json
-                    else:
-                        base_json_data_for_override.setdefault("credits", {})["cast"] = final_cast_for_json
+                        base_json_data_for_override.setdefault("casts", {})["cast"] = final_cast_perfect
+                    else: # Series
+                        base_json_data_for_override.setdefault("credits", {})["cast"] = final_cast_perfect
                     
                     base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
                     image_override_dir = os.path.join(base_override_dir, "images")
@@ -1488,32 +1513,34 @@ class MediaProcessor:
                     process_episodes_config = self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False)
                     if item_type == "Series" and process_episodes_config:
                         logger.info(f"手动处理：开始为所有分集注入手动编辑后的演员表...")
-                        # base_cache_dir 变量在函数前面已经定义好了，可以直接使用
                         for filename in os.listdir(base_cache_dir):
-                            if filename.startswith("season-") and filename.endswith(".json"):
+                            if filename.startswith("season-") and "-episode-" in filename and filename.endswith(".json"):
                                 child_json_original = _read_local_json(os.path.join(base_cache_dir, filename))
                                 if child_json_original:
                                     child_json_for_override = copy.deepcopy(child_json_original)
-                                    child_json_for_override.setdefault("credits", {})["cast"] = final_cast_for_json
+                                    child_json_for_override.setdefault("credits", {})["cast"] = final_cast_perfect
+                                    child_json_for_override["guest_stars"] = [] # 同时清空 guest_stars
                                     override_child_path = os.path.join(base_override_dir, filename)
                                     try:
-                                        with open(override_child_path, 'w', encoding='utf-8') as f:
+                                        # 使用原子写入，防止意外中断
+                                        temp_child_path = f"{override_child_path}.{random.randint(1000, 9999)}.tmp"
+                                        with open(temp_child_path, 'w', encoding='utf-8') as f:
                                             json.dump(child_json_for_override, f, ensure_ascii=False, indent=4)
+                                        os.replace(temp_child_path, override_child_path)
                                     except Exception as e:
                                         logger.error(f"手动处理：写入子项目JSON失败: {override_child_path}, {e}")
+                                        if os.path.exists(temp_child_path): os.remove(temp_child_path)
 
-                    #---同步图片
+                    #---同步图片 (逻辑不变)
                     if self.sync_images_enabled:
                         if self.is_stop_requested(): raise InterruptedError("任务中止")
                         logger.info(f"手动处理：开始下载图片...")
-                        # image_override_dir 变量在函数前面已经定义好了，可以直接使用
                         image_map = {"Primary": "poster.jpg", "Backdrop": "fanart.jpg", "Logo": "clearlogo.png"}
                         if item_type == "Movie": image_map["Thumb"] = "landscape.jpg"
                         for image_type, filename in image_map.items():
                             emby_handler.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
                         
                         if item_type == "Series" and process_episodes_config:
-                            # item_name 变量是从函数参数中传进来的，可以直接使用
                             children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name) or []
                             for child in children:
                                 if self.is_stop_requested(): break
@@ -1536,30 +1563,27 @@ class MediaProcessor:
                         item_name_for_log=item_name
                     )
                     if not refresh_success:
-                        # 即使刷新失败，文件也已经生成了，所以我们不让整个任务失败
-                        # 但可以记录一个警告
                         logger.warning(f"手动处理：文件已生成，但触发 Emby 刷新失败。你可能需要稍后在 Emby 中手动刷新。")
 
                     # 更新处理日志
-                    self.log_db_manager.save_to_processed_log(cursor, item_id, item_name, score=10.0)
+                    self.log_db_manager.save_to_processed_log(cursor, item_id, item_name, score=10.0) # 手动处理直接给满分
                     self.log_db_manager.remove_from_failed_log(cursor, item_id)
                     
-                    logger.info(f"✅ 手动处理 '{item_name}' 流程完成。")
+                    # ✨✨✨ 提交事务 ✨✨✨
+                    conn.commit()
+                    logger.info(f"✅ 手动处理 '{item_name}' 流程完成，数据库事务已提交。")
                     return True
                 
                 except Exception as inner_e:
                     # 如果在事务中发生任何错误，回滚
                     logger.error(f"手动处理事务中发生错误 for {item_name}: {inner_e}", exc_info=True)
                     conn.rollback()
+                    logger.warning(f"由于发生错误，针对 '{item_name}' 的数据库更改已回滚。")
                     # 重新抛出，让外层捕获
                     raise
 
         except Exception as outer_e:
             logger.error(f"手动处理 '{item_name}' 时发生顶层错误: {outer_e}", exc_info=True)
-            # 注意：这里的 save_to_failed_log 不能工作，因为它需要一个 cursor
-            # 但这是一个更好的设计，因为如果数据库连接本身都失败了，我们也不应该尝试写入日志
-            # 我们可以只在日志中记录这个错误
-            # self.save_to_failed_log(item_id, item_name, f"手动处理异常: {str(e)}") # 这行需要移除或修改
             return False
         finally:
             # ★★★ 清理本次编辑会话的缓存 ★★★
