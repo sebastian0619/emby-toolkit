@@ -2858,16 +2858,14 @@ def search_logs_with_context():
     if not query:
         return jsonify({"error": "搜索关键词不能为空"}), 400
 
-    # ★★★ 关键修复：使用更健壮的正则表达式 ★★★
-    # 1. 开始标记：保持不变，re.search可以处理前缀
+    # 正则表达式保持不变
     START_MARKER = re.compile(r"--- 开始核心处理: '(.+?)'")
-    # 2. 结束标记：不再关心前后的装饰性字符(如✨)，只匹配核心文本
     END_MARKER = re.compile(r"处理完成 '(.+?)'")
 
     found_blocks = []
     
     try:
-        # --- 获取并排序所有日志文件 (逻辑不变) ---
+        # --- 文件获取和排序逻辑保持不变 ---
         all_files = os.listdir(PERSISTENT_DATA_PATH)
         log_files = [f for f in all_files if f.startswith('app.log')]
         def sort_key(filename):
@@ -2878,13 +2876,12 @@ def search_logs_with_context():
             return float('inf')
         log_files.sort(key=sort_key)
 
-        # --- 遍历所有文件，进行智能上下文搜索 (逻辑不变) ---
+        # ★★★ 关键修复：重构日志遍历和块处理逻辑 ★★★
         for filename in log_files:
             full_path = os.path.join(PERSISTENT_DATA_PATH, filename)
             
             in_block = False
             current_block = []
-            block_contains_query = False
 
             try:
                 opener = gzip.open if filename.endswith('.gz') else open
@@ -2894,30 +2891,33 @@ def search_logs_with_context():
                         if not line: continue
 
                         is_start_marker = START_MARKER.search(line)
+
                         if is_start_marker:
-                            if in_block and block_contains_query:
-                                found_blocks.append({"file": filename, "lines": current_block})
-                            
+                            # 如果我们之前已经在一个块里，说明那个块是不完整的，直接丢弃。
+                            # 然后开始一个全新的块。
                             in_block = True
                             current_block = [line]
-                            block_contains_query = query.lower() in line.lower()
-                            continue
-
-                        if in_block:
+                        elif in_block:
+                            # 只有当我们在一个块内时，才继续添加内容
                             current_block.append(line)
-                            if not block_contains_query and query.lower() in line.lower():
-                                block_contains_query = True
                             
                             is_end_marker = END_MARKER.search(line)
                             if is_end_marker:
-                                if block_contains_query:
-                                    found_blocks.append({"file": filename, "lines": current_block})
+                                # 块已完整结束，现在检查整个块是否包含关键词
+                                block_content = "\n".join(current_block)
+                                if query.lower() in block_content.lower():
+                                    found_blocks.append({
+                                        "file": filename,
+                                        "lines": current_block
+                                    })
+                                
+                                # 重置状态，准备寻找下一个块
                                 in_block = False
                                 current_block = []
-                                block_contains_query = False
             except Exception as e:
                 logging.warning(f"API: 上下文搜索时无法读取文件 '{filename}': {e}")
         
+        # 排序和返回逻辑保持不变
         found_blocks.sort(key=lambda x: (log_files.index(x['file']), x['lines'][0]))
         return jsonify(found_blocks)
 
