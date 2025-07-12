@@ -298,8 +298,8 @@ class MediaProcessor:
         douban_candidates_raw = self._get_douban_cast_with_local_cache(item_details_from_emby)
         douban_candidates = actor_utils.format_douban_cast(douban_candidates_raw)
         
-        # --- 步骤 1: 执行消耗型一对一匹配 ---
-        logger.debug("--- 匹配阶段 1: 执行消耗型一对一匹配 ---")
+        # --- 步骤 1: 执行一对一匹配 ---
+        logger.debug("--- 匹配阶段 1: 执行一对一匹配 ---")
 
         # 1. 创建一个可被消耗的本地演员列表副本
         unmatched_local_actors = list(local_cast_list)
@@ -384,7 +384,7 @@ class MediaProcessor:
                     if entry and entry["tmdb_person_id"]:
                         tmdb_id_from_map = entry["tmdb_person_id"]
                         if tmdb_id_from_map not in final_cast_map:
-                            logger.info(f"  新增成功 (通过 豆瓣ID映射): 豆瓣演员 '{d_actor.get('Name')}' -> 新增 TMDbID: {tmdb_id_from_map}")
+                            logger.info(f"  匹配成功 (通过 豆瓣ID映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
                             # ★★★ 1. 查询预先缓存的元数据 ★★★
                             cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_map, cursor) or {}
 
@@ -452,7 +452,7 @@ class MediaProcessor:
                             tmdb_id_from_map = str(entry_from_map["tmdb_person_id"])
                             
                             if tmdb_id_from_map not in final_cast_map:
-                                logger.info(f"  新增成功 (通过 IMDb映射): 豆瓣演员 '{d_actor.get('Name')}' -> 新增 TMDbID: {tmdb_id_from_map}")
+                                logger.info(f"  匹配成功 (通过 IMDb映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
                                 # ★★★ 查询预先缓存的元数据 ★★★
                                 cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_find, cursor) or {}
 
@@ -500,7 +500,7 @@ class MediaProcessor:
                                 tmdb_id_from_find = str(person_from_tmdb.get("id"))
                                 
                                 if tmdb_id_from_find not in final_cast_map:
-                                    logger.info(f"  新增成功 (通过 TMDb反查): 豆瓣演员 '{d_actor.get('Name')}' -> 新增 TMDbID: {tmdb_id_from_find}")
+                                    logger.info(f"  匹配成功 (通过 TMDb反查): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
                                     # ★★★ 1. 再次查询预先缓存的元数据 ★★★
                                     cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_find, cursor) or {}
 
@@ -601,7 +601,7 @@ class MediaProcessor:
                 texts_to_send_to_api = set()
 
                 if translation_mode == 'fast':
-                    logger.debug("[低配模式] 正在检查全局翻译缓存...")
+                    logger.debug("[翻译模式] 正在检查全局翻译缓存...")
                     for text in texts_to_collect:
                         cached_entry = DoubanApi._get_translation_from_db(text, cursor=cursor)
                         if cached_entry:
@@ -609,7 +609,7 @@ class MediaProcessor:
                         else:
                             texts_to_send_to_api.add(text)
                 else:
-                    logger.debug("[高配模式] 跳过缓存检查，直接翻译所有词条。")
+                    logger.debug("[顾问模式] 跳过缓存检查，直接翻译所有词条。")
                     texts_to_send_to_api = texts_to_collect
 
                 if texts_to_send_to_api:
