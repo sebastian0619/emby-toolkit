@@ -43,12 +43,25 @@
               <template #icon><n-icon :component="ArrowBackOutline" /></template>
               返回文件浏览
             </n-button>
-            <n-log
-              v-if="hasSearchResults"
-              :log="formattedLogResults"
-              :rows="35"
-              style="font-size: 12px; line-height: 1.6;"
-            />
+            
+            <!-- ★★★ [修改] 将级别class绑定到整行div上 ★★★ -->
+            <div v-if="hasSearchResults" class="log-viewer-container">
+              <div 
+                v-for="(line, index) in parsedLogResults" 
+                :key="index" 
+                class="log-line"
+                :class="line.type === 'log' ? line.level.toLowerCase() : 'raw'"
+              >
+                <template v-if="line.type === 'log'">
+                  <span class="timestamp">{{ line.timestamp }}</span>
+                  <span class="level">{{ line.level }}</span>
+                  <span class="message">{{ line.message }}</span>
+                </template>
+                <template v-else>
+                  {{ line.content }}
+                </template>
+              </div>
+            </div>
             <n-empty v-else description="未找到匹配的日志记录。" style="margin-top: 50px;" />
           </div>
 
@@ -61,13 +74,25 @@
               :loading="isLoadingFiles"
               @update:value="fetchLogContent"
             />
-            <n-log
-              v-if="logContent"
-              :log="logContent"
-              trim
-              :rows="38"
-              style="font-size: 12px; line-height: 1.5; margin-top: 10px;"
-            />
+
+            <!-- ★★★ [修改] 将级别class绑定到整行div上 ★★★ -->
+            <div v-if="logContent" class="log-viewer-container" style="margin-top: 10px;">
+              <div 
+                v-for="(line, index) in parsedLogContent" 
+                :key="index" 
+                class="log-line"
+                :class="line.type === 'log' ? line.level.toLowerCase() : 'raw'"
+              >
+                <template v-if="line.type === 'log'">
+                  <span class="timestamp">{{ line.timestamp }}</span>
+                  <span class="level">{{ line.level }}</span>
+                  <span class="message">{{ line.message }}</span>
+                </template>
+                <template v-else>
+                  {{ line.content }}
+                </template>
+              </div>
+            </div>
             <n-empty v-else description="无数据" style="margin-top: 50px;" />
           </div>
           <template #description>{{ loadingText }}</template>
@@ -81,7 +106,7 @@
 import { ref, watch, computed } from 'vue';
 import axios from 'axios';
 import { 
-  useMessage, NDrawer, NDrawerContent, NSelect, NSpace, NSpin, NLog, 
+  useMessage, NDrawer, NDrawerContent, NSelect, NSpace, NSpin, 
   NInput, NInputGroup, NButton, NDivider, NEmpty, NIcon,
   NRadioGroup, NRadioButton
 } from 'naive-ui';
@@ -98,7 +123,7 @@ const isLoadingContent = ref(false);
 const isSearching = ref(false);
 const logFiles = ref([]);
 const selectedFile = ref(null);
-const logContent = ref(''); // 初始为空，避免显示“无数据”
+const logContent = ref('');
 const searchQuery = ref('');
 const searchResults = ref([]);
 const isSearchMode = ref(false);
@@ -114,34 +139,61 @@ const loadingText = computed(() => {
   if (isSearching.value) return `正在以 [${searchMode.value === 'context' ? '定位' : '筛选'}] 模式搜索...`;
   return '';
 });
-const formattedLogResults = computed(() => {
-  if (!hasSearchResults.value) return '';
-  if (searchMode.value === 'context') {
-    const blocks = searchResults.value.map(block => `--- [ Context found in ${block.file} ] ---\n${block.lines.join('\n')}`);
-    return `以“定位”模式找到 ${blocks.length} 个完整处理过程:\n\n` + blocks.join('\n\n========================================================\n\n');
-  } else {
-    let lastFile = '';
-    const lines = searchResults.value.map(result => `${result.file !== lastFile ? `\n--- [ ${lastFile=result.file} ] ---\n` : ''}${result.content}`);
-    return `以“筛选”模式找到 ${searchResults.value.length} 条结果:` + lines.join('\n');
+
+// 日志行解析函数 (无需改动)
+const parseLogLine = (line) => {
+  const match = line.match(/^(\d{4}-\d{2}-\d{2}\s(\d{2}:\d{2}:\d{2})),\d+\s-\s.+?\s-\s(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s-\s(.*)$/);
+  if (match) {
+    return {
+      type: 'log',
+      timestamp: match[2],
+      level: match[3],
+      message: match[4].trim(),
+    };
   }
+  return { type: 'raw', content: line };
+};
+
+// 计算属性，用于解析日志内容 (无需改动)
+const parsedLogContent = computed(() => {
+  if (!logContent.value) return [];
+  return logContent.value.split('\n').map(parseLogLine);
 });
 
-// --- Methods ---
+// 计算属性，用于解析搜索结果 (无需改动)
+const parsedLogResults = computed(() => {
+  if (!hasSearchResults.value) return [];
+  
+  let resultString;
+  if (searchMode.value === 'context') {
+    const blocks = searchResults.value.map(block => `--- [ Context found in ${block.file} ] ---\n${block.lines.join('\n')}`);
+    resultString = `以“定位”模式找到 ${blocks.length} 个完整处理过程:\n\n` + blocks.join('\n\n========================================================\n\n');
+  } else {
+    let lastFile = '';
+    const lines = searchResults.value.map(result => {
+      const header = result.file !== lastFile ? `\n--- [ ${lastFile=result.file} ] ---\n` : '';
+      return `${header}${result.content}`;
+    });
+    resultString = `以“筛选”模式找到 ${searchResults.value.length} 条结果:` + lines.join('\n');
+  }
+  
+  return resultString.split('\n').map(parseLogLine);
+});
 
+
+// --- Methods --- (无需改动)
 const fetchLogFiles = async () => {
   isLoadingFiles.value = true;
   try {
     const response = await axios.get('/api/logs/list');
     logFiles.value = response.data;
-    // ★★★ 关键修复：确保在文件浏览模式下，自动加载第一个文件 ★★★
     if (!isSearchMode.value && logFiles.value.length > 0) {
-      // 只有当没有文件被选中时，才自动选择第一个
       if (!selectedFile.value) {
         selectedFile.value = logFiles.value[0];
         await fetchLogContent(selectedFile.value);
       }
     } else if (logFiles.value.length === 0) {
-      logContent.value = ''; // 如果没文件，清空内容区
+      logContent.value = '';
     }
   } catch (error) {
     message.error('获取日志文件列表失败！');
@@ -188,18 +240,16 @@ const clearSearch = () => {
   isSearchMode.value = false;
   searchQuery.value = '';
   searchResults.value = [];
-  // ★★★ 关键修复：返回浏览模式时，如果内容区是空的，则重新加载当前选中的文件 ★★★
   if (selectedFile.value && !logContent.value) {
     fetchLogContent(selectedFile.value);
   }
 };
 
-// --- Watcher ---
+// --- Watcher --- (无需改动)
 watch(() => props.show, (newVal) => {
   if (newVal) {
     fetchLogFiles();
   } else {
-    // 关闭时重置所有状态
     clearSearch();
     selectedFile.value = null;
     logFiles.value = [];
@@ -207,3 +257,54 @@ watch(() => props.show, (newVal) => {
   }
 });
 </script>
+
+<!-- ★★★ [修改] 将颜色样式应用到整行 ★★★ -->
+<style scoped>
+.log-viewer-container {
+  background-color: #282c34;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 13px;
+  padding: 10px 15px;
+  border-radius: 6px;
+  max-height: calc(100vh - 250px);
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-line {
+  line-height: 1.6;
+  padding: 1px 0;
+  /* 默认文字颜色，会被下面的具体级别覆盖 */
+  color: #abb2bf; 
+}
+
+/* 不同级别的行颜色 */
+.log-line.info { color: #98c379; }
+.log-line.warning { color: #e5c07b; }
+.log-line.error,
+.log-line.critical { color: #e06c75; }
+.log-line.debug { color: #56b6c2; }
+
+/* 分隔符等原始行的样式 */
+.log-line.raw {
+  color: #95a5a6;
+  font-style: italic;
+}
+
+/* 时间戳颜色保持独立，不受行颜色影响 */
+.timestamp {
+  color: #61afef;
+  margin-right: 1em;
+}
+
+.level {
+  font-weight: bold;
+  margin-right: 1em;
+  text-transform: uppercase;
+}
+
+.message {
+  /* message的颜色会从父级.log-line继承，无需单独设置 */
+}
+</style>
