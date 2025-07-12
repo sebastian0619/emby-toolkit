@@ -12,7 +12,7 @@ LOG_FILE_MAX_SIZE_MB = 5
 LOG_FILE_BACKUP_COUNT = 5
 
 # --- 前端队列和 Handler ---
-frontend_log_queue = deque(maxlen=1000)
+frontend_log_queue = deque(maxlen=100)
 
 class FrontendQueueHandler(logging.Handler):
     def __init__(self, *args, **kwargs):
