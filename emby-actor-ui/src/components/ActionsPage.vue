@@ -163,6 +163,13 @@
       <!-- 右侧列：实时日志区 -->
       <n-gi span="1">
         <n-card title="实时日志" class="glass-section" :bordered="false" content-style="padding: 0;">
+          <!-- ★★★ 1. 在卡片标题栏添加一个按钮 ★★★ -->
+          <template #header-extra>
+            <n-button text @click="isLogViewerVisible = true" title="查看历史归档日志">
+              <template #icon><n-icon :component="DocumentTextOutline" /></template>
+              历史日志
+            </n-button>
+          </template>
           <n-log
             ref="logRef"
             :log="logContent"
@@ -173,6 +180,7 @@
         </n-card>
       </n-gi>
     </n-grid>
+    <LogViewer v-model:show="isLogViewerVisible" />
   </div>
   </n-space>
 </template>
@@ -180,6 +188,7 @@
 <script setup>
 // ★★★ 变化点2: 重新引入 nextTick，因为简化后的 watch 仍然需要它 ★★★
 import { ref, computed, watch, nextTick } from 'vue';
+import LogViewer from './LogViewer.vue';
 import axios from 'axios';
 import { 
   NCard, NButton, NCheckbox, NSpace, NAlert, NLog, NIcon, useMessage, 
@@ -189,7 +198,8 @@ import {
 import { 
   TrashOutline as TrashIcon,
   DownloadOutline as ExportIcon, 
-  CloudUploadOutline as ImportIcon 
+  CloudUploadOutline as ImportIcon,
+  DocumentTextOutline 
 } from '@vicons/ionicons5';
 
 // --- Refs and Props ---
@@ -213,7 +223,7 @@ const props = defineProps({
 const forceReprocessAll = ref(false);
 const isExporting = ref(false);
 const isImporting = ref(false);
-// ★★★ 变化点3: 移除了 autoScrollEnabled 和 logScrollToLine ★★★
+const isLogViewerVisible = ref(false);
 
 // --- Computed Properties (保持不变) ---
 const logContent = computed(() => {

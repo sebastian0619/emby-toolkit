@@ -5,13 +5,14 @@ import json
 import inspect
 import sqlite3
 import shutil
+import gzip
 from actor_sync_handler import UnifiedSyncHandler
 import emby_handler
 import utils
 from utils import LogDBManager
 import configparser
-from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory,Response
-from werkzeug.utils import safe_join
+from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory,Response, abort
+from werkzeug.utils import safe_join, secure_filename
 from queue import Queue
 from functools import wraps
 from utils import get_override_path_for_item
@@ -2737,6 +2738,115 @@ def api_trigger_task_now(task_identifier: str):
         "message": "任务已成功提交到后台队列。",
         "task_name": task_name
     }), 202 # 202 Accepted 表示请求已被接受，将在后台处理
+# ▼▼▼ 日志查看器 API 路由 ▼▼▼
+@app.route('/api/logs/list', methods=['GET'])
+@login_required
+def list_log_files():
+    """列出日志目录下的所有日志文件 (app.log*)"""
+    try:
+        # PERSISTENT_DATA_PATH 变量在当前作用域中可以直接使用
+        all_files = os.listdir(PERSISTENT_DATA_PATH)
+        log_files = [f for f in all_files if f.startswith('app.log')]
+        
+        # 对日志文件进行智能排序，确保 app.log 在最前，然后是 .1.gz, .2.gz ...
+        def sort_key(filename):
+            if filename == 'app.log':
+                return -1
+            parts = filename.split('.')
+            # 适用于 'app.log.1.gz' 这样的格式
+            if len(parts) > 2 and parts[-1] == 'gz' and parts[-2].isdigit():
+                return int(parts[-2])
+            return float('inf') # 其他不规范的格式排在最后
+
+        log_files.sort(key=sort_key)
+        return jsonify(log_files)
+    except Exception as e:
+        logging.error(f"API: 无法列出日志文件: {e}", exc_info=True)
+        return jsonify({"error": "无法读取日志文件列表"}), 500
+@app.route('/api/logs/view', methods=['GET'])
+@login_required
+def view_log_file():
+    """查看指定日志文件的内容，自动处理 .gz 文件"""
+    # 安全性第一：防止目录遍历攻击
+    filename = secure_filename(request.args.get('filename', ''))
+    if not filename or not filename.startswith('app.log'):
+        abort(403, "禁止访问非日志文件或无效的文件名。")
+
+    full_path = os.path.join(PERSISTENT_DATA_PATH, filename)
+
+    # 再次确认最终路径仍然在合法的日志目录下
+    if not os.path.abspath(full_path).startswith(os.path.abspath(PERSISTENT_DATA_PATH)):
+        abort(403, "检测到非法路径访问。")
+        
+    if not os.path.exists(full_path):
+        abort(404, "文件未找到。")
+
+    try:
+        if filename.endswith('.gz'):
+            # 在内存中解压并以文本模式读取 .gz 文件
+            with gzip.open(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+        else:
+            # 直接读取普通文本文件
+            with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+        
+        # 以纯文本形式返回内容
+        return Response(content, mimetype='text/plain')
+        
+    except Exception as e:
+        logging.error(f"API: 读取日志文件 '{filename}' 时出错: {e}", exc_info=True)
+        abort(500, f"读取文件 '{filename}' 时发生内部错误。")
+@app.route('/api/logs/search', methods=['GET'])
+@login_required
+def search_all_logs():
+    """
+    在所有日志文件 (app.log*) 中搜索关键词。
+    """
+    query = request.args.get('q', '').strip()
+    if not query:
+        return jsonify({"error": "搜索关键词不能为空"}), 400
+
+    search_results = []
+    
+    try:
+        # 1. 获取并排序所有日志文件，确保从新到旧搜索
+        all_files = os.listdir(PERSISTENT_DATA_PATH)
+        log_files = [f for f in all_files if f.startswith('app.log')]
+        
+        def sort_key(filename):
+            if filename == 'app.log': return -1
+            parts = filename.split('.')
+            if len(parts) > 2 and parts[-1] == 'gz' and parts[-2].isdigit():
+                return int(parts[-2])
+            return float('inf')
+        log_files.sort(key=sort_key)
+
+        # 2. 遍历每个文件进行搜索
+        for filename in log_files:
+            full_path = os.path.join(PERSISTENT_DATA_PATH, filename)
+            try:
+                # 使用 'rt' 模式，gzip/open 会自动处理文本解码
+                opener = gzip.open if filename.endswith('.gz') else open
+                with opener(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
+                    # 逐行读取，避免内存爆炸
+                    for line_num, line in enumerate(f, 1):
+                        # 不区分大小写搜索
+                        if query.lower() in line.lower():
+                            search_results.append({
+                                "file": filename,
+                                "line_num": line_num,
+                                "content": line.strip()
+                            })
+            except Exception as e:
+                # 如果单个文件读取失败，记录错误并继续
+                logging.warning(f"API: 搜索时无法读取文件 '{filename}': {e}")
+
+        return jsonify(search_results)
+
+    except Exception as e:
+        logging.error(f"API: 全局日志搜索时发生严重错误: {e}", exc_info=True)
+        return jsonify({"error": "搜索过程中发生服务器内部错误"}), 500
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
