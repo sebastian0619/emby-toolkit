@@ -18,12 +18,12 @@
             @keyup.enter="executeSearch"
             :disabled="isLoading"
           />
-          <n-button type="primary" @click="executeSearch" :loading="isLoading">
+          <n-button type="primary" @click="executeSearch" :loading="isSearching">
             搜索
           </n-button>
         </n-input-group>
 
-        <!-- ★★★ 1. 新增：搜索模式切换 ★★★ -->
+        <!-- 搜索模式切换 -->
         <n-radio-group v-model:value="searchMode" name="search-mode-radio">
           <n-radio-button value="filter" :disabled="isLoading">
             筛选模式 (仅显示匹配行)
@@ -62,11 +62,13 @@
               @update:value="fetchLogContent"
             />
             <n-log
+              v-if="logContent"
               :log="logContent"
               trim
               :rows="38"
               style="font-size: 12px; line-height: 1.5; margin-top: 10px;"
             />
+            <n-empty v-else description="无数据" style="margin-top: 50px;" />
           </div>
           <template #description>{{ loadingText }}</template>
         </n-spin>
@@ -85,62 +87,84 @@ import {
 } from 'naive-ui';
 import { ArrowBackOutline } from '@vicons/ionicons5';
 
-// --- Props, Emits, and Core Refs (大部分保持不变) ---
+// --- Props, Emits ---
 const props = defineProps({ show: { type: Boolean, default: false } });
 const emit = defineEmits(['update:show']);
+
+// --- Refs ---
 const message = useMessage();
 const isLoadingFiles = ref(false);
 const isLoadingContent = ref(false);
 const isSearching = ref(false);
 const logFiles = ref([]);
 const selectedFile = ref(null);
-const logContent = ref('请从上方选择一个日志文件进行查看。');
+const logContent = ref(''); // 初始为空，避免显示“无数据”
 const searchQuery = ref('');
-const searchResults = ref([]); // 将同时用于两种模式的结果
+const searchResults = ref([]);
 const isSearchMode = ref(false);
+const searchMode = ref('context');
 
-// ★★★ 2. 新增：控制搜索模式的 Ref ★★★
-const searchMode = ref('context'); // 默认使用更强大的“定位模式”
-
-// --- 计算属性 (Computed) ---
+// --- Computed ---
 const isLoading = computed(() => isLoadingFiles.value || isLoadingContent.value || isSearching.value);
 const hasSearchResults = computed(() => searchResults.value.length > 0);
+const fileOptions = computed(() => logFiles.value.map(file => ({ label: file, value: file })));
 const loadingText = computed(() => {
-  if (isSearching.value) return `正在以 [${searchMode.value === 'context' ? '定位' : '筛选'}] 模式搜索 "${searchQuery.value}"...`;
+  if (isLoadingFiles.value) return '正在获取文件列表...';
+  if (isLoadingContent.value) return '正在加载日志内容...';
+  if (isSearching.value) return `正在以 [${searchMode.value === 'context' ? '定位' : '筛选'}] 模式搜索...`;
   return '';
 });
-const fileOptions = computed(() => logFiles.value.map(file => ({ label: file, value: file })));
-
-// ★★★ 3. 升级：统一的结果格式化器 ★★★
 const formattedLogResults = computed(() => {
   if (!hasSearchResults.value) return '';
-
   if (searchMode.value === 'context') {
-    // 为“定位模式”格式化结果
-    const blocks = searchResults.value.map(block => {
-      const header = `--- [ Context found in ${block.file} ] ---`;
-      const content = block.lines.join('\n');
-      return `${header}\n${content}`;
-    });
+    const blocks = searchResults.value.map(block => `--- [ Context found in ${block.file} ] ---\n${block.lines.join('\n')}`);
     return `以“定位”模式找到 ${blocks.length} 个完整处理过程:\n\n` + blocks.join('\n\n========================================================\n\n');
   } else {
-    // 为“筛选模式”格式化结果
     let lastFile = '';
-    const lines = searchResults.value.map(result => {
-      let header = '';
-      if (result.file !== lastFile) {
-        header = `\n--- [ ${result.file} ] ---\n`;
-        lastFile = result.file;
-      }
-      return `${header}${result.content}`;
-    });
+    const lines = searchResults.value.map(result => `${result.file !== lastFile ? `\n--- [ ${lastFile=result.file} ] ---\n` : ''}${result.content}`);
     return `以“筛选”模式找到 ${searchResults.value.length} 条结果:` + lines.join('\n');
   }
 });
 
-// --- 方法 (Methods) ---
+// --- Methods ---
 
-// ★★★ 4. 升级：执行搜索的方法，根据模式调用不同 API ★★★
+const fetchLogFiles = async () => {
+  isLoadingFiles.value = true;
+  try {
+    const response = await axios.get('/api/logs/list');
+    logFiles.value = response.data;
+    // ★★★ 关键修复：确保在文件浏览模式下，自动加载第一个文件 ★★★
+    if (!isSearchMode.value && logFiles.value.length > 0) {
+      // 只有当没有文件被选中时，才自动选择第一个
+      if (!selectedFile.value) {
+        selectedFile.value = logFiles.value[0];
+        await fetchLogContent(selectedFile.value);
+      }
+    } else if (logFiles.value.length === 0) {
+      logContent.value = ''; // 如果没文件，清空内容区
+    }
+  } catch (error) {
+    message.error('获取日志文件列表失败！');
+  } finally {
+    isLoadingFiles.value = false;
+  }
+};
+
+const fetchLogContent = async (filename) => {
+  if (!filename) return;
+  isLoadingContent.value = true;
+  logContent.value = `正在加载 ${filename}...`;
+  try {
+    const response = await axios.get('/api/logs/view', { params: { filename } });
+    logContent.value = response.data || '（文件为空）';
+  } catch (error) {
+    message.error(`加载日志 ${filename} 失败！`);
+    logContent.value = `加载文件失败: ${error.response?.data || '未知错误'}`;
+  } finally {
+    isLoadingContent.value = false;
+  }
+};
+
 const executeSearch = async () => {
   if (!searchQuery.value.trim()) {
     message.warning('请输入搜索关键词。');
@@ -149,13 +173,9 @@ const executeSearch = async () => {
   isSearching.value = true;
   isSearchMode.value = true;
   searchResults.value = [];
-
   const endpoint = searchMode.value === 'context' ? '/api/logs/search_context' : '/api/logs/search';
-
   try {
-    const response = await axios.get(endpoint, {
-      params: { q: searchQuery.value },
-    });
+    const response = await axios.get(endpoint, { params: { q: searchQuery.value } });
     searchResults.value = response.data;
   } catch (error) {
     message.error(error.response?.data?.error || '搜索失败！');
@@ -164,24 +184,26 @@ const executeSearch = async () => {
   }
 };
 
-// 其他方法 (fetchLogFiles, fetchLogContent, clearSearch) 保持不变
-const fetchLogFiles = async () => { /* ... 保持原样 ... */ };
-const fetchLogContent = async (filename) => { /* ... 保持原样 ... */ };
 const clearSearch = () => {
   isSearchMode.value = false;
   searchQuery.value = '';
   searchResults.value = [];
+  // ★★★ 关键修复：返回浏览模式时，如果内容区是空的，则重新加载当前选中的文件 ★★★
+  if (selectedFile.value && !logContent.value) {
+    fetchLogContent(selectedFile.value);
+  }
 };
 
-// --- 监听器 (Watch) ---
+// --- Watcher ---
 watch(() => props.show, (newVal) => {
   if (newVal) {
     fetchLogFiles();
   } else {
+    // 关闭时重置所有状态
     clearSearch();
     selectedFile.value = null;
     logFiles.value = [];
-    logContent.value = '请从上方选择一个日志文件进行查看。';
+    logContent.value = '';
   }
 });
 </script>
