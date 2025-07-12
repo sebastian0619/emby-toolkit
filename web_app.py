@@ -2383,19 +2383,25 @@ def proxy_emby_image(image_path):
 # ✨✨✨ 清空待复核列表（并全部标记为已处理）的 API ✨✨✨
 @app.route('/api/actions/clear_review_items', methods=['POST'])
 @task_lock_required
-def api_clear_review_items():
+def api_clear_review_items_revised():
     logger.info("API: 收到清空所有待复核项目并标记为已处理的请求。")
-    # ✨✨✨ 添加防御性检查 ✨✨✨
+    
+    # 首先，在事务外部获取初始计数，用于最终验证
     try:
         with get_central_db_connection(DB_PATH) as pre_check_conn:
-            count = pre_check_conn.execute("SELECT COUNT(*) FROM failed_log").fetchone()[0]
-            logger.info(f"防御性检查：在事务开始前，'failed_log' 表中有 {count} 条记录。")
+            initial_count = pre_check_conn.execute("SELECT COUNT(*) FROM failed_log").fetchone()[0]
+            logger.info(f"防御性检查：在事务开始前，'failed_log' 表中有 {initial_count} 条记录。")
+            if initial_count == 0:
+                message = "操作完成，待复核列表本就是空的。"
+                logger.info(message)
+                return jsonify({"message": message}), 200
     except Exception as e_check:
-        logger.error(f"防御性检查失败: {e_check}")
-    # ✨✨✨ 检查结束 ✨✨✨
-    deleted_count = 0 # 在 try 块外部定义
+        logger.error(f"数据库预检查失败: {e_check}")
+        return jsonify({"error": "服务器在预检查数据库时发生内部错误"}), 500
 
-    # ✨✨✨ 核心修改在这里 ✨✨✨
+    copied_count = 0
+    deleted_count = 0
+
     try:
         with get_central_db_connection(DB_PATH) as conn:
             cursor = conn.cursor()
@@ -2412,30 +2418,41 @@ def api_clear_review_items():
                     failed_log;
             """
             cursor.execute(copy_sql)
-            
+            # ▲▲▲ 关键改动(1)：获取 REPLACE 操作影响的行数
+            copied_count = cursor.rowcount 
+            logger.info(f"事务内：尝试从 '待复核' 复制 {copied_count} 条记录到 '已处理'。")
+
             # 2. 清空 failed_log 表
             cursor.execute("DELETE FROM failed_log")
-            deleted_count = cursor.rowcount
+            deleted_count = cursor.rowcount # 获取 DELETE 操作影响的行数
+            logger.info(f"事务内：尝试从 '待复核' 删除 {deleted_count} 条记录。")
             
-            # 3. 提交事务
-            conn.commit()
-            # with 代码块结束，连接自动关闭
+            # ▲▲▲ 关键改动(2)：添加验证逻辑
+            # 只有当复制的记录数和删除的记录数相等，且与初始数量一致时，才提交事务。
+            # 这可以防止源数据被删除但目标数据未成功写入的情况。
+            if copied_count == deleted_count and initial_count == deleted_count:
+                conn.commit() # 验证通过，提交事务
+                logger.info(f"数据一致性验证成功 ({copied_count} == {deleted_count})，事务已提交。")
+            else:
+                conn.rollback() # 验证失败，回滚事务
+                logger.error(
+                    f"数据不一致，事务已回滚！"
+                    f"初始数量: {initial_count}, "
+                    f"尝试复制: {copied_count}, "
+                    f"尝试删除: {deleted_count}."
+                )
+                return jsonify({"error": "服务器在处理数据时检测到不一致性，操作已自动取消以防止数据丢失。"}), 500
 
     except Exception as e:
         # 如果 with 块内任何地方出错，未提交的更改会自动回滚
-        logger.error(f"清空并标记待复核列表时失败: {e}", exc_info=True)
+        logger.error(f"清空并标记待复核列表时发生未知异常: {e}", exc_info=True)
         return jsonify({"error": "服务器在处理数据库时发生内部错误"}), 500
-    # ✨✨✨ 修改结束 ✨✨✨
     
     # 根据事务执行的结果返回响应
-    if deleted_count > 0:
-        message = f"操作成功！已将 {deleted_count} 个项目从待复核列表移至已处理列表。"
-        logger.info(message)
-        return jsonify({"message": message}), 200
-    else:
-        message = "操作完成，待复核列表本就是空的。"
-        logger.info(message)
-        return jsonify({"message": message}), 200
+    # 如果代码执行到这里，意味着事务是成功提交的
+    message = f"操作成功！已将 {deleted_count} 个项目从待复核列表移至已处理列表。"
+    logger.info(message)
+    return jsonify({"message": message}), 200
 
 # # ★★★ 获取追剧列表的API ★★★
 @app.route('/api/watchlist', methods=['GET']) 
