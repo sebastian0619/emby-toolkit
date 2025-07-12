@@ -163,28 +163,6 @@
       <!-- 右侧列：实时日志区 -->
       <n-gi span="1">
         <n-card title="实时日志" class="glass-section" :bordered="false" content-style="padding: 0;">
-          
-          <!-- ★★★ 1. 把 #header-extra 插槽放在正确的位置 ★★★ -->
-          <!-- 它应该是 n-card 的直接子元素 -->
-          <template #header-extra>
-            <n-space align="center">
-              <n-switch v-model:value="autoScrollEnabled" size="small">
-                <template #checked>
-                  自动滚动
-                </template>
-                <template #unchecked>
-                  停止滚动
-                </template>
-              </n-switch>
-              <n-button text @click="clearLogs" style="font-size: 14px; margin-left: 12px;">
-                <template #icon><n-icon :component="TrashIcon" /></template>
-                清空日志
-              </n-button>
-            </n-space>
-          </template>
-
-          <!-- ★★★ 2. 只保留一个 n-log 组件 ★★★ -->
-          <!-- 并且把我们新加的 :to="logScrollToLine" 绑定加上 -->
           <n-log
             ref="logRef"
             :log="logContent"
@@ -192,7 +170,6 @@
             :rows="30"
             style="font-size: 13px; line-height: 1.6;"
           />
-
         </n-card>
       </n-gi>
     </n-grid>
@@ -201,12 +178,13 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'; // 重新引入 nextTick
+// ★★★ 变化点2: 重新引入 nextTick，因为简化后的 watch 仍然需要它 ★★★
+import { ref, computed, watch, nextTick } from 'vue';
 import axios from 'axios';
 import { 
   NCard, NButton, NCheckbox, NSpace, NAlert, NLog, NIcon, useMessage, 
-  NUpload, NGrid, NGi, NSwitch,
-  useDialog,NPopconfirm,
+  NUpload, NGrid, NGi,
+  useDialog, NPopconfirm,
 } from 'naive-ui';
 import { 
   TrashOutline as TrashIcon,
@@ -214,7 +192,7 @@ import {
   CloudUploadOutline as ImportIcon 
 } from '@vicons/ionicons5';
 
-// --- Refs and Props (保持不变) ---
+// --- Refs and Props ---
 const logRef = ref(null);
 const isClearing = ref(false);
 const message = useMessage();
@@ -235,9 +213,8 @@ const props = defineProps({
 const forceReprocessAll = ref(false);
 const isExporting = ref(false);
 const isImporting = ref(false);
-const autoScrollEnabled = ref(true); // 我们的总开关
-const logScrollToLine = ref(0);
-const logContentForDisplay = ref('等待日志...');
+// ★★★ 变化点3: 移除了 autoScrollEnabled 和 logScrollToLine ★★★
+
 // --- Computed Properties (保持不变) ---
 const logContent = computed(() => {
   if (props.taskStatus && Array.isArray(props.taskStatus.logs)) {
@@ -255,43 +232,23 @@ const currentActionIncludesSyncMap = computed(() =>
 const currentActionIncludesRebuild = computed(() => 
   props.taskStatus.current_action && props.taskStatus.current_action.toLowerCase().includes('rebuild')
 );
-// ★★★ 3. 修改 watch 监听器 ★★★
-watch(() => props.taskStatus.logs, async (newLogs, oldLogs) => {
-  // 如果没有新的日志内容，或者 log 组件的 ref 还不存在，则不执行任何操作
-  if (!newLogs || newLogs.length === (oldLogs?.length || 0) || !logRef.value) {
-    return;
-  }
+const currentActionIncludesImageSync = computed(() => 
+  props.taskStatus.current_action && props.taskStatus.current_action.toLowerCase().includes('image_sync')
+);
 
-  // 步骤 1: 在 DOM 更新之前，检查用户是否已经滚动到底部
-  // 我们需要安全地访问 Naive UI 内部的滚动条实例
-  const scrollbarInst = logRef.value.scrollbarInst;
-  if (!scrollbarInst || !scrollbarInst.containerRef) {
-    // 如果无法获取滚动条实例，为了安全起见，直接使用之前的简单逻辑
-    if (autoScrollEnabled.value) {
-      await nextTick();
-      if (logRef.value) {
-        logRef.value.scrollTo({ position: 'bottom', slient: true });
-      }
-    }
-    return;
-  }
-  
-  const scrollEl = scrollbarInst.containerRef;
-  // 判断是否在底部，我们给一个小的容差（比如 10px），让判断更宽松
-  const isScrolledToBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight <= 10;
-
-  // 步骤 2: 等待 Vue 完成 DOM 更新
+// ★★★ 变化点4: 使用一个极其简化的 watch 监听器，实现无条件自动滚动 ★★★
+watch(() => props.taskStatus.logs, async () => {
+  // 等待 Vue 将新的日志内容渲染到 DOM 上
   await nextTick();
-
-  // 步骤 3: 应用我们最终的智能滚动规则
-  // 只有在“自动滚动”开关为开，并且用户在更新前就已经在底部时，我们才执行滚动
-  if (autoScrollEnabled.value && isScrolledToBottom) {
+  
+  // 只要 log 组件存在，就滚动到底部
+  if (logRef.value) {
     logRef.value.scrollTo({ position: 'bottom', slient: true });
   }
-  // 在所有其他情况下（开关关闭，或者用户已经向上滚动），我们什么都不做。
-
 }, { deep: true });
 
+
+// --- Methods ---
 
 const triggerFullScan = async () => {
   try {
@@ -309,10 +266,7 @@ const triggerFullScan = async () => {
 
 const triggerSyncMap = async () => {
   try {
-    // 不再需要构建 payload，发送一个空对象或不发送 body 即可
     await axios.post('/api/trigger_sync_person_map', {});
-    
-    // 消息文本已固定
     message.success('同步任务已启动！');
   } catch (error) {
     console.error('启动同步映射表失败:', error);
@@ -330,15 +284,13 @@ const triggerStopTask = async () => {
   }
 };
 
-const clearLogs = () => {
-  message.info('日志将在下次任务开始时自动清空。');
-};
+// ★★★ 变化点5: 移除了 clearLogs 函数 ★★★
 
 const exportMap = async () => {
   isExporting.value = true;
   try {
     const response = await axios({
-      url: '/api/actors/export', // ✅ 改为统一接口
+      url: '/api/actors/export',
       method: 'GET',
       responseType: 'blob',
     });
@@ -368,6 +320,12 @@ const exportMap = async () => {
   }
 };
 
+const beforeImport = () => {
+  isImporting.value = true;
+  message.loading('正在上传并处理文件...', { duration: 0 });
+  return true;
+};
+
 const afterImport = ({ event }) => {
   isImporting.value = false;
   message.destroyAll();
@@ -393,7 +351,7 @@ const errorImport = ({ event }) => {
     message.error('导入失败，并且无法解析服务器错误响应。');
   }
 };
-// ★★★ 新增：触发全量图片同步的函数 ★★★
+
 const triggerFullImageSync = async () => {
   try {
     const response = await axios.post('/api/actions/trigger_full_image_sync');
@@ -403,7 +361,7 @@ const triggerFullImageSync = async () => {
     message.error(error.response?.data?.error || '启动任务失败，请查看日志。');
   }
 };
-// ★★★ 4. 添加触发一键重构的函数 ★★★
+
 const triggerRebuildActors = () => {
   dialog.warning({
     title: '高危操作确认',
@@ -421,7 +379,7 @@ const triggerRebuildActors = () => {
     },
   });
 };
-// 一键删除TMDB缓存
+
 const handleClearCaches = async () => {
   isClearing.value = true;
   message.info("正在发送清除TMDb缓存指令...");

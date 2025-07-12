@@ -1991,7 +1991,7 @@ def api_handle_trigger_full_scan():
     # 准备任务参数
     action_message = "全量媒体库扫描"
     if force_reprocess:
-        action_message += " (已清空日志)"
+        action_message += " (已清空已处理记录)"
 
     # 从全局配置获取处理深度
     process_episodes = APP_CONFIG.get('process_episodes', True)
