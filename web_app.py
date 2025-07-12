@@ -2847,6 +2847,91 @@ def search_all_logs():
     except Exception as e:
         logging.error(f"API: 全局日志搜索时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "搜索过程中发生服务器内部错误"}), 500
+@app.route('/api/logs/search_context', methods=['GET'])
+@login_required
+def search_logs_with_context():
+    """
+    在所有日志文件中定位包含关键词的完整“处理块”。
+    一个“处理块”由特定的开始和结束标记定义。
+    """
+    query = request.args.get('q', '').strip()
+    if not query:
+        return jsonify({"error": "搜索关键词不能为空"}), 400
+
+    # --- 定义处理块的边界 (使用正则表达式) ---
+    # 捕获开始处理特定条目的日志行
+    START_MARKER = re.compile(r"准备获取Emby项目详情 '(.+?)'")
+    # 捕获处理完成的日志行
+    END_MARKER = re.compile(r"--- 处理完成 '(.+?)'")
+
+    found_blocks = []
+    
+    try:
+        # --- 获取并排序所有日志文件 (复用之前的逻辑) ---
+        all_files = os.listdir(PERSISTENT_DATA_PATH)
+        log_files = [f for f in all_files if f.startswith('app.log')]
+        def sort_key(filename):
+            if filename == 'app.log': return -1
+            parts = filename.split('.')
+            if len(parts) > 2 and parts[-1] == 'gz' and parts[-2].isdigit():
+                return int(parts[-2])
+            return float('inf')
+        log_files.sort(key=sort_key)
+
+        # --- 遍历所有文件，进行智能上下文搜索 ---
+        for filename in log_files:
+            full_path = os.path.join(PERSISTENT_DATA_PATH, filename)
+            
+            in_block = False          # 当前是否在一个处理块内
+            current_block = []        # 存储当前处理块的日志行
+            block_contains_query = False # 当前块是否已匹配到关键词
+
+            try:
+                opener = gzip.open if filename.endswith('.gz') else open
+                with opener(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line: continue
+
+                        # 检查是否是新的开始标记
+                        is_start_marker = START_MARKER.search(line)
+                        if is_start_marker:
+                            # 如果前一个块没有正常结束，但匹配了关键词，也将其保存
+                            if in_block and block_contains_query:
+                                found_blocks.append({"file": filename, "lines": current_block})
+                            
+                            # 开始一个全新的块
+                            in_block = True
+                            current_block = [line]
+                            block_contains_query = query.lower() in line.lower()
+                            continue
+
+                        # 如果在一个块内，继续处理
+                        if in_block:
+                            current_block.append(line)
+                            if not block_contains_query and query.lower() in line.lower():
+                                block_contains_query = True
+                            
+                            # 检查是否是结束标记
+                            is_end_marker = END_MARKER.search(line)
+                            if is_end_marker:
+                                if block_contains_query:
+                                    found_blocks.append({"file": filename, "lines": current_block})
+                                # 结束当前块
+                                in_block = False
+                                current_block = []
+                                block_contains_query = False
+            except Exception as e:
+                logging.warning(f"API: 上下文搜索时无法读取文件 '{filename}': {e}")
+        
+        # 按文件和第一行日志的时间戳排序结果，确保整体有序
+        found_blocks.sort(key=lambda x: (log_files.index(x['file']), x['lines'][0]))
+
+        return jsonify(found_blocks)
+
+    except Exception as e:
+        logging.error(f"API: 上下文日志搜索时发生严重错误: {e}", exc_info=True)
+        return jsonify({"error": "搜索过程中发生服务器内部错误"}), 500
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
