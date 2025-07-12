@@ -572,7 +572,7 @@ def fetch_tmdb_details_for_actor(actor_info: Dict, tmdb_api_key: str) -> Optiona
         # 其他API错误（如网络问题），记录日志并返回失败状态
         logger.warning(f"获取演员 {tmdb_id} 详情时遇到API错误: {e}")
         return {"tmdb_id": tmdb_id, "status": "failed"}
-# --- 补充演员外部ID ---
+# --- 演员元数据增强 ---
 def enrich_all_actor_aliases_task(
     db_path: str, 
     tmdb_api_key: str, 
