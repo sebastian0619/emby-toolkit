@@ -5,7 +5,7 @@
 <!-- 你可以添加更多的徽章，例如构建状态、Docker Hub 拉取次数等 -->
 
 一个用于处理和增强 Emby 媒体库中演员信息的工具，包括但不限于演员名称翻译、信息补全（从豆瓣、TMDb等）、以及演员映射管理。
-
+2.6.4之后版本不再支持非神医Pro用户！！！
 ## ✨ 功能特性
 
 *   **演员信息处理**：自动翻译演员名、角色名、从豆瓣数据源获取中文角色名。
@@ -14,8 +14,9 @@
 *   **处理质量评估**：程序综合各方面因素自动对处理后的演员信息进行打分，低于阈值（自行设置）的分数会列入待复核列表，方便用户手动重新处理，特别是外语影视，机翻的效果很尬的。
 *   **定时任务**：支持定时全量扫描媒体库和同步人物映射表。
 *   **Docker 支持**：易于通过 Docker 部署和运行。
-*   **实时处理新片**：自动处理Emby新入库资源，需配置webhook:http://ip:5257/webhook/emby 请求内容类型：application/json 勾选：新媒体已添加
+*   **实时处理新片**：自动处理Emby新入库资源，需配置webhook:http://ip:5257/webhook/emby 请求内容类型：application/json 勾选：【新媒体已添加】和【按剧集和专辑对通知进行分组】。
 *   **自动追剧**：神医Pro用户覆盖缓存无法更新剧集简介的问题可以通过自动追剧来更新简介
+
 
 ## 🚀 快速开始
 
@@ -47,16 +48,17 @@
         image: hbq0405/emby-actor-processor:latest 
         container_name: emby-actor-processor
         ports:
-          - "5257:5257" # 将容器的 5257 端口映射到宿主机的 5257 端口 (左边可以改成你希望的宿主机端口)
+          - "5257:5257"          #  将容器的 5257 端口映射到宿主机的 5257 端口 (左边可以改成你希望的宿主机端口)
         volumes:
-          - /path/app_data/emby_actor_processor_config:/config # 将宿主机的数据目录挂载到容器的 /config 目录
-          - /path/tmdb:/tmdb #映射神医本地TMDB目录，神医Pro用户必须配置此项，非神医Pro用户无需配置
+          - /path/app:/config    #  将宿主机的数据目录挂载到容器的 /config 目录
+          - /path/tmdb:/tmdb     #  映射神医本地TMDB目录，必须配置。
         environment:
-          - APP_DATA_DIR=/config # 告诉应用数据存储在 /config 目录
+          - APP_DATA_DIR=/config #  告诉应用数据存储在 /config 目录
           - TZ=Asia/Shanghai     # (可选) 设置容器时区，例如亚洲/上海
-          - AUTH_USERNAME=admin  #用户名可任意设置，密码在程序首次运行会生成随机密码打印在日志中
-          # - PUID=1000            # (可选) 如果需要指定运行用户ID
-          # - PGID=100            # (可选) 如果需要指定运行组ID
+          - AUTH_USERNAME=admin  #  用户名可任意设置，密码在程序首次运行会生成随机密码打印在日志中
+          - PUID=0               #  保持和emby相同配置 出现权限问题，可以试试用UID
+          - PGID=0               #  保持和emby相同配置 出现权限问题，可以试试用GID
+          - UMASK=000            #  保持和emby相同配置
         restart: unless-stopped
     ```
     然后在 `docker-compose.yml` 文件所在的目录下运行：
@@ -120,4 +122,5 @@
 ## 📝 日志
 
 *   应用日志默认会输出到任务中心，同时会在配置目录生成日志文件。
+*   可以在任务中心查看历史日志，通过搜索定位完整处理过程。
 
