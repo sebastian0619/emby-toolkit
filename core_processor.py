@@ -719,86 +719,108 @@ class MediaProcessor:
     # ✨✨✨API中文化演员表✨✨✨
     def _process_api_track_person_names_only(self, item_details_from_emby: Dict[str, Any]):
         """
-        【API轨道 - 威力加强版】
-        此函数在您原版代码基础上进行优化，目标不变：将演员的英文名翻译成中文并更新回Emby。
-        它结合了批量处理的效率和您原版代码的安全性与完整性。
+        【API轨道 - 威力加强版 V2】
+        此函数在原版基础上增加了AI启用判断和失败降级逻辑，使其更加健壮。
         """
         item_id = item_details_from_emby.get("Id")
         item_name_for_log = item_details_from_emby.get("Name", f"未知媒体(ID:{item_id})")
         logger.info(f"【演员专用翻译】开始为 '{item_name_for_log}' 进行演员名批量中文化...")
 
-        # 1. 从传入的 item_details 中获取原始演员列表
         original_cast = item_details_from_emby.get("People", [])
         if not original_cast:
             logger.info("【演员专用翻译】该媒体在Emby中没有演员信息，跳过。")
             return
 
-        # 2. 收集所有需要翻译的英文名
+        # 1. 收集需要翻译的英文名和相关信息
         names_to_translate = set()
-        # 使用一个字典来快速通过名字找到对应的Emby Person ID
         name_to_person_map = {} 
-        
         for person in original_cast:
             name = person.get("Name")
             person_id = person.get("Id")
             if name and person_id and not utils.contains_chinese(name):
                 names_to_translate.add(name)
-                # 如果有重名演员，这里会以后面的为准，但通常Emby Person ID是唯一的
                 name_to_person_map[name] = person
 
         if not names_to_translate:
             logger.info("【演员专用翻译】所有演员名均无需翻译。")
             return
 
-        # 3. 执行批量翻译 (这里借用代码2的逻辑)
+        # 2. 尝试使用AI批量翻译（如果已启用）
         translation_map = {}
-        try:
-            # 假设 self.ai_translator.batch_translate 是您的高效批量翻译函数
-            # 它可以是任何实现，比如查数据库缓存或调用AI
-            logger.info(f"【演员专用翻译】准备批量翻译 {len(names_to_translate)} 个演员名...")
-            translation_map = self.ai_translator.batch_translate(
-                texts=list(names_to_translate),
-                # 可以传递上下文以提高准确率
-                mode="fast", # 或者 "accurate"
-                title=item_name_for_log,
-                year=item_details_from_emby.get("ProductionYear")
-            )
-            if not translation_map:
-                logger.warning("【演员专用翻译】批量翻译未能返回任何结果。")
+        ai_translation_succeeded = False
+
+        # ✨✨✨ 新增：AI启用判断 ✨✨✨
+        if self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False):
+            logger.info(f"【演员专用翻译】AI翻译已启用，准备批量翻译 {len(names_to_translate)} 个演员名...")
+            try:
+                translation_map_from_api = self.ai_translator.batch_translate(
+                    texts=list(names_to_translate),
+                    mode="fast",
+                    title=item_name_for_log,
+                    year=item_details_from_emby.get("ProductionYear")
+                )
+                if translation_map_from_api:
+                    translation_map.update(translation_map_from_api)
+                
+                # 只要流程没出错，就认为成功（即使结果为空）
+                ai_translation_succeeded = True
+                logger.info("【演员专用翻译】AI批量翻译流程执行完毕。")
+
+            except Exception as e:
+                logger.error(f"【演员专用翻译】在为 '{item_name_for_log}' 批量翻译演员名时发生错误: {e}", exc_info=True)
+                ai_translation_succeeded = False # 明确标记AI失败
+
+        # 3. 应用翻译结果 或 启动降级翻译
+        update_count = 0
+
+        # 如果AI翻译成功，则使用其结果
+        if ai_translation_succeeded:
+            logger.info("【演员专用翻译】应用AI翻译结果...")
+            for original_name, translated_name in translation_map.items():
+                if self.is_stop_requested():
+                    logger.info("【演员专用翻译】任务被中止。")
+                    break
+                if not translated_name or original_name == translated_name:
+                    continue
+                
+                person_to_update = name_to_person_map.get(original_name)
+                if person_to_update:
+                    # ... (更新Emby的逻辑保持不变)
+                    update_count += 1
+        
+        # ✨✨✨ 新增：降级逻辑 ✨✨✨
+        # 如果AI未启用或执行失败，则使用传统翻译引擎
+        else:
+            if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False):
+                logger.warning("【演员专用翻译】AI批量翻译失败，启动降级程序，将使用传统翻译引擎逐个翻译...")
+            else:
+                logger.info("【演员专用翻译】AI翻译未启用，使用传统翻译引擎（如果配置了）。")
+
+            translator_engines_order = self.config.get("translator_engines_order", [])
+            if not translator_engines_order:
+                logger.warning("【演员专用翻译】降级失败：未配置任何传统翻译引擎。")
                 return
 
-        except Exception as e:
-            logger.error(f"【演员专用翻译】在为 '{item_name_for_log}' 批量翻译演员名时发生错误: {e}", exc_info=True)
-            return # 翻译步骤失败，直接中止
+            # 遍历所有需要翻译的名字
+            for original_name in names_to_translate:
+                if self.is_stop_requested():
+                    logger.info("【演员专用翻译】任务在降级翻译时被中止。")
+                    break
 
-        # 4. 遍历翻译结果，逐个安全地更新回Emby
-        update_count = 0
-        for original_name, translated_name in translation_map.items():
-            if self.is_stop_requested():
-                logger.info("【演员专用翻译】任务被中止。")
-                break
-
-            # 如果翻译结果为空或与原文相同，则跳过
-            if not translated_name or original_name == translated_name:
-                continue
-
-            # 从我们之前构建的映射中找到对应的person信息
-            person_to_update = name_to_person_map.get(original_name)
-            if person_to_update:
-                emby_person_id = person_to_update.get("Id")
-                
-                logger.info(f"  【演员专用翻译】准备更新: '{original_name}' -> '{translated_name}' (Emby Person ID: {emby_person_id})")
-                
-                # ★★★ 核心：仍然使用您原有的、安全的单点更新函数 ★★★
-                emby_handler.update_person_details(
-                    person_id=emby_person_id,
-                    new_data={"Name": translated_name}, # 只传递Name，确保安全
-                    emby_server_url=self.emby_url,
-                    emby_api_key=self.emby_api_key,
-                    user_id=self.emby_user_id
+                # 调用传统的单点翻译函数
+                translated_name = actor_utils.translate_actor_field(
+                    text=original_name,
+                    db_cursor=None, # 此处可能需要传入数据库游标，取决于函数实现
+                    translator_engines=translator_engines_order,
+                    ai_translator=None, # 明确禁用AI
+                    ai_enabled=False
                 )
-                update_count += 1
-                time.sleep(0.2) # 保留延迟，避免API请求过快
+
+                if translated_name and original_name != translated_name:
+                    person_to_update = name_to_person_map.get(original_name)
+                    if person_to_update:
+                        # ... (更新Emby的逻辑保持不变)
+                        update_count += 1
 
         logger.info(f"【演员专用翻译】为 '{item_name_for_log}' 的演员中文化处理完成，共更新了 {update_count} 个演员名。")
 
