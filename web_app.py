@@ -2740,7 +2740,7 @@ def api_trigger_task_now(task_identifier: str):
     if task_identifier == 'full-scan':
         # 我们可以从请求体中获取参数，或者使用默认值
         # 这允许前端未来可以传递 '强制重处理' 等选项
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
         kwargs['process_episodes'] = data.get('process_episodes', True)
         # 假设 task_process_full_library 接受 process_episodes 参数
     
