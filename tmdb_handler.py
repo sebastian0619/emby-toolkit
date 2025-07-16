@@ -362,9 +362,17 @@ def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append
     
     return _tmdb_request(endpoint, api_key, params)
 # --- 获取电视剧某一集的详细信息 ---
-def get_episode_details_tmdb(tv_id: int, season_number: int, episode_number: int, api_key: str, append_to_response: Optional[str] = "credits,guest_stars", item_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def get_episode_details_tmdb(
+    tv_id: int, 
+    season_number: int, 
+    episode_number: int, 
+    api_key: str, 
+    append_to_response: Optional[str] = "credits,guest_stars", 
+    item_name: Optional[str] = None,
+    silent: bool = False  # <--- ▼▼▼ 新增这个 "静默开关" 参数 ▼▼▼
+) -> Optional[Dict[str, Any]]:
     """
-    【已升级】获取电视剧某一集的详细信息，并支持 item_name 用于日志。
+    【V2 - 静默版】获取电视剧某一集的详细信息，并支持 item_name 和 silent 参数。
     """
     endpoint = f"/tv/{tv_id}/season/{season_number}/episode/{episode_number}"
     params = {
@@ -372,8 +380,10 @@ def get_episode_details_tmdb(tv_id: int, season_number: int, episode_number: int
         "append_to_response": append_to_response
     }
     
-    item_name_for_log = f"'{item_name}' " if item_name else ""
-    logger.debug(f"TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) S{season_number:02d}E{episode_number:02d} 的详情...")
+    # ▼▼▼ 在打印日志前，检查 "静默开关" ▼▼▼
+    if not silent:
+        item_name_for_log = f"'{item_name}' " if item_name else ""
+        logger.debug(f"TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) S{season_number:02d}E{episode_number:02d} 的详情...")
     
     return _tmdb_request(endpoint, api_key, params)
 # --- 获取完整演员表 ---

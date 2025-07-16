@@ -1095,7 +1095,8 @@ class MediaProcessor:
                                         tv_id=tmdb_id, season_number=s_num, episode_number=e_num,
                                         api_key=self.tmdb_api_key,
                                         append_to_response="credits,guest_stars", # credits和guest_stars其实不需要，因为会被覆盖，但保留以防万一
-                                        item_name=item_name_for_log # 用于日志
+                                        item_name=item_name_for_log, # 用于日志
+                                        silent=True
                                     )
                                     return (s_num, e_num), details
                                 except Exception as e:
