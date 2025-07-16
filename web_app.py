@@ -144,6 +144,7 @@ else:
     # 如果 web_app.py 在类似 src/ 的子目录，你可能需要 os.path.dirname(PROJECT_ROOT)
     PERSISTENT_DATA_PATH = os.path.join(PROJECT_ROOT, "local_data")
     logger.debug(f"未检测到 APP_DATA_DIR 环境变量，将使用本地开发数据路径: {PERSISTENT_DATA_PATH}")
+    LOG_DIRECTORY = os.path.join(PERSISTENT_DATA_PATH, 'logs')
 
 # 确保这个持久化数据目录存在 (无论是在本地还是在容器内)
 try:
@@ -160,7 +161,11 @@ CONFIG_FILE_PATH = os.path.join(PERSISTENT_DATA_PATH, CONFIG_FILE_NAME)
 
 DB_NAME = getattr(constants, 'DB_NAME', "emby_actor_processor.sqlite")
 DB_PATH = os.path.join(PERSISTENT_DATA_PATH, DB_NAME)
-add_file_handler(PERSISTENT_DATA_PATH)
+# 1. 定义一个专门的日志目录路径
+LOG_DIRECTORY = os.path.join(PERSISTENT_DATA_PATH, 'logs')
+# 2. 将这个新路径传递给日志设置函数
+# (logger_setup.py 里的 add_file_handler 会自动创建这个 'logs' 目录)
+add_file_handler(LOG_DIRECTORY)
 logger.info(f"配置文件路径 (CONFIG_FILE_PATH) 设置为: {CONFIG_FILE_PATH}")
 logger.info(f"数据库文件路径 (DB_PATH) 设置为: {DB_PATH}")
 logging.basicConfig(
@@ -2762,7 +2767,7 @@ def list_log_files():
     """列出日志目录下的所有日志文件 (app.log*)"""
     try:
         # PERSISTENT_DATA_PATH 变量在当前作用域中可以直接使用
-        all_files = os.listdir(PERSISTENT_DATA_PATH)
+        all_files = os.listdir(LOG_DIRECTORY)
         log_files = [f for f in all_files if f.startswith('app.log')]
         
         # 对日志文件进行智能排序，确保 app.log 在最前，然后是 .1.gz, .2.gz ...
@@ -2789,10 +2794,10 @@ def view_log_file():
     if not filename or not filename.startswith('app.log'):
         abort(403, "禁止访问非日志文件或无效的文件名。")
 
-    full_path = os.path.join(PERSISTENT_DATA_PATH, filename)
+    full_path = os.path.join(LOG_DIRECTORY, filename)
 
     # 再次确认最终路径仍然在合法的日志目录下
-    if not os.path.abspath(full_path).startswith(os.path.abspath(PERSISTENT_DATA_PATH)):
+    if not os.path.abspath(full_path).startswith(os.path.abspath(LOG_DIRECTORY)):
         abort(403, "检测到非法路径访问。")
         
     if not os.path.exists(full_path):
@@ -2828,7 +2833,7 @@ def search_all_logs():
     
     try:
         # 1. 获取并排序所有日志文件，确保从新到旧搜索
-        all_files = os.listdir(PERSISTENT_DATA_PATH)
+        all_files = os.listdir(LOG_DIRECTORY)
         log_files = [f for f in all_files if f.startswith('app.log')]
         
         def sort_key(filename):
@@ -2841,7 +2846,7 @@ def search_all_logs():
 
         # 2. 遍历每个文件进行搜索
         for filename in log_files:
-            full_path = os.path.join(PERSISTENT_DATA_PATH, filename)
+            full_path = os.path.join(LOG_DIRECTORY, filename)
             try:
                 # 使用 'rt' 模式，gzip/open 会自动处理文本解码
                 opener = gzip.open if filename.endswith('.gz') else open
@@ -2883,7 +2888,7 @@ def search_logs_with_context():
     
     try:
         # --- 文件获取和排序逻辑保持不变 ---
-        all_files = os.listdir(PERSISTENT_DATA_PATH)
+        all_files = os.listdir(LOG_DIRECTORY)
         log_files = [f for f in all_files if f.startswith('app.log')]
         def sort_key(filename):
             if filename == 'app.log': return -1
@@ -2895,7 +2900,7 @@ def search_logs_with_context():
 
         # ★★★ 关键修复：重构日志遍历和块处理逻辑 ★★★
         for filename in log_files:
-            full_path = os.path.join(PERSISTENT_DATA_PATH, filename)
+            full_path = os.path.join(LOG_DIRECTORY, filename)
             
             in_block = False
             current_block = []
