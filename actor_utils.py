@@ -624,6 +624,12 @@ def enrich_all_actor_aliases_task(
                     metadata_to_commit = []          # 存储元数据字典列表
                     invalid_tmdb_ids = []            # 存储需要置空的 tmdb_id
 
+                    # ▼▼▼ 1. 在批次循环前初始化计数器 ▼▼▼
+                    tmdb_success_count = 0
+                    imdb_found_count = 0
+                    metadata_added_count = 0
+                    not_found_count = 0
+
                     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_TMDB_WORKERS) as executor:
                         # 假设 fetch_tmdb_details_for_actor 现在会返回更完整的详情
                         future_to_actor = {executor.submit(fetch_tmdb_details_for_actor, dict(actor), tmdb_api_key): actor for actor in chunk}
@@ -641,10 +647,11 @@ def enrich_all_actor_aliases_task(
                             details = result.get("details", {})
 
                             if status == "found" and details:
+                                tmdb_success_count += 1 # 增加成功计数
                                 # 2.1 准备 IMDb ID 更新数据
                                 imdb_id = details.get("external_ids", {}).get("imdb_id")
                                 if imdb_id:
-                                    logger.info(f"  -> 成功为演员 (TMDb ID: {tmdb_id}) 获取到 IMDb ID: {imdb_id}")
+                                    imdb_found_count += 1 # 增加IMDb计数
                                     imdb_updates_to_commit.append((imdb_id, tmdb_id))
                                 
                                 # 2.2 准备 ActorMetadata 更新数据
@@ -657,11 +664,21 @@ def enrich_all_actor_aliases_task(
                                     "original_name": details.get("original_name")
                                 }
                                 metadata_to_commit.append(metadata_entry)
-                                logger.debug(f"  -> 已为演员 (TMDb ID: {tmdb_id}) 准备好元数据。")
+                                metadata_added_count += 1 # 增加元数据计数
                             
                             elif status == "not_found":
+                                not_found_count += 1 # 增加未找到计数
                                 logger.warning(f"  -> 演员 (TMDb ID: {tmdb_id}) 在TMDb上已不存在(404)，将清除此无效ID。")
                                 invalid_tmdb_ids.append(tmdb_id)
+
+                    # ▼▼▼ 3. 在批次处理完成后，打印一条摘要日志 ▼▼▼
+                    logger.info(
+                        f"  -> 批次处理完成。摘要: "
+                        f"成功获取({tmdb_success_count}), "
+                        f"新增IMDb({imdb_found_count}), "
+                        f"新增元数据({metadata_added_count}), "
+                        f"未找到({not_found_count})."
+                    )
                     
                     # ★★★ 3. 改造数据库写入：同时操作两个表 ★★★
                     if imdb_updates_to_commit or metadata_to_commit or invalid_tmdb_ids:
