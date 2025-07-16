@@ -2460,7 +2460,7 @@ def api_clear_review_items_revised():
 def api_get_watchlist():
     # 模式检查
 
-    logger.info("API: 收到获取追剧列表的请求。")
+    logger.debug("API: 收到获取追剧列表的请求。")
     
     # ✨✨✨ 核心修改在这里 ✨✨✨
     try:

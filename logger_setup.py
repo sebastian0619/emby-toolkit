@@ -8,8 +8,8 @@ from concurrent_log_handler import ConcurrentRotatingFileHandler
 
 # --- 定义常量 ---
 LOG_FILE_NAME = "app.log"
-LOG_FILE_MAX_SIZE_MB = 5
-LOG_FILE_BACKUP_COUNT = 5
+LOG_FILE_MAX_SIZE_MB = 50
+LOG_FILE_BACKUP_COUNT = 19
 
 # --- 前端队列和 Handler ---
 frontend_log_queue = deque(maxlen=100)
@@ -103,7 +103,7 @@ def add_file_handler(log_directory: str):
             LOG_FILE_MAX_SIZE_MB * 1024 * 1024,
             LOG_FILE_BACKUP_COUNT,
             encoding='utf-8',
-            use_gzip=True
+            use_gzip=False
         )
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)
