@@ -797,7 +797,7 @@ def setup_scheduled_tasks():
                         media_processor_instance.clear_processed_log()
                     else:
                         logger.error("定时任务：无法清空日志，因为处理器未初始化。")
-                current_config, _ = load_config()
+                current_config = APP_CONFIG
                 process_episodes = current_config.get('process_episodes', True)
                 submit_task_to_queue(
                     task_process_full_library,
@@ -1708,7 +1708,7 @@ def api_search_emby_library():
 @app.route('/api/auth/status', methods=['GET'])
 def auth_status():
     """检查当前认证状态"""
-    config, _ = load_config()
+    config = APP_CONFIG
     auth_enabled = config.get(constants.CONFIG_OPTION_AUTH_ENABLED, False)
     
     response = {
@@ -1810,17 +1810,15 @@ def change_password():
 def api_get_config():
     try:
         # ★★★ 确保这里正确解包了元组 ★★★
-        current_config, _ = load_config() 
+        current_config = APP_CONFIG 
         
         if current_config:
             logger.debug(f"API /api/config (GET): 成功加载并返回配置。")
             return jsonify(current_config)
         else:
-            logger.error(f"API /api/config (GET): load_config() 返回为空或None。")
+            logger.error(f"API /api/config (GET): APP_CONFIG 为空或未初始化。")
             return jsonify({"error": "无法加载配置数据"}), 500
     except Exception as e:
-        logger.error(f"API /api/config (GET) 获取配置时发生错误: {e}", exc_info=True)
-        return jsonify({"error": "获取配置信息时发生服务器内部错误"}), 500
         logger.error(f"API /api/config (GET) 获取配置时发生错误: {e}", exc_info=True)
         return jsonify({"error": "获取配置信息时发生服务器内部错误"}), 500
 
@@ -2257,7 +2255,7 @@ def api_parse_cast_from_url():
         return jsonify({"error": "请求中未提供 'url' 参数"}), 400
 
     try:
-        current_config, _ = load_config()
+        current_config = APP_CONFIG
         headers = {'User-Agent': current_config.get('user_agent', '')}
         parsed_cast = parse_cast_from_url(url_to_parse, custom_headers=headers)
         

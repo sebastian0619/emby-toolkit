@@ -108,7 +108,7 @@ class MediaProcessor:
         self._stop_event = threading.Event()
         self.processed_items_cache = self._load_processed_log_from_db()
         self.manual_edit_cache = {}
-        logger.debug("(神医模式)初始化完成。")
+        logger.debug("初始化完成。")
     # --- 清除已处理记录 ---
     def clear_processed_log(self):
         """

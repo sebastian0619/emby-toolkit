@@ -72,8 +72,7 @@
             <template #header-extra>
               <n-tooltip trigger="hover">
                 <template #trigger><n-switch v-model:value="configModel.schedule_watchlist_enabled" /></template>
-                <span v-if="!configModel.use_sa_mode">此功能仅在“神医模式”下可用。请先在“基础设置”中启用。</span>
-                <span v-else>启用/禁用智能追剧更新定时任务</span>
+                <span>启用/禁用智能追剧更新定时任务</span>
               </n-tooltip>
             </template>
             <n-form :model="configModel" label-placement="top">
