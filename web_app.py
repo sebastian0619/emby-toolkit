@@ -577,15 +577,15 @@ def update_status_from_thread(progress: int, message: str):
 # --- 后台任务封装 ---
 def _execute_task_with_lock(task_function, task_name: str, processor: Union[MediaProcessor, WatchlistProcessor], *args, **kwargs):
     """
-    【V2 - 工人专用版】通用后台任务执行器。
-    第一个参数必须是 MediaProcessor 实例。
+    【V3 - 优先级就绪版】通用后台任务执行器。
     """
     global background_task_status
-    # 锁的检查可以移到提交任务的地方，或者保留作为双重保险
-    # if task_lock.locked(): ...
 
     with task_lock:
-        # 1. 检查传入的处理器是否有效
+        # ▼▼▼ 新增：在这里清空前端日志 ▼▼▼
+        # 确保只有即将运行的任务，才能清空日志
+        frontend_log_queue.clear()
+        logger.debug("任务即将执行，前端日志已清空。")
         if not processor:
             logger.error(f"任务 '{task_name}' 无法启动：对应的处理器未初始化。")
             # 可以在这里更新状态，但因为没有启动，所以只打日志可能更清晰
@@ -705,22 +705,19 @@ def start_task_worker_if_not_running():
 # --- 为通用队列添加任务 ---
 def submit_task_to_queue(task_function, task_name: str, priority: TaskPriority = TaskPriority.NORMAL, *args, **kwargs):
     """
-    【V3 - 优先级版】将一个任务提交到通用队列中。
+    【V4 - 终极版】将一个任务提交到优先级队列中。
+    此版本移除了执行状态检查，允许任务在任何时候入队。
     """
-    with task_lock:
-        if background_task_status["is_running"]:
-            logger.warning(f"任务 '{task_name}' 提交失败：已有任务正在运行。")
-            return
-
-        frontend_log_queue.clear()
-        logger.info(f"任务 '{task_name}' (优先级: {priority.name}) 已提交到队列，并已清空前端日志。")
-        
-        # 1. 保持内部的任务信息结构不变
-        task_info_payload = (task_function, task_name, args, kwargs)
-        # 2. 将优先级和任务信息打包成最终的元组放入队列
-        task_queue.put((priority.value, task_info_payload))
-        
-        start_task_worker_if_not_running()
+    # 1. 移除 with task_lock 和 if is_running 检查。PriorityQueue 本身是线程安全的。
+    # 2. 移除 frontend_log_queue.clear()，这个操作将移到任务执行前。
+    
+    logger.info(f"任务 '{task_name}' (优先级: {priority.name}) 已提交到队列。")
+    
+    task_info_payload = (task_function, task_name, args, kwargs)
+    task_queue.put((priority.value, task_info_payload))
+    
+    # 确保工人线程在运行，这部分逻辑保留
+    start_task_worker_if_not_running()
 # --- 将 CRON 表达式转换为人类可读的、干净的执行计划字符串 ---
 def _get_next_run_time_str(cron_expression: str) -> str:
     """
