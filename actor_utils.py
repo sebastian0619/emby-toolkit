@@ -591,15 +591,27 @@ def enrich_all_actor_aliases_task(
             sql_find_tmdb_needy = f"""
                 SELECT p.* FROM person_identity_map p
                 LEFT JOIN ActorMetadata m ON p.tmdb_person_id = m.tmdb_id
-                WHERE p.tmdb_person_id IS NOT NULL
-                AND (
-                    p.imdb_id IS NULL OR      -- 条件1: 缺少IMDb ID
-                    m.tmdb_id IS NULL OR      -- 条件2: 缺少元数据缓存
-                    m.profile_path IS NULL OR -- 条件3: 缺少演员头像
-                    m.gender IS NULL          -- 条件4: 缺少演员性别 
-                )
-                AND (p.last_synced_at IS NULL OR p.last_synced_at < datetime('now', '-{SYNC_INTERVAL_DAYS} days'))
-                ORDER BY p.last_synced_at ASC
+                WHERE
+                    -- 前提1：演员必须有 TMDb ID
+                    p.tmdb_person_id IS NOT NULL
+                AND
+                    -- 前提2：数据是不完整的 (这个定义不变)
+                    (
+                        p.imdb_id IS NULL OR
+                        m.tmdb_id IS NULL OR      -- 这也间接说明 ActorMetadata 中无记录
+                        m.profile_path IS NULL OR
+                        m.gender IS NULL
+                    )
+                AND
+                    -- 核心调度逻辑：
+                    (
+                        -- 条件A (高优先级): 从未成功同步过元数据 (ActorMetadata中没有它的时间戳)
+                        m.last_updated_at IS NULL
+                        OR
+                        -- 条件B (低优先级): 同步过，但已过了冷却期，可以重试
+                        m.last_updated_at < datetime('now', '-{SYNC_INTERVAL_DAYS} days')
+                    )
+                ORDER BY m.last_updated_at ASC -- NULLs 会被优先排在前面，确保新条目最先处理
             """
             actors_for_tmdb = cursor.execute(sql_find_tmdb_needy).fetchall()
             
