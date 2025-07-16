@@ -8,7 +8,7 @@ from concurrent_log_handler import ConcurrentRotatingFileHandler
 
 # --- 定义常量 ---
 LOG_FILE_NAME = "app.log"
-LOG_FILE_MAX_SIZE_MB = 50
+LOG_FILE_MAX_SIZE_MB = 10
 LOG_FILE_BACKUP_COUNT = 19
 
 # --- 前端队列和 Handler ---
