@@ -1896,8 +1896,6 @@ def api_get_review_items():
             if count_row:
                 total_matching_items = count_row[0]
 
-            logger.debug(f"DATABASE CHECK: Found a total of {total_matching_items} items.")
-
             # 2. 查询当前页的数据
             items_sql = f"""
                 SELECT item_id, item_name, failed_at, reason, item_type, score 

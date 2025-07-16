@@ -118,7 +118,6 @@ def get_movie_details_tmdb(movie_id: int, api_key: str, append_to_response: Opti
     }
     # ★★★ 日志降级，并使用 item_name ★★★
     item_name_for_log = f"'{item_name}' " if item_name else ""
-    logger.debug(f"TMDb API: 获取电影 {item_name_for_log}(ID: {movie_id}) 详情")
     
     details = _tmdb_request(endpoint, api_key, params)
     

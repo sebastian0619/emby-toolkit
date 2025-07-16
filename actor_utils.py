@@ -417,7 +417,6 @@ def find_douban_cast(douban_api: DoubanApi, media_info: Dict[str, Any]) -> List[
         if not douban_api:
             logger.warning("未提供 DoubanApi 实例，无法获取豆瓣演员。")
             return []
-        logger.debug("调用豆瓣 API get_acting...")
         douban_data = douban_api.get_acting(
             name=media_info.get("Name"),
             imdbid=media_info.get("ProviderIds", {}).get("Imdb"),

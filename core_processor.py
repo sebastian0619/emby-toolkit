@@ -901,7 +901,6 @@ class MediaProcessor:
                 base_json_data_original = None
                 if should_fetch_online:
                     # 【在线路径】
-                    logger.debug(f"{log_prefix} 开始从TMDb在线获取元数据。")
                     base_json_data_original = self._fetch_and_build_tmdb_base_json(
                         tmdb_id=tmdb_id, 
                         item_type=item_type, 

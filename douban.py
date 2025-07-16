@@ -244,11 +244,7 @@ class DoubanApi:
             headers['Cookie'] = DoubanApi._user_cookie
         resp = None
         try:
-            logger.debug(f"POST Request: {req_url}, Data: {data_payload}")
             resp = DoubanApi._session.post(req_url, data=data_payload, headers=headers, timeout=DoubanApi._default_timeout)
-            logger.debug(f"POST Response Status: {resp.status_code} for {url}")
-            resp.raise_for_status()
-            logger.debug(f"POST Response Status: {resp.status_code} for {url}")
             resp.raise_for_status()
             response_json = resp.json()
             if response_json.get("code") == 1080:
@@ -311,12 +307,10 @@ class DoubanApi:
 
     def match_info(self, name: str, imdbid: Optional[str] = None, mtype: Optional[str] = None,
                    year: Optional[str] = None, season: Optional[int] = None) -> Dict[str, Any]:
-        logger.debug(f"match_info called: name='{name}', imdbid='{imdbid}', mtype='{mtype}', year='{year}'")
         if imdbid and imdbid.strip().startswith("tt"):
             actual_imdbid = imdbid.strip()
             logger.info(f"尝试通过IMDBID {actual_imdbid} 查询豆瓣信息...")
             result_from_imdb = self.imdbid(actual_imdbid)
-            logger.debug(f"IMDBID lookup result: {result_from_imdb}")
             if result_from_imdb.get("error"):
                 logger.warning(f"IMDBID {actual_imdbid} 查询失败: {result_from_imdb.get('message')}")
                 # 继续尝试名称搜索
@@ -407,7 +401,6 @@ class DoubanApi:
     def get_acting(self, name: str, imdbid: Optional[str] = None, mtype: Optional[str] = None,
                    year: Optional[str] = None, season: Optional[int] = None,
                    douban_id_override: Optional[str] = None) -> Dict[str, Any]:
-        logger.debug(f"get_acting CALLED: name='{name}', imdbid='{imdbid}', mtype='{mtype}', year='{year}', override='{douban_id_override}'")
         douban_subject_id = None
         final_mtype = mtype
 
@@ -424,7 +417,6 @@ class DoubanApi:
                 else: return self._make_error_dict("type_inference_failed", f"无法为豆瓣ID '{douban_subject_id}' 推断媒体类型", {"cast": []})
         else:
             match_info_result = self.match_info(name=name, imdbid=imdbid, mtype=mtype, year=year, season=season)
-            logger.debug(f"get_acting: match_info_result = {match_info_result}")
             if match_info_result.get("error"):
                 return {**match_info_result, "cast": []} # 合并错误信息并添加空cast
             if match_info_result.get("id") and str(match_info_result.get("id")).isdigit():
@@ -435,7 +427,6 @@ class DoubanApi:
             else: # 未找到ID
                 return self._make_error_dict("no_match_id_found", f"未能为 '{name}' 匹配到豆瓣ID", {"cast": []})
 
-        logger.debug(f"get_acting: Determined douban_subject_id='{douban_subject_id}', final_mtype='{final_mtype}'")
         if not douban_subject_id or not final_mtype:
             return self._make_error_dict("missing_id_or_type", f"获取演职员信息前豆瓣ID或类型无效 (ID: {douban_subject_id}, Type: {final_mtype})", {"cast": []})
 
@@ -445,7 +436,6 @@ class DoubanApi:
         elif final_mtype == "movie": response = self.movie_celebrities(douban_subject_id)
         else: return self._make_error_dict("unknown_media_type", f"未知的媒体类型 '{final_mtype}'", {"cast": []})
 
-        logger.debug(f"get_acting: celebrities_response = {response}")
         if not response or response.get("error"): # 检查错误
             err_msg = response.get("message", "获取演职员信息失败") if response else "获取演职员信息无响应"
             return self._make_error_dict(response.get("error", "api_error") if response else "no_response", err_msg, {"cast": []})

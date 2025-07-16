@@ -111,14 +111,10 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
     params["PersonFields"] = "ImageTags,ProviderIds"
     
     # --- 函数的其余部分保持不变 ---
-    logger.debug(
-        f"准备获取Emby项目详情 (UserSpecific)：ItemID='{item_id}', UserID='{user_id}', BaseURL='{url}', Params='{params}'")
 
     try:
         response = requests.get(url, params=params, timeout=15)
 
-        logger.debug(f"实际请求的完整URL: {response.url}")
-        logger.debug(f"响应状态码: {response.status_code}")
         if response.status_code != 200:
             logger.debug(f"响应头部: {response.headers}")
             logger.debug(f"响应内容 (前500字符): {response.text[:500]}")
@@ -505,9 +501,6 @@ def refresh_emby_item_metadata(item_emby_id: str,
         "ReplaceAllImages": str(replace_all_images_param).lower()
     }
     
-    # 3. 使用缩进打印详细参数 (用 DEBUG 级别，因为这属于调试信息)
-    logger.debug(f"  - 刷新URL: {refresh_url}")
-    logger.debug(f"  - 刷新参数: {params}")
 
     try:
         response = requests.post(refresh_url, params=params, timeout=30)
