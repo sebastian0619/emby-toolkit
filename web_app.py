@@ -170,6 +170,7 @@ add_file_handler(LOG_DIRECTORY)
 logging.getLogger("requests").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger.info(f"配置文件路径 (CONFIG_FILE_PATH) 设置为: {CONFIG_FILE_PATH}")
 logger.info(f"数据库文件路径 (DB_PATH) 设置为: {DB_PATH}")
 logging.basicConfig(
