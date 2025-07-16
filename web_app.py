@@ -13,8 +13,7 @@ from utils import LogDBManager
 import configparser
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory,Response, abort
 from werkzeug.utils import safe_join, secure_filename
-from enum import Enum
-from queue import PriorityQueue
+from queue import Queue
 from functools import wraps
 from utils import get_override_path_for_item
 from watchlist_processor import WatchlistProcessor
@@ -191,14 +190,8 @@ APP_CONFIG: Dict[str, Any] = {} # ✨✨✨ 新增：全局配置字典 ✨✨�
 media_processor_instance: Optional[MediaProcessor] = None
 watchlist_processor_instance: Optional[WatchlistProcessor] = None
 
-# ▼▼▼ 1. 新增：定义任务优先级 ▼▼▼
-class TaskPriority(Enum):
-    HIGH = 1    # 用于需要立即响应的任务，如 Webhook、用户手动触发的单个项目处理
-    NORMAL = 2  # 用于常规的计划任务，如每日全量扫描
-    LOW = 3     # 用于耗时很长、可以随时中断和恢复的后台任务，如演员元数据增强
-
 # ✨✨✨ 任务队列 ✨✨✨
-task_queue = PriorityQueue()
+task_queue = Queue()
 task_worker_thread: Optional[threading.Thread] = None
 task_worker_lock = threading.Lock()
 
@@ -577,15 +570,15 @@ def update_status_from_thread(progress: int, message: str):
 # --- 后台任务封装 ---
 def _execute_task_with_lock(task_function, task_name: str, processor: Union[MediaProcessor, WatchlistProcessor], *args, **kwargs):
     """
-    【V3 - 优先级就绪版】通用后台任务执行器。
+    【V2 - 工人专用版】通用后台任务执行器。
+    第一个参数必须是 MediaProcessor 实例。
     """
     global background_task_status
+    # 锁的检查可以移到提交任务的地方，或者保留作为双重保险
+    # if task_lock.locked(): ...
 
     with task_lock:
-        # ▼▼▼ 新增：在这里清空前端日志 ▼▼▼
-        # 确保只有即将运行的任务，才能清空日志
-        frontend_log_queue.clear()
-        logger.debug("任务即将执行，前端日志已清空。")
+        # 1. 检查传入的处理器是否有效
         if not processor:
             logger.error(f"任务 '{task_name}' 无法启动：对应的处理器未初始化。")
             # 可以在这里更新状态，但因为没有启动，所以只打日志可能更清晰
@@ -647,30 +640,21 @@ def _execute_task_with_lock(task_function, task_name: str, processor: Union[Medi
 # --- 通用队列 ---
 def task_worker_function():
     """
-    【V2 - 优先级版】通用工人线程，从优先级队列中获取并处理各种后台任务。
+    通用工人线程，从队列中获取并处理各种后台任务。
     """
     logger.info("通用任务线程已启动，等待任务...")
     while True:
         try:
-            # 1. 从队列中获取带优先级的任务元组
-            priority_value, task_info = task_queue.get()
-            
-            # (可选但推荐) 将数字优先级转回可读的枚举名用于日志
-            try:
-                priority_name = TaskPriority(priority_value).name
-            except ValueError:
-                priority_name = "未知"
+            # 从队列中获取任务元组
+            task_info = task_queue.get()
 
             if task_info is None: # 停止信号
                 logger.info("工人线程收到停止信号，即将退出。")
                 break
 
-            # 2. 解包内部的任务信息元组 (这部分逻辑不变)
+            # 解包任务信息
             task_function, task_name, args, kwargs = task_info
-            
-            logger.info(f"从队列获取到任务 '{task_name}'，优先级: {priority_name}")
-
-            # ... 后续的所有处理逻辑完全保持不变 ...
+            # ★★★ 核心修复：在任务执行前，检查全局实例是否可用 ★★★
             if "追剧" in task_name or "watchlist" in task_function.__name__:
                 processor_to_use = watchlist_processor_instance
                 logger.debug(f"任务 '{task_name}' 将使用 WatchlistProcessor。")
@@ -703,21 +687,28 @@ def start_task_worker_if_not_running():
         else:
             logger.debug("通用任务线程已在运行。")
 # --- 为通用队列添加任务 ---
-def submit_task_to_queue(task_function, task_name: str, priority: TaskPriority = TaskPriority.NORMAL, *args, **kwargs):
+def submit_task_to_queue(task_function, task_name: str, *args, **kwargs):
     """
-    【V4 - 终极版】将一个任务提交到优先级队列中。
-    此版本移除了执行状态检查，允许任务在任何时候入队。
+    【修复版】将一个任务提交到通用队列中，并在这里清空日志。
     """
-    # 1. 移除 with task_lock 和 if is_running 检查。PriorityQueue 本身是线程安全的。
-    # 2. 移除 frontend_log_queue.clear()，这个操作将移到任务执行前。
-    
-    logger.info(f"任务 '{task_name}' (优先级: {priority.name}) 已提交到队列。")
-    
-    task_info_payload = (task_function, task_name, args, kwargs)
-    task_queue.put((priority.value, task_info_payload))
-    
-    # 确保工人线程在运行，这部分逻辑保留
-    start_task_worker_if_not_running()
+    # ★★★ 核心修改：在提交任务到队列之前，就清空旧日志 ★★★
+    # 这个操作应该在 task_lock 的保护下进行，以确保原子性
+    with task_lock:
+        # 检查是否可以启动新任务
+        if background_task_status["is_running"]:
+            # 这里可以抛出异常或返回一个状态，让调用方知道任务提交失败
+            # 为了简单起见，我们先打印日志并直接返回
+            logger.warning(f"任务 '{task_name}' 提交失败：已有任务正在运行。")
+            # 或者 raise RuntimeError("已有任务在运行")
+            return
+
+        # 如果可以启动，我们就在这里清空日志
+        frontend_log_queue.clear()
+        logger.info(f"任务 '{task_name}' 已提交到队列，并已清空前端日志。")
+        
+        task_info = (task_function, task_name, args, kwargs)
+        task_queue.put(task_info)
+        start_task_worker_if_not_running()
 # --- 将 CRON 表达式转换为人类可读的、干净的执行计划字符串 ---
 def _get_next_run_time_str(cron_expression: str) -> str:
     """
@@ -807,7 +798,6 @@ def setup_scheduled_tasks():
                 submit_task_to_queue(
                     task_process_full_library,
                     "定时全量扫描",
-                    priority=TaskPriority.NORMAL,
                     process_episodes=process_episodes
                 )
 
@@ -842,8 +832,7 @@ def setup_scheduled_tasks():
                 logger.info("定时任务触发：演员映射表同步。")
                 submit_task_to_queue(
                     task_sync_person_map,
-                    "定时同步演员映射表",
-                    priority=TaskPriority.NORMAL
+                    "定时同步演员映射表"
                 )
 
             scheduler.add_job(
@@ -871,7 +860,7 @@ def setup_scheduled_tasks():
                     def scheduled_watchlist_task():
                         # ... (内部逻辑保持不变)
                         logger.debug("定时任务触发：智能追剧更新。")
-                        submit_task_to_queue(task_process_watchlist, "定时智能追剧更新", priority=TaskPriority.NORMAL)
+                        submit_task_to_queue(task_process_watchlist, "定时智能追剧更新")
 
                     scheduler.add_job(
                         func=scheduled_watchlist_task,
@@ -901,8 +890,7 @@ def setup_scheduled_tasks():
                     logger.debug("定时任务触发：准备提交演员元数据增强任务到队列。")
                     submit_task_to_queue(
                         task_enrich_aliases, # <--- 调用我们刚刚创建的任务函数
-                        "演员元数据增强",
-                        priority=TaskPriority.LOW
+                        "演员元数据增强"
                     )
 
                 scheduler.add_job(
@@ -935,8 +923,7 @@ def setup_scheduled_tasks():
                 logger.info("定时任务触发：准备提交演员名翻译查漏补缺任务到队列。")
                 submit_task_to_queue(
                     task_actor_translation_cleanup, # 任务包装函数
-                    "定时演员名查漏补缺",
-                    priority=TaskPriority.LOW
+                    "定时演员名查漏补缺"
                 )
 
             scheduler.add_job(
@@ -1472,11 +1459,11 @@ def task_full_image_sync(processor: MediaProcessor):
     processor.sync_all_images(update_status_callback=update_status_from_thread)
 # --- 立即执行任务注册表 ---
 TASK_REGISTRY = {
-    'full-scan': (task_process_full_library, "立即执行全量扫描", TaskPriority.NORMAL),
-    'sync-person-map': (task_sync_person_map, "立即执行同步演员映射表", TaskPriority.NORMAL),
-    'process-watchlist': (task_process_watchlist, "立即执行智能追剧更新", TaskPriority.NORMAL),
-    'enrich-aliases': (task_enrich_aliases, "立即执行演员元数据增强", TaskPriority.LOW),
-    'actor-cleanup': (task_actor_translation_cleanup, "立即执行演员名翻译查漏补缺", TaskPriority.LOW)
+    'full-scan': (task_process_full_library, "立即执行全量扫描"),
+    'sync-person-map': (task_sync_person_map, "立即执行同步演员映射表"),
+    'process-watchlist': (task_process_watchlist, "立即执行智能追剧更新"),
+    'enrich-aliases': (task_enrich_aliases, "立即执行演员元数据增强"),
+    'actor-cleanup': (task_actor_translation_cleanup, "立即执行演员名翻译查漏补缺")
 }
 # --- 路由区 ---
 # --- webhook通知任务 ---
@@ -1563,7 +1550,6 @@ def emby_webhook():
         # --- 传递给 webhook_processing_task 的参数 ---
         id_to_process,
         force_reprocess=True, 
-        priority=TaskPriority.HIGH,
         process_episodes=True
     )
     
@@ -1646,7 +1632,7 @@ def application_exit_handler():
         while not task_queue.empty():
             try:
                 task_queue.get_nowait()
-            except PriorityQueue.Empty:
+            except Queue.Empty:
                 break
         logger.info("任务队列已清空。")
 
@@ -1992,6 +1978,7 @@ def api_mark_item_processed(item_id):
 # --- 前端全量扫描接口 ---   
 @app.route('/api/trigger_full_scan', methods=['POST'])
 @processor_ready_required # <-- 检查处理器是否就绪
+@task_lock_required      # <-- 检查任务锁
 def api_handle_trigger_full_scan():
     logger.debug("API Endpoint: Received request to trigger full scan.")
     # 从 FormData 获取数据
@@ -2021,8 +2008,7 @@ def api_handle_trigger_full_scan():
     submit_task_to_queue(
         task_process_full_library, # 调用简化后的任务函数
         action_message,
-        process_episodes, # 不再需要传递 force_reprocess
-        priority=TaskPriority.NORMAL
+        process_episodes # 不再需要传递 force_reprocess
     )
     
     return jsonify({"message": f"{action_message} 任务已提交启动。"}), 202
@@ -2037,8 +2023,7 @@ def api_handle_trigger_sync_map():
         
         submit_task_to_queue(
             task_sync_person_map,
-            task_name_for_api,
-            priority=TaskPriority.NORMAL
+            task_name_for_api
         )
 
         return jsonify({"message": f"'{task_name_for_api}' 任务已提交启动。"}), 202
@@ -2075,8 +2060,7 @@ def api_update_edited_cast_sa(item_id):
         # --- 后面是传递给 task_manual_update 的参数 ---
         item_id,
         edited_cast,
-        item_name,
-        priority=TaskPriority.HIGH
+        item_name
     )
     
     return jsonify({"message": "手动更新任务已在后台启动。"}), 202
@@ -2213,6 +2197,7 @@ def api_export_person_map():
 # ★★★ 导入演员映射表 ★★★
 @app.route('/api/actors/import', methods=['POST'])
 @login_required
+@task_lock_required
 def api_import_person_map():
     """
     【队列版】接收上传的CSV文件，读取内容，并提交一个后台任务来处理它。
@@ -2233,7 +2218,6 @@ def api_import_person_map():
         submit_task_to_queue(
             task_import_person_map,
             "导入演员映射表",
-            priority=TaskPriority.LOW,
             # ★★★ 把任务需要的所有东西，都作为关键字参数传递 ★★★
             file_content=file_content,
             tmdb_api_key=app.config.get("tmdb_api_key", "")
@@ -2550,8 +2534,7 @@ def api_trigger_watchlist_update(): # <-- 函数名可以不变，因为它和�
     logger.info("API: 收到手动触发追剧列表更新的请求。")
     submit_task_to_queue(
         task_process_watchlist,
-        "手动追剧更新",
-        priority=TaskPriority.HIGH
+        "手动追剧更新"
     )
     return jsonify({"message": "追剧列表更新任务已在后台启动！"}), 202
 # ★★★ 新增：手动更新追剧状态的API ★★★
@@ -2630,6 +2613,7 @@ def api_remove_from_watchlist(item_id):
 # ★★★ 新增：手动触发单项追剧更新的API ★★★
 @app.route('/api/watchlist/trigger_update/<item_id>/', methods=['POST'])
 @login_required
+@task_lock_required
 def api_trigger_single_watchlist_update(item_id):
     logger.info(f"API: 收到对单个项目 {item_id} 的追剧更新请求。")
     if not watchlist_processor_instance:
@@ -2640,27 +2624,27 @@ def api_trigger_single_watchlist_update(item_id):
     submit_task_to_queue(
         task_process_single_watchlist_item,
         f"手动单项追剧更新: {item_id}",
-        item_id, # 把 item_id 作为参数传给任务
-        priority=TaskPriority.HIGH
+        item_id # 把 item_id 作为参数传给任务
     )
     
     return jsonify({"message": f"项目 {item_id} 的更新任务已在后台启动！"}), 202
 # ★★★ 重新处理单个项目 ★★★
 @app.route('/api/actions/reprocess_item/<item_id>', methods=['POST'])
 @login_required
+@task_lock_required # <-- 检查任务锁
 def api_reprocess_item(item_id):
     logger.info(f"API: 收到重新处理项目 '{item_id}' 的请求。")
     submit_task_to_queue(
         task_reprocess_single_item,
         f"重新处理: {item_id}",
-        item_id,
-        priority=TaskPriority.HIGH
+        item_id
     )
     return jsonify({"message": f"重新处理项目 '{item_id}' 的任务已提交。"}), 202
 
 # ★★★ 重新处理所有待复核项 ★★★
 @app.route('/api/actions/reprocess_all_review_items', methods=['POST'])
 @login_required
+@task_lock_required
 @processor_ready_required
 def api_reprocess_all_review_items():
     """
@@ -2670,14 +2654,14 @@ def api_reprocess_all_review_items():
     # 提交一个宏任务，让后台线程来做这件事
     submit_task_to_queue(
         task_reprocess_all_review_items, # <--- 我们需要创建这个新的任务函数
-        "重新处理所有待复核项",
-        priority=TaskPriority.LOW
+        "重新处理所有待复核项"
     )
     
     return jsonify({"message": "重新处理所有待复核项的任务已提交。"}), 202
 # ★★★ 触发全量图片同步的 API 接口 ★★★
 @app.route('/api/actions/trigger_full_image_sync', methods=['POST'])
 @login_required
+@task_lock_required
 @processor_ready_required
 def api_trigger_full_image_sync():
     """
@@ -2685,14 +2669,14 @@ def api_trigger_full_image_sync():
     """
     submit_task_to_queue(
         task_full_image_sync,
-        "全量同步媒体库海报",
-        priority=TaskPriority.LOW
+        "全量同步媒体库海报"
     )
     
     return jsonify({"message": "全量海报同步任务已成功提交。"}), 202
 # --- 一键重构演员数据端点 ---
 @app.route('/api/tasks/rebuild-actors', methods=['POST'])
 @login_required
+@task_lock_required
 @processor_ready_required
 def trigger_rebuild_actors_task():
     """
@@ -2703,8 +2687,7 @@ def trigger_rebuild_actors_task():
         # 我们需要把这个函数本身，以及它的名字，提交到队列
         submit_task_to_queue(
             run_full_rebuild_task, # <--- 传递函数本身
-            "重构演员数据库", # <--- 任务名
-            priority=TaskPriority.LOW
+            "重构演员数据库" # <--- 任务名
             # 注意：这里不需要传递 processor 实例，因为 task_worker_function 会自动选择
         )
         return jsonify({"status": "success", "message": "重构演员数据库任务已成功提交到后台队列。"}), 202
@@ -2755,7 +2738,7 @@ def api_trigger_task_now(task_identifier: str):
             "message": f"未知的任务标识符: {task_identifier}"
         }), 404 # Not Found
 
-    task_function, task_name, priority = task_info
+    task_function, task_name = task_info
     
     # 3. 提交任务到队列
     #    使用您现有的 submit_task_to_queue 函数
@@ -2771,7 +2754,6 @@ def api_trigger_task_now(task_identifier: str):
     submit_task_to_queue(
         task_function,
         task_name,
-        priority=priority,
         **kwargs # 使用字典解包来传递命名参数
     )
 
