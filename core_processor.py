@@ -660,7 +660,7 @@ class MediaProcessor:
                 # 使用 .get(key, default_value) 来安全地处理，如果没在缓存里，就用原文
                 translated_name = translation_cache.get(original_name, original_name)
                 if original_name != translated_name:
-                    logger.info(f"  演员名翻译: '{original_name}' -> '{translated_name}'")
+                    logger.debug(f"  演员名翻译: '{original_name}' -> '{translated_name}'")
                 actor['name'] = translated_name
 
                 # 2. 处理角色名
@@ -672,7 +672,7 @@ class MediaProcessor:
                     
                     if translated_character != original_character:
                         actor_name_for_log = actor.get('name', '未知演员')
-                        logger.info(f"  角色名翻译: '{original_character}' -> '{translated_character}' (演员: {actor_name_for_log})")
+                        logger.debug(f"  角色名翻译: '{original_character}' -> '{translated_character}' (演员: {actor_name_for_log})")
                     
                     actor['character'] = translated_character
                     
