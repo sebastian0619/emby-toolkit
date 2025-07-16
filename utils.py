@@ -171,9 +171,9 @@ class LogDBManager:
                 "REPLACE INTO processed_log (item_id, item_name, processed_at, score) VALUES (?, ?, CURRENT_TIMESTAMP, ?)",
                 (item_id, item_name or f"未知项目(ID:{item_id})", score)
             )
-            logger.debug(f"已将 Item ID '{item_id}' 写入 processed_log。")
+            logger.debug(f"已将 Item ID '{item_id}' 写入已处理。")
         except sqlite3.Error as e:
-            logger.error(f"写入 processed_log 失败 (Item ID: {item_id}): {e}")
+            logger.error(f"写入已处理 失败 (Item ID: {item_id}): {e}")
             raise # 重新抛出异常，让事务管理器处理
     
     def remove_from_failed_log(self, cursor: sqlite3.Cursor, item_id: str):
