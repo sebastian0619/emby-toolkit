@@ -1992,7 +1992,6 @@ def api_mark_item_processed(item_id):
 # --- 前端全量扫描接口 ---   
 @app.route('/api/trigger_full_scan', methods=['POST'])
 @processor_ready_required # <-- 检查处理器是否就绪
-@task_lock_required      # <-- 检查任务锁
 def api_handle_trigger_full_scan():
     logger.debug("API Endpoint: Received request to trigger full scan.")
     # 从 FormData 获取数据
@@ -2214,7 +2213,6 @@ def api_export_person_map():
 # ★★★ 导入演员映射表 ★★★
 @app.route('/api/actors/import', methods=['POST'])
 @login_required
-@task_lock_required
 def api_import_person_map():
     """
     【队列版】接收上传的CSV文件，读取内容，并提交一个后台任务来处理它。
@@ -2632,7 +2630,6 @@ def api_remove_from_watchlist(item_id):
 # ★★★ 新增：手动触发单项追剧更新的API ★★★
 @app.route('/api/watchlist/trigger_update/<item_id>/', methods=['POST'])
 @login_required
-@task_lock_required
 def api_trigger_single_watchlist_update(item_id):
     logger.info(f"API: 收到对单个项目 {item_id} 的追剧更新请求。")
     if not watchlist_processor_instance:
@@ -2651,7 +2648,6 @@ def api_trigger_single_watchlist_update(item_id):
 # ★★★ 重新处理单个项目 ★★★
 @app.route('/api/actions/reprocess_item/<item_id>', methods=['POST'])
 @login_required
-@task_lock_required # <-- 检查任务锁
 def api_reprocess_item(item_id):
     logger.info(f"API: 收到重新处理项目 '{item_id}' 的请求。")
     submit_task_to_queue(
@@ -2665,7 +2661,6 @@ def api_reprocess_item(item_id):
 # ★★★ 重新处理所有待复核项 ★★★
 @app.route('/api/actions/reprocess_all_review_items', methods=['POST'])
 @login_required
-@task_lock_required
 @processor_ready_required
 def api_reprocess_all_review_items():
     """
@@ -2683,7 +2678,6 @@ def api_reprocess_all_review_items():
 # ★★★ 触发全量图片同步的 API 接口 ★★★
 @app.route('/api/actions/trigger_full_image_sync', methods=['POST'])
 @login_required
-@task_lock_required
 @processor_ready_required
 def api_trigger_full_image_sync():
     """
@@ -2699,7 +2693,6 @@ def api_trigger_full_image_sync():
 # --- 一键重构演员数据端点 ---
 @app.route('/api/tasks/rebuild-actors', methods=['POST'])
 @login_required
-@task_lock_required
 @processor_ready_required
 def trigger_rebuild_actors_task():
     """
