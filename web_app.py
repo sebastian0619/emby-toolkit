@@ -166,8 +166,10 @@ LOG_DIRECTORY = os.path.join(PERSISTENT_DATA_PATH, 'logs')
 # 2. 将这个新路径传递给日志设置函数
 # (logger_setup.py 里的 add_file_handler 会自动创建这个 'logs' 目录)
 add_file_handler(LOG_DIRECTORY)
+#过滤底层日志
 logging.getLogger("requests").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger.info(f"配置文件路径 (CONFIG_FILE_PATH) 设置为: {CONFIG_FILE_PATH}")
 logger.info(f"数据库文件路径 (DB_PATH) 设置为: {DB_PATH}")
 logging.basicConfig(
