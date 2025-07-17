@@ -77,7 +77,7 @@ class MediaProcessor:
                 
                 # 3. 添加一个日志，方便调试
                 if not douban_cookie:
-                    logger.debug(f"配置文件中未找到或未设置 '{constants.CONFIG_OPTION_DOUBAN_COOKIE}'。如果豆瓣API返回'need_login'错误，请在此处配置。")
+                    logger.debug(f"配置文件中未找到或未设置 '{constants.CONFIG_OPTION_DOUBAN_COOKIE}'。如果豆瓣API返回'need_login'错误，请配置豆瓣cookie。")
                 else:
                     logger.debug("已从配置中加载豆瓣 Cookie。")
 
@@ -109,7 +109,7 @@ class MediaProcessor:
         self._stop_event = threading.Event()
         self.processed_items_cache = self._load_processed_log_from_db()
         self.manual_edit_cache = TTLCache(maxsize=10, ttl=600)
-        logger.debug("初始化完成。")
+        logger.trace("核心处理器初始化完成。")
     # --- 清除已处理记录 ---
     def clear_processed_log(self):
         """

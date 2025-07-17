@@ -22,7 +22,7 @@ class UnifiedSyncHandler:
         self.tmdb_api_key = tmdb_api_key # ★★★ 存储TMDb Key，用于记录冲突时获取头像 ★★★
         
         
-        logger.info(f"UnifiedSyncHandler 初始化完成。")
+        logger.trace(f"UnifiedSyncHandler 初始化完成。")
     def sync_emby_person_map_to_db(self, update_status_callback: Optional[callable] = None, stop_event: Optional[threading.Event] = None):
         """
         【流式处理版】分批次地获取、处理和汇报进度。
