@@ -90,7 +90,6 @@
                     :type="statusInfo(item.status).type" 
                     @click="() => updateStatus(item.item_id, statusInfo(item.status).next)"
                     :title="`点击切换到 '${statusInfo(item.status).nextText}'`"
-                    :disabled="item.status === 'Completed'"
                   >
                     <template #icon><n-icon :component="statusInfo(item.status).icon" /></template>
                     {{ statusInfo(item.status).text }}
