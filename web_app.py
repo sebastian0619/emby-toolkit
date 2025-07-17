@@ -2877,7 +2877,7 @@ def search_logs_with_context():
 
     # 正则表达式保持不变
     START_MARKER = re.compile(r"成功获取Emby演员 '(.+?)' \(ID: .*?\) 的详情")
-    END_MARKER = re.compile(r"(流程完成|处理完成)")
+    END_MARKER = re.compile(r"(✨✨✨处理完成|最终状态: 处理完成)")
 
     found_blocks = []
     
