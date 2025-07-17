@@ -931,7 +931,7 @@ def prepare_actor_translation_data(
         logger.info("【演员数据准备】任务完成，没有发现需要翻译的演员名。")
         return {}, {}
 
-    logger.info(f"【演员数据准备】筛选出 {len(names_to_translate)} 个独特的英文名需要翻译。")
+    logger.info(f"【演员数据准备】筛选出 {len(names_to_translate)} 个外文名需要翻译。")
 
     # --- 阶段三：批量翻译 ---
     logger.info(f"【演员数据准备】正在调用AI批量翻译 {len(names_to_translate)} 个名字...")
