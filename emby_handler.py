@@ -166,7 +166,7 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
     
     try:
         # 步骤 1: 获取 Person 的当前完整信息
-        logger.debug(f"准备获取 Person 详情 (ID: {person_id}, UserID: {user_id}) at {api_url}")
+        logger.trace(f"准备获取 Person 详情 (ID: {person_id}, UserID: {user_id}) at {api_url}")
         response_get = requests.get(api_url, params=params, timeout=10)
         response_get.raise_for_status()
         person_to_update = response_get.json()
@@ -187,7 +187,7 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
     try:
         response_post = requests.post(update_url, json=person_to_update, headers=headers, params=params, timeout=15)
         response_post.raise_for_status()
-        logger.info(f"成功更新 Person (ID: {person_id}) 的信息。")
+        logger.debug(f"成功更新 Person (ID: {person_id}) 的信息。")
         return True
     except requests.exceptions.RequestException as e:
         logger.error(f"更新 Person (ID: {person_id}) 时发生错误: {e}")

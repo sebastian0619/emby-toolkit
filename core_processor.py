@@ -555,7 +555,7 @@ class MediaProcessor:
                     "douban_id": actor_data.get("douban_id"),
                 },
             )
-        logger.info("所有演员的ID映射关系已保存。")
+        logger.trace("所有演员的ID映射关系已保存。")
         # 步骤 演员列表截断 (先截断！)
         # ======================================================================
         max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
@@ -752,7 +752,7 @@ class MediaProcessor:
 
         # ✨✨✨ 新增：AI启用判断 ✨✨✨
         if self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False):
-            logger.info(f"【演员专用翻译】AI翻译已启用，准备批量翻译 {len(names_to_translate)} 个演员名...")
+            logger.trace(f"【演员专用翻译】AI翻译已启用，准备批量翻译 {len(names_to_translate)} 个演员名...")
             try:
                 translation_map_from_api = self.ai_translator.batch_translate(
                     texts=list(names_to_translate),
@@ -765,7 +765,7 @@ class MediaProcessor:
                 
                 # 只要流程没出错，就认为成功（即使结果为空）
                 ai_translation_succeeded = True
-                logger.info("【演员专用翻译】AI批量翻译流程执行完毕。")
+                logger.trace("【演员专用翻译】AI批量翻译流程执行完毕。")
 
             except Exception as e:
                 logger.error(f"【演员专用翻译】在为 '{item_name_for_log}' 批量翻译演员名时发生错误: {e}", exc_info=True)
@@ -788,7 +788,7 @@ class MediaProcessor:
                 if person_to_update:
                     emby_person_id = person_to_update.get("Id")
                 
-                    logger.info(f"  【演员专用翻译】准备更新: '{original_name}' -> '{translated_name}' (Emby Person ID: {emby_person_id})")
+                    logger.debug(f"  【演员专用翻译】准备更新: '{original_name}' -> '{translated_name}' (Emby Person ID: {emby_person_id})")
                     
                     # ★★★ 核心：仍然使用您原有的、安全的单点更新函数 ★★★
                     emby_handler.update_person_details(
@@ -833,7 +833,7 @@ class MediaProcessor:
                     if person_to_update:
                         emby_person_id = person_to_update.get("Id")
                 
-                        logger.info(f"  【演员专用翻译】准备更新: '{original_name}' -> '{translated_name}' (Emby Person ID: {emby_person_id})")
+                        logger.debug(f"  【演员专用翻译】准备更新: '{original_name}' -> '{translated_name}' (Emby Person ID: {emby_person_id})")
                         
                         # ★★★ 核心：仍然使用您原有的、安全的单点更新函数 ★★★
                         emby_handler.update_person_details(
@@ -1011,7 +1011,7 @@ class MediaProcessor:
                     with open(temp_json_path, 'w', encoding='utf-8') as f:
                         json.dump(base_json_data_for_override, f, ensure_ascii=False, indent=4)
                     os.replace(temp_json_path, override_json_path)
-                    logger.info(f"✅ 成功生成覆盖元数据文件: {override_json_path}")
+                    logger.debug(f"✅ 成功生成覆盖元数据文件: {override_json_path}")
                 except Exception as e_write:
                     logger.error(f"写入或重命名元数据文件时发生错误: {e_write}", exc_info=True)
                     if os.path.exists(temp_json_path): os.remove(temp_json_path)
@@ -1656,7 +1656,7 @@ class MediaProcessor:
                     with open(temp_json_path, 'w', encoding='utf-8') as f:
                         json.dump(base_json_data_for_override, f, ensure_ascii=False, indent=4)
                     os.replace(temp_json_path, override_json_path)
-                    logger.info(f"手动处理：成功生成覆盖元数据文件: {override_json_path}")
+                    logger.debug(f"手动处理：成功生成覆盖元数据文件: {override_json_path}")
 
                     #---深度处理剧集
                     process_episodes_config = self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False)
