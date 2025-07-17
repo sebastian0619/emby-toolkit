@@ -18,6 +18,7 @@ import utils
 import constants
 import logging
 import actor_utils
+from cachetools import TTLCache
 from actor_utils import ActorDBManager
 from actor_utils import get_db_connection as get_central_db_connection
 from ai_translator import AITranslator
@@ -107,7 +108,7 @@ class MediaProcessor:
         
         self._stop_event = threading.Event()
         self.processed_items_cache = self._load_processed_log_from_db()
-        self.manual_edit_cache = {}
+        self.manual_edit_cache = TTLCache(maxsize=10, ttl=600)
         logger.debug("初始化完成。")
     # --- 清除已处理记录 ---
     def clear_processed_log(self):
