@@ -786,7 +786,18 @@ class MediaProcessor:
                 
                 person_to_update = name_to_person_map.get(original_name)
                 if person_to_update:
-                    # ... (更新Emby的逻辑保持不变)
+                    emby_person_id = person_to_update.get("Id")
+                
+                    logger.info(f"  【演员专用翻译】准备更新: '{original_name}' -> '{translated_name}' (Emby Person ID: {emby_person_id})")
+                    
+                    # ★★★ 核心：仍然使用您原有的、安全的单点更新函数 ★★★
+                    emby_handler.update_person_details(
+                        person_id=emby_person_id,
+                        new_data={"Name": translated_name}, # 只传递Name，确保安全
+                        emby_server_url=self.emby_url,
+                        emby_api_key=self.emby_api_key,
+                        user_id=self.emby_user_id
+                    )
                     update_count += 1
         
         # ✨✨✨ 新增：降级逻辑 ✨✨✨
@@ -820,7 +831,18 @@ class MediaProcessor:
                 if translated_name and original_name != translated_name:
                     person_to_update = name_to_person_map.get(original_name)
                     if person_to_update:
-                        # ... (更新Emby的逻辑保持不变)
+                        emby_person_id = person_to_update.get("Id")
+                
+                        logger.info(f"  【演员专用翻译】准备更新: '{original_name}' -> '{translated_name}' (Emby Person ID: {emby_person_id})")
+                        
+                        # ★★★ 核心：仍然使用您原有的、安全的单点更新函数 ★★★
+                        emby_handler.update_person_details(
+                            person_id=emby_person_id,
+                            new_data={"Name": translated_name}, # 只传递Name，确保安全
+                            emby_server_url=self.emby_url,
+                            emby_api_key=self.emby_api_key,
+                            user_id=self.emby_user_id
+                        )
                         update_count += 1
 
         logger.info(f"【演员专用翻译】为 '{item_name_for_log}' 的演员中文化处理完成，共更新了 {update_count} 个演员名。")
