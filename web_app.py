@@ -2906,6 +2906,8 @@ def search_logs_with_context():
             
             in_block = False
             current_block = []
+            # ✨ 1. 新增一个变量，用于“记住”当前处理块的名称
+            current_item_name = None
 
             try:
                 opener = gzip.open if filename.endswith('.gz') else open
@@ -2917,17 +2919,18 @@ def search_logs_with_context():
                         is_start_marker = START_MARKER.search(line)
 
                         if is_start_marker:
-                            # 如果我们之前已经在一个块里，说明那个块是不完整的，直接丢弃。
-                            # 然后开始一个全新的块。
                             in_block = True
                             current_block = [line]
+                            # ✨ 2. 从开始标记中捕获并记住项目名称
+                            current_item_name = is_start_marker.group(1)
+                        
                         elif in_block:
-                            # 只有当我们在一个块内时，才继续添加内容
                             current_block.append(line)
                             
                             is_end_marker = END_MARKER.search(line)
-                            if is_end_marker:
-                                # 块已完整结束，现在检查整个块是否包含关键词
+                            
+                            # ✨ 3. 【核心逻辑】只有当结束标记存在，并且行中包含我们记住的项目名时，才认为块结束
+                            if is_end_marker and current_item_name and current_item_name in line:
                                 block_content = "\n".join(current_block)
                                 if query.lower() in block_content.lower():
                                     found_blocks.append({
@@ -2935,9 +2938,10 @@ def search_logs_with_context():
                                         "lines": current_block
                                     })
                                 
-                                # 重置状态，准备寻找下一个块
+                                # 重置所有状态，准备寻找下一个块
                                 in_block = False
                                 current_block = []
+                                current_item_name = None
             except Exception as e:
                 logging.warning(f"API: 上下文搜索时无法读取文件 '{filename}': {e}")
         
