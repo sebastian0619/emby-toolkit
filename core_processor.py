@@ -1772,10 +1772,16 @@ class MediaProcessor:
                 profile_path = actor_data.get('profile_path')
                 image_url = f"https://image.tmdb.org/t/p/w185{profile_path}" if profile_path else None
 
+                # ✨✨✨ 1. 获取从缓存文件中读出的、可能带有前缀的角色名
+                role_from_cache = actor_data.get('character', '')
+                
+                # ✨✨✨ 2. 调用清理函数，得到干净的角色名
+                cleaned_role_for_display = utils.clean_character_name_static(role_from_cache)
+
                 cast_for_frontend.append({
                     "tmdbId": actor_tmdb_id,
                     "name": actor_data.get('name'),
-                    "role": actor_data.get('character'),
+                    "role": cleaned_role_for_display,
                     "imageUrl": image_url,
                 })
             
