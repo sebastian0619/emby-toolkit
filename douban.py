@@ -56,10 +56,10 @@ class DoubanApi:
             with DoubanApi._session_lock:
                 if DoubanApi._session is None:
                     DoubanApi._session = requests.Session()
-                    logger.debug("DoubanApi requests.Session 已初始化。")
+                    logger.trace("DoubanApi requests.Session 已初始化。")
         if db_path:
             DoubanApi._db_path = db_path
-            logger.debug(f"DoubanApi 将使用数据库路径进行缓存: {DoubanApi._db_path}")
+            logger.trace(f"DoubanApi 将使用数据库路径进行缓存: {DoubanApi._db_path}")
         elif not DoubanApi._db_path:
             logger.warning("DoubanApi 初始化：未提供数据库路径 (db_path)，翻译缓存功能将不可用或受限。")
         # 如果外部传入了冷却时间，则使用它覆盖默认值
@@ -476,10 +476,9 @@ class DoubanApi:
     def close(self):
         with DoubanApi._session_lock: # 关闭时也加锁
             if DoubanApi._session:
-                try: DoubanApi._session.close(); logger.debug("DoubanApi requests.Session 已关闭。")
+                try: DoubanApi._session.close(); logger.trace("DoubanApi requests.Session 已关闭。")
                 except Exception as e: logger.error(f"关闭 DoubanApi session 时出错: {e}")
                 finally: DoubanApi._session = None
-            logger.debug("DoubanApi close 方法执行完毕。")
 
     # ✨✨✨ 获取演员详细信息方法 ✨✨✨
     def celebrity_details(self, celebrity_id: str) -> Dict[str, Any]:

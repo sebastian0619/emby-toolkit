@@ -87,7 +87,7 @@ class MediaProcessor:
                     cooldown_seconds=douban_cooldown,
                     user_cookie=douban_cookie  # <--- 将 cookie 传进去
                 )
-                logger.debug("DoubanApi 实例已在 MediaProcessorAPI 中创建。")
+                logger.trace("DoubanApi 实例已在 MediaProcessorAPI 中创建。")
                 
                 # --- ✨✨✨ 核心修改区域 END ✨✨✨ ---
 
@@ -2131,4 +2131,3 @@ class MediaProcessor:
         return report
     def close(self):
         if self.douban_api: self.douban_api.close()
-        logger.debug("MediaProcessor closed.")

@@ -28,7 +28,7 @@ class ActorDBManager:
     """
     def __init__(self, db_path: str):
         self.db_path = db_path
-        logger.debug(f"ActorDBManager 初始化，使用数据库: {self.db_path}")
+        logger.trace(f"ActorDBManager 初始化，使用数据库: {self.db_path}")
     
 
     def find_person_by_any_id(self, cursor: sqlite3.Cursor, **kwargs) -> Optional[sqlite3.Row]:

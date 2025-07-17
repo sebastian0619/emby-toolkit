@@ -40,7 +40,7 @@ class WatchlistProcessor:
         self.emby_user_id = self.config.get("emby_user_id")
         self.local_data_path = self.config.get("local_data_path", "")
         self._stop_event = threading.Event()
-        logger.debug("WatchlistProcessor 初始化完成。")
+        logger.trace("WatchlistProcessor 初始化完成。")
 
     # --- 线程控制方法 ---
     def signal_stop(self): self._stop_event.set()

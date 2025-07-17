@@ -231,14 +231,14 @@ def init_db():
             cursor.execute("PRAGMA journal_mode=WAL;")
             result = cursor.fetchone()
             if result and result[0].lower() == 'wal':
-                logger.debug("数据库已成功启用 WAL (Write-Ahead Logging) 模式。")
+                logger.trace("数据库已成功启用 WAL (Write-Ahead Logging) 模式。")
             else:
                 logger.warning(f"尝试启用 WAL 模式失败，当前模式: {result[0] if result else '未知'}。")
         except Exception as e_wal:
             logger.error(f"启用 WAL 模式时出错: {e_wal}")
 
         # --- 3. 创建基础表 (日志、缓存、用户) ---
-        logger.debug("正在确认/创建基础表...")
+        logger.trace("正在确认/创建基础表...")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS processed_log (
                 item_id TEXT PRIMARY KEY, item_name TEXT,
@@ -264,10 +264,10 @@ def init_db():
                 password_hash TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        logger.debug("基础表结构已确认。")
+        logger.trace("基础表结构已确认。")
 
         # --- 4. 创建核心功能表 (追剧列表) ---
-        logger.debug("正在确认/创建 'watchlist' 表...")
+        logger.trace("正在确认/创建 'watchlist' 表...")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS watchlist (
                 item_id TEXT PRIMARY KEY,
@@ -280,7 +280,7 @@ def init_db():
             )
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
-        logger.debug("表 'watchlist' 结构已确认。")
+        logger.trace("表 'watchlist' 结构已确认。")
 
 
         # 核心表：person_identity_map (单一事实来源)
@@ -310,13 +310,13 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_tmdb_id ON person_identity_map (tmdb_person_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_imdb_id ON person_identity_map (imdb_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_id ON person_identity_map (douban_celebrity_id)")
-        logger.debug("  -> [核心] 'person_identity_map' 表已创建。")
+        logger.trace("  -> [核心] 'person_identity_map' 表已创建。")
 
         # =================================================================
         # ★★★ 5.2 新增核心表：ActorMetadata (TMDb元数据缓存) ★★★
         # =================================================================
         # 职责：专门存储从TMDb获取的、用于增强显示的演员元数据。
-        logger.debug("正在确认/创建 'ActorMetadata' 表...")
+        logger.trace("正在确认/创建 'ActorMetadata' 表...")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS ActorMetadata (
                 -- 主键，并与 person_identity_map 表建立外键关系
@@ -337,11 +337,11 @@ def init_db():
                 FOREIGN KEY(tmdb_id) REFERENCES person_identity_map(tmdb_person_id) ON DELETE CASCADE
             )
         """)
-        logger.debug("  -> [核心] 'ActorMetadata' 表已确认。")
+        logger.trace("  -> [核心] 'ActorMetadata' 表已确认。")
 
         # --- 6. 提交事务 ---
         conn.commit()
-        logger.info(f"数据库重建完成！所有表结构已在 '{DB_PATH}' 中创建。")
+        logger.trace(f"数据库重建完成！所有表结构已在 '{DB_PATH}' 中创建。")
 
     except sqlite3.Error as e_sqlite:
         logger.error(f"数据库初始化时发生 SQLite 错误: {e_sqlite}", exc_info=True)
@@ -356,7 +356,7 @@ def init_db():
     finally:
         if conn:
             conn.close()
-            logger.debug("数据库连接已在 init_db 的 finally 块中安全关闭。")
+            logger.trace("数据库连接已在 init_db 的 finally 块中安全关闭。")
 # ✨✨✨ 装饰器：检查登陆状态 ✨✨✨
 def login_required(f):
     @wraps(f)
@@ -398,7 +398,7 @@ def init_auth():
     
     if env_username:
         username = env_username.strip()
-        logger.info(f"检测到 AUTH_USERNAME 环境变量，将使用用户名: '{username}'")
+        logger.debug(f"检测到 AUTH_USERNAME 环境变量，将使用用户名: '{username}'")
     else:
         username = APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_USERNAME, constants.DEFAULT_USERNAME).strip()
         logger.debug(f"未检测到 AUTH_USERNAME 环境变量，将使用配置文件中的用户名: '{username}'")
@@ -434,7 +434,7 @@ def init_auth():
             logger.critical("请立即使用此密码登录，并在设置页面修改为您自己的密码。")
             logger.critical("=" * 60)
         else:
-            logger.debug(f"[AUTH DIAGNOSTIC] User '{username}' found in DB. No action needed.")
+            logger.trace(f"[AUTH DIAGNOSTIC] User '{username}' found in DB. No action needed.")
 
     except Exception as e:
         logger.error(f"初始化认证系统时发生错误: {e}", exc_info=True)
@@ -479,7 +479,7 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
             app_cfg[key] = config_parser.get(section, key, fallback=default)
 
     APP_CONFIG = app_cfg.copy()
-    logger.debug("全局配置 APP_CONFIG 已更新。")
+    logger.trace("全局配置 APP_CONFIG 已更新。")
     return app_cfg, is_first_run
 # --- 保存配置 ---
 def save_config(new_config: Dict[str, Any]):
@@ -558,7 +558,7 @@ def initialize_processors():
         try:
             # 假设 WatchlistProcessor 的构造函数和 MediaProcessor 类似，接收一个 config 字典
             watchlist_processor_instance = WatchlistProcessor(config=current_config)
-            logger.debug("WatchlistProcessor 实例已成功初始化，随时待命。")
+            logger.trace("WatchlistProcessor 实例已成功初始化，随时待命。")
         except Exception as e:
             logger.error(f"创建 WatchlistProcessor 实例失败: {e}", exc_info=True)
             watchlist_processor_instance = None # 初始化失败，明确设为 None
@@ -626,10 +626,8 @@ def _execute_task_with_lock(task_function, task_name: str, processor: Union[Medi
 
             if processor:
                 processor.close()
-                logger.debug(f"任务 '{task_name}' 结束 (finally块)，准备调用 media_processor_instance.close() ...")
                 try:
                     media_processor_instance.close()
-                    logger.debug(f"media_processor_instance.close() 调用完毕 (任务 '{task_name}' finally块)。")
                 except Exception as e_close_proc:
                     logger.error(f"调用 media_processor_instance.close() 时发生错误: {e_close_proc}", exc_info=True)
 
@@ -685,7 +683,7 @@ def start_task_worker_if_not_running():
     global task_worker_thread
     with task_worker_lock:
         if task_worker_thread is None or not task_worker_thread.is_alive():
-            logger.debug("通用任务线程未运行，正在启动...")
+            logger.trace("通用任务线程未运行，正在启动...")
             task_worker_thread = threading.Thread(target=task_worker_function, daemon=True)
             task_worker_thread.start()
         else:

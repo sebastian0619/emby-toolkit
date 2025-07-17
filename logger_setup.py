@@ -11,6 +11,19 @@ LOG_FILE_NAME = "app.log"
 LOG_FILE_MAX_SIZE_MB = 5
 LOG_FILE_BACKUP_COUNT = 10
 
+# ★★★ 新增部分 1: 定义并注册 TRACE 日志级别 ★★★
+# 1. 定义一个比 DEBUG (10) 更低的级别数值
+TRACE_LEVEL = 5
+# 2. 注册级别名称和方法
+logging.addLevelName(TRACE_LEVEL, "TRACE")
+# 3. 给 Logger 类添加一个便捷方法 trace()，方便使用 logger.trace(...)
+#    我们还加入了 isEnabledFor 检查，这是一个好习惯，可以避免在日志级别不够时浪费资源去格式化消息字符串
+def trace(self, message, *args, **kws):
+    if self.isEnabledFor(TRACE_LEVEL):
+        self._log(TRACE_LEVEL, message, args, **kws)
+logging.Logger.trace = trace
+# ★★★ 新增部分结束 ★★★
+
 # --- 前端队列和 Handler ---
 frontend_log_queue = deque(maxlen=100)
 
@@ -21,7 +34,10 @@ class FrontendQueueHandler(logging.Handler):
     def emit(self, record):
         try:
             log_entry = self.format(record)
-            frontend_log_queue.append(log_entry)
+            # ★★★ 新增部分 2: 确保 TRACE 级别的日志不会进入前端 ★★★
+            # 前端只应显示 INFO 及以上级别，所以这里加一个判断
+            if record.levelno >= logging.INFO:
+                frontend_log_queue.append(log_entry)
         except Exception:
             self.handleError(record)
 
@@ -46,7 +62,8 @@ class DowngradeHttpx200Filter(logging.Filter):
 
 # --- 获取根记录器 ---
 logger = logging.getLogger() 
-logger.setLevel(logging.DEBUG) # 根级别必须是 DEBUG，才能捕获到降级后的日志
+# ★★★ 修改部分 1: 根级别必须是最低的 TRACE，才能捕获到所有日志 ★★★
+logger.setLevel(TRACE_LEVEL) 
 
 # --- 检查并清空处理器 ---
 if logger.hasHandlers():
@@ -56,7 +73,8 @@ if logger.hasHandlers():
 
 # 1. 控制台 Handler
 stream_handler = logging.StreamHandler(sys.stdout)
-stream_handler.setLevel(logging.DEBUG if constants.DEBUG_MODE else logging.INFO)
+# ★★★ 修改部分 2: 在 DEBUG_MODE 下，让控制台显示 TRACE 级别的日志 ★★★
+stream_handler.setLevel(TRACE_LEVEL if constants.DEBUG_MODE else logging.INFO)
 console_formatter = logging.Formatter(
     '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )

@@ -161,7 +161,7 @@ class LogDBManager:
     """
     def __init__(self, db_path: str):
         self.db_path = db_path
-        logger.debug(f"LogDBManager 初始化，使用数据库: {self.db_path}")
+        logger.trace(f"LogDBManager 初始化，使用数据库: {self.db_path}")
 
     # 注意：这个类不自己管理连接，它假设操作都在一个外部事务中
     def save_to_processed_log(self, cursor: sqlite3.Cursor, item_id: str, item_name: Optional[str] = None, score: Optional[float] = None):
