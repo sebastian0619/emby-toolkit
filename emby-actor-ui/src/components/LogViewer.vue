@@ -166,7 +166,7 @@ const parsedLogResults = computed(() => {
   
   let resultString;
   if (searchMode.value === 'context') {
-    const blocks = searchResults.value.map(block => `--- [ 记录于 ${block.file} 在 ${block.date} ] ---\n${block.lines.join('\n')}`);
+    const blocks = searchResults.value.map(block => `--- [ Context found in ${block.file} ] ---\n${block.lines.join('\n')}`);
     resultString = `以“定位”模式找到 ${blocks.length} 个完整处理过程:\n\n` + blocks.join('\n\n========================================================\n\n');
   } else {
     let lastFile = '';
@@ -304,7 +304,4 @@ watch(() => props.show, (newVal) => {
   text-transform: uppercase;
 }
 
-.message {
-  /* message的颜色会从父级.log-line继承，无需单独设置 */
-}
 </style>
