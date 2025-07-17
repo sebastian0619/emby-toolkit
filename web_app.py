@@ -2881,7 +2881,7 @@ def search_logs_with_context():
         return jsonify({"error": "搜索关键词不能为空"}), 400
 
     # 正则表达式保持不变
-    START_MARKER = re.compile(r"成功获取Emby '(.+?)' \(ID: .*?\) 的演员详情")
+    START_MARKER = re.compile(r"成功获取Emby演员 '(.+?)' \(ID: .*?\) 的详情")
     END_MARKER = re.compile(r"最终状态: 处理完成")
 
     found_blocks = []
