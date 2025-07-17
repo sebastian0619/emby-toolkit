@@ -340,7 +340,7 @@ class DoubanApi:
         if not search_query: return self._make_error_dict("invalid_param", "搜索关键词为空")
 
         search_result = self.search(search_query)
-        logger.debug(f"名称搜索 '{search_query}' 原始结果: {search_result}")
+        logger.trace(f"名称搜索 '{search_query}' 原始结果: {search_result}")
 
         if search_result.get("error"):
             return search_result # 直接返回搜索的错误
