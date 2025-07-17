@@ -2904,9 +2904,10 @@ def search_logs_with_context():
         for filename in log_files:
             full_path = os.path.join(LOG_DIRECTORY, filename)
             
+            # ✨ 我们不再需要在这里推断日期了
+            
             in_block = False
             current_block = []
-            # ✨ 1. 新增一个变量，用于“记住”当前处理块的名称
             current_item_name = None
 
             try:
@@ -2921,7 +2922,6 @@ def search_logs_with_context():
                         if is_start_marker:
                             in_block = True
                             current_block = [line]
-                            # ✨ 2. 从开始标记中捕获并记住项目名称
                             current_item_name = is_start_marker.group(1)
                         
                         elif in_block:
@@ -2929,16 +2929,27 @@ def search_logs_with_context():
                             
                             is_end_marker = END_MARKER.search(line)
                             
-                            # ✨ 3. 【核心逻辑】只有当结束标记存在，并且行中包含我们记住的项目名时，才认为块结束
                             if is_end_marker and current_item_name and current_item_name in line:
                                 block_content = "\n".join(current_block)
                                 if query.lower() in block_content.lower():
+                                    
+                                    # ✨✨✨ 【核心修改】直接从日志块的第一行提取日期 ✨✨✨
+                                    log_date_str = "Unknown Date" # 设置一个默认值
+                                    if current_block:
+                                        try:
+                                            # 日志格式为 "2025-07-16 19:13:48,683 - ..."
+                                            # 我们只需要按空格分割，取第一部分即可
+                                            log_date_str = current_block[0].split(' ')[0]
+                                        except IndexError:
+                                            # 如果某行格式异常，则使用默认值
+                                            pass
+
                                     found_blocks.append({
                                         "file": filename,
+                                        "date": log_date_str, # 使用100%准确的日期
                                         "lines": current_block
                                     })
                                 
-                                # 重置所有状态，准备寻找下一个块
                                 in_block = False
                                 current_block = []
                                 current_item_name = None
