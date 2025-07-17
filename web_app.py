@@ -540,7 +540,7 @@ def initialize_processors():
         media_processor_instance.close()
     try:
         media_processor_instance = MediaProcessor(config=current_config)
-        logger.info("MediaProcessor 实例已创建/更新。")
+        logger.info("核心处理器 实例已创建/更新。")
     except Exception as e:
         logger.error(f"创建 MediaProcessor 实例失败: {e}", exc_info=True)
         media_processor_instance = None
