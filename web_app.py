@@ -1319,33 +1319,28 @@ def task_import_person_map(processor, file_content: str, **kwargs):
 # ★★★ 重新处理单个项目 ★★★
 def task_reprocess_single_item(processor: MediaProcessor, item_id: str):
     """
-    【已升级 - 强制在线获取版】
+    【最终正确版 - 高效简洁】
     后台任务：通过强制在线获取TMDb最新数据的方式，重新处理单个项目。
     """
+    # ✨ 1. 直接使用 ItemID 作为日志标识，不再预先获取项目名
     item_name_for_log = f"ItemID: {item_id}"
-    logger.info(f"--- 开始执行“重新处理单个项目”任务 ({item_name_for_log}) [强制在线获取模式] ---")
+    logger.debug(f"--- 开始执行“重新处理单个项目”任务 ({item_name_for_log}) [强制在线获取模式] ---")
     
     try:
-        # 1. 获取项目名用于日志（可选，但体验更好）
-        item_details = emby_handler.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-        if item_details:
-            item_name_for_log = item_details.get("Name", item_name_for_log)
-        
+        # ✨ 2. 状态更新也直接使用 ItemID
         update_status_from_thread(10, f"正在处理: {item_name_for_log}")
 
-        # 2. 【核心修改】直接调用 processor 的核心方法，并传递 force_fetch_from_tmdb=True
-        #    不再需要删除缓存、触发Emby刷新、等待等脆弱的步骤！
-        logger.info(f"为 '{item_name_for_log}' 调用核心处理器，并设置强制在线获取标志...")
+        # ✨ 3. 【核心修改】直接调用核心处理器，不再有任何预先的API调用
+        #    由 process_single_item 自己去获取详情并打印唯一的开始日志
+        logger.debug(f"为 '{item_name_for_log}' 调用核心处理器，并设置强制在线获取标志...")
         
         processor.process_single_item(
             item_id, 
-            force_reprocess_this_item=True, # 确保它会被处理，即使在processed_log里
-            force_fetch_from_tmdb=True      # ★★★ 这就是我们新的“魔法棒” ★★★
+            force_reprocess_this_item=True,
+            force_fetch_from_tmdb=True
         )
         
-        # 3. 任务结束（process_single_item内部会处理最终状态）
-        # 这里的日志可以简化，因为核心日志在processor里
-        logger.info(f"--- “重新处理单个项目”任务完成 ({item_name_for_log}) ---")
+        logger.debug(f"--- “重新处理单个项目”任务完成 ({item_name_for_log}) ---")
 
     except Exception as e:
         logger.error(f"重新处理 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
@@ -2882,7 +2877,7 @@ def search_logs_with_context():
 
     # 正则表达式保持不变
     START_MARKER = re.compile(r"成功获取Emby演员 '(.+?)' \(ID: .*?\) 的详情")
-    END_MARKER = re.compile(r"最终状态: 处理完成")
+    END_MARKER = re.compile(r"✨✨✨处理完成")
 
     found_blocks = []
     
