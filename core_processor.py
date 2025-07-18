@@ -801,6 +801,10 @@ class MediaProcessor:
             file_found = False
 
             for i in range(max_retries):
+                if self.is_stop_requested():
+                    logger.warning(f"{log_prefix} 在等待缓存文件生成期间收到停止信号，处理中止。")
+                    # 直接返回False，中断当前项目处理
+                    return False
                 if os.path.exists(json_file_path):
                     logger.info(f"{log_prefix} ✅ 在 {i * wait_interval} 秒后，成功找到新生成的缓存文件: {json_file_path}")
                     file_found = True
