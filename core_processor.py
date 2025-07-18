@@ -409,10 +409,12 @@ class MediaProcessor:
             # --- 步骤 3 & 4: 查询IMDbID -> TMDb反查 -> 新增 ---
             logger.debug(f"--- 匹配阶段 3 & 4: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员) ---")
             still_unmatched_final = []
-            for d_actor in unmatched_douban_actors:
+            for i, d_actor in enumerate(unmatched_douban_actors):
                 if self.is_stop_requested(): raise InterruptedError("任务中止")
+                
                 # ✨ 核心修改：在每次循环开始时检查上限
                 if len(final_cast_map) >= limit:
+                    # 现在 'i' 是一个有效的、已定义的变量
                     logger.info(f"演员数已达上限 ({limit})，跳过剩余 {len(unmatched_douban_actors) - i} 位演员的API查询。")
                     # 将所有剩下的演员直接加入 still_unmatched_final
                     still_unmatched_final.extend(unmatched_douban_actors[i:])
