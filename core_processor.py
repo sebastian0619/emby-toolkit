@@ -979,6 +979,7 @@ class MediaProcessor:
                     "name", "networks", "number_of_episodes", "number_of_seasons",
                     "origin_country", "original_language", "original_name", "overview",
                     "popularity", "poster_path", "production_companies", "production_countries",
+                    "release_date",  # <--- 在这里添加电影的上映日期字段
                     "seasons", "spoken_languages", "status", "tagline", "type",
                     "vote_average", "vote_count", "english_name"
                 ]
@@ -1635,6 +1636,7 @@ class MediaProcessor:
                         "name", "networks", "number_of_episodes", "number_of_seasons",
                         "origin_country", "original_language", "original_name", "overview",
                         "popularity", "poster_path", "production_companies", "production_countries",
+                        "release_date",  # <--- 在这里添加电影的上映日期字段
                         "seasons", "spoken_languages", "status", "tagline", "type",
                         "vote_average", "vote_count", "english_name"
                     ]
