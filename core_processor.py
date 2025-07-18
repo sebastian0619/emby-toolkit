@@ -625,7 +625,12 @@ class MediaProcessor:
                         translation_cache.update(translation_map_from_api)
                         if translation_mode == 'fast':
                             for original, translated in translation_map_from_api.items():
-                                self.actor_db_manager.save_translation_to_db(original, translated, self.ai_translator.provider, cursor=cursor)
+                                self.actor_db_manager.save_translation_to_db(
+                                    cursor=cursor,
+                                    original_text=original,
+                                    translated_text=translated,
+                                    engine_used=self.ai_translator.provider
+                                )
                 
                 # 无论API是否被调用，只要这个流程没出错，就认为AI部分成功了
                 # （即使只是成功使用了缓存或确认了无需翻译）
@@ -1358,10 +1363,10 @@ class MediaProcessor:
 
                                         # 现在，我们用正确的 Key ("Jake Sully") 和新的 Value ("杰克") 去更新缓存
                                         self.actor_db_manager.save_translation_to_db(
+                                            cursor=cursor, # <--- ★★★ 将 cursor 放在正确的位置 ★★★
                                             original_text=original_text_key,
                                             translated_text=cleaned_new_role,
-                                            engine_used="manual",
-                                            cursor=cursor
+                                            engine_used="manual"
                                         )
                                         logger.debug(f"  AI缓存通过反查更新: '{original_text_key}' -> '{cleaned_new_role}'")
                                         cache_update_succeeded = True
