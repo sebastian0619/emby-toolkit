@@ -732,7 +732,6 @@ class MediaProcessor:
         # --- 定义动画片 ---
         genres = item_details_from_emby.get("Genres", [])
         is_animation = "Animation" in genres or "动画" in genres
-        logger.debug(f"项目 '{item_name_for_log}' 是否为动画: {is_animation}")
         # ★★★ 现在 item_name_for_log 已经定义好了 ★★★
         original_emby_actor_count = len(item_details_from_emby.get("People", []))
         
@@ -758,20 +757,20 @@ class MediaProcessor:
             else:
                 log_prefix = "[自动缓存重建]"
                 logger.info(f"{log_prefix} 检测到缓存文件不存在，为 '{item_name_for_log}' 自动执行缓存重建...")
-                logger.info(f"  - 目标文件路径: {json_file_path}")
+                logger.debug(f"  - 目标文件路径: {json_file_path}")
 
             # 1. 删除旧的 override 和 cache 目录
             if os.path.exists(item_override_dir):
                 try:
                     shutil.rmtree(item_override_dir)
-                    logger.info(f"{log_prefix} 成功删除旧的覆盖缓存目录: {item_override_dir}")
+                    logger.debug(f"{log_prefix} 成功删除旧的覆盖缓存目录: {item_override_dir}")
                 except Exception as e:
                     logger.error(f"{log_prefix} 删除覆盖缓存目录时失败: {e}", exc_info=True)
             
             if os.path.exists(item_cache_dir):
                 try:
                     shutil.rmtree(item_cache_dir)
-                    logger.info(f"{log_prefix} 成功删除旧的主缓存目录: {item_cache_dir}")
+                    logger.debug(f"{log_prefix} 成功删除旧的主缓存目录: {item_cache_dir}")
                 except Exception as e:
                     logger.error(f"{log_prefix} 删除主缓存目录时失败: {e}", exc_info=True)
 
@@ -792,9 +791,9 @@ class MediaProcessor:
             # 3. 【【【【【 新增核心逻辑：等待缓存文件生成 】】】】】
             logger.info(f"{log_prefix} 刷新已触发，现在开始等待新的缓存文件生成...")
             
-            # 设置等待参数：最多等12次，每次10秒，总共2分钟超时
+            # 设置等待参数：最多等12次，每次5秒，总共1分钟超时
             max_retries = self.config.get("rebuild_max_retries", 12)
-            wait_interval = self.config.get("rebuild_wait_interval", 10)
+            wait_interval = self.config.get("rebuild_wait_interval", 5)
             file_found = False
 
             for i in range(max_retries):
@@ -821,16 +820,6 @@ class MediaProcessor:
         try:
             with get_central_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
-                # # ★★★ 轨道一：API 轨道 (仅中文化演员名) ★★★
-                # if not force_fetch_from_tmdb:
-                #     # 【★★★ 修复点 1：传递上下文 ★★★】
-                #     self._process_api_track_person_names_only(
-                #         item_details_from_emby=item_details_from_emby
-                #     )
-                
-                # if self.is_stop_requested(): raise InterruptedError("任务被中止")
-
-                # # ★★★ 轨道二：JSON 轨道 (神医模式核心) ★★★
                 if not tmdb_id or not self.local_data_path:
                     error_msg = "缺少TMDbID" if not tmdb_id else "未配置本地数据路径"
                     logger.warning(f"【JSON轨道】跳过处理 '{item_name_for_log}'，原因: {error_msg}。")
@@ -881,7 +870,7 @@ class MediaProcessor:
                 # =================================================================
                 
                 # 3. 直接在原始数据上替换演员表部分
-                logger.info("将直接修改缓存元数据中的演员表，并保留所有其他字段。")
+                logger.trace("将直接修改缓存元数据中的演员表，并保留所有其他字段。")
                 
                 # 我们不再创建新的空字典，而是直接使用读入的完整数据
                 base_json_data_for_override = base_json_data_original
@@ -1425,7 +1414,7 @@ class MediaProcessor:
                         raise ValueError(f"无法读取或解析JSON文件: {json_file_path}")
 
                     # 5.2 直接在原始数据上替换演员表部分
-                    logger.info("将直接修改缓存元数据中的演员表，并保留所有其他字段。")
+                    logger.trace("将直接修改缓存元数据中的演员表，并保留所有其他字段。")
                     base_json_data_for_override = base_json_data_original # 直接引用，不再重建
 
                     if item_type == "Movie":
