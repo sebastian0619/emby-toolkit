@@ -770,7 +770,7 @@ def enrich_all_actor_aliases_task(
             # --- 阶段二：从 豆瓣 补充 IMDb ID (串行执行) ---
             if (stop_event and stop_event.is_set()) or (time.time() >= end_time): raise InterruptedError("任务中止")
             
-            douban_api = DoubanApi(db_path=db_path)
+            douban_api = DoubanApi()
             logger.info("--- 阶段二：从 豆瓣 补充 IMDb ID ---")
             cursor = conn.cursor()
             sql_find_douban_needy = f"""

@@ -156,7 +156,7 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
     try:
         response_post = requests.post(update_url, json=person_to_update, headers=headers, params=params, timeout=15)
         response_post.raise_for_status()
-        logger.debug(f"成功更新 Person (ID: {person_id}) 的信息。")
+        logger.trace(f"成功更新 Person (ID: {person_id}) 的信息。")
         return True
     except requests.exceptions.RequestException as e:
         logger.error(f"更新 Person (ID: {person_id}) 时发生错误: {e}")
@@ -523,7 +523,7 @@ def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str
     start_index = 0
     batch_size = 5000 # 使用更稳定的 endpoint，可以适当调大批次大小，提高效率
 
-    logger.info(f"开始从 Emby 分批次获取所有演员数据 (Endpoint: {api_url}, BatchSize: {batch_size})...")
+    logger.info(f"开始从 Emby 分批次获取所有演员数据 (每批: {batch_size})...")
     
     while True:
         if stop_event and stop_event.is_set():
@@ -919,7 +919,7 @@ def prepare_actor_translation_data(
         logger.error(f"【演员数据准备】批量翻译时发生错误: {e}", exc_info=True)
         return {}, name_to_persons_map # 翻译失败
 
-    logger.info("【演员数据准备】数据准备完毕，将返回翻译结果给主任务进行处理。")
+    logger.info("所有演员名翻译完毕，正在写回Emby数据库...")
     
     # --- 核心修改：返回两个关键的数据结构，而不是执行写回 ---
     return translation_map, name_to_persons_map
