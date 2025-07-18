@@ -108,7 +108,7 @@ class ActorDBManager:
                 # ▲▲▲ 这样可以确保 17401 和 '17401' 都变成 '17401'，从而被集合正确去重 ▲▲▲
                 
                 if len(all_values_for_key) > 1:
-                    logger.error(
+                    logger.trace(
                         f"数据合并冲突！演员 '{data_to_process.get('name')}' 的 '{key}' 存在多个不同的值: {list(all_values_for_key)}。已中止操作。"
                     )
                     return -1
