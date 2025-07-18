@@ -1,6 +1,5 @@
 # douban.py
 
-import sqlite3
 import os
 import requests # type: ignore
 from typing import Optional, Dict, Any, List
@@ -24,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 class DoubanApi:
     _session: Optional[requests.Session] = None
-    _db_path: Optional[str] = None
     _session_lock = threading.Lock()
     # --- ✨ 新增的冷却相关属性 ✨ ---
     _cooldown_seconds: float = 1.5  # 默认冷却时间（秒），可以设置一个安全值
@@ -51,18 +49,14 @@ class DoubanApi:
     _default_timeout = 15 # 稍微增加超时
     
 
-    def __init__(self, db_path: Optional[str] = None, cooldown_seconds: Optional[float] = None, user_cookie: Optional[str] = None):
+    def __init__(self, cooldown_seconds: Optional[float] = None, user_cookie: Optional[str] = None):
+        # 完全移除了和 db_path 相关的逻辑
         if DoubanApi._session is None:
             with DoubanApi._session_lock:
                 if DoubanApi._session is None:
                     DoubanApi._session = requests.Session()
                     logger.trace("DoubanApi requests.Session 已初始化。")
-        if db_path:
-            DoubanApi._db_path = db_path
-            logger.trace(f"DoubanApi 将使用数据库路径进行缓存: {DoubanApi._db_path}")
-        elif not DoubanApi._db_path:
-            logger.warning("DoubanApi 初始化：未提供数据库路径 (db_path)，翻译缓存功能将不可用或受限。")
-        # 如果外部传入了冷却时间，则使用它覆盖默认值
+        
         if cooldown_seconds is not None and cooldown_seconds > 0:
             DoubanApi._cooldown_seconds = cooldown_seconds
             logger.info(f"豆瓣Api 已设置请求冷却时间为: {DoubanApi._cooldown_seconds} 秒。")
@@ -83,89 +77,6 @@ class DoubanApi:
             
             # 无论是否等待，都更新最后请求时间为当前时间
             cls._last_request_time = time.time()
-
-    @classmethod
-    def _get_translation_from_db(cls, text: str, by_translated_text: bool = False, cursor: Optional[sqlite3.Cursor] = None) -> Optional[Dict[str, Any]]:
-        """
-        从数据库获取翻译缓存。
-        :param text: 要查询的文本 (可以是原文或译文)。
-        :param by_translated_text: 如果为 True，则通过译文反查原文。
-        :param cursor: (可选) 使用外部提供的数据库游标，避免重复开关连接。
-        :return: 包含原文、译文和引擎的字典，或 None。
-        """
-        conn_was_provided = cursor is not None
-        internal_conn: Optional[sqlite3.Connection] = None
-
-        if not conn_was_provided and not cls._db_path:
-            logger.warning("DoubanApi._get_translation_from_db: DB path not set, cannot get cache.")
-            return None
-
-        try:
-            if not cursor:
-                internal_conn = sqlite3.connect(cls._db_path, timeout=10.0)
-                internal_conn.row_factory = sqlite3.Row
-                cursor = internal_conn.cursor()
-
-            # 根据查询模式选择不同的SQL语句
-            if by_translated_text:
-                # 通过译文反查
-                sql = "SELECT original_text, translated_text, engine_used FROM translation_cache WHERE translated_text = ?"
-            else:
-                # 默认通过原文查询
-                sql = "SELECT original_text, translated_text, engine_used FROM translation_cache WHERE original_text = ?"
-            
-            cursor.execute(sql, (text,))
-            row = cursor.fetchone()
-            
-            # 如果是内部创建的连接，在这里就关闭它
-            if not conn_was_provided and internal_conn:
-                internal_conn.close()
-
-            return dict(row) if row else None
-
-        except Exception as e:
-            logger.error(f"DB读取翻译缓存失败 for '{text}' (by_translated: {by_translated_text}): {e}", exc_info=True)
-            # 如果出错，也确保关闭内部连接
-            if not conn_was_provided and internal_conn:
-                try: internal_conn.close()
-                except Exception: pass
-            return None
-
-    @classmethod
-    def _save_translation_to_db(cls, original_text: str, translated_text: Optional[str], 
-                                engine_used: Optional[str], cursor: Optional[sqlite3.Cursor] = None): # 添加 cursor 参数
-        
-        conn_was_provided = cursor is not None # 标记是否使用了外部游标
-        internal_conn = None
-
-        try:
-            if not cursor: # 如果没有提供游标，则自己管理连接
-                if not cls._db_path: 
-                    logger.warning("DoubanApi._save_translation_to_db: DB path not set, cannot save cache.")
-                    return
-                internal_conn = sqlite3.connect(cls._db_path, timeout=10.0)
-                cursor = internal_conn.cursor()
-            
-            # cursor 现在肯定不是 None
-            cursor.execute(
-                "REPLACE INTO translation_cache (original_text, translated_text, engine_used, last_updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
-                (original_text, translated_text, engine_used)
-            )
-            
-            if not conn_was_provided and internal_conn: # 如果是自己创建的连接，则自己提交
-                internal_conn.commit()
-            
-            logger.debug(f"翻译缓存存DB: '{original_text}' -> '{translated_text}' (引擎: {engine_used}) (Conn provided: {conn_was_provided})")
-
-        except Exception as e:
-            logger.error(f"DB保存翻译缓存失败 for '{original_text}': {e}", exc_info=True)
-            if not conn_was_provided and internal_conn: # 如果是自己创建的连接且出错，尝试回滚
-                try: internal_conn.rollback()
-                except Exception as rb_e: logger.error(f"DoubanApi: 翻译缓存保存回滚失败: {rb_e}")
-        finally:
-            if not conn_was_provided and internal_conn: # 如果是自己创建的连接，则自己关闭
-                try: internal_conn.close()
-                except Exception as cl_e: logger.error(f"DoubanApi: 关闭内部翻译缓存DB连接失败: {cl_e}")
 
     @classmethod
     def _ensure_session(cls):
@@ -492,27 +403,18 @@ class DoubanApi:
         return details
 
 if __name__ == '__main__':
-    # (测试代码与之前版本类似，确保 TEST_DB_PATH 和表结构正确)
-    TEST_DB_PATH = "test_douban_api_cache.sqlite"
+    # 测试代码现在不再需要创建数据库文件
     try:
-        if os.path.exists(TEST_DB_PATH): os.remove(TEST_DB_PATH)
-        conn_test = sqlite3.connect(TEST_DB_PATH); cursor_test = conn_test.cursor()
-        cursor_test.execute("CREATE TABLE IF NOT EXISTS translation_cache (original_text TEXT PRIMARY KEY, translated_text TEXT, engine_used TEXT, last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-        conn_test.commit(); conn_test.close(); logger.info(f"测试数据库 '{TEST_DB_PATH}' 已创建。")
-
-        api = DoubanApi(db_path=TEST_DB_PATH)
-        # 测试1: 缓存
-        api._save_translation_to_db("Test", "测试", "manual")
-        cached = api._get_translation_from_db("Test")
-        logger.info(f"缓存测试: {cached}")
-        # 测试2: 搜索 (需要网络)
+        # 不再需要 db_path
+        api = DoubanApi(cooldown_seconds=2.0)
+        
+        # 测试API调用 (需要网络)
         # search_res = api.search("你好，李焕英")
         # logger.info(f"搜索结果: {json.dumps(search_res, indent=2, ensure_ascii=False)}")
-        # 测试3: 获取演员 (需要网络，并替换为有效的电影名/ID)
-        # acting_res = api.get_acting(name="你好，李焕英", mtype="movie", year="2021")
-        # logger.info(f"演职员结果: {json.dumps(acting_res, indent=2, ensure_ascii=False)}")
-    except Exception as e: logger.error(f"DoubanApi 测试异常: {e}", exc_info=True)
+        
+    except Exception as e:
+        logger.error(f"DoubanApi 测试异常: {e}", exc_info=True)
     finally:
-        if 'api' in locals() and api: api.close()
-        # if os.path.exists(TEST_DB_PATH): os.remove(TEST_DB_PATH) # 测试后清理
+        if 'api' in locals() and api:
+            api.close()
         logger.info("--- DoubanApi 测试结束 ---")

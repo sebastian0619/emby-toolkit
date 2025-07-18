@@ -35,10 +35,6 @@ except ImportError:
         def __init__(self, *args, **kwargs): pass
         def get_acting(self, *args, **kwargs): return {}
         def close(self): pass
-        @staticmethod
-        def _get_translation_from_db(*args, **kwargs): return None
-        @staticmethod
-        def _save_translation_to_db(*args, **kwargs): pass
 
 def _read_local_json(file_path: str) -> Optional[Dict[str, Any]]:
     if not os.path.exists(file_path):
@@ -83,7 +79,6 @@ class MediaProcessor:
 
                 # 4. 将所有参数传递给 DoubanApi 的构造函数
                 self.douban_api = DoubanApi(
-                    db_path=self.db_path,
                     cooldown_seconds=douban_cooldown,
                     user_cookie=douban_cookie  # <--- 将 cookie 传进去
                 )
@@ -604,7 +599,7 @@ class MediaProcessor:
                 if translation_mode == 'fast':
                     logger.debug("[翻译模式] 正在检查全局翻译缓存...")
                     for text in texts_to_collect:
-                        cached_entry = DoubanApi._get_translation_from_db(text, cursor=cursor)
+                        cached_entry = self.actor_db_manager.get_translation_from_db(cursor=cursor, text=text)
                         if cached_entry:
                             translation_cache[text] = cached_entry.get("translated_text")
                         else:
@@ -630,7 +625,7 @@ class MediaProcessor:
                         translation_cache.update(translation_map_from_api)
                         if translation_mode == 'fast':
                             for original, translated in translation_map_from_api.items():
-                                DoubanApi._save_translation_to_db(original, translated, self.ai_translator.provider, cursor=cursor)
+                                self.actor_db_manager.save_translation_to_db(original, translated, self.ai_translator.provider, cursor=cursor)
                 
                 # 无论API是否被调用，只要这个流程没出错，就认为AI部分成功了
                 # （即使只是成功使用了缓存或确认了无需翻译）
@@ -695,6 +690,7 @@ class MediaProcessor:
                 cleaned_name = actor.get('name')
                 actor['name'] = actor_utils.translate_actor_field(
                     text=cleaned_name,
+                    db_manager=self.actor_db_manager,
                     db_cursor=cursor,
                     translator_engines=translator_engines_order,
                     # ★★★ 核心修正：在降级路径中，明确禁用AI ★★★
@@ -708,6 +704,7 @@ class MediaProcessor:
                     actor['character'] = actor_utils.translate_actor_field(
                         text=cleaned_character,
                         db_cursor=cursor,
+                        db_manager=self.actor_db_manager,
                         translator_engines=translator_engines_order,
                         # ★★★ 核心修正：同样在此处禁用AI ★★★
                         ai_translator=None,
@@ -1184,7 +1181,7 @@ class MediaProcessor:
                     logger.debug("[翻译模式] 正在检查全局翻译缓存...")
                     for text in texts_to_collect:
                         # 翻译模式只读写全局缓存
-                        cached_entry = DoubanApi._get_translation_from_db(text, cursor=cursor)
+                        cached_entry = self.actor_db_manager.get_translation_from_db(cursor=cursor, text=text)
                         if cached_entry:
                             translation_cache[text] = cached_entry.get("translated_text")
                         else:
@@ -1209,8 +1206,11 @@ class MediaProcessor:
                             # 只有在翻译模式下，才将结果写入全局缓存
                             if translation_mode == 'fast':
                                 for original, translated in translation_map_from_api.items():
-                                    DoubanApi._save_translation_to_db(
-                                        original, translated, self.ai_translator.provider, cursor=cursor
+                                    self.actor_db_manager.save_translation_to_db(
+                                        cursor=cursor,
+                                        original_text=original, 
+                                        translated_text=translated, 
+                                        engine_used=self.ai_translator.provider
                                     )
                             
                             ai_translation_succeeded = True
@@ -1249,41 +1249,45 @@ class MediaProcessor:
                 logger.info("手动编辑-翻译：AI未启用，使用传统引擎逐个翻译。")
                 
             try:
-                # 1. 使用 with 语句和中央函数，将所有数据库操作包裹起来
                 with get_central_db_connection(self.db_path) as conn:
                     cursor = conn.cursor()
 
-                    # 2. 您所有的翻译业务逻辑，原封不动地放在这里
                     for i, actor in enumerate(translated_cast):
-                        actor_name_for_log = actor.get('name', '未知演员')
+                        # 【【【 修复点 3：使用正确的参数调用 translate_actor_field 】】】
                         
                         # 翻译演员名
                         name_to_translate = actor.get('name', '').strip()
                         if name_to_translate and not utils.contains_chinese(name_to_translate):
-                            translated_name = actor_utils.translate_actor_field(name_to_translate, "演员名(一键翻译)", name_to_translate, cursor)
+                            translated_name = actor_utils.translate_actor_field(
+                                text=name_to_translate,
+                                db_manager=self.actor_db_manager,
+                                db_cursor=cursor,
+                                ai_translator=self.ai_translator,
+                                translator_engines=self.translator_engines,
+                                ai_enabled=self.ai_enabled
+                            )
                             if translated_name and translated_name != name_to_translate:
                                 translated_cast[i]['name'] = translated_name
-                                actor_name_for_log = translated_name
 
                         # 翻译角色名
                         role_to_translate = actor.get('role', '').strip()
                         if role_to_translate and not utils.contains_chinese(role_to_translate):
-                            translated_role = actor_utils.translate_actor_field(role_to_translate, "角色名(一键翻译)", actor_name_for_log, cursor)
+                            translated_role = actor_utils.translate_actor_field(
+                                text=role_to_translate,
+                                db_manager=self.actor_db_manager,
+                                db_cursor=cursor,
+                                ai_translator=self.ai_translator,
+                                translator_engines=self.translator_engines,
+                                ai_enabled=self.ai_enabled
+                            )
                             if translated_role and translated_role != role_to_translate:
                                 translated_cast[i]['role'] = translated_role
 
                         if translated_cast[i].get('name') != actor.get('name') or translated_cast[i].get('role') != actor.get('role'):
                             translated_cast[i]['matchStatus'] = '已翻译'
-                    
-                    # 3. with 语句块在这里结束。
-                    #    因为 translate_actor_field 内部可能会写入翻译缓存，
-                    #    所以 with 语句在退出时会自动 commit 这些更改。
-                    #    我们不再需要任何手动的 conn.commit(), conn.rollback(), conn.close()。
-
+            
             except Exception as e:
-                # 4. 这里的 except 块现在能捕获所有错误，包括连接数据库时的错误
                 logger.error(f"一键翻译（降级模式）时发生错误: {e}", exc_info=True)
-                # 注意：这里不需要返回 translated_cast，因为这个函数是直接修改列表内容的
 
         logger.info("手动编辑-翻译完成。")
         return translated_cast
@@ -1341,7 +1345,7 @@ class MediaProcessor:
                                 try:
                                     # ★★★ 核心修改：调用您现有的函数并开启反查模式 ★★★
                                     # 使用“修改前的中文名”（例如 "杰克萨利"）进行反向查找
-                                    cache_entry = DoubanApi._get_translation_from_db(
+                                    cache_entry = self.actor_db_manager.get_translation_from_db(
                                         text=cleaned_original_role,
                                         by_translated_text=True,  # <--- 关键！开启反查模式
                                         cursor=cursor
@@ -1353,7 +1357,7 @@ class MediaProcessor:
                                         original_text_key = cache_entry['original_text']
 
                                         # 现在，我们用正确的 Key ("Jake Sully") 和新的 Value ("杰克") 去更新缓存
-                                        DoubanApi._save_translation_to_db(
+                                        self.actor_db_manager.save_translation_to_db(
                                             original_text=original_text_key,
                                             translated_text=cleaned_new_role,
                                             engine_used="manual",

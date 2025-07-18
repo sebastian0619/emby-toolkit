@@ -30,6 +30,41 @@ class ActorDBManager:
         self.db_path = db_path
         logger.trace(f"ActorDBManager 初始化，使用数据库: {self.db_path}")
     
+    def get_translation_from_db(self, cursor: sqlite3.Cursor, text: str, by_translated_text: bool = False) -> Optional[Dict[str, Any]]:
+        """
+        【已迁移】从数据库获取翻译缓存。
+        :param cursor: 必须提供外部数据库游标。
+        :param text: 要查询的文本 (可以是原文或译文)。
+        :param by_translated_text: 如果为 True，则通过译文反查原文。
+        :return: 包含原文、译文和引擎的字典，或 None。
+        """
+        try:
+            # 根据查询模式选择不同的SQL语句
+            if by_translated_text:
+                sql = "SELECT original_text, translated_text, engine_used FROM translation_cache WHERE translated_text = ?"
+            else:
+                sql = "SELECT original_text, translated_text, engine_used FROM translation_cache WHERE original_text = ?"
+            
+            cursor.execute(sql, (text,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"DB读取翻译缓存失败 for '{text}' (by_translated: {by_translated_text}): {e}", exc_info=True)
+            return None
+
+    def save_translation_to_db(self, cursor: sqlite3.Cursor, original_text: str, translated_text: Optional[str], engine_used: Optional[str]):
+        """
+        【已迁移】将翻译结果保存到数据库。
+        :param cursor: 必须提供外部数据库游标。
+        """
+        try:
+            cursor.execute(
+                "REPLACE INTO translation_cache (original_text, translated_text, engine_used, last_updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                (original_text, translated_text, engine_used)
+            )
+            logger.trace(f"翻译缓存存DB: '{original_text}' -> '{translated_text}' (引擎: {engine_used})")
+        except Exception as e:
+            logger.error(f"DB保存翻译缓存失败 for '{original_text}': {e}", exc_info=True)
 
     def find_person_by_any_id(self, cursor: sqlite3.Cursor, **kwargs) -> Optional[sqlite3.Row]:
         search_criteria = [
@@ -335,7 +370,7 @@ def evaluate_cast_processing_quality(
     return final_score_rounded
 
 
-def translate_actor_field(text: Optional[str], db_cursor: sqlite3.Cursor, ai_translator: Optional[AITranslator], translator_engines: List[str], ai_enabled: bool) -> Optional[str]:
+def translate_actor_field(text: Optional[str], db_manager: ActorDBManager, db_cursor: sqlite3.Cursor, ai_translator: Optional[AITranslator], translator_engines: List[str], ai_enabled: bool) -> Optional[str]:
     """翻译演员的特定字段，智能选择AI或传统翻译引擎。"""
     # 1. 前置检查：如果文本为空、是纯空格，或已包含中文，则直接返回原文
     if not text or not text.strip() or utils.contains_chinese(text):
@@ -348,7 +383,7 @@ def translate_actor_field(text: Optional[str], db_cursor: sqlite3.Cursor, ai_tra
         return text
 
     # 3. 核心修复：优先从数据库读取缓存，并处理所有情况
-    cached_entry = DoubanApi._get_translation_from_db(text_stripped, cursor=db_cursor)
+    cached_entry = db_manager.get_translation_from_db(db_cursor, text_stripped)
     if cached_entry:
         # 情况 A: 缓存中有成功的翻译结果
         if cached_entry.get("translated_text"):
@@ -400,12 +435,12 @@ def translate_actor_field(text: Optional[str], db_cursor: sqlite3.Cursor, ai_tra
     if final_translation and final_translation.strip() and final_translation.strip().lower() != text_stripped.lower():
         # 翻译成功，存入缓存并返回结果
         logger.info(f"在线翻译成功: '{text_stripped}' -> '{final_translation}' (使用引擎: {final_engine})")
-        DoubanApi._save_translation_to_db(text_stripped, final_translation, final_engine, cursor=db_cursor)
+        db_manager.save_translation_to_db(db_cursor, text_stripped, final_translation, final_engine)
         return final_translation
     else:
         # 翻译失败或返回原文，将失败状态存入缓存，并返回原文
         logger.warning(f"在线翻译未能翻译 '{text_stripped}' 或返回了原文 (使用引擎: {final_engine})。")
-        DoubanApi._save_translation_to_db(text_stripped, None, f"failed_or_same_via_{final_engine}", cursor=db_cursor)
+        db_manager.save_translation_to_db(db_cursor, text_stripped, None, f"failed_or_same_via_{final_engine}")
         return text
 # ✨✨✨从豆瓣API获取指定媒体的演员原始数据列表✨✨✨
 def find_douban_cast(douban_api: DoubanApi, media_info: Dict[str, Any]) -> List[Dict[str, Any]]:
