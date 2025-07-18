@@ -832,17 +832,15 @@ class MediaProcessor:
                 base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
                 image_override_dir = os.path.join(base_override_dir, "images")
                 os.makedirs(base_override_dir, exist_ok=True)
-                os.makedirs(image_override_dir, exist_ok=True)
+                
                 base_json_filename = "all.json" if item_type == "Movie" else "series.json"
                 
                 # 1. 读取神医插件生成的原始JSON文件
                 json_file_path = os.path.join(base_cache_dir, base_json_filename)
-                if not os.path.exists(json_file_path):
-                    logger.warning(f"【JSON轨道】跳过，因为神医插件的缓存文件不存在: {json_file_path}")
-                    return False
-                
                 logger.info(f"读取神医插件生成的缓存文件: {json_file_path}")
                 base_json_data_original = _read_local_json(json_file_path)
+                
+                # 如果文件存在但无法读取或解析（例如，内容为空或格式错误），则抛出异常由外层捕获
                 if not base_json_data_original:
                     raise ValueError(f"无法读取或解析JSON文件: {json_file_path}")
 
@@ -950,6 +948,7 @@ class MediaProcessor:
                 # 【同步图片】
                 if self.sync_images_enabled:
                     if self.is_stop_requested(): raise InterruptedError("任务被中止")
+                    os.makedirs(image_override_dir, exist_ok=True)
                     logger.info(f"{log_prefix} 开始为 '{item_name_for_log}' 下载图片...")
                     image_map = {"Primary": "poster.jpg", "Backdrop": "fanart.jpg", "Logo": "clearlogo.png"}
                     if item_type == "Movie": image_map["Thumb"] = "landscape.jpg"
