@@ -197,6 +197,7 @@ class LogDBManager:
         except sqlite3.Error as e:
             logger.error(f"写入 failed_log 失败 (Item ID: {item_id}): {e}")
             raise
+    
 
 # if __name__ == '__main__':
 #     # 测试新的 are_names_match
