@@ -450,11 +450,11 @@ class MediaProcessor:
                             if tmdb_id_from_map not in final_cast_map:
                                 logger.info(f"  匹配成功 (通过 IMDb映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
                                 # ★★★ 查询预先缓存的元数据 ★★★
-                                cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_find, cursor) or {}
+                                cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_map, cursor) or {}
 
                                 # ★★★ 使用缓存数据或默认值来创建 ★★★
                                 new_actor_entry = {
-                                    "id": tmdb_id_from_find,
+                                    "id": tmdb_id_from_map,
                                     "name": d_actor.get("Name"),
                                     "original_name": cached_metadata.get("original_name") or d_actor.get("OriginalName"),
                                     "character": d_actor.get("Role"),
