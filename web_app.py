@@ -6,6 +6,7 @@ import inspect
 import sqlite3
 import shutil
 import gzip
+from datetime import datetime, timedelta
 from actor_sync_handler import UnifiedSyncHandler
 import emby_handler
 import utils
@@ -127,6 +128,19 @@ CONFIG_DEFINITION = {
     constants.CONFIG_OPTION_AUTH_ENABLED: (constants.CONFIG_SECTION_AUTH, 'boolean', False),
     constants.CONFIG_OPTION_AUTH_USERNAME: (constants.CONFIG_SECTION_AUTH, 'string', constants.DEFAULT_USERNAME),
     constants.CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX: (constants.CONFIG_SECTION_ACTOR, 'boolean', False),
+
+    # ★★★日志轮转配置 ★★★
+    constants.CONFIG_OPTION_LOG_ROTATION_SIZE_MB: (
+        constants.CONFIG_SECTION_LOGGING, 
+        'int', 
+        constants.DEFAULT_LOG_ROTATION_SIZE_MB
+    ),
+    constants.CONFIG_OPTION_LOG_ROTATION_BACKUPS: (
+        constants.CONFIG_SECTION_LOGGING, 
+        'int', 
+        constants.DEFAULT_LOG_ROTATION_BACKUPS
+    ),
+
 }
 if APP_DATA_DIR_ENV:
     # 如果在 Docker 中，并且设置了 APP_DATA_DIR 环境变量 (例如设置为 "/config")
@@ -161,11 +175,7 @@ CONFIG_FILE_PATH = os.path.join(PERSISTENT_DATA_PATH, CONFIG_FILE_NAME)
 
 DB_NAME = getattr(constants, 'DB_NAME', "emby_actor_processor.sqlite")
 DB_PATH = os.path.join(PERSISTENT_DATA_PATH, DB_NAME)
-# 1. 定义一个专门的日志目录路径
-LOG_DIRECTORY = os.path.join(PERSISTENT_DATA_PATH, 'logs')
-# 2. 将这个新路径传递给日志设置函数
-# (logger_setup.py 里的 add_file_handler 会自动创建这个 'logs' 目录)
-add_file_handler(LOG_DIRECTORY)
+
 #过滤底层日志
 logging.getLogger("requests").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
@@ -174,12 +184,6 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 logger.info(f"配置文件路径 (CONFIG_FILE_PATH) 设置为: {CONFIG_FILE_PATH}")
 logger.info(f"数据库文件路径 (DB_PATH) 设置为: {DB_PATH}")
-logging.basicConfig(
-    level=logging.INFO,
-    # ✨ 关键在这里：设置你想要的格式 ✨
-    format='[%(asctime)s] %(message)s',
-    datefmt='%H:%M:%S'
-)
 
 # --- 全局变量 ---
 media_processor_instance: Optional[MediaProcessor] = None
@@ -944,19 +948,15 @@ def setup_scheduled_tasks():
     else:
         logger.info("定时演员名翻译查漏补缺任务未启用。")
 
-    # --- 启动调度器逻辑保持不变 ---
-    scan_enabled = config.get("schedule_enabled", False)
-    sync_enabled = config.get("schedule_sync_map_enabled", False)
-    watchlist_enabled = config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False)
-    actor_cleanup_enabled = config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED, True)
 
-    # 在 if 条件中加入 actor_cleanup_enabled
+    # --- 启动调度器逻辑 ---
+    # ... (这里的逻辑也需要更新) ...
     if not scheduler.running and (
         config.get(constants.CONFIG_OPTION_SCHEDULE_ENABLED, False) or
         config.get(constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_ENABLED, False) or
         config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False) or
         config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED, False) or
-        actor_cleanup_enabled # ✨ 添加我们的新任务标志
+        config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED, True) 
     ):
         try:
             scheduler.start()
@@ -1454,6 +1454,108 @@ def task_full_image_sync(processor: MediaProcessor):
     """
     # 直接把回调函数传进去
     processor.sync_all_images(update_status_callback=update_status_from_thread)
+# --- 日志管理函数 ---
+def task_log_cleanup_and_archive(_=None):
+    """
+    一个后台任务，用于归档热日志并清理过期的归档文件。
+    """
+    logger.info("日志清理与归档任务开始...")
+
+    # --- 1. 从配置中获取所有需要的参数 ---
+    
+    # ▼▼▼ [ 核心修改 ] 使用标准的字典操作来获取配置 ▼▼▼
+
+    # 获取“归档是否启用”的配置
+    archive_enabled_raw = APP_CONFIG.get(constants.CONFIG_OPTION_LOG_ARCHIVE_ENABLED, "True")
+    archive_enabled = str(archive_enabled_raw).lower() in ('true', '1', 't', 'y', 'yes')
+
+    if not archive_enabled:
+        logger.info("日志归档功能未启用，任务跳过。")
+        return
+
+    # 获取“保留天数”的配置
+    retention_days_raw = APP_CONFIG.get(constants.CONFIG_OPTION_LOG_ARCHIVE_RETENTION_DAYS, constants.DEFAULT_LOG_ARCHIVE_RETENTION_DAYS)
+    try:
+        retention_days = int(retention_days_raw)
+    except (ValueError, TypeError):
+        retention_days = constants.DEFAULT_LOG_ARCHIVE_RETENTION_DAYS
+        logger.warning(f"配置中的保留天数 '{retention_days_raw}' 无效，将使用默认值: {retention_days} 天。")
+
+    # 获取“备份数量”的配置
+    backup_count_raw = APP_CONFIG.get(constants.CONFIG_OPTION_LOG_ROTATION_BACKUPS, constants.DEFAULT_LOG_ROTATION_BACKUPS)
+    try:
+        backup_count = int(backup_count_raw)
+    except (ValueError, TypeError):
+        backup_count = constants.DEFAULT_LOG_ROTATION_BACKUPS
+        logger.warning(f"配置中的备份数量 '{backup_count_raw}' 无效，将使用默认值: {backup_count}。")
+    
+    # ▼▼▼ [ 核心修改 ] 直接使用在文件顶部定义的全局变量 LOG_DIRECTORY ▼▼▼
+    if not LOG_DIRECTORY or not os.path.isdir(LOG_DIRECTORY):
+        logger.error(f"日志目录 '{LOG_DIRECTORY}' 无效或不存在，任务终止。")
+        return
+
+    log_dir = LOG_DIRECTORY # 直接使用全局变量
+    archive_dir = os.path.join(log_dir, 'archive')
+
+    # 确保归档目录存在
+    os.makedirs(archive_dir, exist_ok=True)
+
+    # --- 2. 归档过程 ---
+    # 找到最老的那个热日志文件，例如 app.log.10
+    oldest_hot_log_name = f"app.log.{backup_count}"
+    oldest_hot_log_path = os.path.join(log_dir, oldest_hot_log_name)
+
+    if os.path.exists(oldest_hot_log_path):
+        try:
+            # 使用文件的最后修改时间作为归档日期，这比用当前日期更准确
+            mtime = os.path.getmtime(oldest_hot_log_path)
+            archive_date = datetime.fromtimestamp(mtime)
+            archive_filename_base = f"app.log.{archive_date.strftime('%Y-%m-%d_%H-%M-%S')}"
+            archive_filepath_gz = os.path.join(archive_dir, f"{archive_filename_base}.gz")
+
+            # 使用 gzip 直接读取原文件并写入压缩文件，然后删除原文件
+            with open(oldest_hot_log_path, 'rb') as f_in:
+                with gzip.open(archive_filepath_gz, 'wb') as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+            
+            os.remove(oldest_hot_log_path)
+            logger.info(f"成功归档日志: {oldest_hot_log_name} -> {os.path.basename(archive_filepath_gz)}")
+
+        except Exception as e:
+            logger.error(f"归档日志文件 '{oldest_hot_log_name}' 时失败: {e}", exc_info=True)
+    else:
+        logger.debug(f"未找到最旧的热日志 '{oldest_hot_log_name}'，无需归档。")
+
+    # --- 3. 清理过程 ---
+    try:
+        cutoff_date = datetime.now() - timedelta(days=retention_days)
+        files_deleted_count = 0
+        for filename in os.listdir(archive_dir):
+            if filename.endswith(".gz"):
+                file_path = os.path.join(archive_dir, filename)
+                try:
+                    # 从文件名中解析日期
+                    # 文件名格式: app.log.YYYY-MM-DD_HH-MM-SS.gz
+                    date_str = filename.split('.')[2].split('_')[0]
+                    file_date = datetime.strptime(date_str, '%Y-%m-%d')
+
+                    if file_date < cutoff_date:
+                        os.remove(file_path)
+                        files_deleted_count += 1
+                        logger.debug(f"删除过期归档日志: {filename}")
+                except (IndexError, ValueError):
+                    logger.warning(f"无法从文件名 '{filename}' 中解析日期，跳过清理。")
+                    continue
+        
+        if files_deleted_count > 0:
+            logger.info(f"清理完成，共删除 {files_deleted_count} 个超过 {retention_days} 天的归档日志。")
+        else:
+            logger.info("没有过期的归档日志需要清理。")
+
+    except Exception as e:
+        logger.error(f"清理过期归档日志时发生错误: {e}", exc_info=True)
+    
+    logger.info("日志清理与归档任务结束。")
 # --- 立即执行任务注册表 ---
 TASK_REGISTRY = {
     'full-scan': (task_process_full_library, "立即执行全量扫描"),
@@ -2970,27 +3072,57 @@ def serve(path):
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}")
     
-    # 1. 加载配置到全局变量
+    # 1. ★★★ 首先，加载配置，让 APP_CONFIG 获得真实的值 ★★★
     load_config()
     
-    # 2. 初始化数据库
+    # 2. ★★★ 然后，再执行依赖于配置的日志设置 ★★★
+    # --- 日志文件处理器配置 ---
+    LOG_DIRECTORY = os.path.join(PERSISTENT_DATA_PATH, 'logs')
+
+    # 从现在已经有值的 APP_CONFIG 中获取配置
+    raw_size = APP_CONFIG.get(
+        constants.CONFIG_OPTION_LOG_ROTATION_SIZE_MB, 
+        constants.DEFAULT_LOG_ROTATION_SIZE_MB
+    )
+    try:
+        log_size = int(raw_size)
+    except (ValueError, TypeError):
+        log_size = constants.DEFAULT_LOG_ROTATION_SIZE_MB
+
+    raw_backups = APP_CONFIG.get(
+        constants.CONFIG_OPTION_LOG_ROTATION_BACKUPS, 
+        constants.DEFAULT_LOG_ROTATION_BACKUPS
+    )
+    try:
+        log_backups = int(raw_backups)
+    except (ValueError, TypeError):
+        log_backups = constants.DEFAULT_LOG_ROTATION_BACKUPS
+
+    # 将正确的配置注入日志系统
+    add_file_handler(
+        log_directory=LOG_DIRECTORY,
+        log_size_mb=log_size,
+        log_backups=log_backups
+    )
+    
+    # 3. 初始化数据库
     init_db()
     
-    # 3. 初始化认证系统 (它会依赖全局配置)
+    # 4. 初始化认证系统 (它会依赖全局配置)
     init_auth()
 
-    # 4. ★★★ 创建唯一的 MediaProcessor 实例 ★★★
+    # 5. 创建唯一的 MediaProcessor 实例
     initialize_processors()
     
-    # 5. 启动后台任务工人
+    # 6. 启动后台任务工人
     start_task_worker_if_not_running()
     
-    # 6. 设置定时任务 (它会依赖全局配置和实例)
+    # 7. 设置定时任务 (它会依赖全局配置和实例)
     if not scheduler.running:
         scheduler.start()
     setup_scheduled_tasks()
     
-    # 7. 运行 Flask 应用
+    # 8. 运行 Flask 应用
     app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=True, use_reloader=False)
 
 # # --- 主程序入口结束 ---

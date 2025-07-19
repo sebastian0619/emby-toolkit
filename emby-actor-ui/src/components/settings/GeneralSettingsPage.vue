@@ -64,7 +64,7 @@
               <template #feedback>开启后，处理媒体时会下载海报、横幅图等图片文件。</template>
             </n-form-item>
           </n-card>
-
+          
           <!-- 卡片: 数据源与 API -->
           <n-card title="数据源与 API" size="small" class="glass-section">
             <n-form-item label="本地数据源路径" path="local_data_path" required>
@@ -192,6 +192,31 @@
                 />
               </n-form-item>
             </div>
+          </n-card>
+          <n-card title="日志配置（更改后重启生效）" size="small" class="glass-section">
+            <n-form-item-grid-item label="单个日志文件大小 (MB)" path="log_rotation_size_mb">
+              <n-input-number 
+                v-model:value="configModel.log_rotation_size_mb" 
+                :min="1" 
+                :step="1" 
+                placeholder="例如: 5"
+              />
+              <template #feedback>
+                <n-text depth="3" style="font-size:0.8em;">设置 app.log 文件的最大体积，超限后会轮转。</n-text>
+              </template>
+            </n-form-item-grid-item>
+
+            <n-form-item-grid-item label="日志备份数量" path="log_rotation_backup_count">
+              <n-input-number 
+                v-model:value="configModel.log_rotation_backup_count" 
+                :min="1" 
+                :step="1" 
+                placeholder="例如: 10"
+              />
+              <template #feedback>
+                <n-text depth="3" style="font-size:0.8em;">保留最近的日志文件数量 (app.log.1, app.log.2 ...)。</n-text>
+              </template>
+            </n-form-item-grid-item>
           </n-card>
         </n-space>
       </n-gi>

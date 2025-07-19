@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "2.8.5.4"  # 更新版本号
+APP_VERSION = "2.8.5.5"  # 更新版本号
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 CONFIG_FILE_NAME = "config.ini" # 主配置文件名
@@ -107,6 +107,13 @@ DEFAULT_ENRICH_ALIASES_SYNC_INTERVAL_DAYS = 7 # 默认冷却7天
 CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED = "schedule_actor_cleanup_enabled" # 是否启用演员名翻译查漏补缺任务
 CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_CRON = "schedule_actor_cleanup_cron"       # 演员名翻译查漏补缺的CRON表达式
 DEFAULT_SCHEDULE_ACTOR_CLEANUP_CRON = "0 4 * * *" # 默认每天凌晨4点执行
+
+# --- 日志配置 ---
+CONFIG_SECTION_LOGGING = "Logging"
+CONFIG_OPTION_LOG_ROTATION_SIZE_MB = "log_rotation_size_mb"
+CONFIG_OPTION_LOG_ROTATION_BACKUPS = "log_rotation_backup_count"
+DEFAULT_LOG_ROTATION_SIZE_MB = 5
+DEFAULT_LOG_ROTATION_BACKUPS = 10
 # ==============================================================================
 # ✨ 内部常量与映射 (Internal Constants & Mappings)
 # ==============================================================================

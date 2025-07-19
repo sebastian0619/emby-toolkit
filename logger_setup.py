@@ -8,8 +8,6 @@ from concurrent_log_handler import ConcurrentRotatingFileHandler
 
 # --- 定义常量 ---
 LOG_FILE_NAME = "app.log"
-LOG_FILE_MAX_SIZE_MB = 5
-LOG_FILE_BACKUP_COUNT = 10
 
 # ★★★ 新增部分 1: 定义并注册 TRACE 日志级别 ★★★
 # 1. 定义一个比 DEBUG (10) 更低的级别数值
@@ -100,9 +98,12 @@ httpx_logger.addFilter(DowngradeHttpx200Filter())
 # 它会把日志传递给根 logger (propagate=True 默认行为)，由根 logger 的 handler 处理。
 
 # --- 专门用于添加文件日志的函数 ---
-def add_file_handler(log_directory: str):
+def add_file_handler(log_directory: str, 
+                     log_size_mb: int = constants.DEFAULT_LOG_ROTATION_SIZE_MB, 
+                     log_backups: int = constants.DEFAULT_LOG_ROTATION_BACKUPS):
     """
     向根 logger 添加一个线程安全的轮转文件处理器。
+    配置值通过参数传入，而不是在此文件中导入配置管理器。
     """
     try:
         if not os.path.exists(log_directory):
@@ -115,11 +116,12 @@ def add_file_handler(log_directory: str):
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
 
+        # ▼▼▼ [ 核心修改 ] 直接使用传入的参数来初始化 Handler ▼▼▼
         file_handler = ConcurrentRotatingFileHandler(
             log_file_path,
             "a",
-            LOG_FILE_MAX_SIZE_MB * 1024 * 1024,
-            LOG_FILE_BACKUP_COUNT,
+            log_size_mb * 1024 * 1024, # 使用传入的参数
+            log_backups,               # 使用传入的参数
             encoding='utf-8',
             use_gzip=False
         )
@@ -128,7 +130,8 @@ def add_file_handler(log_directory: str):
         
         if not any(isinstance(h, ConcurrentRotatingFileHandler) for h in logger.handlers):
             logger.addHandler(file_handler)
-            logging.info(f"文件日志功能已成功配置。日志将写入到: {log_file_path}")
+            # 在日志中明确打印出当前生效的配置
+            logging.info(f"文件日志功能已配置。轮转策略: {log_size_mb}MB * {log_backups}个备份。日志路径: {log_file_path}")
         else:
             logging.warning("文件日志处理器已存在，本次不再重复添加。")
 
