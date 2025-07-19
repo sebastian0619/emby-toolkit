@@ -2879,25 +2879,19 @@ def search_logs_with_context():
     START_MARKER = re.compile(r"成功获取Emby演员 '(.+?)' \(ID: .*?\) 的详情")
     END_MARKER = re.compile(r"(✨✨✨处理完成|最终状态: 处理完成)")
 
+    # 从日志块首行提取时间
+    TIMESTAMP_REGEX = re.compile(r"^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})")
+
     found_blocks = []
     
     try:
-        # --- 文件获取和排序逻辑保持不变 ---
+        # 获取所有 app.log* 文件，无需预先排序
         all_files = os.listdir(LOG_DIRECTORY)
         log_files = [f for f in all_files if f.startswith('app.log')]
-        def sort_key(filename):
-            if filename == 'app.log': return -1
-            parts = filename.split('.')
-            if len(parts) > 2 and parts[-1] == 'gz' and parts[-2].isdigit():
-                return int(parts[-2])
-            return float('inf')
-        log_files.sort(key=sort_key)
 
-        # ★★★ 关键修复：重构日志遍历和块处理逻辑 ★★★
+        # ★★★ 逻辑变更：不再对文件进行排序，直接遍历 ★★★
         for filename in log_files:
             full_path = os.path.join(LOG_DIRECTORY, filename)
-            
-            # ✨ 我们不再需要在这里推断日期了
             
             in_block = False
             current_block = []
@@ -2913,6 +2907,8 @@ def search_logs_with_context():
                         is_start_marker = START_MARKER.search(line)
 
                         if is_start_marker:
+                            if in_block: # 如果上一个块没有正常结束，则丢弃
+                                pass
                             in_block = True
                             current_block = [line]
                             current_item_name = is_start_marker.group(1)
@@ -2926,31 +2922,34 @@ def search_logs_with_context():
                                 block_content = "\n".join(current_block)
                                 if query.lower() in block_content.lower():
                                     
-                                    # ✨✨✨ 【核心修改】直接从日志块的第一行提取日期 ✨✨✨
-                                    log_date_str = "Unknown Date" # 设置一个默认值
+                                    # ★★★ 核心修改：提取时间戳用于后续排序 ★★★
+                                    block_timestamp = "0000-00-00 00:00:00" # 设置一个默认值以防万一
                                     if current_block:
-                                        try:
-                                            # 日志格式为 "2025-07-16 19:13:48,683 - ..."
-                                            # 我们只需要按空格分割，取第一部分即可
-                                            log_date_str = current_block[0].split(' ')[0]
-                                        except IndexError:
-                                            # 如果某行格式异常，则使用默认值
-                                            pass
+                                        match = TIMESTAMP_REGEX.search(current_block[0])
+                                        if match:
+                                            block_timestamp = match.group(1)
 
                                     found_blocks.append({
                                         "file": filename,
-                                        "date": log_date_str, # 使用100%准确的日期
+                                        "timestamp": block_timestamp, # 存储提取到的时间戳
                                         "lines": current_block
                                     })
                                 
+                                # 重置状态机
                                 in_block = False
                                 current_block = []
                                 current_item_name = None
             except Exception as e:
                 logging.warning(f"API: 上下文搜索时无法读取文件 '{filename}': {e}")
         
-        # 排序和返回逻辑保持不变
-        found_blocks.sort(key=lambda x: (log_files.index(x['file']), x['lines'][0]))
+        # ★★★ 核心修改：在所有块收集完毕后，根据时间戳进行统一排序 ★★★
+        # 由于时间戳是 "YYYY-MM-DD HH:MM:SS" 格式，直接按字符串排序即可得到正确的时间顺序
+        found_blocks.sort(key=lambda x: x['timestamp'])
+        
+        # 为了保持API响应的简洁性，在返回前删除临时的 'timestamp' 键
+        for block in found_blocks:
+            del block['timestamp']
+
         return jsonify(found_blocks)
 
     except Exception as e:
