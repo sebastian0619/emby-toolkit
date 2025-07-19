@@ -2970,8 +2970,8 @@ def search_all_logs():
 @login_required
 def search_logs_with_context():
     """
-    在所有日志文件中定位包含关键词的完整“处理块”。
-    一个“处理块”由特定的开始和结束标记定义。
+    【最终修正版】在所有日志文件中定位包含关键词的完整“处理块”，
+    并根据块内的时间戳进行精确排序，同时保留日期信息。
     """
     query = request.args.get('q', '').strip()
     if not query:
@@ -2980,8 +2980,6 @@ def search_logs_with_context():
     # 正则表达式保持不变
     START_MARKER = re.compile(r"成功获取Emby演员 '(.+?)' \(ID: .*?\) 的详情")
     END_MARKER = re.compile(r"(✨✨✨处理完成|最终状态: 处理完成)")
-
-    # 从日志块首行提取时间
     TIMESTAMP_REGEX = re.compile(r"^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})")
 
     found_blocks = []
@@ -2991,7 +2989,6 @@ def search_logs_with_context():
         all_files = os.listdir(LOG_DIRECTORY)
         log_files = [f for f in all_files if f.startswith('app.log')]
 
-        # ★★★ 逻辑变更：不再对文件进行排序，直接遍历 ★★★
         for filename in log_files:
             full_path = os.path.join(LOG_DIRECTORY, filename)
             
@@ -3009,8 +3006,7 @@ def search_logs_with_context():
                         is_start_marker = START_MARKER.search(line)
 
                         if is_start_marker:
-                            if in_block: # 如果上一个块没有正常结束，则丢弃
-                                pass
+                            if in_block: pass
                             in_block = True
                             current_block = [line]
                             current_item_name = is_start_marker.group(1)
@@ -3024,33 +3020,31 @@ def search_logs_with_context():
                                 block_content = "\n".join(current_block)
                                 if query.lower() in block_content.lower():
                                     
-                                    # ★★★ 核心修改：提取时间戳用于后续排序 ★★★
-                                    block_timestamp = "0000-00-00 00:00:00" # 设置一个默认值以防万一
+                                    # ★★★ 核心修改 1: 提取时间戳，并将其存储在名为 'date' 的键中 ★★★
+                                    block_date = "Unknown Date" # 默认值
                                     if current_block:
                                         match = TIMESTAMP_REGEX.search(current_block[0])
                                         if match:
-                                            block_timestamp = match.group(1)
+                                            # match.group(1) 的结果是 "YYYY-MM-DD HH:MM:SS"
+                                            block_date = match.group(1)
 
                                     found_blocks.append({
                                         "file": filename,
-                                        "timestamp": block_timestamp, # 存储提取到的时间戳
+                                        "date": block_date, # <--- 使用 'date' 键，前端需要它
                                         "lines": current_block
                                     })
                                 
-                                # 重置状态机
                                 in_block = False
                                 current_block = []
                                 current_item_name = None
             except Exception as e:
                 logging.warning(f"API: 上下文搜索时无法读取文件 '{filename}': {e}")
         
-        # ★★★ 核心修改：在所有块收集完毕后，根据时间戳进行统一排序 ★★★
-        # 由于时间戳是 "YYYY-MM-DD HH:MM:SS" 格式，直接按字符串排序即可得到正确的时间顺序
-        found_blocks.sort(key=lambda x: x['timestamp'])
+        # ★★★ 核心修改 2: 根据我们刚刚添加的 'date' 键进行排序 ★★★
+        found_blocks.sort(key=lambda x: x['date'])
         
-        # 为了保持API响应的简洁性，在返回前删除临时的 'timestamp' 键
-        for block in found_blocks:
-            del block['timestamp']
+        # ★★★ 核心修改 3: 移除那行画蛇添足的 "del" 代码 ★★★
+        # (这里不再有删除键的代码)
 
         return jsonify(found_blocks)
 

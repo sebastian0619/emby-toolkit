@@ -763,20 +763,33 @@ class MediaProcessor:
                 logger.info(f"{log_prefix} 检测到缓存文件不存在，为 '{item_name_for_log}' 自动执行缓存重建...")
                 logger.debug(f"  - 目标文件路径: {json_file_path}")
 
-            # 1. 删除旧的 override 和 cache 目录
-            if os.path.exists(item_override_dir):
-                try:
-                    shutil.rmtree(item_override_dir)
-                    logger.debug(f"{log_prefix} 成功删除旧的覆盖缓存目录: {item_override_dir}")
-                except Exception as e:
-                    logger.error(f"{log_prefix} 删除覆盖缓存目录时失败: {e}", exc_info=True)
+            # 1. 删除旧的 override 和 cache 缓存文件
+            dirs_to_clean = [item_override_dir, item_cache_dir]
             
-            if os.path.exists(item_cache_dir):
-                try:
-                    shutil.rmtree(item_cache_dir)
-                    logger.debug(f"{log_prefix} 成功删除旧的主缓存目录: {item_cache_dir}")
-                except Exception as e:
-                    logger.error(f"{log_prefix} 删除主缓存目录时失败: {e}", exc_info=True)
+            for target_dir in dirs_to_clean:
+                if os.path.isdir(target_dir):
+                    files_deleted_count = 0
+                    try:
+                        # 使用 os.walk 遍历目录及其所有子目录
+                        for dirpath, _, filenames in os.walk(target_dir):
+                            for filename in filenames:
+                                if filename.lower().endswith('.json'):
+                                    file_to_delete = os.path.join(dirpath, filename)
+                                    try:
+                                        os.remove(file_to_delete)
+                                        files_deleted_count += 1
+                                    except OSError as e_remove:
+                                        logger.error(f"{log_prefix} 删除文件 {file_to_delete} 时失败: {e_remove}")
+                        
+                        if files_deleted_count > 0:
+                            logger.debug(f"{log_prefix} 成功从 {target_dir} 删除了 {files_deleted_count} 个 .json 文件。")
+                        else:
+                            logger.debug(f"{log_prefix} 在 {target_dir} 中未找到需要删除的 .json 文件。")
+
+                    except Exception as e_walk:
+                        logger.error(f"{log_prefix} 遍历目录 {target_dir} 进行清理时失败: {e_walk}", exc_info=True)
+                else:
+                    logger.debug(f"{log_prefix} 目录不存在，无需清理: {target_dir}")
 
             # 2. 触发Emby进行“替换所有元数据”的刷新
             logger.info(f"{log_prefix} 正在触发Emby对 '{item_name_for_log}' 进行“替换所有元数据”的刷新...")
@@ -1817,25 +1830,24 @@ class MediaProcessor:
     # --- 一键删除本地TMDB缓存 ---
     def clear_tmdb_caches(self) -> Dict[str, Any]:
         """
-        【新功能】一键清除所有TMDb相关的缓存和覆盖目录。
-        这是一个高风险操作，会强制所有项目在下次处理时重新从在线获取。
+        【V2 - 精准清除版】一键清除所有TMDb相关的 .json 缓存和覆盖文件。
+        此操作会强制所有项目在下次处理时重新从在线获取元数据，但会保留图片等非JSON文件。
         """
         if not self.local_data_path:
             msg = "未配置本地数据路径 (local_data_path)，无法执行清除操作。"
             logger.error(msg)
             return {"success": False, "message": msg, "details": {}}
 
-        # 定义需要被清空的目标目录
-        # 我们只清空这四个目录的 *内容*，而不删除目录本身
+        # 定义需要被扫描的目标目录
         target_subdirs = {
             "cache": ["tmdb-movies2", "tmdb-tv"],
             "override": ["tmdb-movies2", "tmdb-tv"]
         }
 
-        report = {"success": True, "message": "TMDb缓存清除成功！", "details": {}}
+        report = {"success": True, "message": "TMDb .json 缓存清除成功！", "details": {}}
         base_path = self.local_data_path
         
-        logger.warning("!!! 开始执行高风险操作：清除TMDb缓存 !!!")
+        logger.warning("!!! 开始执行操作：清除所有TMDb .json缓存文件 !!!")
 
         for dir_type, subdirs in target_subdirs.items():
             report["details"][dir_type] = []
@@ -1843,24 +1855,43 @@ class MediaProcessor:
                 full_path = os.path.join(base_path, dir_type, subdir_name)
                 
                 if os.path.isdir(full_path):
+                    # ★★★ 核心修改：不再直接删除，而是遍历并筛选 .json 文件 ★★★
+                    files_deleted_count = 0
+                    errors_encountered = False
+                    
                     try:
-                        # 遍历目录下的所有文件和子目录并删除
-                        for item in os.listdir(full_path):
-                            item_path = os.path.join(full_path, item)
-                            if os.path.isdir(item_path):
-                                shutil.rmtree(item_path) # 递归删除子目录
-                            else:
-                                os.remove(item_path) # 删除文件
+                        # 使用 os.walk 遍历目标目录及其所有子目录
+                        for dirpath, _, filenames in os.walk(full_path):
+                            for filename in filenames:
+                                # 检查文件是否以 .json 结尾 (不区分大小写)
+                                if filename.lower().endswith('.json'):
+                                    file_to_delete = os.path.join(dirpath, filename)
+                                    try:
+                                        os.remove(file_to_delete)
+                                        files_deleted_count += 1
+                                    except OSError as e_remove:
+                                        # 如果单个文件删除失败，记录错误并继续
+                                        msg = f"删除文件 {file_to_delete} 时失败: {e_remove}"
+                                        logger.error(msg)
+                                        report["details"][dir_type].append(msg)
+                                        errors_encountered = True
                         
-                        msg = f"成功清空目录: {full_path}"
+                        # 根据遍历结果生成报告信息
+                        if errors_encountered:
+                            msg = f"从 {full_path} 清理 .json 文件时遇到错误。共删除了 {files_deleted_count} 个文件。"
+                            report["success"] = False
+                            report["message"] = "清除过程中发生错误，部分缓存可能未被清除。"
+                        else:
+                            msg = f"成功从 {full_path} 及其子目录中删除了 {files_deleted_count} 个 .json 文件。"
+                        
                         logger.info(msg)
                         report["details"][dir_type].append(msg)
 
-                    except Exception as e:
-                        msg = f"清空目录 {full_path} 时发生错误: {e}"
+                    except Exception as e_walk:
+                        msg = f"遍历目录 {full_path} 时发生严重错误: {e_walk}"
                         logger.error(msg, exc_info=True)
                         report["details"][dir_type].append(msg)
-                        report["success"] = False # 标记整个操作为失败
+                        report["success"] = False
                         report["message"] = "清除过程中发生错误，部分缓存可能未被清除。"
                 else:
                     msg = f"目录不存在，跳过: {full_path}"
@@ -1868,9 +1899,9 @@ class MediaProcessor:
                     report["details"][dir_type].append(msg)
         
         if report["success"]:
-            logger.info("✅ 所有指定的TMDb缓存目录已成功清空。")
+            logger.info("✅ 所有指定的TMDb .json 缓存文件已成功清除。")
         else:
-            logger.error("❌ 清除TMDb缓存操作未完全成功，请检查日志。")
+            logger.error("❌ 清除TMDb .json 缓存操作未完全成功，请检查日志。")
             
         return report
     def close(self):
