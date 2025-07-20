@@ -1561,27 +1561,14 @@ class MediaProcessor:
             item_type = emby_details.get("Type")
             if not tmdb_id: raise ValueError(f"项目 {item_id} 缺少 TMDb ID")
 
-            # 2. ★★★ 根据类型决定如何从本地 cache 文件读取演员列表 ★★★
-            full_cast_from_cache = []
-            if item_type == "Movie":
-                logger.debug(f"项目类型为电影，直接加载 all.json。")
-                cache_folder_name = "tmdb-movies2"
-                base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
-                base_json_filename = "all.json"
-                tmdb_data = _read_local_json(os.path.join(base_cache_dir, base_json_filename))
-                if not tmdb_data: raise ValueError("未找到本地 TMDb 电影缓存文件")
-                full_cast_from_cache = tmdb_data.get("credits", {}).get("cast", []) or tmdb_data.get("casts", {}).get("cast", [])
+            # 2. 从本地 cache 文件读取最可靠的演员列表
+            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+            base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
+            base_json_filename = "all.json" if item_type == "Movie" else "series.json"
+            tmdb_data = _read_local_json(os.path.join(base_cache_dir, base_json_filename))
+            if not tmdb_data: raise ValueError("未找到本地 TMDb 缓存文件")
             
-            elif item_type == "Series":
-                logger.debug(f"项目类型为电视剧，调用聚合函数。")
-                cache_folder_name = "tmdb-tv"
-                base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
-                # 【核心调用】调用我们已经完善的辅助函数来聚合所有演员
-                full_cast_from_cache = self._get_full_tv_cast_from_cache(base_cache_dir)
-                if not full_cast_from_cache: raise ValueError("未找到或无法聚合本地 TMDb 电视剧缓存")
-            
-            else:
-                raise ValueError(f"不支持的 ItemType: {item_type} 用于演员编辑")
+            full_cast_from_cache = tmdb_data.get("credits", {}).get("cast", []) or tmdb_data.get("casts", {}).get("cast", [])
 
             # 3. 将完整的演员列表存入内存缓存
             self.manual_edit_cache[item_id] = full_cast_from_cache
@@ -1739,94 +1726,6 @@ class MediaProcessor:
             time.sleep(0.2)
 
         logger.info("--- 全量海报同步任务结束 ---")
-    # --- 从本地 cache 获取完整演员表 ---
-    def _get_full_tv_cast_from_cache(self, base_cache_dir: str) -> List[Dict[str, Any]]:
-        """
-        【V3 - 严格去重聚合版】从本地缓存中聚合电视剧的所有演员。
-        修改为严格按ID和名字去重，确保没有同名演员。
-        """
-        import glob
-        
-        aggregated_cache_file = os.path.join(base_cache_dir, "_cast_aggregated.json")
-
-        if os.path.exists(aggregated_cache_file):
-            logger.debug(f"发现聚合演员缓存文件: {aggregated_cache_file}")
-            cached_list = _read_local_json(aggregated_cache_file) or []
-            
-            # 【★★★ 终极加固：对读出的缓存进行强制去重 ★★★】
-            # 防止旧的、被污染的缓存文件导致问题。
-            final_list = []
-            seen_ids = set()
-            seen_names = set()
-            is_dirty = False
-            for actor in cached_list:
-                actor_id = actor.get('id')
-                actor_name = str(actor.get('name') or "").strip()
-                if not actor_name: continue
-                
-                if (actor_id and actor_id in seen_ids) or (actor_name in seen_names):
-                    is_dirty = True # 发现重复，标记缓存为脏
-                    continue
-
-                if actor_id: seen_ids.add(actor_id)
-                seen_names.add(actor_name)
-                final_list.append(actor)
-
-            if is_dirty:
-                logger.warning("检测到聚合缓存文件包含重复演员，已在内存中进行清理，并准备覆盖重写缓存。")
-                self._write_aggregated_cast_cache(base_cache_dir, final_list) # 用干净的列表重写缓存
-            
-            return final_list
-
-        logger.info(f"未找到聚合缓存，开始为 '{os.path.basename(base_cache_dir)}' 执行首次全量演员聚合...")
-        
-        # 【★★★ 核心修复：全新的、严格的去重聚合逻辑 ★★★】
-        full_cast_list = []
-        seen_ids = set()
-        seen_names = set()
-
-        def _add_cast_to_list(cast_list: List[Dict[str, Any]]):
-            if not cast_list: return
-            for actor_data in cast_list:
-                if not isinstance(actor_data, dict): continue
-
-                actor_id = actor_data.get('id')
-                actor_name = str(actor_data.get('name') or "").strip()
-
-                if not actor_name: continue # 忽略没有名字的演员
-
-                # 1. ID去重
-                if actor_id and actor_id in seen_ids: continue
-                # 2. 名字去重
-                if actor_name in seen_names: continue
-
-                # 唯一演员，添加到列表并记录
-                if actor_id: seen_ids.add(actor_id)
-                seen_names.add(actor_name)
-                full_cast_list.append(actor_data)
-        
-        all_json_files = glob.glob(os.path.join(base_cache_dir, '*.json'))
-        all_json_files = [f for f in all_json_files if os.path.basename(f) != "_cast_aggregated.json"]
-        
-        if not all_json_files:
-            logger.warning(f"在 {base_cache_dir} 中未找到任何源数据文件，无法执行聚合。")
-            return []
-
-        logger.debug(f"找到 {len(all_json_files)} 个源数据文件进行全量聚合。")
-
-        for file_path in all_json_files:
-            data = _read_local_json(file_path)
-            if data:
-                cast = data.get("credits", {}).get("cast", []) or data.get("casts", {}).get("cast", [])
-                guest_stars = data.get("guest_stars", [])
-                _add_cast_to_list(cast)
-                _add_cast_to_list(guest_stars)
-
-        logger.info(f"全量聚合完成，共获得 {len(full_cast_list)} 位独立演员。")
-
-        # self._write_aggregated_cast_cache(base_cache_dir, full_cast_list)
-
-        return full_cast_list
     # --- 一键删除本地TMDB缓存 ---
     def clear_tmdb_caches(self) -> Dict[str, Any]:
         """
