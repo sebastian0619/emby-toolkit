@@ -1454,13 +1454,13 @@ def task_full_image_sync(processor: MediaProcessor):
     # 直接把回调函数传进去
     processor.sync_all_images(update_status_callback=update_status_from_thread)
 # --- 图片同步后台任务 ---
-def image_update_task(processor: MediaProcessor, item_id: str):
+def image_update_task(processor: MediaProcessor, item_id: str, update_description: str):
     """
-    【新增】这是一个轻量级的后台任务，专门用于处理图片更新事件。
+    【升级版】这是一个轻量级的后台任务，专门用于处理图片更新事件。
+    它现在可以接收一个描述，以实现精准同步。
     """
-    logger.info(f"图片更新任务启动，处理项目: {item_id}")
+    logger.info(f"图片更新任务启动，处理项目: {item_id}，描述: '{update_description}'")
 
-    # 步骤 A: 获取项目详情
     item_details = emby_handler.get_emby_item_details(
         item_id, 
         processor.emby_url, 
@@ -1473,21 +1473,22 @@ def image_update_task(processor: MediaProcessor, item_id: str):
 
     item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
 
-    # 步骤 B: 调用核心图片同步逻辑
-    sync_success = processor.sync_item_images(item_details)
+    # ★★★ 修改点 4: 将 description 传递给核心同步方法 ★★★
+    sync_success = processor.sync_item_images(item_details, update_description=update_description)
+    
     if not sync_success:
         logger.error(f"为 '{item_name_for_log}' 同步图片时失败。")
         return
 
-    # 步骤 C: 触发一次普通的Emby刷新（非替换元数据），让Emby加载新图片
-    logger.info(f"图片同步完成，正在触发Emby刷新以应用 '{item_name_for_log}' 的新图片...")
-    emby_handler.refresh_emby_item_metadata(
-        item_emby_id=item_id,
-        emby_server_url=processor.emby_url,
-        emby_api_key=processor.emby_api_key,
-        replace_all_metadata_param=False, # ★★★ 注意：这里是False，只刷新，不替换
-        item_name_for_log=item_name_for_log
-    )
+    # 触发Emby刷新以应用新图片
+    # logger.info(f"图片同步完成，正在触发Emby刷新以应用 '{item_name_for_log}' 的新图片...")
+    # emby_handler.refresh_emby_item_metadata(
+    #     item_emby_id=item_id,
+    #     emby_server_url=processor.emby_url,
+    #     emby_api_key=processor.emby_api_key,
+    #     replace_all_metadata_param=False,
+    #     item_name_for_log=item_name_for_log
+    # )
     
     logger.info(f"图片更新任务完成: {item_id}")
 # --- 立即执行任务注册表 ---
@@ -1582,19 +1583,23 @@ def emby_webhook():
 
     # --- 分支 B: 处理图片更新事件 ---
     elif event_type == "image.update":
-        logger.info(f"Webhook事件触发，项目 '{original_item_name}' (ID: {original_item_id}) 的图片已更新，将提交到图片同步队列。")
+        # ★★★ 核心修改点 1: 获取 Description 字段 ★★★
+        update_description = data.get("Description", "")
+        logger.info(f"Webhook 图片更新事件触发，项目 '{original_item_name}' (ID: {original_item_id})。描述: '{update_description}'")
         
-        # 对于图片更新，我们直接处理当前项目ID即可，无需向上查找
+        # ★★★ 核心修改点 2: 将 description 传递给任务队列 ★★★
         submit_task_to_queue(
-            image_update_task,  # <--- ★★★ 调用我们新的、轻量级的图片任务
-            f"图片同步: {original_item_name}",
-            original_item_id
+            image_update_task,
+            f"精准图片同步: {original_item_name}",
+            # --- 传递给 image_update_task 的参数 ---
+            item_id=original_item_id,
+            update_description=update_description # <--- 新增参数
         )
         
-        return jsonify({"status": "image_task_queued", "item_id": original_item_id}), 202
+        return jsonify({"status": "precise_image_task_queued", "item_id": original_item_id}), 202
     
-    # 作为备用，尽管逻辑上不应该到达这里
     return jsonify({"status": "event_unhandled"}), 500
+    
 @app.route('/trigger_sync_person_map', methods=['POST'])
 def trigger_sync_person_map(): # WebUI 用的
 

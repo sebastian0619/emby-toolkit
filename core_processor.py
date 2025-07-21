@@ -1789,7 +1789,7 @@ class MediaProcessor:
             
         return report
     # --- 图片同步 ---
-    def sync_item_images(self, item_details: Dict[str, Any]) -> bool:
+    def sync_item_images(self, item_details: Dict[str, Any], update_description: Optional[str] = None) -> bool:
         """
         【新增-重构】这个方法负责同步一个媒体项目的所有相关图片。
         它从 _process_item_core_logic 中提取出来，以便复用。
@@ -1803,30 +1803,70 @@ class MediaProcessor:
             return False
 
         try:
+            # --- 准备工作 (目录、TMDb ID等) ---
             log_prefix = "[图片同步]"
-            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
             tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
             if not tmdb_id:
-                logger.warning(f"{log_prefix} 项目 '{item_name_for_log}' 缺少TMDb ID，无法确定覆盖目录，跳过图片同步。")
+                logger.warning(f"{log_prefix} 项目 '{item_name_for_log}' 缺少TMDb ID，无法确定覆盖目录，跳过。")
                 return False
-
+            
+            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
             base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
             image_override_dir = os.path.join(base_override_dir, "images")
             os.makedirs(image_override_dir, exist_ok=True)
 
-            logger.info(f"{log_prefix} 开始为 '{item_name_for_log}' 下载图片至 {image_override_dir}...")
-            
-            image_map = {"Primary": "poster.jpg", "Backdrop": "fanart.jpg", "Logo": "clearlogo.png"}
+            # --- 定义所有可能的图片映射 ---
+            full_image_map = {"Primary": "poster.jpg", "Backdrop": "fanart.jpg", "Logo": "clearlogo.png"}
             if item_type == "Movie":
-                image_map["Thumb"] = "landscape.jpg"
+                full_image_map["Thumb"] = "landscape.jpg"
+
+            # ★★★ 全新逻辑分发 ★★★
+            images_to_sync = {}
             
-            for image_type, filename in image_map.items():
+            # 模式一：精准同步 (当描述存在时)
+            if update_description:
+                log_prefix = "[精准图片同步]"
+                logger.info(f"{log_prefix} 尝试解析描述: '{update_description}'")
+                
+                # 定义关键词到Emby图片类型的映射 (使用小写以方便匹配)
+                keyword_map = {
+                    "primary": "Primary",
+                    "backdrop": "Backdrop",
+                    "logo": "Logo",
+                    "thumb": "Thumb", # 电影缩略图
+                    "banner": "Banner" # 剧集横幅 (如果需要可以添加)
+                }
+                
+                desc_lower = update_description.lower()
+                found_specific_image = False
+                for keyword, image_type_api in keyword_map.items():
+                    if keyword in desc_lower and image_type_api in full_image_map:
+                        images_to_sync[image_type_api] = full_image_map[image_type_api]
+                        logger.info(f"{log_prefix} 匹配到关键词 '{keyword}'，将只同步 {image_type_api} 图片。")
+                        found_specific_image = True
+                        break # 找到第一个匹配就停止，避免重复
+                
+                if not found_specific_image:
+                    logger.warning(f"{log_prefix} 未能在描述中找到可识别的图片关键词，将回退到完全同步。")
+                    images_to_sync = full_image_map # 回退
+            
+            # 模式二：完全同步 (默认或回退)
+            else:
+                log_prefix = "[完整图片同步]"
+                logger.info(f"{log_prefix} 未提供更新描述，将同步所有类型的图片。")
+                images_to_sync = full_image_map
+
+            # --- 执行下载 ---
+            logger.info(f"{log_prefix} 开始为 '{item_name_for_log}' 下载 {len(images_to_sync)} 张图片至 {image_override_dir}...")
+            for image_type, filename in images_to_sync.items():
                 if self.is_stop_requested():
                     logger.warning(f"{log_prefix} 收到停止信号，中止图片下载。")
                     return False
                 emby_handler.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
             
-            if item_type == "Series":
+            # --- 分集图片逻辑 (只有在完全同步时才考虑执行) ---
+            if images_to_sync == full_image_map and item_type == "Series":
+            
                 # 决定是否处理分集图片，这里可以根据全局配置
                 should_process_episodes_this_run = self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False)
                 if should_process_episodes_this_run:
