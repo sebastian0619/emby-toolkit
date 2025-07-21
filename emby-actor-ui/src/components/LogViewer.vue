@@ -166,15 +166,32 @@ const parsedLogResults = computed(() => {
   
   let resultString;
   if (searchMode.value === 'context') {
-    const blocks = searchResults.value.map(block => `--- [ 记录在 ${block.file} 于 ${block.date} ] ---\n${block.lines.join('\n')}`);
+    const blocks = searchResults.value.map(block => {
+      const datePart = block.date && block.date.includes(' ') ? block.date.split(' ')[0] : block.date;
+      return `--- [ 记录在 ${block.file} 于 ${datePart} ] ---\n${block.lines.join('\n')}`;
+    });
     resultString = `以“定位”模式找到 ${blocks.length} 个完整处理过程:\n\n` + blocks.join('\n\n========================================================\n\n');
   } else {
+    // --- ▼▼▼ 核心修改区域 ▼▼▼ ---
     let lastFile = '';
+    let lastDatePart = ''; // 只用来追踪日期部分 YYYY-MM-DD
+
     const lines = searchResults.value.map(result => {
-      const header = result.file !== lastFile ? `\n--- [ ${lastFile=result.file} ] ---\n` : '';
+      // 从完整的日期时间中只取日期部分用于分组
+      const currentDatePart = result.date ? result.date.split(' ')[0] : '';
+      
+      let header = '';
+      // 当文件名或日期部分发生变化时，插入一个新的标题行
+      if (result.file !== lastFile || currentDatePart !== lastDatePart) {
+        header = `\n--- [ 记录在 ${result.file} 于 ${currentDatePart || '未知'} ] ---\n`;
+        lastFile = result.file;
+        lastDatePart = currentDatePart;
+      }
+      
       return `${header}${result.content}`;
     });
-    resultString = `以“筛选”模式找到 ${searchResults.value.length} 条结果:` + lines.join('\n');
+    resultString = `以“筛选”模式找到 ${searchResults.value.length} 条结果:` + lines.join(''); // 使用 join('') 因为 header 已包含 \n
+    // --- ▲▲▲ 修改结束 ▲▲▲ ---
   }
   
   return resultString.split('\n').map(parseLogLine);

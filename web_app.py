@@ -2815,6 +2815,7 @@ def search_all_logs():
     query = request.args.get('q', '').strip()
     if not query:
         return jsonify({"error": "搜索关键词不能为空"}), 400
+    TIMESTAMP_REGEX = re.compile(r"^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})")
 
     search_results = []
     
@@ -2847,10 +2848,15 @@ def search_all_logs():
                     for line_num, line in enumerate(f, 1):
                         # 不区分大小写搜索
                         if query.lower() in line.lower():
+                            match = TIMESTAMP_REGEX.search(line)
+                            line_date = match.group(1) if match else "" # 如果匹配失败则为空字符串
+                            
+                            # 2. 将提取到的日期添加到返回结果中
                             search_results.append({
                                 "file": filename,
                                 "line_num": line_num,
-                                "content": line.strip()
+                                "content": line.strip(),
+                                "date": line_date  # <--- 新增的日期字段
                             })
             except Exception as e:
                 # 如果单个文件读取失败，记录错误并继续
