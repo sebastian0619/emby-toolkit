@@ -1453,7 +1453,7 @@ def task_full_image_sync(processor: MediaProcessor):
     """
     # 直接把回调函数传进去
     processor.sync_all_images(update_status_callback=update_status_from_thread)
-# --- 图片同步后台任务 ---
+# --- 精准图片同步后台任务 ---
 def image_update_task(processor: MediaProcessor, item_id: str, update_description: str):
     """
     【升级版】这是一个轻量级的后台任务，专门用于处理图片更新事件。
@@ -1480,17 +1480,7 @@ def image_update_task(processor: MediaProcessor, item_id: str, update_descriptio
         logger.error(f"为 '{item_name_for_log}' 同步图片时失败。")
         return
 
-    # 触发Emby刷新以应用新图片
-    # logger.info(f"图片同步完成，正在触发Emby刷新以应用 '{item_name_for_log}' 的新图片...")
-    # emby_handler.refresh_emby_item_metadata(
-    #     item_emby_id=item_id,
-    #     emby_server_url=processor.emby_url,
-    #     emby_api_key=processor.emby_api_key,
-    #     replace_all_metadata_param=False,
-    #     item_name_for_log=item_name_for_log
-    # )
-    
-    logger.info(f"图片更新任务完成: {item_id}")
+    logger.debug(f"图片更新任务完成: {item_id}")
 # --- 立即执行任务注册表 ---
 TASK_REGISTRY = {
     'full-scan': (task_process_full_library, "立即执行全量扫描"),
