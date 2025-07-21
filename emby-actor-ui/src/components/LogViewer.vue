@@ -163,38 +163,61 @@ const parsedLogContent = computed(() => {
 // 计算属性，用于解析搜索结果 (无需改动)
 const parsedLogResults = computed(() => {
   if (!hasSearchResults.value) return [];
-  
-  let resultString;
-  if (searchMode.value === 'context') {
-    const blocks = searchResults.value.map(block => {
-      const datePart = block.date && block.date.includes(' ') ? block.date.split(' ')[0] : block.date;
-      return `--- [ 记录在 ${block.file} 于 ${datePart} ] ---\n${block.lines.join('\n')}`;
-    });
-    resultString = `以“定位”模式找到 ${blocks.length} 个完整处理过程:\n\n` + blocks.join('\n\n========================================================\n\n');
-  } else {
-    // --- ▼▼▼ 核心修改区域 ▼▼▼ ---
-    let lastFile = '';
-    let lastDatePart = ''; // 只用来追踪日期部分 YYYY-MM-DD
 
-    const lines = searchResults.value.map(result => {
-      // 从完整的日期时间中只取日期部分用于分组
+  // 最终要渲染的行数组，每一项都是一个独立的字符串
+  const finalLines = [];
+
+  if (searchMode.value === 'context') {
+    // --- “定位”模式重构 ---
+    finalLines.push(`以“定位”模式找到 ${searchResults.value.length} 个完整处理过程:`);
+    
+    searchResults.value.forEach((block, index) => {
+      // 为每个块添加一个空行作为间距
+      finalLines.push(''); 
+      
+      const datePart = block.date && block.date.includes(' ') ? block.date.split(' ')[0] : block.date;
+      finalLines.push(`--- [ 记录在 ${block.file} 于 ${datePart} ] ---`);
+      
+      // 将块内的所有行逐一添加到最终数组中
+      block.lines.forEach(line => finalLines.push(line));
+      
+      // 在块与块之间添加分隔符，但最后一个块后面不加
+      if (index < searchResults.value.length - 1) {
+        finalLines.push('');
+        finalLines.push('========================================================');
+      }
+    });
+
+  } else {
+    // --- “筛选”模式重构 (核心修复) ---
+    finalLines.push(`以“筛选”模式找到 ${searchResults.value.length} 条结果:`);
+
+    let lastFile = '';
+    let lastDatePart = '';
+
+    searchResults.value.forEach(result => {
       const currentDatePart = result.date ? result.date.split(' ')[0] : '';
       
-      let header = '';
-      // 当文件名或日期部分发生变化时，插入一个新的标题行
+      // 当文件名或日期变化时，插入一个新的分组头
       if (result.file !== lastFile || currentDatePart !== lastDatePart) {
-        header = `\n--- [ 记录在 ${result.file} 于 ${currentDatePart || '未知'} ] ---\n`;
+        // 在新的分组头前加一个空行，增加可读性（但不在最开始加）
+        if (finalLines.length > 1) {
+            finalLines.push('');
+        }
+        
+        finalLines.push(`--- [ 记录在 ${result.file} 于 ${currentDatePart || '未知'} ] ---`);
+        
         lastFile = result.file;
         lastDatePart = currentDatePart;
       }
       
-      return `${header}${result.content}`;
+      // 直接将单条日志内容作为独立一项推入数组
+      finalLines.push(result.content);
     });
-    resultString = `以“筛选”模式找到 ${searchResults.value.length} 条结果:` + lines.join(''); // 使用 join('') 因为 header 已包含 \n
-    // --- ▲▲▲ 修改结束 ▲▲▲ ---
   }
   
-  return resultString.split('\n').map(parseLogLine);
+  // 最后，将这个结构清晰的行数组交给 parseLogLine 进行格式化
+  return finalLines.map(parseLogLine);
 });
 
 
