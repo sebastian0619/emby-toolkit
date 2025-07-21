@@ -1826,7 +1826,7 @@ class MediaProcessor:
             # 模式一：精准同步 (当描述存在时)
             if update_description:
                 log_prefix = "[精准图片同步]"
-                logger.info(f"{log_prefix} 尝试解析描述: '{update_description}'")
+                logger.debug(f"{log_prefix} 正在解析描述: '{update_description}'")
                 
                 # 定义关键词到Emby图片类型的映射 (使用小写以方便匹配)
                 keyword_map = {
@@ -1842,7 +1842,7 @@ class MediaProcessor:
                 for keyword, image_type_api in keyword_map.items():
                     if keyword in desc_lower and image_type_api in full_image_map:
                         images_to_sync[image_type_api] = full_image_map[image_type_api]
-                        logger.info(f"{log_prefix} 匹配到关键词 '{keyword}'，将只同步 {image_type_api} 图片。")
+                        logger.debug(f"{log_prefix} 匹配到关键词 '{keyword}'，将只同步 {image_type_api} 图片。")
                         found_specific_image = True
                         break # 找到第一个匹配就停止，避免重复
                 
@@ -1853,7 +1853,7 @@ class MediaProcessor:
             # 模式二：完全同步 (默认或回退)
             else:
                 log_prefix = "[完整图片同步]"
-                logger.info(f"{log_prefix} 未提供更新描述，将同步所有类型的图片。")
+                logger.debug(f"{log_prefix} 未提供更新描述，将同步所有类型的图片。")
                 images_to_sync = full_image_map
 
             # --- 执行下载 ---

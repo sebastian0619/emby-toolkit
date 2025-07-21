@@ -1459,7 +1459,7 @@ def image_update_task(processor: MediaProcessor, item_id: str, update_descriptio
     【升级版】这是一个轻量级的后台任务，专门用于处理图片更新事件。
     它现在可以接收一个描述，以实现精准同步。
     """
-    logger.info(f"图片更新任务启动，处理项目: {item_id}，描述: '{update_description}'")
+    logger.debug(f"图片更新任务启动，处理项目: {item_id}，描述: '{update_description}'")
 
     item_details = emby_handler.get_emby_item_details(
         item_id, 
