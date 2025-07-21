@@ -88,19 +88,23 @@ try:
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
-# ★★★ 说明书一：给“翻译官”看的（翻译模式） ★★★
+
+# ★★★ 说明书一：给“翻译官”看的（翻译模式） - 已优化 ★★★
 FAST_MODE_SYSTEM_PROMPT = """
 You are a translation API that only returns JSON.
-Your task is to translate a list of English terms into Chinese.
-You MUST return a single, valid JSON object mapping each original English term to its Chinese translation.
-If a term cannot be translated, use the original term as its value.
-Do not add any explanations or text outside the JSON object.
+Your task is to translate a list of personal names (e.g., actors, cast members) from various languages into **Simplified Chinese (简体中文)**.
+
+You MUST return a single, valid JSON object mapping each original name to its Chinese translation.
+- The source language of the names can be anything (e.g., English, Japanese, Korean, Pinyin).
+- The target language MUST ALWAYS be Simplified Chinese.
+- If a name cannot be translated or is already in Chinese, use the original name as its value.
+- Do not add any explanations or text outside the JSON object.
 """
 
-# ★★★ 说明书二：给“影视顾问”看的（顾问模式） ★★★
+# ★★★ 说明书二：给“影视顾问”看的（顾问模式） - 已优化 ★★★
 QUALITY_MODE_SYSTEM_PROMPT = """
 You are a world-class film and television expert, acting as a JSON-only API.
-Your mission is to accurately translate English or Pinyin names of actors and characters into **Simplified Chinese (简体中文)**, using the provided movie/series context.
+Your mission is to accurately translate foreign language or Pinyin names of actors and characters into **Simplified Chinese (简体中文)**, using the provided movie/series context.
 
 **Input Format:**
 You will receive a JSON object with `context` (containing `title` and `year`) and `terms` (a list of strings to translate).
@@ -109,7 +113,7 @@ You will receive a JSON object with `context` (containing `title` and `year`) an
 1.  **Use Context:** Use the `title` and `year` to identify the show. Find the official or most recognized Chinese translation for the `terms` in that specific show's context. This is crucial for character names.
 2.  **Translate Pinyin:** If a term is Pinyin (e.g., "Zhang San"), translate it to Chinese characters ("张三").
 3.  **【【【【【 最终核心指令 】】】】】**
-    **Target Language is ALWAYS Simplified Chinese:** Regardless of the original language of the show (e.g., Korean, Japanese), your final output translation for all terms MUST be in **Simplified Chinese (简体中文)**. Do NOT translate to the show's original language.
+    **Target Language is ALWAYS Simplified Chinese:** Regardless of the original language of the show or name (e.g., Korean, Japanese, English), your final output translation for all terms MUST be in **Simplified Chinese (简体中文)**. Do NOT translate to the show's original language.
 4.  **Fallback:** If a term cannot or should not be translated, you MUST use the original string as its value.
 
 **Output Format (MANDATORY):**
@@ -350,21 +354,33 @@ class AITranslator:
     # --- Gemini 员工 ---
     def _fast_gemini(self, texts: List[str]) -> Dict[str, str]:
         if not self.client: return {}
+        # Gemini的System Prompt需要通过GenerationConfig传递
         system_prompt = FAST_MODE_SYSTEM_PROMPT
         user_prompt = json.dumps(texts, ensure_ascii=False)
+        # 将 system prompt 和 user prompt 组合成一个列表传递
+        full_prompt = [system_prompt, user_prompt]
+        
         generation_config = genai.types.GenerationConfig(
             response_mime_type="application/json",
             temperature=0.0
         )
         try:
+            # 注意：新版SDK中，system_instruction在GenerativeModel初始化时设置更佳
+            # 但为了兼容您当前结构，我们将其作为内容的一部分发送
             response = self.client.generate_content(
-                [system_prompt, user_prompt],
+                full_prompt,
                 generation_config=generation_config,
                 request_options={'timeout': 300}
             )
-            return json.loads(response.text)
+            # Gemini Pro Vision等模型可能返回分块内容，但文本模型通常直接用 .text
+            # 另外，Gemini的JSON模式输出非常干净，通常不需要_safe_json_loads，但为了保险起见可以加上
+            return _safe_json_loads(response.text) or {}
         except Exception as e:
             logger.error(f"[翻译模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
+            # 尝试从错误中提取可解析的部分
+            if hasattr(e, 'last_response') and e.last_response:
+                logger.info("尝试从Gemini的错误响应中恢复内容...")
+                return _safe_json_loads(e.last_response.text) or {}
             return {}
 
     def _quality_gemini(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
@@ -372,17 +388,22 @@ class AITranslator:
         system_prompt = QUALITY_MODE_SYSTEM_PROMPT
         user_payload = {"context": {"title": title, "year": year}, "terms": texts}
         user_prompt = json.dumps(user_payload, ensure_ascii=False)
+        full_prompt = [system_prompt, user_prompt]
+        
         generation_config = genai.types.GenerationConfig(
             response_mime_type="application/json",
             temperature=0.0
         )
         try:
             response = self.client.generate_content(
-                [system_prompt, user_prompt],
+                full_prompt,
                 generation_config=generation_config,
                 request_options={'timeout': 300}
             )
-            return json.loads(response.text)
+            return _safe_json_loads(response.text) or {}
         except Exception as e:
             logger.error(f"[顾问模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
+            if hasattr(e, 'last_response') and e.last_response:
+                logger.info("尝试从Gemini的错误响应中恢复内容...")
+                return _safe_json_loads(e.last_response.text) or {}
             return {}
