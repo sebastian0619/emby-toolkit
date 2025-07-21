@@ -5,7 +5,6 @@ import json
 import inspect
 import sqlite3
 import shutil
-import gzip
 from datetime import datetime, timedelta
 from actor_sync_handler import UnifiedSyncHandler
 import emby_handler
@@ -1454,108 +1453,6 @@ def task_full_image_sync(processor: MediaProcessor):
     """
     # 直接把回调函数传进去
     processor.sync_all_images(update_status_callback=update_status_from_thread)
-# --- 日志管理函数 ---
-def task_log_cleanup_and_archive(_=None):
-    """
-    一个后台任务，用于归档热日志并清理过期的归档文件。
-    """
-    logger.info("日志清理与归档任务开始...")
-
-    # --- 1. 从配置中获取所有需要的参数 ---
-    
-    # ▼▼▼ [ 核心修改 ] 使用标准的字典操作来获取配置 ▼▼▼
-
-    # 获取“归档是否启用”的配置
-    archive_enabled_raw = APP_CONFIG.get(constants.CONFIG_OPTION_LOG_ARCHIVE_ENABLED, "True")
-    archive_enabled = str(archive_enabled_raw).lower() in ('true', '1', 't', 'y', 'yes')
-
-    if not archive_enabled:
-        logger.info("日志归档功能未启用，任务跳过。")
-        return
-
-    # 获取“保留天数”的配置
-    retention_days_raw = APP_CONFIG.get(constants.CONFIG_OPTION_LOG_ARCHIVE_RETENTION_DAYS, constants.DEFAULT_LOG_ARCHIVE_RETENTION_DAYS)
-    try:
-        retention_days = int(retention_days_raw)
-    except (ValueError, TypeError):
-        retention_days = constants.DEFAULT_LOG_ARCHIVE_RETENTION_DAYS
-        logger.warning(f"配置中的保留天数 '{retention_days_raw}' 无效，将使用默认值: {retention_days} 天。")
-
-    # 获取“备份数量”的配置
-    backup_count_raw = APP_CONFIG.get(constants.CONFIG_OPTION_LOG_ROTATION_BACKUPS, constants.DEFAULT_LOG_ROTATION_BACKUPS)
-    try:
-        backup_count = int(backup_count_raw)
-    except (ValueError, TypeError):
-        backup_count = constants.DEFAULT_LOG_ROTATION_BACKUPS
-        logger.warning(f"配置中的备份数量 '{backup_count_raw}' 无效，将使用默认值: {backup_count}。")
-    
-    # ▼▼▼ [ 核心修改 ] 直接使用在文件顶部定义的全局变量 LOG_DIRECTORY ▼▼▼
-    if not LOG_DIRECTORY or not os.path.isdir(LOG_DIRECTORY):
-        logger.error(f"日志目录 '{LOG_DIRECTORY}' 无效或不存在，任务终止。")
-        return
-
-    log_dir = LOG_DIRECTORY # 直接使用全局变量
-    archive_dir = os.path.join(log_dir, 'archive')
-
-    # 确保归档目录存在
-    os.makedirs(archive_dir, exist_ok=True)
-
-    # --- 2. 归档过程 ---
-    # 找到最老的那个热日志文件，例如 app.log.10
-    oldest_hot_log_name = f"app.log.{backup_count}"
-    oldest_hot_log_path = os.path.join(log_dir, oldest_hot_log_name)
-
-    if os.path.exists(oldest_hot_log_path):
-        try:
-            # 使用文件的最后修改时间作为归档日期，这比用当前日期更准确
-            mtime = os.path.getmtime(oldest_hot_log_path)
-            archive_date = datetime.fromtimestamp(mtime)
-            archive_filename_base = f"app.log.{archive_date.strftime('%Y-%m-%d_%H-%M-%S')}"
-            archive_filepath_gz = os.path.join(archive_dir, f"{archive_filename_base}.gz")
-
-            # 使用 gzip 直接读取原文件并写入压缩文件，然后删除原文件
-            with open(oldest_hot_log_path, 'rb') as f_in:
-                with gzip.open(archive_filepath_gz, 'wb') as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-            
-            os.remove(oldest_hot_log_path)
-            logger.info(f"成功归档日志: {oldest_hot_log_name} -> {os.path.basename(archive_filepath_gz)}")
-
-        except Exception as e:
-            logger.error(f"归档日志文件 '{oldest_hot_log_name}' 时失败: {e}", exc_info=True)
-    else:
-        logger.debug(f"未找到最旧的热日志 '{oldest_hot_log_name}'，无需归档。")
-
-    # --- 3. 清理过程 ---
-    try:
-        cutoff_date = datetime.now() - timedelta(days=retention_days)
-        files_deleted_count = 0
-        for filename in os.listdir(archive_dir):
-            if filename.endswith(".gz"):
-                file_path = os.path.join(archive_dir, filename)
-                try:
-                    # 从文件名中解析日期
-                    # 文件名格式: app.log.YYYY-MM-DD_HH-MM-SS.gz
-                    date_str = filename.split('.')[2].split('_')[0]
-                    file_date = datetime.strptime(date_str, '%Y-%m-%d')
-
-                    if file_date < cutoff_date:
-                        os.remove(file_path)
-                        files_deleted_count += 1
-                        logger.debug(f"删除过期归档日志: {filename}")
-                except (IndexError, ValueError):
-                    logger.warning(f"无法从文件名 '{filename}' 中解析日期，跳过清理。")
-                    continue
-        
-        if files_deleted_count > 0:
-            logger.info(f"清理完成，共删除 {files_deleted_count} 个超过 {retention_days} 天的归档日志。")
-        else:
-            logger.info("没有过期的归档日志需要清理。")
-
-    except Exception as e:
-        logger.error(f"清理过期归档日志时发生错误: {e}", exc_info=True)
-    
-    logger.info("日志清理与归档任务结束。")
 # --- 立即执行任务注册表 ---
 TASK_REGISTRY = {
     'full-scan': (task_process_full_library, "立即执行全量扫描"),
@@ -2901,16 +2798,9 @@ def view_log_file():
         abort(404, "文件未找到。")
 
     try:
-        if filename.endswith('.gz'):
-            # 在内存中解压并以文本模式读取 .gz 文件
-            with gzip.open(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-        else:
-            # 直接读取普通文本文件
-            with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
+        with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
         
-        # 以纯文本形式返回内容
         return Response(content, mimetype='text/plain')
         
     except Exception as e:
@@ -2933,21 +2823,26 @@ def search_all_logs():
         all_files = os.listdir(LOG_DIRECTORY)
         log_files = [f for f in all_files if f.startswith('app.log')]
         
+        # --- 代码修改点 ---
+        # 简化了排序键，不再处理 .gz 后缀
         def sort_key(filename):
-            if filename == 'app.log': return -1
+            if filename == 'app.log':
+                return -1  # app.log 永远排在最前面
             parts = filename.split('.')
-            if len(parts) > 2 and parts[-1] == 'gz' and parts[-2].isdigit():
-                return int(parts[-2])
-            return float('inf')
+            # 适用于 app.log.1, app.log.2 等格式
+            if len(parts) == 3 and parts[0] == 'app' and parts[1] == 'log' and parts[2].isdigit():
+                return int(parts[2])
+            return float('inf') # 其他不符合格式的文件排在最后
+        
         log_files.sort(key=sort_key)
 
         # 2. 遍历每个文件进行搜索
         for filename in log_files:
             full_path = os.path.join(LOG_DIRECTORY, filename)
             try:
-                # 使用 'rt' 模式，gzip/open 会自动处理文本解码
-                opener = gzip.open if filename.endswith('.gz') else open
-                with opener(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
+                # --- 代码修改点 ---
+                # 移除了 opener 的判断，直接使用 open 函数
+                with open(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
                     # 逐行读取，避免内存爆炸
                     for line_num, line in enumerate(f, 1):
                         # 不区分大小写搜索
@@ -2997,8 +2892,7 @@ def search_logs_with_context():
             current_item_name = None
 
             try:
-                opener = gzip.open if filename.endswith('.gz') else open
-                with opener(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
+                with open(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
                     for line in f:
                         line = line.strip()
                         if not line: continue
