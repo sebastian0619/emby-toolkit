@@ -967,26 +967,11 @@ class MediaProcessor:
                 # 【同步图片】
                 if self.sync_images_enabled:
                     if self.is_stop_requested(): raise InterruptedError("任务被中止")
-                    os.makedirs(image_override_dir, exist_ok=True)
-                    logger.info(f"{log_prefix} 开始为 '{item_name_for_log}' 下载图片...")
-                    image_map = {"Primary": "poster.jpg", "Backdrop": "fanart.jpg", "Logo": "clearlogo.png"}
-                    if item_type == "Movie": image_map["Thumb"] = "landscape.jpg"
-                    for image_type, filename in image_map.items():
-                        emby_handler.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
                     
-                    if item_type == "Series" and should_process_episodes_this_run:
-                        children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name_for_log) or []
-                        for child in children:
-                            child_type, child_id = child.get("Type"), child.get("Id")
-                            if child_type == "Season":
-                                season_number = child.get("IndexNumber")
-                                if season_number is not None:
-                                    emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}.jpg"), self.emby_url, self.emby_api_key)
-                            elif child_type == "Episode":
-                                season_number, episode_number = child.get("ParentIndexNumber"), child.get("IndexNumber")
-                                if season_number is not None and episode_number is not None:
-                                    emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
-
+                    # 直接调用我们新的、可复用的图片同步方法
+                    # 注意：item_details_from_emby 就是它需要的参数
+                    self.sync_item_images(item_details_from_emby)
+                    
                 # --- 阶段3: 统计、评分和最终日志记录 ---
                 final_actor_count = len(final_cast_perfect)
                 logger.info(f"✨✨✨处理统计 '{item_name_for_log}'✨✨✨")
@@ -1803,5 +1788,67 @@ class MediaProcessor:
             logger.error("❌ 清除TMDb .json 缓存操作未完全成功，请检查日志。")
             
         return report
+    # --- 图片同步 ---
+    def sync_item_images(self, item_details: Dict[str, Any]) -> bool:
+        """
+        【新增-重构】这个方法负责同步一个媒体项目的所有相关图片。
+        它从 _process_item_core_logic 中提取出来，以便复用。
+        """
+        item_id = item_details.get("Id")
+        item_type = item_details.get("Type")
+        item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
+        
+        if not all([item_id, item_type, self.local_data_path]):
+            logger.error(f"[图片同步] 跳过 '{item_name_for_log}'，因为缺少ID、类型或未配置本地数据路径。")
+            return False
+
+        try:
+            log_prefix = "[图片同步]"
+            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+            tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+            if not tmdb_id:
+                logger.warning(f"{log_prefix} 项目 '{item_name_for_log}' 缺少TMDb ID，无法确定覆盖目录，跳过图片同步。")
+                return False
+
+            base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+            image_override_dir = os.path.join(base_override_dir, "images")
+            os.makedirs(image_override_dir, exist_ok=True)
+
+            logger.info(f"{log_prefix} 开始为 '{item_name_for_log}' 下载图片至 {image_override_dir}...")
+            
+            image_map = {"Primary": "poster.jpg", "Backdrop": "fanart.jpg", "Logo": "clearlogo.png"}
+            if item_type == "Movie":
+                image_map["Thumb"] = "landscape.jpg"
+            
+            for image_type, filename in image_map.items():
+                if self.is_stop_requested():
+                    logger.warning(f"{log_prefix} 收到停止信号，中止图片下载。")
+                    return False
+                emby_handler.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
+            
+            if item_type == "Series":
+                # 决定是否处理分集图片，这里可以根据全局配置
+                should_process_episodes_this_run = self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False)
+                if should_process_episodes_this_run:
+                    children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name_for_log) or []
+                    for child in children:
+                        if self.is_stop_requested():
+                            logger.warning(f"{log_prefix} 收到停止信号，中止子项目图片下载。")
+                            return False
+                        child_type, child_id = child.get("Type"), child.get("Id")
+                        if child_type == "Season":
+                            season_number = child.get("IndexNumber")
+                            if season_number is not None:
+                                emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}.jpg"), self.emby_url, self.emby_api_key)
+                        elif child_type == "Episode":
+                            season_number, episode_number = child.get("ParentIndexNumber"), child.get("IndexNumber")
+                            if season_number is not None and episode_number is not None:
+                                emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
+            
+            logger.info(f"{log_prefix} ✅ 成功完成 '{item_name_for_log}' 的图片同步。")
+            return True
+        except Exception as e:
+            logger.error(f"{log_prefix} 为 '{item_name_for_log}' 同步图片时发生未知错误: {e}", exc_info=True)
+            return False
     def close(self):
         if self.douban_api: self.douban_api.close()

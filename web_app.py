@@ -1453,6 +1453,43 @@ def task_full_image_sync(processor: MediaProcessor):
     """
     # 直接把回调函数传进去
     processor.sync_all_images(update_status_callback=update_status_from_thread)
+# --- 图片同步后台任务 ---
+def image_update_task(processor: MediaProcessor, item_id: str):
+    """
+    【新增】这是一个轻量级的后台任务，专门用于处理图片更新事件。
+    """
+    logger.info(f"图片更新任务启动，处理项目: {item_id}")
+
+    # 步骤 A: 获取项目详情
+    item_details = emby_handler.get_emby_item_details(
+        item_id, 
+        processor.emby_url, 
+        processor.emby_api_key, 
+        processor.emby_user_id
+    )
+    if not item_details:
+        logger.error(f"图片更新任务：无法获取项目 {item_id} 的详情，任务中止。")
+        return
+
+    item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
+
+    # 步骤 B: 调用核心图片同步逻辑
+    sync_success = processor.sync_item_images(item_details)
+    if not sync_success:
+        logger.error(f"为 '{item_name_for_log}' 同步图片时失败。")
+        return
+
+    # 步骤 C: 触发一次普通的Emby刷新（非替换元数据），让Emby加载新图片
+    logger.info(f"图片同步完成，正在触发Emby刷新以应用 '{item_name_for_log}' 的新图片...")
+    emby_handler.refresh_emby_item_metadata(
+        item_emby_id=item_id,
+        emby_server_url=processor.emby_url,
+        emby_api_key=processor.emby_api_key,
+        replace_all_metadata_param=False, # ★★★ 注意：这里是False，只刷新，不替换
+        item_name_for_log=item_name_for_log
+    )
+    
+    logger.info(f"图片更新任务完成: {item_id}")
 # --- 立即执行任务注册表 ---
 TASK_REGISTRY = {
     'full-scan': (task_process_full_library, "立即执行全量扫描"),
@@ -1470,7 +1507,7 @@ def emby_webhook():
     event_type = data.get("Event") if data else "未知事件"
     logger.info(f"收到Emby Webhook: {event_type}")
     
-    trigger_events = ["item.add", "library.new"] 
+    trigger_events = ["item.add", "library.new", "image.update"] 
 
     if event_type not in trigger_events:
         logger.info(f"Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
@@ -1489,67 +1526,75 @@ def emby_webhook():
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
 
 
-    # ★★★ 核心修复逻辑 START ★★★
-    
-    id_to_process = original_item_id
-    type_to_process = original_item_type
+    # --- 分支 A: 处理元数据新增/更新事件 ---
+    if event_type in ["item.add", "library.new"]:
+        # 这部分是您原有的核心修复逻辑，保持不变
+        id_to_process = original_item_id
+        type_to_process = original_item_type
 
-    # 1. 如果是分集，向上查找剧集ID
-    if original_item_type == "Episode":
-        logger.info(f"Webhook 收到分集 '{original_item_name}' (ID: {original_item_id})，正在向上查找其所属剧集...")
-        series_id = emby_handler.get_series_id_from_child_id(
-            original_item_id,
-            media_processor_instance.emby_url,
-            media_processor_instance.emby_api_key,
-            media_processor_instance.emby_user_id
+        if original_item_type == "Episode":
+            # ... (您原有的向上查找剧集ID的逻辑) ...
+            logger.info(f"Webhook 收到分集 '{original_item_name}' (ID: {original_item_id})，正在向上查找其所属剧集...")
+            series_id = emby_handler.get_series_id_from_child_id(
+                original_item_id,
+                media_processor_instance.emby_url,
+                media_processor_instance.emby_api_key,
+                media_processor_instance.emby_user_id
+            )
+            if series_id:
+                id_to_process = series_id
+                type_to_process = "Series"
+                logger.info(f"成功找到所属剧集 ID: {id_to_process}。将处理此剧集。")
+            else:
+                logger.error(f"无法为分集 '{original_item_name}' 找到所属剧集ID，将跳过处理。")
+                return jsonify({"status": "event_ignored_series_not_found"}), 200
+
+        full_item_details = emby_handler.get_emby_item_details(
+            item_id=id_to_process,
+            emby_server_url=media_processor_instance.emby_url,
+            emby_api_key=media_processor_instance.emby_api_key,
+            user_id=media_processor_instance.emby_user_id
         )
-        if series_id:
-            id_to_process = series_id
-            type_to_process = "Series" # 明确类型为剧集
-            logger.info(f"成功找到所属剧集 ID: {id_to_process}。将处理此剧集。")
-        else:
-            logger.error(f"无法为分集 '{original_item_name}' 找到所属剧集ID，将跳过处理。")
-            return jsonify({"status": "event_ignored_series_not_found"}), 200
 
-    # 2. 无论最初是什么类型，都用最终确定的ID重新获取一次完整的项目详情
-    logger.info(f"准备重新获取项目 {id_to_process} 的最新、最完整的元数据...")
-    full_item_details = emby_handler.get_emby_item_details(
-        item_id=id_to_process,
-        emby_server_url=media_processor_instance.emby_url,
-        emby_api_key=media_processor_instance.emby_api_key,
-        user_id=media_processor_instance.emby_user_id
-    )
+        if not full_item_details:
+            logger.error(f"无法获取项目 {id_to_process} 的完整详情，处理中止。")
+            return jsonify({"status": "event_ignored_details_fetch_failed"}), 200
 
-    if not full_item_details:
-        logger.error(f"无法获取项目 {id_to_process} 的完整详情，处理中止。")
-        return jsonify({"status": "event_ignored_details_fetch_failed"}), 200
+        final_item_name = full_item_details.get("Name", f"未知项目(ID:{id_to_process})")
+        provider_ids = full_item_details.get("ProviderIds", {})
+        tmdb_id = provider_ids.get("Tmdb")
 
-    # 3. 从新获取的详情中提取最终的名称和TMDb ID
-    final_item_name = full_item_details.get("Name", f"未知项目(ID:{id_to_process})")
-    provider_ids = full_item_details.get("ProviderIds", {})
-    tmdb_id = provider_ids.get("Tmdb")
-
-    # 4. 在提交到队列前，做最后一次检查
-    if not tmdb_id:
-        logger.warning(f"项目 '{final_item_name}' (ID: {id_to_process}) 缺少 TMDb ID，无法进行处理。这可能是因为 Emby 尚未完成对该项目的元数据刮削。将跳过本次 Webhook 请求。")
-        return jsonify({"status": "event_ignored_no_tmdb_id"}), 200
+        if not tmdb_id:
+            logger.warning(f"项目 '{final_item_name}' (ID: {id_to_process}) 缺少 TMDb ID，无法进行处理。将跳过本次 Webhook 请求。")
+            return jsonify({"status": "event_ignored_no_tmdb_id"}), 200
+            
+        logger.info(f"Webhook事件触发，最终处理项目 '{final_item_name}' (ID: {id_to_process}, TMDbID: {tmdb_id}) 已提交到任务队列。")
         
-    # ★★★ 核心修复逻辑 END ★★★
+        submit_task_to_queue(
+            webhook_processing_task,
+            f"Webhook处理: {final_item_name}",
+            id_to_process,
+            force_reprocess=True, 
+            process_episodes=True
+        )
+        
+        return jsonify({"status": "metadata_task_queued", "item_id": id_to_process}), 202
 
-    logger.info(f"Webhook事件触发，最终处理项目 '{final_item_name}' (ID: {id_to_process}, TMDbID: {tmdb_id}) 已提交到任务队列。")
+    # --- 分支 B: 处理图片更新事件 ---
+    elif event_type == "image.update":
+        logger.info(f"Webhook事件触发，项目 '{original_item_name}' (ID: {original_item_id}) 的图片已更新，将提交到图片同步队列。")
+        
+        # 对于图片更新，我们直接处理当前项目ID即可，无需向上查找
+        submit_task_to_queue(
+            image_update_task,  # <--- ★★★ 调用我们新的、轻量级的图片任务
+            f"图片同步: {original_item_name}",
+            original_item_id
+        )
+        
+        return jsonify({"status": "image_task_queued", "item_id": original_item_id}), 202
     
-    # ★★★ 核心修改点在这里 ★★★
-    # 使用最终确定的信息，提交我们新的“编排任务”到队列
-    submit_task_to_queue(
-        webhook_processing_task,  # <--- 目标函数是这个，而不是 process_single_item
-        f"Webhook处理: {final_item_name}",
-        # --- 传递给 webhook_processing_task 的参数 ---
-        id_to_process,
-        force_reprocess=True, 
-        process_episodes=True
-    )
-    
-    return jsonify({"status": "task_queued", "item_id": id_to_process}), 202
+    # 作为备用，尽管逻辑上不应该到达这里
+    return jsonify({"status": "event_unhandled"}), 500
 @app.route('/trigger_sync_person_map', methods=['POST'])
 def trigger_sync_person_map(): # WebUI 用的
 
