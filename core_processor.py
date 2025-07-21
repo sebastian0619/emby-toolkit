@@ -1466,28 +1466,13 @@ class MediaProcessor:
                                         logger.error(f"手动处理：写入子项目JSON失败: {override_child_path}, {e}")
                                         if os.path.exists(temp_child_path): os.remove(temp_child_path)
 
-                    #---同步图片 (逻辑不变)
+                    #---同步图片 
                     if self.sync_images_enabled:
-                        if self.is_stop_requested(): raise InterruptedError("任务中止")
-                        logger.info(f"手动处理：开始下载图片...")
-                        image_map = {"Primary": "poster.jpg", "Backdrop": "fanart.jpg", "Logo": "clearlogo.png"}
-                        if item_type == "Movie": image_map["Thumb"] = "landscape.jpg"
-                        for image_type, filename in image_map.items():
-                            emby_handler.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
+                        if self.is_stop_requested(): raise InterruptedError("任务被中止")
                         
-                        if item_type == "Series" and process_episodes_config:
-                            children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name) or []
-                            for child in children:
-                                if self.is_stop_requested(): break
-                                child_type, child_id = child.get("Type"), child.get("Id")
-                                if child_type == "Season":
-                                    season_number = child.get("IndexNumber")
-                                    if season_number is not None:
-                                        emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}.jpg"), self.emby_url, self.emby_api_key)
-                                elif child_type == "Episode":
-                                    season_number, episode_number = child.get("ParentIndexNumber"), child.get("IndexNumber")
-                                    if season_number is not None and episode_number is not None:
-                                        emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
+                        # 直接调用我们新的、可复用的图片同步方法
+                        # 注意：item_details_from_emby 就是它需要的参数
+                        self.sync_item_images(item_details)
 
                     logger.info(f"手动处理：准备刷新 Emby 项目 {item_name}...")
                     refresh_success = emby_handler.refresh_emby_item_metadata(
