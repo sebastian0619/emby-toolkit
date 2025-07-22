@@ -566,7 +566,7 @@ def initialize_processors():
         server_info = emby_handler.get_emby_server_info(emby_url, emby_key)
         if server_info and server_info.get("Id"):
             EMBY_SERVER_ID = server_info.get("Id")
-            logger.info(f"成功获取到 Emby Server ID: {EMBY_SERVER_ID}")
+            logger.trace(f"成功获取到 Emby Server ID: {EMBY_SERVER_ID}")
         else:
             EMBY_SERVER_ID = None
             logger.warning("未能获取到 Emby Server ID，跳转链接可能不完整。")
