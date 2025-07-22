@@ -90,7 +90,7 @@
           </n-card>
           <n-card title="MoviePilot 订阅服务" size="small" class="glass-section">
             <template #header-extra>
-              <n-text depth="3" style="font-size: 0.85em;">用于一键订阅缺失的电影</n-text>
+              <n-text depth="3" style="font-size: 0.85em;">用于一键订阅合集中缺失的电影</n-text>
             </template>
             <n-form-item-grid-item label="MoviePilot URL" path="moviepilot_url">
               <n-input 
