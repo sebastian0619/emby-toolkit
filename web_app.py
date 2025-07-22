@@ -3191,10 +3191,10 @@ def api_subscribe_moviepilot():
         subscribe_headers = {"Authorization": f"Bearer {access_token}"}
         subscribe_payload = {"name": title, "tmdbid": int(tmdb_id), "type": "电影"}
 
-        logger.info(f"正在向 MoviePilot 提交订阅请求: {subscribe_payload}")
+        logger.info(f"正在向 MoviePilot 提交订阅请求 '{title}'")
         sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
         
-        logger.debug(f"收到 MoviePilot 订阅接口的响应: Status={sub_response.status_code}, Body='{sub_response.text}'")
+        logger.trace(f"收到 MoviePilot 订阅接口的响应: Status={sub_response.status_code}, Body='{sub_response.text}'")
 
         if sub_response.status_code in [200, 201, 204]:
             logger.info("通过 MoviePilot 订阅成功。")
