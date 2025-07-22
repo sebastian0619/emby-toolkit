@@ -359,7 +359,8 @@ def init_db():
                 has_missing BOOLEAN,
                 missing_movies_json TEXT,
                 last_checked_at TIMESTAMP,
-                poster_path TEXT
+                poster_path TEXT,
+                ignored_movies_json TEXT DEFAULT '[]'
             )
         """)
         logger.trace("表 'collections_info' 结构已确认。")
@@ -1583,7 +1584,7 @@ def task_refresh_collections(processor: MediaProcessor):
                 image_tag = collection.get("ImageTags", {}).get("Primary")
                 poster_path = f"/Items/{collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
                 
-                cursor.execute("INSERT OR REPLACE INTO collections_info VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (collection_id, collection.get('Name'), tmdb_id, status, has_missing, json.dumps(missing_movies), time.time(), poster_path))
+                cursor.execute("INSERT OR REPLACE INTO collections_info VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (collection_id, collection.get('Name'), tmdb_id, status, has_missing, json.dumps(missing_movies), time.time(), poster_path, '[]'))
             
             conn.commit()
     except Exception as e:
@@ -3216,6 +3217,32 @@ def api_subscribe_moviepilot():
         error_msg = f"连接 MoviePilot 时发生网络错误: {e}"
         logger.error(error_msg)
         return jsonify({"error": error_msg}), 503
+# ★★★ 更新合集忽略列表的 API ★★★
+@app.route('/api/collections/ignore', methods=['POST'])
+@login_required
+def api_update_collection_ignore_list():
+    data = request.json
+    collection_id = data.get('collection_id')
+    ignored_ids = data.get('ignored_ids') # 期望是一个ID数组
+
+    if not collection_id or not isinstance(ignored_ids, list):
+        return jsonify({"error": "请求参数无效"}), 400
+
+    try:
+        with get_central_db_connection(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE collections_info SET ignored_movies_json = ? WHERE emby_collection_id = ?",
+                (json.dumps(ignored_ids), collection_id)
+            )
+            conn.commit()
+            if cursor.rowcount > 0:
+                return jsonify({"message": "忽略列表已更新"}), 200
+            else:
+                return jsonify({"error": "未找到指定的合集"}), 404
+    except Exception as e:
+        logger.error(f"更新忽略列表时失败: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
