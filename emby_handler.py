@@ -320,7 +320,7 @@ def get_emby_libraries(base_url: str, api_key: str, user_id: Optional[str] = Non
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Views"
     params = {"api_key": api_key}
 
-    logger.debug(f"get_emby_libraries: 正在从 URL 请求用户视图: {api_url}")
+    logger.trace(f"get_emby_libraries: 正在从 URL 请求用户视图: {api_url}")
     try:
         response = requests.get(api_url, params=params, timeout=15)
         response.raise_for_status()
