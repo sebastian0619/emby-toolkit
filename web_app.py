@@ -3137,18 +3137,18 @@ def api_get_collections_status():
     except Exception as e:
         logger.error(f"读取合集状态时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "读取合集时发生服务器内部错误"}), 500
-# ★★★ 最终版：将电影提交到 MoviePilot 订阅 (实现完整认证流程) ★★★
+# ★★★ 将电影提交到 MoviePilot 订阅  ★★★
 @app.route('/api/subscribe/moviepilot', methods=['POST'])
 @login_required
 def api_subscribe_moviepilot():
     data = request.json
     tmdb_id = data.get('tmdb_id')
-    title = data.get('title') # 我们需要前端也传来电影标题
+    title = data.get('title')
 
     if not tmdb_id or not title:
         return jsonify({"error": "请求中缺少 tmdb_id 或 title"}), 400
 
-    # 1. 从全局配置中获取 MoviePilot 信息
+    # 1. 从配置中获取信息
     moviepilot_url = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
     mp_username = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_USERNAME, '')
     mp_password = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD, '')
@@ -3156,14 +3156,13 @@ def api_subscribe_moviepilot():
     if not all([moviepilot_url, mp_username, mp_password]):
         return jsonify({"error": "服务器未完整配置 MoviePilot URL、用户名或密码。"}), 500
 
-    access_token = None
+    # --- 流程第一步：登录并获取 Token ---
     try:
-        # 2. 第一步：登录并获取 Token
         login_url = f"{moviepilot_url}/api/v1/login/access-token"
         login_headers = {"Content-Type": "application/x-www-form-urlencoded"}
         login_data = {"username": mp_username, "password": mp_password}
 
-        logger.info(f"正在向 MoviePilot ({login_url}) 请求 access token...")
+        logger.trace(f"正在向 MoviePilot ({login_url}) 请求 access token...")
         login_response = requests.post(login_url, headers=login_headers, data=login_data, timeout=10)
         login_response.raise_for_status()
 
@@ -3173,10 +3172,11 @@ def api_subscribe_moviepilot():
         if not access_token:
             logger.error("MoviePilot 登录成功，但未在响应中找到 access_token。")
             return jsonify({"error": "MoviePilot 认证失败：未能获取到 Token。"}), 500
-        logger.info("成功获取 MoviePilot access token。")
+        
+        logger.trace("成功获取 MoviePilot access token。")
 
     except requests.exceptions.HTTPError as e:
-        error_msg = f"MoviePilot 登录认证失败: {e.response.status_code}。请检查用户名和密码是否正确。"
+        error_msg = f"MoviePilot 登录认证失败: {e.response.status_code}。请检查用户名和密码。"
         logger.error(f"{error_msg} 响应: {e.response.text}")
         return jsonify({"error": error_msg}), 502
     except requests.exceptions.RequestException as e:
@@ -3184,30 +3184,28 @@ def api_subscribe_moviepilot():
         logger.error(error_msg)
         return jsonify({"error": error_msg}), 503
 
+    # --- 流程第二步：使用 Token 提交订阅 (只有在第一步成功后才会执行) ---
     try:
-        # 3. 第二步：使用 Token 提交订阅
         subscribe_url = f"{moviepilot_url}/api/v1/subscribe/"
-        subscribe_headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
-        }
-        # 根据参考代码，构建订阅的 payload
-        subscribe_payload = {
-            "name": title,
-            "tmdbid": int(tmdb_id),
-            "type": "电影"
-        }
+        subscribe_headers = {"Authorization": f"Bearer {access_token}"}
+        subscribe_payload = {"name": title, "tmdbid": int(tmdb_id), "type": "电影"}
 
         logger.info(f"正在向 MoviePilot 提交订阅请求: {subscribe_payload}")
         sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
-        sub_response.raise_for_status()
+        
+        logger.debug(f"收到 MoviePilot 订阅接口的响应: Status={sub_response.status_code}, Body='{sub_response.text}'")
 
-        sub_json = sub_response.json()
-        if sub_json.get("success"):
+        if sub_response.status_code in [200, 201, 204]:
+            logger.info("通过 MoviePilot 订阅成功。")
             return jsonify({"message": f"《{title}》已成功提交到 MoviePilot 订阅！"}), 200
         else:
-            error_detail = sub_json.get("message", "未知错误，请查看 MoviePilot 日志。")
-            logger.error(f"MoviePilot 报告订阅失败: {error_detail}")
+            error_detail = "未知错误"
+            try:
+                error_json = sub_response.json()
+                error_detail = error_json.get("message") or error_json.get("detail", sub_response.text)
+            except Exception:
+                error_detail = sub_response.text
+            logger.error(f"通过 MoviePilot 订阅失败: {error_detail}")
             return jsonify({"error": f"MoviePilot 报告订阅失败: {error_detail}"}), 500
 
     except requests.exceptions.HTTPError as e:
