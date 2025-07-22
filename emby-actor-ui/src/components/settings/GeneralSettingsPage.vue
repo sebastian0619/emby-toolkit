@@ -88,6 +88,31 @@
               </template>
             </n-form-item>
           </n-card>
+          <n-card title="MoviePilot 订阅服务" size="small" class="glass-section">
+            <template #header-extra>
+              <n-text depth="3" style="font-size: 0.85em;">用于一键订阅缺失的电影</n-text>
+            </template>
+            <n-form-item-grid-item label="MoviePilot URL" path="moviepilot_url">
+              <n-input 
+                v-model:value="configModel.moviepilot_url" 
+                placeholder="例如: http://192.168.1.100:3000"
+              />
+            </n-form-item-grid-item>
+            <n-form-item-grid-item label="用户名" path="moviepilot_username">
+              <n-input 
+                v-model:value="configModel.moviepilot_username" 
+                placeholder="输入 MoviePilot 的登录用户名"
+              />
+            </n-form-item-grid-item>
+            <n-form-item-grid-item label="密码" path="moviepilot_password">
+              <n-input 
+                type="password" 
+                show-password-on="mousedown" 
+                v-model:value="configModel.moviepilot_password" 
+                placeholder="输入 MoviePilot 的登录密码"
+              />
+            </n-form-item-grid-item>
+          </n-card>
         </n-space>
       </n-gi>
 

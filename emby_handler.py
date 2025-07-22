@@ -923,3 +923,90 @@ def prepare_actor_translation_data(
     
     # --- 核心修改：返回两个关键的数据结构，而不是执行写回 ---
     return translation_map, name_to_persons_map
+# ✨✨✨ 获取所有合集及其包含的电影 ✨✨✨
+def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    【新】获取 Emby 中所有的电影合集 (BoxSet)，并包含每个合集内的项目。
+    """
+    if not all([base_url, api_key, user_id]):
+        logger.error("get_all_collections_with_items: 缺少必要的参数。")
+        return None
+
+    logger.info("正在从 Emby 获取所有电影合集...")
+    
+    # 1. 首先，获取所有类型为 BoxSet 的项目
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    params = {
+        "api_key": api_key,
+        "IncludeItemTypes": "BoxSet",
+        "Recursive": "true",
+        "Fields": "ProviderIds,Name,ImageTags"
+    }
+    
+    try:
+        response = requests.get(api_url, params=params, timeout=20)
+        response.raise_for_status()
+        collections_data = response.json().get("Items", [])
+        logger.info(f"成功获取到 {len(collections_data)} 个合集。")
+
+        # 2. 遍历每个合集，获取其包含的电影
+        detailed_collections = []
+        for collection in collections_data:
+            collection_id = collection.get("Id")
+            if not collection_id:
+                continue
+
+            logger.debug(f"  正在获取合集 '{collection.get('Name')}' (ID: {collection_id}) 的内容...")
+            
+            # 获取合集下的所有子项目 (即电影)
+            children_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+            children_params = {
+                "api_key": api_key,
+                "ParentId": collection_id,
+                "IncludeItemTypes": "Movie",
+                "Recursive": "true",
+                "Fields": "ProviderIds" # 我们只需要 ProviderIds 来做对比
+            }
+            
+            children_response = requests.get(children_url, params=children_params, timeout=20)
+            children_response.raise_for_status()
+            movies_in_collection = children_response.json().get("Items", [])
+            
+            # 提取已有电影的 TMDb ID
+            existing_movie_tmdb_ids = []
+            for movie in movies_in_collection:
+                tmdb_id = movie.get("ProviderIds", {}).get("Tmdb")
+                if tmdb_id:
+                    existing_movie_tmdb_ids.append(tmdb_id)
+
+            collection['ExistingMovieTmdbIds'] = existing_movie_tmdb_ids
+            detailed_collections.append(collection)
+            
+        return detailed_collections
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"获取 Emby 合集时发生网络错误: {e}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"处理 Emby 合集时发生未知错误: {e}", exc_info=True)
+        return None
+# ✨✨✨ 获取 Emby 服务器信息 (如 Server ID) ✨✨✨
+def get_emby_server_info(base_url: str, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    【新】获取 Emby 服务器的系统信息，主要用于获取 Server ID。
+    """
+    if not base_url or not api_key:
+        return None
+    
+    api_url = f"{base_url.rstrip('/')}/System/Info"
+    params = {"api_key": api_key}
+    
+    logger.debug("正在获取 Emby 服务器信息...")
+    try:
+        response = requests.get(api_url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        return data
+    except Exception as e:
+        logger.error(f"获取 Emby 服务器信息失败: {e}")
+        return None

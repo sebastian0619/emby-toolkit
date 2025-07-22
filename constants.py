@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "2.8.6.7"  # 更新版本号
+APP_VERSION = "2.8.6.8"  # 更新版本号
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 CONFIG_FILE_NAME = "config.ini" # 主配置文件名
@@ -51,6 +51,12 @@ CONFIG_OPTION_DOUBAN_COOKIE = "douban_cookie" # 用于身份验证的豆瓣登�
 # --- 本地数据源 (神医模式) ---
 CONFIG_SECTION_LOCAL_DATA = "LocalDataSource"
 CONFIG_OPTION_LOCAL_DATA_PATH = "local_data_path" # 本地JSON元数据（TMDbHelper等生成）的根路径
+
+# --- MoviePilot ---
+CONFIG_SECTION_MOVIEPILOT = "MoviePilot"
+CONFIG_OPTION_MOVIEPILOT_URL = "moviepilot_url"
+CONFIG_OPTION_MOVIEPILOT_USERNAME = "moviepilot_username"
+CONFIG_OPTION_MOVIEPILOT_PASSWORD = "moviepilot_password"
 
 # ==============================================================================
 # ✨ 翻译功能配置 (Translation)

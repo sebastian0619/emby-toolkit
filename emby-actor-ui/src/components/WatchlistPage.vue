@@ -113,7 +113,7 @@
                 </n-tooltip>
                 <n-tooltip>
                   <template #trigger>
-                    <n-button text tag="a" :href="getEmbyUrl(item.item_id)" target="_blank">
+                    <n-button text @click="openInEmby(item.item_id)" target="_blank">
                       <template #icon><n-icon :component="EmbyIcon" size="18" /></template>
                     </n-button>
                   </template>
@@ -201,9 +201,22 @@ const formatTimestamp = (timestamp) => {
 const getPosterUrl = (itemId) => `/image_proxy/Items/${itemId}/Images/Primary?maxHeight=360&tag=1`;
 const getEmbyUrl = (itemId) => {
   const embyServerUrl = configModel.value?.emby_server_url;
-  if (!embyServerUrl) return '#';
+  const serverId = configModel.value?.emby_server_id;
+  if (!embyServerUrl || !itemId) return '#';
   const baseUrl = embyServerUrl.endsWith('/') ? embyServerUrl.slice(0, -1) : embyServerUrl;
-  return `${baseUrl}/web/index.html#!/item?id=${itemId}`;
+  let finalUrl = `${baseUrl}/web/index.html#!/item?id=${itemId}`;
+  if (serverId) {
+    finalUrl += `&serverId=${serverId}`;
+  }
+  return finalUrl;
+};
+
+// ★★★ 新增这个函数 ★★★
+const openInEmby = (itemId) => {
+  const url = getEmbyUrl(itemId);
+  if (url !== '#') {
+    window.open(url, '_blank');
+  }
 };
 const statusInfo = (status) => {
   const map = {

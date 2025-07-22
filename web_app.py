@@ -21,6 +21,7 @@ import threading
 import time
 from datetime import datetime
 import requests
+import tmdb_handler
 from douban import DoubanApi
 from typing import Optional, Dict, Any, List, Tuple, Union # 确保 List 被导入
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -78,6 +79,11 @@ CONFIG_DEFINITION = {
     # [DoubanAPI]
     constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN: (constants.CONFIG_SECTION_API_DOUBAN, 'float', 1.0),
     constants.CONFIG_OPTION_DOUBAN_COOKIE: (constants.CONFIG_SECTION_API_DOUBAN, 'string', ""),
+
+    # [MoviePilot]
+    constants.CONFIG_OPTION_MOVIEPILOT_URL: (constants.CONFIG_SECTION_MOVIEPILOT, 'string', ""),
+    constants.CONFIG_OPTION_MOVIEPILOT_USERNAME: (constants.CONFIG_SECTION_MOVIEPILOT, 'string', ""),
+    constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD: (constants.CONFIG_SECTION_MOVIEPILOT, 'string', ""),
 
     # [Translation]
     constants.CONFIG_OPTION_TRANSLATOR_ENGINES: (constants.CONFIG_SECTION_TRANSLATION, 'list', constants.DEFAULT_TRANSLATOR_ENGINES_ORDER),
@@ -185,6 +191,7 @@ logger.info(f"配置文件路径 (CONFIG_FILE_PATH) 设置为: {CONFIG_FILE_PATH
 logger.info(f"数据库文件路径 (DB_PATH) 设置为: {DB_PATH}")
 
 # --- 全局变量 ---
+EMBY_SERVER_ID: Optional[str] = None # ★★★ 新增：用于存储 Emby Server ID
 media_processor_instance: Optional[MediaProcessor] = None
 background_task_status = {
     "is_running": False,
@@ -341,6 +348,21 @@ def init_db():
             )
         """)
         logger.trace("  -> [核心] 'ActorMetadata' 表已确认。")
+
+        logger.trace("正在确认/创建 'collections_info' 表...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS collections_info (
+                emby_collection_id TEXT PRIMARY KEY,
+                name TEXT,
+                tmdb_collection_id TEXT,
+                status TEXT,
+                has_missing BOOLEAN,
+                missing_movies_json TEXT,
+                last_checked_at TIMESTAMP,
+                poster_path TEXT
+            )
+        """)
+        logger.trace("表 'collections_info' 结构已确认。")
 
         # --- 6. 提交事务 ---
         conn.commit()
@@ -529,8 +551,7 @@ def initialize_processors():
     【修复版】初始化所有需要的处理器实例，包括 MediaProcessor 和 WatchlistProcessor。
     """
     # ★★★ 1. 声明所有需要修改的全局变量 ★★★
-    global media_processor_instance, watchlist_processor_instance
-    
+    global media_processor_instance, watchlist_processor_instance, EMBY_SERVER_ID
     if not APP_CONFIG:
         logger.error("无法初始化处理器：全局配置 APP_CONFIG 为空。")
         return
@@ -538,6 +559,19 @@ def initialize_processors():
     current_config = APP_CONFIG.copy()
     current_config['db_path'] = DB_PATH
 
+    # --- ★★★ 在初始化时自动发现 Server ID ★★★ ---
+    emby_url = current_config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+    emby_key = current_config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+    if emby_url and emby_key:
+        server_info = emby_handler.get_emby_server_info(emby_url, emby_key)
+        if server_info and server_info.get("Id"):
+            EMBY_SERVER_ID = server_info.get("Id")
+            logger.info(f"成功获取到 Emby Server ID: {EMBY_SERVER_ID}")
+        else:
+            EMBY_SERVER_ID = None
+            logger.warning("未能获取到 Emby Server ID，跳转链接可能不完整。")
+    else:
+        EMBY_SERVER_ID = None
     # --- 初始化 MediaProcessor  ---
     if media_processor_instance:
         media_processor_instance.close()
@@ -1489,6 +1523,72 @@ TASK_REGISTRY = {
     'enrich-aliases': (task_enrich_aliases, "立即执行演员元数据增强"),
     'actor-cleanup': (task_actor_translation_cleanup, "立即执行演员名翻译查漏补缺")
 }
+# ★★★ 刷新合集的后台任务函数 ★★★
+def task_refresh_collections(processor: MediaProcessor):
+    """
+    后台任务：全量同步所有合集信息到数据库。
+    """
+    update_status_from_thread(0, "正在获取 Emby 合集列表...")
+    try:
+        with get_central_db_connection(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            emby_collections = emby_handler.get_all_collections_with_items(
+                base_url=processor.emby_url,
+                api_key=processor.emby_api_key,
+                user_id=processor.emby_user_id
+            )
+            if emby_collections is None:
+                raise RuntimeError("从 Emby 获取合集列表失败")
+
+            total = len(emby_collections)
+            update_status_from_thread(5, f"共找到 {total} 个合集，开始同步...")
+
+            emby_current_ids = {c['Id'] for c in emby_collections}
+            cursor.execute("SELECT emby_collection_id FROM collections_info")
+            db_known_ids = {row[0] for row in cursor.fetchall()}
+            
+            deleted_ids = db_known_ids - emby_current_ids
+            if deleted_ids:
+                cursor.executemany("DELETE FROM collections_info WHERE emby_collection_id = ?", [(id,) for id in deleted_ids])
+
+            tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+            if not tmdb_api_key: raise RuntimeError("未配置 TMDb API Key")
+
+            for i, collection in enumerate(emby_collections):
+                if processor.is_stop_requested():
+                    logger.info("合集刷新任务被中止。")
+                    break
+                
+                progress = 10 + int((i / total) * 90)
+                update_status_from_thread(progress, f"正在同步: {collection.get('Name', '')[:20]}... ({i+1}/{total})")
+
+                # (这里的核心处理逻辑与之前完全相同)
+                collection_id = collection['Id']
+                provider_ids = collection.get("ProviderIds", {})
+                tmdb_id = provider_ids.get("TmdbCollection") or provider_ids.get("TmdbCollectionId") or provider_ids.get("Tmdb")
+                status, has_missing, missing_movies = "ok", False, []
+                if not tmdb_id:
+                    status = "unlinked"
+                else:
+                    details = tmdb_handler.get_collection_details_tmdb(int(tmdb_id), tmdb_api_key)
+                    if not details or "parts" not in details: status = "tmdb_error"
+                    else:
+                        emby_movie_ids = set(collection.get("ExistingMovieTmdbIds", []))
+                        for movie in details.get("parts", []):
+                            if str(movie.get("id")) not in emby_movie_ids:
+                                missing_movies.append({"tmdb_id": str(movie.get("id")), "title": movie.get("title"), "year": movie.get("release_date", "----")[0:4], "poster_path": movie.get("poster_path")})
+                        if missing_movies: has_missing, status = True, "has_missing"
+                
+                image_tag = collection.get("ImageTags", {}).get("Primary")
+                poster_path = f"/Items/{collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
+                
+                cursor.execute("INSERT OR REPLACE INTO collections_info VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (collection_id, collection.get('Name'), tmdb_id, status, has_missing, json.dumps(missing_movies), time.time(), poster_path))
+            
+            conn.commit()
+    except Exception as e:
+        logger.error(f"刷新合集任务失败: {e}", exc_info=True)
+        update_status_from_thread(-1, f"错误: {e}")
 # --- 路由区 ---
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
@@ -1845,6 +1945,7 @@ def api_get_config():
         current_config = APP_CONFIG 
         
         if current_config:
+            current_config['emby_server_id'] = EMBY_SERVER_ID
             logger.trace(f"API /api/config (GET): 成功加载并返回配置。")
             return jsonify(current_config)
         else:
@@ -2386,27 +2487,30 @@ def api_preview_processed_cast(item_id):
 def proxy_emby_image(image_path):
     """
     一个安全的、动态的 Emby 图片代理。
+    【V2 - 完整修复版】确保 api_key 作为 URL 参数传递，适用于所有图片类型。
     """
     try:
-        # 从已加载的配置中获取 Emby URL 和 API Key
         emby_url = media_processor_instance.emby_url.rstrip('/')
         emby_api_key = media_processor_instance.emby_api_key
 
+        # 1. 构造基础 URL，包含路径和原始查询参数
         query_string = request.query_string.decode('utf-8')
         target_url = f"{emby_url}/{image_path}"
         if query_string:
             target_url += f"?{query_string}"
         
-        headers = {
-            'X-Emby-Token': emby_api_key,
-            'User-Agent': request.headers.get('User-Agent', 'EmbyActorProcessorProxy/1.0')
-        }
+        # 2. ★★★ 核心修复：将 api_key 作为 URL 参数追加 ★★★
+        # 判断是使用 '?' 还是 '&' 来追加 api_key
+        separator = '&' if '?' in target_url else '?'
+        target_url_with_key = f"{target_url}{separator}api_key={emby_api_key}"
         
-        logger.trace(f"代理图片请求: {target_url}")
+        logger.trace(f"代理图片请求 (最终URL): {target_url_with_key}")
 
-        emby_response = requests.get(target_url, headers=headers, stream=True, timeout=20)
+        # 3. 发送请求
+        emby_response = requests.get(target_url_with_key, stream=True, timeout=20)
         emby_response.raise_for_status()
 
+        # 4. 将 Emby 的响应流式传输回浏览器
         return Response(
             stream_with_context(emby_response.iter_content(chunk_size=8192)),
             content_type=emby_response.headers.get('Content-Type'),
@@ -2414,7 +2518,7 @@ def proxy_emby_image(image_path):
         )
     except Exception as e:
         logger.error(f"代理 Emby 图片时发生严重错误: {e}", exc_info=True)
-        # 返回一个占位符图片
+        # 返回一个1x1的透明像素点作为占位符，避免显示大的裂图图标
         return Response(
             b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82',
             mimetype='image/png'
@@ -2992,6 +3096,128 @@ def search_logs_with_context():
     except Exception as e:
         logging.error(f"API: 上下文日志搜索时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "搜索过程中发生服务器内部错误"}), 500
+# ★★★ 获取所有合集状态的 API 端点 ★★★
+@app.route('/api/collections/status', methods=['GET'])
+@login_required
+@processor_ready_required
+def api_get_collections_status():
+    """
+    获取所有 Emby 合集状态。
+    - 默认：直接从数据库读取。
+    - force_refresh=true：提交一个后台任务来执行全量同步。
+    【V5 - 任务化版】
+    """
+    force_refresh = request.args.get('force_refresh', 'false').lower() == 'true'
+
+    # --- 模式一：强制刷新（提交后台任务） ---
+    if force_refresh:
+        # 使用我们现有的装饰器逻辑来检查任务锁
+        if task_lock.locked():
+            return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
+        
+        submit_task_to_queue(
+            task_refresh_collections,
+            "刷新合集列表"
+        )
+        return jsonify({"message": "刷新任务已在后台启动，请稍后查看结果。"}), 202
+
+    # --- 模式二：快速读取（默认行为） ---
+    try:
+        with get_central_db_connection(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM collections_info ORDER BY name")
+            final_results = []
+            for row in cursor.fetchall():
+                row_dict = dict(row)
+                row_dict['missing_movies'] = json.loads(row_dict.get('missing_movies_json', '[]'))
+                del row_dict['missing_movies_json']
+                final_results.append(row_dict)
+            return jsonify(final_results)
+    except Exception as e:
+        logger.error(f"读取合集状态时发生严重错误: {e}", exc_info=True)
+        return jsonify({"error": "读取合集时发生服务器内部错误"}), 500
+# ★★★ 最终版：将电影提交到 MoviePilot 订阅 (实现完整认证流程) ★★★
+@app.route('/api/subscribe/moviepilot', methods=['POST'])
+@login_required
+def api_subscribe_moviepilot():
+    data = request.json
+    tmdb_id = data.get('tmdb_id')
+    title = data.get('title') # 我们需要前端也传来电影标题
+
+    if not tmdb_id or not title:
+        return jsonify({"error": "请求中缺少 tmdb_id 或 title"}), 400
+
+    # 1. 从全局配置中获取 MoviePilot 信息
+    moviepilot_url = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
+    mp_username = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_USERNAME, '')
+    mp_password = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD, '')
+
+    if not all([moviepilot_url, mp_username, mp_password]):
+        return jsonify({"error": "服务器未完整配置 MoviePilot URL、用户名或密码。"}), 500
+
+    access_token = None
+    try:
+        # 2. 第一步：登录并获取 Token
+        login_url = f"{moviepilot_url}/api/v1/login/access-token"
+        login_headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        login_data = {"username": mp_username, "password": mp_password}
+
+        logger.info(f"正在向 MoviePilot ({login_url}) 请求 access token...")
+        login_response = requests.post(login_url, headers=login_headers, data=login_data, timeout=10)
+        login_response.raise_for_status()
+
+        login_json = login_response.json()
+        access_token = login_json.get("access_token")
+
+        if not access_token:
+            logger.error("MoviePilot 登录成功，但未在响应中找到 access_token。")
+            return jsonify({"error": "MoviePilot 认证失败：未能获取到 Token。"}), 500
+        logger.info("成功获取 MoviePilot access token。")
+
+    except requests.exceptions.HTTPError as e:
+        error_msg = f"MoviePilot 登录认证失败: {e.response.status_code}。请检查用户名和密码是否正确。"
+        logger.error(f"{error_msg} 响应: {e.response.text}")
+        return jsonify({"error": error_msg}), 502
+    except requests.exceptions.RequestException as e:
+        error_msg = f"连接 MoviePilot 时发生网络错误: {e}"
+        logger.error(error_msg)
+        return jsonify({"error": error_msg}), 503
+
+    try:
+        # 3. 第二步：使用 Token 提交订阅
+        subscribe_url = f"{moviepilot_url}/api/v1/subscribe/"
+        subscribe_headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        # 根据参考代码，构建订阅的 payload
+        subscribe_payload = {
+            "name": title,
+            "tmdbid": int(tmdb_id),
+            "type": "电影"
+        }
+
+        logger.info(f"正在向 MoviePilot 提交订阅请求: {subscribe_payload}")
+        sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
+        sub_response.raise_for_status()
+
+        sub_json = sub_response.json()
+        if sub_json.get("success"):
+            return jsonify({"message": f"《{title}》已成功提交到 MoviePilot 订阅！"}), 200
+        else:
+            error_detail = sub_json.get("message", "未知错误，请查看 MoviePilot 日志。")
+            logger.error(f"MoviePilot 报告订阅失败: {error_detail}")
+            return jsonify({"error": f"MoviePilot 报告订阅失败: {error_detail}"}), 500
+
+    except requests.exceptions.HTTPError as e:
+        error_msg = f"向 MoviePilot 提交订阅时出错: {e.response.status_code} - {e.response.text}"
+        logger.error(error_msg)
+        return jsonify({"error": error_msg}), 502
+    except requests.exceptions.RequestException as e:
+        error_msg = f"连接 MoviePilot 时发生网络错误: {e}"
+        logger.error(error_msg)
+        return jsonify({"error": error_msg}), 503
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
