@@ -933,6 +933,10 @@ class MediaProcessor:
 
                         # --- 步骤2: 遍历每一个找到的分集文件，修改并写入覆盖目录 ---
                         for episode_filename in sorted(episode_files_to_process):
+                            # ✨✨✨ 新增停止检查 ✨✨✨
+                            if self.is_stop_requested():
+                                logger.warning(f"分集处理循环被用户中止。")
+                                raise InterruptedError("任务中止")
                             local_child_path = os.path.join(base_cache_dir, episode_filename)
                             
                             try:
@@ -1261,6 +1265,9 @@ class MediaProcessor:
                     cursor = conn.cursor()
 
                     for i, actor in enumerate(translated_cast):
+                        if self.is_stop_requested():
+                            logger.warning(f"一键翻译（降级模式）被用户中止。")
+                            break # 这里使用 break 更安全，可以直接跳出循环
                         # 【【【 修复点 3：使用正确的参数调用 translate_actor_field 】】】
                         
                         # 翻译演员名
@@ -1449,6 +1456,9 @@ class MediaProcessor:
                         logger.info(f"手动处理：开始为所有分集注入手动编辑后的演员表...")
                         # (这部分逻辑已经很精简了，直接复用即可)
                         for filename in os.listdir(base_cache_dir):
+                            if self.is_stop_requested():
+                                logger.warning(f"手动保存的分集处理循环被用户中止。")
+                                raise InterruptedError("任务中止")
                             if filename.startswith("season-") and "-episode-" in filename and filename.endswith(".json"):
                                 child_json_original = _read_local_json(os.path.join(base_cache_dir, filename))
                                 if child_json_original:
@@ -1731,7 +1741,13 @@ class MediaProcessor:
                     try:
                         # 使用 os.walk 遍历目标目录及其所有子目录
                         for dirpath, _, filenames in os.walk(full_path):
+                            if self.is_stop_requested():
+                                logger.warning("缓存清除任务被中止 (遍历目录时)。")
+                                break # 跳出 for dirpath... 循环
                             for filename in filenames:
+                                if self.is_stop_requested():
+                                    logger.warning("缓存清除任务被中止 (处理文件时)。")
+                                    break # 跳出 for filename... 循环
                                 # 检查文件是否以 .json 结尾 (不区分大小写)
                                 if filename.lower().endswith('.json'):
                                     file_to_delete = os.path.join(dirpath, filename)
