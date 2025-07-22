@@ -1845,7 +1845,7 @@ def api_get_config():
         current_config = APP_CONFIG 
         
         if current_config:
-            logger.debug(f"API /api/config (GET): 成功加载并返回配置。")
+            logger.trace(f"API /api/config (GET): 成功加载并返回配置。")
             return jsonify(current_config)
         else:
             logger.error(f"API /api/config (GET): APP_CONFIG 为空或未初始化。")

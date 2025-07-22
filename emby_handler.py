@@ -669,7 +669,7 @@ def download_emby_image(
     if max_width: params["maxWidth"] = max_width
     if max_height: params["maxHeight"] = max_height
 
-    logger.debug(f"准备下载图片: 类型='{image_type}', 从 URL: {image_url}")
+    logger.trace(f"准备下载图片: 类型='{image_type}', 从 URL: {image_url}")
     
     try:
         with requests.get(image_url, params=params, stream=True, timeout=30) as r:
@@ -677,7 +677,7 @@ def download_emby_image(
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             with open(save_path, 'wb') as f:
                 shutil.copyfileobj(r.raw, f)
-        logger.debug(f"成功下载图片并保存到: {save_path}")
+        logger.trace(f"成功下载图片并保存到: {save_path}")
         return True
     except requests.exceptions.RequestException as e:
         if hasattr(e, 'response') and e.response is not None and e.response.status_code == 404:
