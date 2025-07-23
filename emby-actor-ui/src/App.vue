@@ -191,7 +191,7 @@ const menuOptions = computed(() => [
   { type: 'divider', key: 'd1' },
   { label: '任务中心', key: 'actions-status', icon: renderIcon(ActionsIcon) },
   { label: '合集检查', key: 'Collections', icon: renderIcon(CollectionsIcon) },
-  { label: '追剧列表', key: 'Watchlist', icon: renderIcon(WatchlistIcon) },
+  { label: '智能追剧', key: 'Watchlist', icon: renderIcon(WatchlistIcon) },
   { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
   { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
 ]);

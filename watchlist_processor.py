@@ -224,6 +224,7 @@ class WatchlistProcessor:
 
         final_series_data = base_series_data
         final_series_data.setdefault("credits", {})["cast"] = actor_cast_data
+        final_series_data["name"] = item_name
         try:
             with open(os.path.join(override_dir, "series.json"), 'w', encoding='utf-8') as f:
                 json.dump(final_series_data, f, ensure_ascii=False, indent=4)
