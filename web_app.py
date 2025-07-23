@@ -217,6 +217,7 @@ scheduler = BackgroundScheduler(timezone=str(pytz.timezone(constants.TIMEZONE)))
 JOB_ID_FULL_SCAN = "scheduled_full_scan"
 JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
 JOB_ID_PROCESS_WATCHLIST = "scheduled_process_watchlist"
+JOB_ID_REVIVAL_CHECK = "scheduled_revival_check"
 # --- 全局变量结束 ---
 
 # --- 数据库辅助函数 ---
@@ -271,16 +272,36 @@ def init_db():
                 )
             """)
 
-            # 剧集追踪 (追剧列表)
-            logger.trace("  -> 正在创建 'watchlist' 表...")
+            # 剧集追踪 (追剧列表) - ★★★ 已更新 ★★★
+            logger.trace("  -> 正在创建/更新 'watchlist' 表...")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS watchlist (
-                    item_id TEXT PRIMARY KEY, tmdb_id TEXT NOT NULL, item_name TEXT, item_type TEXT DEFAULT 'Series',
-                    status TEXT DEFAULT 'Watching', added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_checked_at TIMESTAMP,
-                    tmdb_status TEXT, next_episode_to_air_json TEXT, missing_info_json TEXT
+                    item_id TEXT PRIMARY KEY,
+                    tmdb_id TEXT NOT NULL,
+                    item_name TEXT,
+                    item_type TEXT DEFAULT 'Series',
+                    status TEXT DEFAULT 'Watching',
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_checked_at TIMESTAMP,
+                    tmdb_status TEXT,
+                    next_episode_to_air_json TEXT,
+                    missing_info_json TEXT,
+                    paused_until DATE DEFAULT NULL  -- ★★★ 新增字段：用于记录暂停至何时 ★★★
                 )
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
+
+            # ★★★ 新增：为现有数据库平滑升级的逻辑 ★★★
+            # 这种方式可以确保老用户更新程序后，数据库结构也能自动更新而不会报错。
+            try:
+                cursor.execute("PRAGMA table_info(watchlist)")
+                columns = [row[1] for row in cursor.fetchall()]
+                if 'paused_until' not in columns:
+                    logger.info("    -> 检测到旧版 'watchlist' 表，正在添加 'paused_until' 字段...")
+                    cursor.execute("ALTER TABLE watchlist ADD COLUMN paused_until DATE DEFAULT NULL;")
+                    logger.info("    -> 'paused_until' 字段添加成功。")
+            except Exception as e_alter:
+                logger.error(f"  -> 为 'watchlist' 表添加新字段时出错: {e_alter}")
 
             # 演员身份映射
             logger.trace("  -> 正在创建 'person_identity_map' 表...")
@@ -614,7 +635,7 @@ def _execute_task_with_lock(task_function, task_name: str, processor: Union[Medi
         background_task_status["message"] = "等待任务"
         if processor:
             processor.clear_stop_signal()
-        logger.debug(f"后台任务 '{task_name}' 状态已重置。")
+        logger.trace(f"后台任务 '{task_name}' 状态已重置。")
 # --- 通用队列 ---
 def task_worker_function():
     """
@@ -807,12 +828,34 @@ def setup_scheduled_tasks():
     if config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False):
         try:
             cron = config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON)
-            scheduler.add_job(func=lambda: submit_task_to_queue(task_process_watchlist, "定时刷新追剧列表"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_PROCESS_WATCHLIST, name="定时刷新追剧列表", replace_existing=True)
-            logger.info(f"已设置定时任务：刷新追剧列表，将{_get_next_run_time_str(cron)}")
+            # ★★★ 核心修改：让定时任务调用新的、职责更明确的函数 ★★★
+            def scheduled_watchlist_task():
+                submit_task_to_queue(
+                    lambda p: p.run_regular_processing_task(update_status_from_thread),
+                    "定时常规追剧更新"
+                )
+            scheduler.add_job(func=scheduled_watchlist_task, trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_PROCESS_WATCHLIST, name="定时常规追剧更新", replace_existing=True)
+            logger.info(f"已设置定时任务：常规追剧更新，将{_get_next_run_time_str(cron)}")
         except Exception as e:
-            logger.error(f"设置定时刷新追剧列表任务失败: {e}", exc_info=True)
+            logger.error(f"设置定时常规追剧更新任务失败: {e}", exc_info=True)
     else:
-        logger.info("定时刷新追剧列表任务未启用。")
+        logger.info("定时常规追剧更新任务未启用。")
+
+    # ★★★ 已完结剧集复活检查 (硬编码，每周一次) ★★★
+    global JOB_ID_REVIVAL_CHECK
+    if scheduler.get_job(JOB_ID_REVIVAL_CHECK): scheduler.remove_job(JOB_ID_REVIVAL_CHECK)
+    try:
+        # 硬编码为每周日的凌晨5点执行，这个时间点API调用压力小
+        revival_cron = "0 5 * * 0" 
+        def scheduled_revival_check_task():
+            submit_task_to_queue(
+                lambda p: p.run_revival_check_task(update_status_from_thread),
+                "每周已完结剧集复活检查"
+            )
+        scheduler.add_job(func=scheduled_revival_check_task, trigger=CronTrigger.from_crontab(revival_cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_REVIVAL_CHECK, name="每周已完结剧集复活检查", replace_existing=True)
+        logger.info(f"已设置内置任务：已完结剧集复活检查，将{_get_next_run_time_str(revival_cron)}")
+    except Exception as e:
+        logger.error(f"设置内置的已完结剧集复活检查任务失败: {e}", exc_info=True)
 
     # --- 任务 5: 演员元数据增强 ---
     JOB_ID_ENRICH_ALIASES = 'scheduled_enrich_aliases'
@@ -1102,124 +1145,43 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
 # --- 追剧 ---    
 def task_process_watchlist(processor: WatchlistProcessor, item_id: Optional[str] = None):
     """
-    【V2 - 超级追踪器】
-    遍历追剧列表，为每一部剧集：
-    1. 更新 TMDb 状态和下一待播集信息。
-    2. 对比 Emby 和 TMDb，找出缺失的季和集。
-    3. 将所有情报更新到数据库。
+    【V9 - 启动器】
+    调用处理器实例来执行追剧任务，并处理UI状态更新。
     """
-    processor.process_watching_list()
-    task_name = "追剧列表更新"
-    if item_id:
-        task_name = f"单项追剧更新 (ID: {item_id})"
-    
-    update_status_from_thread(0, "正在准备更新追剧列表...")
-    
+    # 定义一个可以传递给处理器的回调函数
+    def progress_updater(progress, message):
+        # 这里的 update_status_from_thread 是您项目中用于更新UI的函数
+        update_status_from_thread(progress, message)
+
     try:
-        with get_central_db_connection(DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            # 1. 确定要处理的项目范围
-            sql_query = "SELECT item_id, tmdb_id, item_name FROM watchlist"
-            if item_id:
-                sql_query += " AND item_id = ?"
-                cursor.execute(sql_query, (item_id,))
-            else:
-                cursor.execute(sql_query)
-            
-            items_to_process = cursor.fetchall()
-            total = len(items_to_process)
-            if total == 0:
-                update_status_from_thread(100, "没有需要更新的在追剧集。")
-                return
-
-            update_status_from_thread(5, f"开始处理 {total} 部在追剧集...")
-
-            # 2. 遍历处理每一部剧
-            for i, series in enumerate(items_to_process):
-                series_item_id = series['item_id']
-                series_tmdb_id = series['tmdb_id']
-                series_name = series['item_name']
-
-                if processor.is_stop_requested():
-                    logger.info("追剧任务被中止。")
-                    break
-                
-                progress = 10 + int((i / total) * 90)
-                update_status_from_thread(progress, f"正在检查: {series_name[:20]}... ({i+1}/{total})")
-
-                # --- a. 从 TMDb 获取官方数据 ---
-                tmdb_details = tmdb_handler.get_tv_details_tmdb(series_tmdb_id, processor.tmdb_api_key)
-                if not tmdb_details:
-                    logger.warning(f"无法获取 '{series_name}' 的 TMDb 详情，跳过。")
-                    continue
-                
-                tmdb_status = tmdb_details.get('status')
-                next_episode_to_air = tmdb_details.get('next_episode_to_air')
-                tmdb_seasons = {s['season_number']: s for s in tmdb_details.get('seasons', []) if s.get('season_number', 0) > 0}
-
-                # --- b. 从 Emby 获取已有数据 ---
-                emby_children = emby_handler.get_series_children(series_item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-                emby_seasons = {}
-                if emby_children:
-                    for child in emby_children:
-                        s_num = child.get('ParentIndexNumber')
-                        e_num = child.get('IndexNumber')
-                        if s_num is not None and e_num is not None:
-                            if s_num not in emby_seasons:
-                                emby_seasons[s_num] = set()
-                            emby_seasons[s_num].add(e_num)
-
-                # --- c. 对比并找出缺失 ---
-                missing_info = {"missing_seasons": [], "missing_episodes": []}
-                
-                for s_num, tmdb_season_data in tmdb_seasons.items():
-                    if s_num not in emby_seasons:
-                        # 整季缺失
-                        missing_info["missing_seasons"].append({
-                            "season_number": s_num,
-                            "name": tmdb_season_data.get('name'),
-                            "episode_count": tmdb_season_data.get('episode_count'),
-                            "air_date": tmdb_season_data.get('air_date')
-                        })
-                    else:
-                        # 季存在，检查缺失的集
-                        season_details = tmdb_handler.get_season_details_tmdb(series_tmdb_id, s_num, processor.tmdb_api_key)
-                        if season_details and 'episodes' in season_details:
-                            for episode in season_details['episodes']:
-                                e_num = episode.get('episode_number')
-                                if e_num is not None and e_num not in emby_seasons.get(s_num, set()):
-                                    missing_info["missing_episodes"].append({
-                                        "season_number": s_num,
-                                        "episode_number": e_num,
-                                        "title": episode.get('name'),
-                                        "air_date": episode.get('air_date')
-                                    })
-
-                # --- d. 更新数据库 ---
-                cursor.execute("""
-                    UPDATE watchlist 
-                    SET tmdb_status = ?, next_episode_to_air_json = ?, missing_info_json = ?, last_checked_at = CURRENT_TIMESTAMP
-                    WHERE item_id = ?
-                """, (
-                    tmdb_status,
-                    json.dumps(next_episode_to_air) if next_episode_to_air else None,
-                    json.dumps(missing_info),
-                    series_item_id
-                ))
-            
-            conn.commit()
-            update_status_from_thread(100, "所有在追剧集已检查完毕。")
+        # 直接调用 processor 实例的方法，并将回调函数传入
+        processor.run_regular_processing_task(progress_callback=progress_updater, item_id=item_id)
 
     except Exception as e:
-        logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
-        update_status_from_thread(-1, f"错误: {e}")
+        task_name = "追剧列表更新"
+        if item_id:
+            task_name = f"单项追剧更新 (ID: {item_id})"
+        logger.error(f"执行 '{task_name}' 时发生顶层错误: {e}", exc_info=True)
+        progress_updater(-1, f"启动任务时发生错误: {e}")
 # ★★★ 只更新追剧列表中的一个特定项目 ★★★
-def task_process_single_watchlist_item(processor: WatchlistProcessor, item_id: str):
-    """任务：只更新追剧列表中的一个特定项目"""
-    # 传递 item_id，执行单项更新
-    processor.process_watching_list(item_id=item_id)
+def task_refresh_single_watchlist_item(processor: WatchlistProcessor, item_id: str):
+    """
+    【V11 - 新增】后台任务：只刷新追剧列表中的一个特定项目。
+    这是一个职责更明确的函数，专门用于手动触发。
+    """
+    # 定义一个可以传递给处理器的回调函数
+    def progress_updater(progress, message):
+        update_status_from_thread(progress, message)
+
+    try:
+        # 直接调用处理器的主方法，并将 item_id 传入
+        # 这会执行完整的元数据刷新、状态检查和数据库更新流程
+        processor.run_regular_processing_task(progress_callback=progress_updater, item_id=item_id)
+
+    except Exception as e:
+        task_name = f"单项追剧刷新 (ID: {item_id})"
+        logger.error(f"执行 '{task_name}' 时发生顶层错误: {e}", exc_info=True)
+        progress_updater(-1, f"启动任务时发生错误: {e}")
 # ★★★ 导入映射表 + 元数据 ★★★
 def task_import_person_map(processor, file_content: str, **kwargs):
     """
@@ -2974,24 +2936,38 @@ def api_remove_from_watchlist(item_id):
         return jsonify({"error": "移除项目时发生未知的服务器内部错误"}), 500
     # 4. 不再需要 finally 块，因为 with 语句已经处理了连接关闭
     # ✨✨✨ 修改结束 ✨✨✨
-# ★★★ 新增：手动触发单项追剧更新的API ★★★
-@app.route('/api/watchlist/trigger_update/<item_id>/', methods=['POST'])
+# ★★★ 手动触发单项追剧更新的API ★★★
+@app.route('/api/watchlist/refresh/<item_id>', methods=['POST'])
 @login_required
 @task_lock_required
-def api_trigger_single_watchlist_update(item_id):
-    logger.info(f"API: 收到对单个项目 {item_id} 的追剧更新请求。")
+def api_trigger_single_watchlist_refresh(item_id):
+    """
+    【V11 - 新增】API端点，用于手动触发对单个追剧项目的即时刷新。
+    """
+    logger.trace(f"API: 收到对单个追剧项目 {item_id} 的刷新请求。")
     if not watchlist_processor_instance:
         return jsonify({"error": "追剧处理模块未就绪"}), 503
 
-    # 我们需要一个新的、只处理单个项目的任务函数
-    # 我们在下面定义它
+    # 从数据库获取项目名称，让任务名更友好
+    item_name = "未知剧集"
+    try:
+        with get_central_db_connection(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT item_name FROM watchlist WHERE item_id = ?", (item_id,))
+            row = cursor.fetchone()
+            if row:
+                item_name = row[0]
+    except Exception as e:
+        logger.warning(f"获取项目 {item_id} 名称时出错: {e}")
+
+    # 提交我们刚刚创建的、职责单一的新任务
     submit_task_to_queue(
-        task_process_single_watchlist_item,
-        f"手动单项追剧更新: {item_id}",
+        task_refresh_single_watchlist_item,
+        f"手动刷新: {item_name}",
         item_id # 把 item_id 作为参数传给任务
     )
     
-    return jsonify({"message": f"项目 {item_id} 的更新任务已在后台启动！"}), 202
+    return jsonify({"message": f"《{item_name}》的刷新任务已在后台启动！"}), 202
 # ★★★ 重新处理单个项目 ★★★
 @app.route('/api/actions/reprocess_item/<item_id>', methods=['POST'])
 @login_required

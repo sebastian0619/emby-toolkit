@@ -61,7 +61,7 @@
                     </n-space>
                     <!-- ★★★ 核心修正：使用可选链操作符 (?.) 来安全地访问属性 ★★★ -->
                     <n-text v-if="nextEpisode(item)?.name" :depth="3" class="next-episode-text">
-                      <n-icon :component="CalendarIcon" /> 下集: {{ nextEpisode(item).name }} ({{ formatAirDate(nextEpisode(item).air_date) }})
+                      <n-icon :component="CalendarIcon" /> 待播: {{ nextEpisode(item).name }} ({{ formatAirDate(nextEpisode(item).air_date) }})
                     </n-text>
                     <n-text :depth="3" class="last-checked-text">上次检查: {{ formatTimestamp(item.last_checked_at) }}</n-text>
                   </n-space>
@@ -71,6 +71,18 @@
                     <template #icon><n-icon :component="EyeIcon" /></template>
                     查看缺失
                   </n-button>
+                  <n-tooltip>
+                    <template #trigger>
+                      <n-button 
+                        circle 
+                        :loading="refreshingItems[item.item_id]" 
+                        @click="() => triggerSingleRefresh(item.item_id, item.item_name)"
+                      >
+                        <template #icon><n-icon :component="SyncOutline" /></template>
+                      </n-button>
+                    </template>
+                    立即刷新此剧集
+                  </n-tooltip>
                   <n-tooltip>
                     <template #trigger><n-button text @click="openInEmby(item.item_id)"><template #icon><n-icon :component="EmbyIcon" size="18" /></template></n-button></template>
                     在 Emby 中打开
@@ -138,7 +150,26 @@ const error = ref(null);
 const showModal = ref(false);
 const selectedSeries = ref(null);
 const subscribing = ref({}); // ★★★ 新增：用于跟踪订阅状态
-
+const refreshingItems = ref({});
+// ★★★ 新增：手动触发单项刷新的函数 ★★★
+const triggerSingleRefresh = async (itemId, itemName) => {
+  refreshingItems.value[itemId] = true;
+  try {
+    await axios.post(`/api/watchlist/refresh/${itemId}`);
+    message.success(`《${itemName}》的刷新任务已提交！`);
+    // 延迟后自动刷新列表，给后端一点处理时间
+    setTimeout(() => {
+      fetchWatchlist();
+    }, 5000); // 5秒后刷新
+  } catch (err) {
+    message.error(err.response?.data?.error || '启动刷新失败。');
+  } finally {
+    // 无论成功失败，一段时间后都应该结束加载状态，避免按钮卡死
+    setTimeout(() => {
+      refreshingItems.value[itemId] = false;
+    }, 5000);
+  }
+};
 // ★★★ 新增：订阅指定季的函数 ★★★
 const subscribeSeason = async (seasonNumber) => {
   if (!selectedSeries.value) return;
