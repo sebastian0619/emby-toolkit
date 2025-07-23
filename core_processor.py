@@ -867,8 +867,13 @@ class MediaProcessor:
                 full_tmdb_cast_as_base = []
                 if item_type == "Movie":
                     full_tmdb_cast_as_base = base_json_data_original.get("casts", {}).get("cast", [])
+                
                 elif item_type == "Series":
-                    full_tmdb_cast_as_base = base_json_data_original.get("credits", {}).get("cast", [])
+                    # ✨✨✨ 直接调用新的聚合函数 ✨✨✨
+                    full_tmdb_cast_as_base = self._aggregate_series_cast_from_cache(
+                        base_cache_dir=base_cache_dir,
+                        item_name_for_log=item_name_for_log
+                    )
                 
                 intermediate_cast = self._process_cast_list_from_local(
                     full_tmdb_cast_as_base,
@@ -1539,16 +1544,26 @@ class MediaProcessor:
 
             tmdb_id = emby_details.get("ProviderIds", {}).get("Tmdb")
             item_type = emby_details.get("Type")
+            item_name_for_log = emby_details.get("Name", f"未知(ID:{item_id})")
             if not tmdb_id: raise ValueError(f"项目 {item_id} 缺少 TMDb ID")
 
             # 2. 从本地 cache 文件读取最可靠的演员列表
             cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
             base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
             base_json_filename = "all.json" if item_type == "Movie" else "series.json"
-            tmdb_data = _read_local_json(os.path.join(base_cache_dir, base_json_filename))
-            if not tmdb_data: raise ValueError("未找到本地 TMDb 缓存文件")
+            full_cast_from_cache = []
             
-            full_cast_from_cache = tmdb_data.get("credits", {}).get("cast", []) or tmdb_data.get("casts", {}).get("cast", [])
+            if item_type == "Movie":
+                tmdb_data = _read_local_json(os.path.join(base_cache_dir, base_json_filename))
+                if not tmdb_data: raise ValueError("未找到本地 TMDb 缓存文件")
+                full_cast_from_cache = tmdb_data.get("casts", {}).get("cast", [])
+            
+            elif item_type == "Series":
+                # ✨✨✨ 同样直接调用新的聚合函数 ✨✨✨
+                full_cast_from_cache = self._aggregate_series_cast_from_cache(
+                    base_cache_dir=base_cache_dir,
+                    item_name_for_log=item_name_for_log
+                )
 
             # 3. 将完整的演员列表存入内存缓存
             self.manual_edit_cache[item_id] = full_cast_from_cache
@@ -1891,5 +1906,83 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"{log_prefix} 为 '{item_name_for_log}' 同步图片时发生未知错误: {e}", exc_info=True)
             return False
+    # --- 聚合演员表 ---
+    def _aggregate_series_cast_from_cache(self, base_cache_dir: str, item_name_for_log: str) -> List[Dict[str, Any]]:
+        """
+        【新增】聚合一个剧集所有本地缓存JSON文件中的演员列表。
+
+        此函数会扫描指定TMDb缓存目录，读取series.json、所有season-*.json和
+        season-*-episode-*.json文件，提取其中的演员和客串演员，
+        然后去重并形成一个完整的演员列表。
+
+        Args:
+            base_cache_dir (str): 剧集的TMDb缓存根目录路径。
+            item_name_for_log (str): 用于日志记录的媒体项目名称。
+
+        Returns:
+            List[Dict[str, Any]]: 聚合、去重并排序后的完整演员列表。
+        """
+        logger.info(f"【演员聚合】开始为 '{item_name_for_log}' 聚合所有JSON文件中的演员...")
+        
+        # 1. 使用字典进行去重，以演员ID为键，确保唯一性
+        aggregated_cast_map = {}
+        
+        # 2. 定义主剧集文件路径并优先处理
+        base_json_filename = "series.json"
+        main_series_json_path = os.path.join(base_cache_dir, base_json_filename)
+        
+        main_data = _read_local_json(main_series_json_path)
+        if main_data:
+            main_cast = main_data.get("credits", {}).get("cast", [])
+            for actor in main_cast:
+                actor_id = actor.get("id")
+                if actor_id:
+                    # 主演信息（尤其是order）优先级最高，直接存入
+                    aggregated_cast_map[actor_id] = actor
+            logger.debug(f"  -> 从 {base_json_filename} 中加载了 {len(aggregated_cast_map)} 位主演员。")
+        else:
+            logger.warning(f"  -> 未找到主剧集文件: {main_series_json_path}，将只处理子文件。")
+
+        # 3. 扫描缓存目录，查找所有分季和分集文件
+        child_json_files = []
+        try:
+            for filename in os.listdir(base_cache_dir):
+                # 排除主文件和非json文件，只处理与季/集相关的JSON
+                if filename != base_json_filename and filename.startswith("season-") and filename.lower().endswith(".json"):
+                    child_json_files.append(filename)
+        except FileNotFoundError:
+            logger.warning(f"  -> 缓存目录 {base_cache_dir} 不存在，无法聚合子项目演员。")
+        
+        if child_json_files:
+            logger.debug(f"  -> 发现 {len(child_json_files)} 个额外的季/集JSON文件需要处理。")
+
+            # 4. 遍历所有子文件，聚合演员
+            for json_filename in sorted(child_json_files):
+                file_path = os.path.join(base_cache_dir, json_filename)
+                child_data = _read_local_json(file_path)
+                if not child_data:
+                    continue
+
+                # 提取 'cast' 和 'guest_stars'
+                actors_from_child = child_data.get("credits", {}).get("cast", []) + child_data.get("guest_stars", [])
+                
+                for actor in actors_from_child:
+                    actor_id = actor.get("id")
+                    # 如果演员ID存在，并且尚未被记录（即不是主演），则添加
+                    if actor_id and actor_id not in aggregated_cast_map:
+                        # 给这些非主演演员一个较高的 order 值，让他们默认排在后面
+                        if 'order' not in actor:
+                            actor['order'] = 999 
+                        aggregated_cast_map[actor_id] = actor
+
+        # 5. 将聚合后的演员从字典转回列表
+        full_aggregated_cast = list(aggregated_cast_map.values())
+        
+        # 6. 根据 'order' 字段进行最终排序，确保主演员在前，其他演员按原始顺序
+        full_aggregated_cast.sort(key=lambda x: x.get('order', 999))
+        
+        logger.info(f"【演员聚合】完成。共为 '{item_name_for_log}' 聚合了 {len(full_aggregated_cast)} 位独立演员。")
+        
+        return full_aggregated_cast
     def close(self):
         if self.douban_api: self.douban_api.close()
