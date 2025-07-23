@@ -1332,34 +1332,29 @@ def task_import_person_map(processor, file_content: str, **kwargs):
         logger.error(f"后台导入任务失败: {e}", exc_info=True)
         update_status_from_thread(-1, f"导入失败: {e}")
 # ★★★ 重新处理单个项目 ★★★
-def task_reprocess_single_item(processor: MediaProcessor, item_id: str):
+def task_reprocess_single_item(processor: MediaProcessor, item_id: str, item_name_for_ui: str):
     """
-    【最终正确版 - 高效简洁】
-    后台任务：通过强制在线获取TMDb最新数据的方式，重新处理单个项目。
+    【最终版 - 职责分离】后台任务。
+    此版本负责在任务开始时设置“正在处理”的状态，并执行核心逻辑。
     """
-    # ✨ 1. 直接使用 ItemID 作为日志标识，不再预先获取项目名
-    item_name_for_log = f"ItemID: {item_id}"
-    logger.debug(f"--- 开始执行“重新处理单个项目”任务 ({item_name_for_log}) [强制在线获取模式] ---")
+    logger.debug(f"--- 后台任务开始执行 ({item_name_for_ui}) ---")
     
     try:
-        # ✨ 2. 状态更新也直接使用 ItemID
-        update_status_from_thread(10, f"正在处理: {item_name_for_log}")
+        # ✨ 关键修改：任务一开始，就用“正在处理”的状态覆盖掉旧状态
+        update_status_from_thread(0, f"正在处理: {item_name_for_ui}")
 
-        # ✨ 3. 【核心修改】直接调用核心处理器，不再有任何预先的API调用
-        #    由 process_single_item 自己去获取详情并打印唯一的开始日志
-        logger.debug(f"为 '{item_name_for_log}' 调用核心处理器，并设置强制在线获取标志...")
-        
+        # 现在才开始真正的工作
         processor.process_single_item(
             item_id, 
             force_reprocess_this_item=True,
             force_fetch_from_tmdb=True
         )
-        
-        logger.debug(f"--- “重新处理单个项目”任务完成 ({item_name_for_log}) ---")
+        # 任务成功完成后的状态更新会自动由任务队列处理，我们无需关心
+        logger.debug(f"--- 后台任务完成 ({item_name_for_ui}) ---")
 
     except Exception as e:
-        logger.error(f"重新处理 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
-        update_status_from_thread(-1, f"重新处理失败: {e}")
+        logger.error(f"后台任务处理 '{item_name_for_ui}' 时发生严重错误: {e}", exc_info=True)
+        update_status_from_thread(-1, f"处理失败: {item_name_for_ui}")
 # --- 翻译演员任务 ---
 def task_actor_translation_cleanup(processor):
     """
@@ -3002,13 +2997,34 @@ def api_trigger_single_watchlist_update(item_id):
 @login_required
 @task_lock_required # <-- 检查任务锁
 def api_reprocess_item(item_id):
+    """
+    【最终版 - 职责分离】启动单个项目重新处理的API接口。
+    此版本只负责提交任务和设置一个简单的“已提交”状态。
+    """
+    global media_processor_instance
+
     logger.info(f"API: 收到重新处理项目 '{item_id}' 的请求。")
+    
+    # 仍然需要获取名称，以便传递给后台任务
+    item_details = emby_handler.get_emby_item_details(
+        item_id,
+        media_processor_instance.emby_url,
+        media_processor_instance.emby_api_key,
+        media_processor_instance.emby_user_id
+    )
+    item_name_for_ui = item_details.get("Name", f"ItemID: {item_id}") if item_details else f"ItemID: {item_id}"
+
+    logger.info(f"API: 将为 '{item_name_for_ui}' 提交重新处理任务。")
+
+    # ✨ 关键修改：设置一个非常简单的初始状态，避免与后台任务冲突
     submit_task_to_queue(
         task_reprocess_single_item,
-        f"重新处理: {item_id}",
-        item_id
+        f"任务已提交: {item_name_for_ui}",  # <--- 只说“已提交”
+        item_id,
+        item_name_for_ui  # 将友好名称作为参数传递给后台任务
     )
-    return jsonify({"message": f"重新处理项目 '{item_id}' 的任务已提交。"}), 202
+    
+    return jsonify({"message": f"重新处理项目 '{item_name_for_ui}' 的任务已提交。"}), 202
 
 # ★★★ 重新处理所有待复核项 ★★★
 @app.route('/api/actions/reprocess_all_review_items', methods=['POST'])
