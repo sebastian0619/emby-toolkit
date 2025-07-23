@@ -1640,7 +1640,6 @@ def task_auto_subscribe(processor: MediaProcessor):
         return
 
     try:
-        offset_days = APP_CONFIG.get(constants.CONFIG_OPTION_AUTOSUB_RELEASE_DATE_OFFSET_DAYS)
         today = date.today()
         # 我们之前的修复是正确的，这里保持 season_date <= today 的逻辑
         

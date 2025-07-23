@@ -6,7 +6,7 @@ import json
 import os
 import copy
 from typing import Optional, Dict, Any, List, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
 from actor_utils import get_db_connection as get_central_db_connection
 # 导入我们需要的辅助模块
@@ -15,13 +15,19 @@ import emby_handler
 import logging
 
 logger = logging.getLogger(__name__)
-# ✨✨✨ 状态翻译字典 ✨✨✨
+# ✨✨✨ Tmdb状态翻译字典 ✨✨✨
 TMDB_STATUS_TRANSLATION = {
     "Ended": "已完结",
     "Canceled": "已取消",
     "Returning Series": "连载中",
     "In Production": "制作中",
     "Planned": "计划中"
+}
+# ★★★ 内部状态翻译字典，用于日志显示 ★★★
+INTERNAL_STATUS_TRANSLATION = {
+    'Watching': '追剧中',
+    'Paused': '已暂停',
+    'Completed': '已完结'
 }
 # ★★★ 新增：定义状态常量，便于维护 ★★★
 STATUS_WATCHING = 'Watching'
@@ -30,6 +36,9 @@ STATUS_COMPLETED = 'Completed'
 def translate_status(status: str) -> str:
     """一个简单的辅助函数，用于翻译状态，如果找不到翻译则返回原文。"""
     return TMDB_STATUS_TRANSLATION.get(status, status)
+def translate_internal_status(status: str) -> str:
+    """★★★ 新增：一个辅助函数，用于翻译内部状态，用于日志显示 ★★★"""
+    return INTERNAL_STATUS_TRANSLATION.get(status, status)
 class WatchlistProcessor:
     """
     【V11 - 最终版智能管家】
@@ -239,12 +248,11 @@ class WatchlistProcessor:
         item_name = series_data['item_name']
         
         logger.info(f"正在处理剧集: '{item_name}' (TMDb ID: {tmdb_id})")
-
         if not self.tmdb_api_key:
             logger.warning("未配置TMDb API Key，跳过。")
             return
         
-        # --- 1. 刷新并保存全量元数据 (原功能) ---
+        # 步骤 1: 刷新元数据
         override_dir = os.path.join(self.local_data_path, "override", "tmdb-tv", tmdb_id)
         os.makedirs(override_dir, exist_ok=True)
         cache_dir = os.path.join(self.local_data_path, "cache", "tmdb-tv", tmdb_id)
@@ -265,7 +273,7 @@ class WatchlistProcessor:
             logger.error(f"读取最新的 series.json 文件失败: {e}，无法继续处理。")
             return
 
-        # --- 2. 获取 Emby/Jellyfin 已有剧集数据 ---
+        # 步骤 2: 获取本地状态
         emby_children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
         emby_seasons = {}
         if emby_children:
@@ -274,30 +282,60 @@ class WatchlistProcessor:
                 if s_num is not None and e_num is not None:
                     emby_seasons.setdefault(s_num, set()).add(e_num)
 
-        # --- 3. 对比分析，计算缺失和真正的下一集 ---
+        # 步骤 3: 智能决策
+        new_tmdb_status = latest_series_data.get("status")
+        is_ended_on_tmdb = new_tmdb_status in ["Ended", "Canceled"]
+        
         real_next_episode_to_air = self._calculate_real_next_episode(all_tmdb_episodes, emby_seasons, latest_series_data)
         missing_info = self._calculate_missing_info(latest_series_data.get('seasons', []), all_tmdb_episodes, emby_seasons)
-
-        # --- 4. 决定最终状态并更新数据库 ---
-        new_tmdb_status = latest_series_data.get("status")
-        is_ended = new_tmdb_status in ["Ended", "Canceled"]
-        final_db_status = 'Watching'
-        
         has_missing_media = bool(missing_info["missing_seasons"] or missing_info["missing_episodes"])
-        
-        if is_ended and self._check_all_episodes_have_overview(all_tmdb_episodes) and not has_missing_media:
-            final_db_status = 'Completed'
-            logger.info(f"'{item_name}' 已完结且媒体库完整，将标记为 'Completed'。")
 
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # ★★★              这就是注入了完整逻辑的“大脑中枢”              ★★★
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        final_status = STATUS_WATCHING # 先假设是追剧中
+        paused_until_date = None
+
+        if is_ended_on_tmdb and self._check_all_episodes_have_overview(all_tmdb_episodes) and not has_missing_media:
+            # 决策1: 完结
+            final_status = STATUS_COMPLETED
+            # ★★★ 修改：日志输出使用翻译后的状态 ★★★
+            logger.info(f"  -> 剧集已完结且本地完整，状态变更为: {translate_internal_status(final_status)}")
+        elif real_next_episode_to_air and real_next_episode_to_air.get('air_date'):
+            # 决策2: 有明确的下一集播出日期
+            air_date_str = real_next_episode_to_air['air_date']
+            air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+            days_until_air = (air_date - datetime.now().date()).days
+            
+            logger.debug(f"  -> 下一集播出日期: {air_date_str}, 距离今天: {days_until_air} 天。")
+
+            if days_until_air > 3:
+                # 下一集在3天后，进入暂停状态
+                final_status = STATUS_PAUSED
+                paused_until_date = air_date - timedelta(days=1) # 提前一天唤醒
+                # ★★★ 修改：日志输出使用翻译后的状态 ★★★
+                logger.info(f"  -> 下一集在3天后播出，状态变更为: {translate_internal_status(final_status)}，暂停至 {paused_until_date}。")
+            else:
+                # 即将播出或已播出，保持追剧中
+                final_status = STATUS_WATCHING
+                # ★★★ 修改：日志输出使用翻译后的状态 ★★★
+                logger.info(f"  -> 下一集即将在3天内播出，状态保持为: {translate_internal_status(final_status)}。")
+        else:
+            # 决策3: 暂时没有下一集信息（季歇期）
+            final_status = STATUS_PAUSED
+            paused_until_date = datetime.now().date() + timedelta(days=7) # 7天后再来检查
+            # ★★★ 修改：日志输出使用翻译后的状态 ★★★
+            logger.info(f"  -> 暂无待播信息 (季歇期)，状态变更为: {translate_internal_status(final_status)}，暂停7天。")
+
+        # 步骤 4 & 5: 更新数据库并触发刷新
         updates_to_db = {
-            "status": final_db_status,
+            "status": final_status,
+            "paused_until": paused_until_date.isoformat() if paused_until_date else None,
             "tmdb_status": new_tmdb_status,
             "next_episode_to_air_json": json.dumps(real_next_episode_to_air) if real_next_episode_to_air else None,
             "missing_info_json": json.dumps(missing_info)
         }
         self._update_watchlist_entry(item_id, item_name, updates_to_db)
-
-        # --- 5. 触发媒体库刷新 ---
         emby_handler.refresh_emby_item_metadata(item_id, self.emby_url, self.emby_api_key, item_name_for_log=item_name)
 
     # ★★★ 统一的、公开的追剧处理入口 ★★★
