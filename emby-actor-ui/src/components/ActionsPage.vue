@@ -144,8 +144,7 @@
           <n-card title="全量海报同步" class="glass-section" :bordered="false">
             <n-space vertical>
               <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">
-                此功能会遍历所有**已处理**的媒体，将你在 Emby 中设置的最新海报、背景图等同步到 override 缓存目录。
-                当更换了喜欢的海报后，使用此功能可以确保它们被正确备份和应用。
+                此功能会遍历所有**已处理**的媒体，将 Emby 中的海报、背景图等同步到 override 缓存目录。
               </p>
               <n-button
                 type="primary"
