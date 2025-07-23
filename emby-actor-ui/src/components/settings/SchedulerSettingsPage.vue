@@ -6,7 +6,7 @@
         
         <!-- 卡片 1: 全量扫描 -->
         <n-gi>
-          <n-card title="全量扫描定时任务" class="glass-section" :bordered="false" style="height: 100%;">
+          <n-card title="全量扫描" class="glass-section" :bordered="false" style="height: 100%;">
             <template #header-extra>
               <n-switch v-model:value="configModel.schedule_enabled" />
             </template>
@@ -43,7 +43,7 @@
 
         <!-- 卡片 2: 同步映射表 -->
         <n-gi>
-          <n-card title="同步演员映射表定时任务" class="glass-section" :bordered="false" style="height: 100%;">
+          <n-card title="同步演员映射表" class="glass-section" :bordered="false" style="height: 100%;">
             <template #header-extra>
               <n-switch v-model:value="configModel.schedule_sync_map_enabled" />
             </template>
@@ -67,7 +67,7 @@
         </n-gi>
         <!-- 卡片 5: 演员名翻译查漏补缺 -->
         <n-gi>
-          <n-card title="演员名翻译查漏补缺" class="glass-section" :bordered="false" style="height: 100%;">
+          <n-card title="演员名翻译" class="glass-section" :bordered="false" style="height: 100%;">
             <template #header-extra>
               <n-switch v-model:value="configModel.schedule_actor_cleanup_enabled" />
             </template>
@@ -92,7 +92,7 @@
         </n-gi>        
         <!-- 卡片 4: 演员元数据增强 -->
         <n-gi>
-          <n-card title="演员元数据增强定时任务" class="glass-section" :bordered="false" style="height: 100%;">
+          <n-card title="演员元数据补充" class="glass-section" :bordered="false" style="height: 100%;">
             <template #header-extra>
               <n-switch v-model:value="configModel.schedule_enrich_aliases_enabled" />
             </template>
@@ -117,18 +117,18 @@
         </n-gi>
         <!-- 卡片 5: 剧集简介更新 -->
         <n-gi>
-          <n-card title="剧集简介更新定时任务" class="glass-section" :bordered="false" style="height: 100%;">
+          <n-card title="智能追剧刷新" class="glass-section" :bordered="false" style="height: 100%;">
             <template #header-extra>
               <n-tooltip trigger="hover">
                 <template #trigger><n-switch v-model:value="configModel.schedule_watchlist_enabled" /></template>
-                <span>启用/禁用剧集简介更新定时任务</span>
+                <span>启用/禁用追更剧集刷新定时任务</span>
               </n-tooltip>
             </template>
             <n-form :model="configModel" label-placement="top">
               <n-grid :cols="1">
                 <n-form-item-grid-item label="CRON表达式" path="schedule_watchlist_cron">
                   <n-input v-model:value="configModel.schedule_watchlist_cron" :disabled="!configModel.schedule_watchlist_enabled" placeholder="例如: 0 */6 * * * (每6小时)" />
-                  <template #feedback>高频率地检查追剧列表中的剧集是否有更新。</template>
+                  <template #feedback>检查智能追剧列表中的剧集是否有更新。</template>
                 </n-form-item-grid-item>
               </n-grid>
             </n-form>
@@ -147,7 +147,7 @@
         
         <!-- ★★★ 卡片 6: 智能订阅 ★★★ -->
         <n-gi>
-          <n-card title="智能订阅定时任务" class="glass-section" :bordered="false" style="height: 100%;">
+          <n-card title="智能订阅" class="glass-section" :bordered="false" style="height: 100%;">
             <template #header-extra><n-switch v-model:value="configModel.schedule_autosub_enabled" /></template>
             <n-form :model="configModel" label-placement="top">
               <n-grid :cols="1">
@@ -162,7 +162,7 @@
         </n-gi>
         <!-- ★★★ 电影合集刷新任务卡片 ★★★ -->
         <n-gi>
-          <n-card title="电影合集刷新定时任务" class="glass-section" :bordered="false" style="height: 100%;">
+          <n-card title="电影合集刷新" class="glass-section" :bordered="false" style="height: 100%;">
             <template #header-extra><n-switch v-model:value="configModel.schedule_refresh_collections_enabled" /></template>
             <n-form :model="configModel" label-placement="top">
               <n-grid :cols="1">

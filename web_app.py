@@ -822,7 +822,7 @@ def setup_scheduled_tasks():
     else:
         logger.info("定时刷新电影合集任务未启用。")
 
-    # --- 任务 4: 刷新追剧列表 ---
+    # --- 任务 4: 智能追剧刷新 ---
     JOB_ID_PROCESS_WATCHLIST = "scheduled_process_watchlist"
     if scheduler.get_job(JOB_ID_PROCESS_WATCHLIST): scheduler.remove_job(JOB_ID_PROCESS_WATCHLIST)
     if config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False):
@@ -832,14 +832,14 @@ def setup_scheduled_tasks():
             def scheduled_watchlist_task():
                 submit_task_to_queue(
                     lambda p: p.run_regular_processing_task(update_status_from_thread),
-                    "定时常规追剧更新"
+                    "定时智能追剧更新"
                 )
             scheduler.add_job(func=scheduled_watchlist_task, trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_PROCESS_WATCHLIST, name="定时常规追剧更新", replace_existing=True)
-            logger.info(f"已设置定时任务：常规追剧更新，将{_get_next_run_time_str(cron)}")
+            logger.info(f"已设置定时任务：智能追剧更新，将{_get_next_run_time_str(cron)}")
         except Exception as e:
-            logger.error(f"设置定时常规追剧更新任务失败: {e}", exc_info=True)
+            logger.error(f"设置定时智能追剧更新任务失败: {e}", exc_info=True)
     else:
-        logger.info("定时常规追剧更新任务未启用。")
+        logger.info("定时智能追剧更新任务未启用。")
 
     # ★★★ 已完结剧集复活检查 (硬编码，每周一次) ★★★
     global JOB_ID_REVIVAL_CHECK
@@ -857,31 +857,31 @@ def setup_scheduled_tasks():
     except Exception as e:
         logger.error(f"设置内置的已完结剧集复活检查任务失败: {e}", exc_info=True)
 
-    # --- 任务 5: 演员元数据增强 ---
+    # --- 任务 5: 演员元数据 ---
     JOB_ID_ENRICH_ALIASES = 'scheduled_enrich_aliases'
     if scheduler.get_job(JOB_ID_ENRICH_ALIASES): scheduler.remove_job(JOB_ID_ENRICH_ALIASES)
     if config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED, False):
         try:
             cron = config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON)
             scheduler.add_job(func=lambda: submit_task_to_queue(task_enrich_aliases, "定时演员元数据增强"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_ENRICH_ALIASES, name="定时演员元数据增强", replace_existing=True)
-            logger.info(f"已设置定时任务：演员元数据增强，将{_get_next_run_time_str(cron)}")
+            logger.info(f"已设置定时任务：演员元数据补充，将{_get_next_run_time_str(cron)}")
         except Exception as e:
-            logger.error(f"设置定时演员元数据增强任务失败: {e}", exc_info=True)
+            logger.error(f"设置定时演员元数据补充任务失败: {e}", exc_info=True)
     else:
-        logger.info("定时演员元数据增强任务未启用。")
+        logger.info("定时演员元数据补充任务未启用。")
 
-    # --- 任务 6: 演员名翻译查漏补缺 ---
+    # --- 任务 6: 演员名翻译 ---
     JOB_ID_ACTOR_CLEANUP = 'scheduled_actor_translation_cleanup'
     if scheduler.get_job(JOB_ID_ACTOR_CLEANUP): scheduler.remove_job(JOB_ID_ACTOR_CLEANUP)
     if config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED, True):
         try:
             cron = config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_CRON)
             scheduler.add_job(func=lambda: submit_task_to_queue(task_actor_translation_cleanup, "定时演员名查漏补缺"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_ACTOR_CLEANUP, name="定时演员名查漏补缺", replace_existing=True)
-            logger.info(f"已设置定时任务：演员名翻译查漏补缺，将{_get_next_run_time_str(cron)}")
+            logger.info(f"已设置定时任务：演员名翻译，将{_get_next_run_time_str(cron)}")
         except Exception as e:
-            logger.error(f"设置定时演员名查漏补缺任务失败: {e}", exc_info=True)
+            logger.error(f"设置定时演员名翻译任务失败: {e}", exc_info=True)
     else:
-        logger.info("定时演员名翻译查漏补缺任务未启用。")
+        logger.info("定时演员名翻译任务未启用。")
 
     # --- 任务 7: 智能订阅 ---
     JOB_ID_AUTO_SUBSCRIBE = 'scheduled_auto_subscribe'
@@ -1772,9 +1772,9 @@ def task_auto_subscribe(processor: MediaProcessor):
 TASK_REGISTRY = {
     'full-scan': (task_process_full_library, "立即执行全量扫描"),
     'sync-person-map': (task_sync_person_map, "立即执行同步演员映射表"),
-    'process-watchlist': (task_process_watchlist, "立即执行剧集简介更新"),
-    'enrich-aliases': (task_enrich_aliases, "立即执行演员元数据增强"),
-    'actor-cleanup': (task_actor_translation_cleanup, "立即执行演员名翻译查漏补缺"),
+    'process-watchlist': (task_process_watchlist, "立即执行智能追剧刷新"),
+    'enrich-aliases': (task_enrich_aliases, "立即执行演员元数据补充"),
+    'actor-cleanup': (task_actor_translation_cleanup, "立即执行演员名翻译"),
     'refresh-collections': (task_refresh_collections, "立即执行电影合集刷新"),
     'auto-subscribe': (task_auto_subscribe, "立即执行智能订阅")
 }
@@ -3440,32 +3440,6 @@ def api_subscribe_moviepilot():
         error_msg = f"连接 MoviePilot 时发生网络错误: {e}"
         logger.error(error_msg)
         return jsonify({"error": error_msg}), 503
-# ★★★ 更新合集忽略列表的 API ★★★
-@app.route('/api/collections/ignore', methods=['POST'])
-@login_required
-def api_update_collection_ignore_list():
-    data = request.json
-    collection_id = data.get('collection_id')
-    ignored_ids = data.get('ignored_ids') # 期望是一个ID数组
-
-    if not collection_id or not isinstance(ignored_ids, list):
-        return jsonify({"error": "请求参数无效"}), 400
-
-    try:
-        with get_central_db_connection(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE collections_info SET ignored_movies_json = ? WHERE emby_collection_id = ?",
-                (json.dumps(ignored_ids), collection_id)
-            )
-            conn.commit()
-            if cursor.rowcount > 0:
-                return jsonify({"message": "忽略列表已更新"}), 200
-            else:
-                return jsonify({"error": "未找到指定的合集"}), 404
-    except Exception as e:
-        logger.error(f"更新忽略列表时失败: {e}", exc_info=True)
-        return jsonify({"error": "服务器内部错误"}), 500
 # ★★★ 订阅剧集（季/集）的专用API ★★★
 @app.route('/api/subscribe/moviepilot/series', methods=['POST'])
 @login_required
