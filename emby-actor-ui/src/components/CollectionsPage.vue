@@ -90,7 +90,12 @@
               <n-gi v-for="movie in unreleasedMoviesInModal" :key="movie.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
                   <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster"></template>
-                  <div class="movie-info"><n-ellipsis style="max-width: 100%; font-weight: bold;">{{ movie.title }} ({{ extractYear(movie.release_date) || '未知年份' }})</n-ellipsis></div>
+                  <div class="movie-info">
+                    <div class="movie-title">
+                    {{ movie.title }}<br />
+                    ({{ extractYear(movie.release_date) || '未知年份' }})
+                    </div>
+                </div>
                 </n-card>
               </n-gi>
             </n-grid>

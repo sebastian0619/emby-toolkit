@@ -153,7 +153,7 @@
               <n-grid :cols="1">
                 <n-form-item-grid-item label="CRON表达式" path="schedule_autosub_cron">
                   <n-input v-model:value="configModel.schedule_autosub_cron" :disabled="!configModel.schedule_autosub_enabled" placeholder="例如: 0 5 * * *" />
-                  <template #feedback>根据规则，自动订阅缺失的电影和剧集。</template>
+                  <template #feedback>自动订阅缺失的电影合集和追更的剧集。</template>
                 </n-form-item-grid-item>
               </n-grid>
             </n-form>

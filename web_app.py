@@ -1551,6 +1551,10 @@ def task_refresh_collections(processor: MediaProcessor):
                     else:
                         emby_movie_ids = set(collection.get("ExistingMovieTmdbIds", []))
                         for movie in details.get("parts", []):
+                            release_date = movie.get("release_date")
+                            # 过滤掉没有发布日期的影片
+                            if not release_date:
+                                continue  # 跳过没有日期的影片
                             movie_tmdb_id = str(movie.get("id"))
                             if movie_tmdb_id not in emby_movie_ids:
                                 release_date = movie.get("release_date")
@@ -1561,7 +1565,6 @@ def task_refresh_collections(processor: MediaProcessor):
                                 all_missing_movies.append({
                                     "tmdb_id": movie_tmdb_id,
                                     "title": movie.get("title"),
-                                    # ★★★ 核心修正：存储完整的 release_date ★★★
                                     "release_date": release_date, 
                                     "poster_path": movie.get("poster_path"),
                                     "status": movie_status
