@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "2.8.8.2"  # 更新版本号
+APP_VERSION = "2.8.8.3"  # 更新版本号
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 CONFIG_FILE_NAME = "config.ini" # 主配置文件名
@@ -57,6 +57,8 @@ CONFIG_SECTION_MOVIEPILOT = "MoviePilot"
 CONFIG_OPTION_MOVIEPILOT_URL = "moviepilot_url"
 CONFIG_OPTION_MOVIEPILOT_USERNAME = "moviepilot_username"
 CONFIG_OPTION_MOVIEPILOT_PASSWORD = "moviepilot_password"
+# --- 智能订阅相关配置 ---
+CONFIG_OPTION_AUTOSUB_ENABLED = "autosub_enabled" # 智能订阅总开关
 
 # ==============================================================================
 # ✨ 翻译功能配置 (Translation)
@@ -91,18 +93,16 @@ CONFIG_OPTION_SCHEDULE_FORCE_REPROCESS = "schedule_force_reprocess" # 定时任�
 CONFIG_OPTION_SCHEDULE_SYNC_MAP_ENABLED = "schedule_sync_map_enabled" # 是否启用同步演员映射表任务
 CONFIG_OPTION_SCHEDULE_SYNC_MAP_CRON = "schedule_sync_map_cron"       # 同步映射表的CRON表达式
 
-# --- 智能追剧任务 (神医模式) ---
+# --- 智能追剧任务 ---
 CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED = "schedule_watchlist_enabled" # 是否启用智能追剧任务
 CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON = "schedule_watchlist_cron"       # 智能追剧的CRON表达式
 DEFAULT_SCHEDULE_WATCHLIST_CRON = "0 */6 * * *" # 默认每6小时执行一次
 
-# ==============================================================================
-# ✨ 演员处理相关配置 (Actor Processing)
-# ==============================================================================
+# --- 演员处理相关配置 ---
 CONFIG_SECTION_ACTOR = "Actor"
 CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX = "actor_role_add_prefix"
 
-# ★★★ 演员元数据增强任务 ★★★
+# --- 演员元数据增强任务 ---
 CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED = "schedule_enrich_aliases_enabled" # 是否启用演员元数据增强任务
 CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON = "schedule_enrich_aliases_cron"       # 演员元数据增强的CRON表达式
 CONFIG_OPTION_SCHEDULE_ENRICH_DURATION_MINUTES = "schedule_enrich_run_duration_minutes" # 演员元数据增强任务的运行时长常量
@@ -114,6 +114,15 @@ CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED = "schedule_actor_cleanup_enabled" 
 CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_CRON = "schedule_actor_cleanup_cron"       # 演员名翻译查漏补缺的CRON表达式
 DEFAULT_SCHEDULE_ACTOR_CLEANUP_CRON = "0 4 * * *" # 默认每天凌晨4点执行
 
+# --- 智能订阅任务 ---
+CONFIG_OPTION_SCHEDULE_AUTOSUB_ENABLED = "schedule_autosub_enabled" # 是否启用智能订阅任务
+CONFIG_OPTION_SCHEDULE_AUTOSUB_CRON = "schedule_autosub_cron"       # 智能订阅的CRON表达式
+DEFAULT_SCHEDULE_AUTOSUB_CRON = "0 5 * * *" # 默认每天凌晨5点执行
+
+# --- 电影合集刷新任务 ---
+CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_ENABLED = "schedule_refresh_collections_enabled"
+CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_CRON = "schedule_refresh_collections_cron"
+DEFAULT_SCHEDULE_REFRESH_COLLECTIONS_CRON = "0 2 * * *" # 默认每天凌晨2点
 # --- 日志配置 ---
 CONFIG_SECTION_LOGGING = "Logging"
 CONFIG_OPTION_LOG_ROTATION_SIZE_MB = "log_rotation_size_mb"

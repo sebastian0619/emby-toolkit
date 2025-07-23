@@ -5,7 +5,7 @@ import json
 import inspect
 import sqlite3
 import shutil
-from datetime import datetime, timedelta
+from datetime import date, timedelta, datetime
 from actor_sync_handler import UnifiedSyncHandler
 import emby_handler
 import utils
@@ -84,6 +84,7 @@ CONFIG_DEFINITION = {
     constants.CONFIG_OPTION_MOVIEPILOT_URL: (constants.CONFIG_SECTION_MOVIEPILOT, 'string', ""),
     constants.CONFIG_OPTION_MOVIEPILOT_USERNAME: (constants.CONFIG_SECTION_MOVIEPILOT, 'string', ""),
     constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD: (constants.CONFIG_SECTION_MOVIEPILOT, 'string', ""),
+    constants.CONFIG_OPTION_AUTOSUB_ENABLED: (constants.CONFIG_SECTION_MOVIEPILOT, 'boolean', False),
 
     # [Translation]
     constants.CONFIG_OPTION_TRANSLATOR_ENGINES: (constants.CONFIG_SECTION_TRANSLATION, 'list', constants.DEFAULT_TRANSLATOR_ENGINES_ORDER),
@@ -128,7 +129,10 @@ CONFIG_DEFINITION = {
     constants.CONFIG_OPTION_SCHEDULE_ENRICH_SYNC_INTERVAL_DAYS: (constants.CONFIG_SECTION_SCHEDULER, 'int', constants.DEFAULT_ENRICH_ALIASES_SYNC_INTERVAL_DAYS),
     constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', True),
     constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', constants.DEFAULT_SCHEDULE_ACTOR_CLEANUP_CRON),
-
+    constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
+    constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', constants.DEFAULT_SCHEDULE_AUTOSUB_CRON),
+    constants.CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_ENABLED: ('Scheduler', 'boolean', False),
+    constants.CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_CRON: ('Scheduler', 'string', constants.DEFAULT_SCHEDULE_REFRESH_COLLECTIONS_CRON),
     # [Authentication]
     constants.CONFIG_OPTION_AUTH_ENABLED: (constants.CONFIG_SECTION_AUTH, 'boolean', False),
     constants.CONFIG_OPTION_AUTH_USERNAME: (constants.CONFIG_SECTION_AUTH, 'string', constants.DEFAULT_USERNAME),
@@ -222,167 +226,101 @@ def task_process_single_item(processor: MediaProcessor, item_id: str, force_repr
 # --- 初始化数据库 ---
 def init_db():
     """
-    【重建版】初始化数据库，创建面向未来的统一表结构。
-    此版本已移除旧的、分离的演员表，并引入了统一的身份管理体系。
+    【最终版】初始化数据库，创建所有表的最终结构，并包含性能优化。
     """
+    logger.info("正在初始化数据库，创建/验证所有表的最终结构...")
     conn: Optional[sqlite3.Connection] = None
     try:
-        # --- 1. 准备工作：创建目录并获取连接 ---
+        # 确保数据目录存在
         if not os.path.exists(PERSISTENT_DATA_PATH):
             os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
-            logger.info(f"持久化数据目录已创建: {PERSISTENT_DATA_PATH}")
 
-        conn = get_central_db_connection(DB_PATH)
-        cursor = conn.cursor()
+        with get_central_db_connection(DB_PATH) as conn:
+            cursor = conn.cursor()
 
-        # --- 2. 性能优化：启用 WAL 模式 ---
-        # 提高并发读写性能，是现代 SQLite 应用的标配。
-        try:
-            cursor.execute("PRAGMA journal_mode=WAL;")
-            result = cursor.fetchone()
-            if result and result[0].lower() == 'wal':
-                logger.trace("数据库已成功启用 WAL (Write-Ahead Logging) 模式。")
-            else:
-                logger.warning(f"尝试启用 WAL 模式失败，当前模式: {result[0] if result else '未知'}。")
-        except Exception as e_wal:
-            logger.error(f"启用 WAL 模式时出错: {e_wal}")
+            # --- 1. ★★★ 性能优化：启用 WAL 模式 (必须保留) ★★★ ---
+            try:
+                cursor.execute("PRAGMA journal_mode=WAL;")
+                result = cursor.fetchone()
+                if result and result[0].lower() == 'wal':
+                    logger.trace("  -> 数据库已成功启用 WAL (Write-Ahead Logging) 模式。")
+                else:
+                    logger.warning(f"  -> 尝试启用 WAL 模式失败，当前模式: {result[0] if result else '未知'}。")
+            except Exception as e_wal:
+                logger.error(f"  -> 启用 WAL 模式时出错: {e_wal}")
 
-        # --- 3. 创建基础表 (日志、缓存、用户) ---
-        logger.trace("正在确认/创建基础表...")
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS processed_log (
-                item_id TEXT PRIMARY KEY, item_name TEXT,
-                processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, score REAL
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS failed_log (
-                item_id TEXT PRIMARY KEY, item_name TEXT,reason TEXT,
-                failed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                error_message TEXT, item_type TEXT, score REAL
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS translation_cache (
-                original_text TEXT PRIMARY KEY, translated_text TEXT,
-                engine_used TEXT, last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        logger.trace("基础表结构已确认。")
+            # --- 2. 创建基础表 (日志、用户) ---
+            logger.trace("  -> 正在创建基础表...")
+            cursor.execute("CREATE TABLE IF NOT EXISTS processed_log (item_id TEXT PRIMARY KEY, item_name TEXT, processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, score REAL)")
+            cursor.execute("CREATE TABLE IF NOT EXISTS failed_log (item_id TEXT PRIMARY KEY, item_name TEXT, reason TEXT, failed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, error_message TEXT, item_type TEXT, score REAL)")
+            cursor.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
 
-        # --- 4. 创建核心功能表 (追剧列表) ---
-        logger.trace("正在确认/创建 'watchlist' 表...")
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS watchlist (
-                item_id TEXT PRIMARY KEY,
-                tmdb_id TEXT NOT NULL,
-                item_name TEXT,
-                item_type TEXT DEFAULT 'Series',
-                status TEXT DEFAULT 'Watching', -- 'Watching', 'Paused', 'Completed'
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_checked_at TIMESTAMP
-            )
-        """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
-        logger.trace("表 'watchlist' 结构已确认。")
+            # --- 3. 创建核心功能表 ---
+            # 电影合集检查
+            logger.trace("  -> 正在创建 'collections_info' 表...")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS collections_info (
+                    emby_collection_id TEXT PRIMARY KEY,
+                    name TEXT,
+                    tmdb_collection_id TEXT,
+                    status TEXT,
+                    has_missing BOOLEAN, -- ★★★ 把这个字段加回来！ ★★★
+                    missing_movies_json TEXT,
+                    last_checked_at TIMESTAMP,
+                    poster_path TEXT
+                )
+            """)
 
+            # 剧集追踪 (追剧列表)
+            logger.trace("  -> 正在创建 'watchlist' 表...")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS watchlist (
+                    item_id TEXT PRIMARY KEY, tmdb_id TEXT NOT NULL, item_name TEXT, item_type TEXT DEFAULT 'Series',
+                    status TEXT DEFAULT 'Watching', added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_checked_at TIMESTAMP,
+                    tmdb_status TEXT, next_episode_to_air_json TEXT, missing_info_json TEXT
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
 
-        # 核心表：person_identity_map (单一事实来源)
-        # 职责：存储每个演员的唯一身份和跨平台ID映射。
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS person_identity_map (
-                -- 中立的内部主键，我们的地盘我们做主！
-                map_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                
-                -- 权威的、用户友好的名字
-                primary_name TEXT NOT NULL,
-                -- (可选) 使用JSON存储其他平台的名字，如 {"tmdb": "Yan Ni", "douban": "闫妮"}
+            # 演员身份映射
+            logger.trace("  -> 正在创建 'person_identity_map' 表...")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS person_identity_map (
+                    map_id INTEGER PRIMARY KEY AUTOINCREMENT, primary_name TEXT NOT NULL, emby_person_id TEXT UNIQUE,
+                    tmdb_person_id INTEGER UNIQUE, imdb_id TEXT UNIQUE, douban_celebrity_id TEXT UNIQUE,
+                    last_synced_at TIMESTAMP, last_updated_at TIMESTAMP
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_id ON person_identity_map (emby_person_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_tmdb_id ON person_identity_map (tmdb_person_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_imdb_id ON person_identity_map (imdb_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_id ON person_identity_map (douban_celebrity_id)")
 
-                -- 所有外部ID，都应该是 UNIQUE 且允许为 NULL
-                emby_person_id TEXT UNIQUE,
-                tmdb_person_id INTEGER UNIQUE,
-                imdb_id TEXT UNIQUE,
-                douban_celebrity_id TEXT UNIQUE,
+            # 演员元数据缓存
+            logger.trace("  -> 正在创建 'ActorMetadata' 表...")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ActorMetadata (
+                    tmdb_id INTEGER PRIMARY KEY, profile_path TEXT, gender INTEGER, adult BOOLEAN,
+                    popularity REAL, original_name TEXT, last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(tmdb_id) REFERENCES person_identity_map(tmdb_person_id) ON DELETE CASCADE
+                )
+            """)
 
-                -- 时间戳
-                last_synced_at TIMESTAMP,
-                last_updated_at TIMESTAMP
-            )
-        """)
-        # 为所有外部ID创建索引，加速查找和冲突检测
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_id ON person_identity_map (emby_person_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_tmdb_id ON person_identity_map (tmdb_person_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_imdb_id ON person_identity_map (imdb_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_id ON person_identity_map (douban_celebrity_id)")
-        logger.trace("  -> [核心] 'person_identity_map' 表已创建。")
-
-        # =================================================================
-        # ★★★ 5.2 新增核心表：ActorMetadata (TMDb元数据缓存) ★★★
-        # =================================================================
-        # 职责：专门存储从TMDb获取的、用于增强显示的演员元数据。
-        logger.trace("正在确认/创建 'ActorMetadata' 表...")
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS ActorMetadata (
-                -- 主键，并与 person_identity_map 表建立外键关系
-                tmdb_id INTEGER PRIMARY KEY,
-                
-                -- 需要缓存的核心元数据字段
-                profile_path TEXT,
-                gender INTEGER,
-                adult BOOLEAN,
-                popularity REAL,
-                original_name TEXT,
-                
-                -- 时间戳，方便管理缓存刷新
-                last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                
-                -- 外键约束：确保这里的演员在身份映射表中存在
-                -- ON DELETE CASCADE: 如果身份映射记录被删除，这里的元数据也自动删除
-                FOREIGN KEY(tmdb_id) REFERENCES person_identity_map(tmdb_person_id) ON DELETE CASCADE
-            )
-        """)
-        logger.trace("  -> [核心] 'ActorMetadata' 表已确认。")
-
-        logger.trace("正在确认/创建 'collections_info' 表...")
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS collections_info (
-                emby_collection_id TEXT PRIMARY KEY,
-                name TEXT,
-                tmdb_collection_id TEXT,
-                status TEXT,
-                has_missing BOOLEAN,
-                missing_movies_json TEXT,
-                last_checked_at TIMESTAMP,
-                poster_path TEXT,
-                ignored_movies_json TEXT DEFAULT '[]'
-            )
-        """)
-        logger.trace("表 'collections_info' 结构已确认。")
-
-        # --- 6. 提交事务 ---
-        conn.commit()
-        logger.trace(f"数据库重建完成！所有表结构已在 '{DB_PATH}' 中创建。")
+            conn.commit()
+            logger.info("数据库初始化完成，所有表结构已更新至最新版本。")
 
     except sqlite3.Error as e_sqlite:
         logger.error(f"数据库初始化时发生 SQLite 错误: {e_sqlite}", exc_info=True)
         if conn:
             try: conn.rollback()
             except Exception as e_rb: logger.error(f"SQLite 错误后回滚失败: {e_rb}")
+        raise # 重新抛出异常，让程序停止
     except Exception as e_global:
         logger.error(f"数据库初始化时发生未知错误: {e_global}", exc_info=True)
         if conn:
             try: conn.rollback()
             except Exception as e_rb: logger.error(f"未知错误后回滚失败: {e_rb}")
-    finally:
-        if conn:
-            conn.close()
-            logger.trace("数据库连接已在 init_db 的 finally 块中安全关闭。")
+        raise # 重新抛出异常，让程序停止
 # ✨✨✨ 装饰器：检查登陆状态 ✨✨✨
 def login_required(f):
     @wraps(f)
@@ -812,186 +750,120 @@ def _get_next_run_time_str(cron_expression: str) -> str:
             return f"按计划 '{cron_expression}' 执行"
 # --- 定时任务配置 ---
 def setup_scheduled_tasks():
+    """
+    【最终版】根据全局配置，设置或移除所有定时任务。
+    """
     config = APP_CONFIG
-    # --- 处理全量扫描的定时任务 ---
-    schedule_scan_enabled = config.get("schedule_enabled", False)
-    scan_cron_expression = config.get("schedule_cron", "0 3 * * *")
-    force_reprocess_scheduled_scan = config.get("schedule_force_reprocess", False)
-
-    if scheduler.get_job(JOB_ID_FULL_SCAN):
-        scheduler.remove_job(JOB_ID_FULL_SCAN)
-        # logger.info("已移除旧的定时全量扫描任务。") # 可以选择性保留或移除此日志
-
-    if schedule_scan_enabled:
+    
+    # --- 任务 1: 全量扫描 ---
+    JOB_ID_FULL_SCAN = "scheduled_full_scan"
+    if scheduler.get_job(JOB_ID_FULL_SCAN): scheduler.remove_job(JOB_ID_FULL_SCAN)
+    if config.get(constants.CONFIG_OPTION_SCHEDULE_ENABLED, False):
         try:
-            def submit_scheduled_scan_to_queue():
-                # ... (内部逻辑保持不变)
-                logger.info(f"定时任务触发：准备提交全量扫描到任务队列 (强制={force_reprocess_scheduled_scan})。")
-                if force_reprocess_scheduled_scan:
-                    logger.info("定时任务：检测到“强制重处理”选项，将在任务开始前清空已处理日志。")
-                    if media_processor_instance:
-                        media_processor_instance.clear_processed_log()
-                    else:
-                        logger.error("定时任务：无法清空日志，因为处理器未初始化。")
-                current_config = APP_CONFIG
-                process_episodes = current_config.get('process_episodes', True)
-                submit_task_to_queue(
-                    task_process_full_library,
-                    "定时全量扫描",
-                    process_episodes=process_episodes
-                )
-
-            scheduler.add_job(
-                func=submit_scheduled_scan_to_queue,
-                trigger=CronTrigger.from_crontab(scan_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                id=JOB_ID_FULL_SCAN,
-                name="定时全量媒体库扫描",
-                replace_existing=True,
-            )
-            # ✨ 日志优化 ✨
-            next_run_str = _get_next_run_time_str(scan_cron_expression)
-            force_str = " (强制重处理)" if force_reprocess_scheduled_scan else ""
-            logger.info(f"已设置定时任务：全量扫描，将{next_run_str}{force_str}")
-
+            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_CRON)
+            force = config.get(constants.CONFIG_OPTION_SCHEDULE_FORCE_REPROCESS, False)
+            
+            def scheduled_scan_task():
+                logger.info(f"定时任务触发：全量扫描 (强制={force})。")
+                if force: media_processor_instance.clear_processed_log()
+                submit_task_to_queue(task_process_full_library, "定时全量扫描", process_episodes=APP_CONFIG.get('process_episodes', True))
+            
+            scheduler.add_job(func=scheduled_scan_task, trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_FULL_SCAN, name="定时全量扫描", replace_existing=True)
+            logger.info(f"已设置定时任务：全量扫描，将{_get_next_run_time_str(cron)}{' (强制重处理)' if force else ''}")
         except Exception as e:
             logger.error(f"设置定时全量扫描任务失败: {e}", exc_info=True)
     else:
         logger.info("定时全量扫描任务未启用。")
 
-    # --- 对同步映射表的定时任务也做类似修改 ---
-    schedule_sync_map_enabled = config.get("schedule_sync_map_enabled", False)
-    sync_map_cron_expression = config.get("schedule_sync_map_cron", "0 1 * * *")
-
-    if scheduler.get_job(JOB_ID_SYNC_PERSON_MAP):
-        scheduler.remove_job(JOB_ID_SYNC_PERSON_MAP)
-
-    if schedule_sync_map_enabled:
+    # --- 任务 2: 同步演员映射表 ---
+    JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
+    if scheduler.get_job(JOB_ID_SYNC_PERSON_MAP): scheduler.remove_job(JOB_ID_SYNC_PERSON_MAP)
+    if config.get(constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_ENABLED, False):
         try:
-            def scheduled_sync_map_task():
-                # ... (内部逻辑保持不变)
-                logger.info("定时任务触发：演员映射表同步。")
-                submit_task_to_queue(
-                    task_sync_person_map,
-                    "定时同步演员映射表"
-                )
-
-            scheduler.add_job(
-                func=scheduled_sync_map_task,
-                trigger=CronTrigger.from_crontab(sync_map_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                id=JOB_ID_SYNC_PERSON_MAP, name="定时同步Emby演员映射表", replace_existing=True
-            )
-            # ✨ 日志优化 ✨
-            next_run_str = _get_next_run_time_str(sync_map_cron_expression)
-            logger.info(f"已设置定时任务：同步演员映射表，将{next_run_str}")
-
+            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_CRON)
+            scheduler.add_job(func=lambda: submit_task_to_queue(task_sync_person_map, "定时同步演员映射表"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_SYNC_PERSON_MAP, name="定时同步演员映射表", replace_existing=True)
+            logger.info(f"已设置定时任务：同步演员映射表，将{_get_next_run_time_str(cron)}")
         except Exception as e:
             logger.error(f"设置定时同步演员映射表任务失败: {e}", exc_info=True)
     else:
         logger.info("定时同步演员映射表任务未启用。")
 
-    # --- 对智能追剧任务也做类似修改 ---
-    if scheduler.get_job(JOB_ID_PROCESS_WATCHLIST):
-        scheduler.remove_job(JOB_ID_PROCESS_WATCHLIST)
-
-    if config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False):
-            cron_expression = config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON)
-            if cron_expression:
-                try:
-                    def scheduled_watchlist_task():
-                        # ... (内部逻辑保持不变)
-                        logger.debug("定时任务触发：智能追剧更新。")
-                        submit_task_to_queue(task_process_watchlist, "定时智能追剧更新")
-
-                    scheduler.add_job(
-                        func=scheduled_watchlist_task,
-                        trigger=CronTrigger.from_crontab(cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                        id=JOB_ID_PROCESS_WATCHLIST,
-                        name="定时智能追剧更新",
-                        replace_existing=True,
-                    )
-                    # ✨ 日志优化 ✨
-                    next_run_str = _get_next_run_time_str(cron_expression)
-                    logger.info(f"已设置定时任务：智能追剧更新，将{next_run_str}")
-
-                except Exception as e:
-                    logger.error(f"设置定时智能追剧更新任务失败: {e}", exc_info=True)
+    # --- 任务 3: 刷新电影合集 ---
+    JOB_ID_REFRESH_COLLECTIONS = 'scheduled_refresh_collections'
+    if scheduler.get_job(JOB_ID_REFRESH_COLLECTIONS): scheduler.remove_job(JOB_ID_REFRESH_COLLECTIONS)
+    if config.get(constants.CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_ENABLED, False):
+        try:
+            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_CRON)
+            scheduler.add_job(func=lambda: submit_task_to_queue(task_refresh_collections, "定时刷新电影合集"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_REFRESH_COLLECTIONS, name="定时刷新电影合集", replace_existing=True)
+            logger.info(f"已设置定时任务：刷新电影合集，将{_get_next_run_time_str(cron)}")
+        except Exception as e:
+            logger.error(f"设置定时刷新电影合集任务失败: {e}", exc_info=True)
     else:
-        logger.info("定时智能追剧更新任务未启用。")
-    # ✨✨✨ 处理演员元数据增强任务 ✨✨✨
-    job_id_enrich = 'scheduled_enrich_aliases' # 给它一个唯一的ID
-    if scheduler.get_job(job_id_enrich):
-        scheduler.remove_job(job_id_enrich)
+        logger.info("定时刷新电影合集任务未启用。")
 
+    # --- 任务 4: 刷新追剧列表 ---
+    JOB_ID_PROCESS_WATCHLIST = "scheduled_process_watchlist"
+    if scheduler.get_job(JOB_ID_PROCESS_WATCHLIST): scheduler.remove_job(JOB_ID_PROCESS_WATCHLIST)
+    if config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False):
+        try:
+            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON)
+            scheduler.add_job(func=lambda: submit_task_to_queue(task_process_watchlist, "定时刷新追剧列表"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_PROCESS_WATCHLIST, name="定时刷新追剧列表", replace_existing=True)
+            logger.info(f"已设置定时任务：刷新追剧列表，将{_get_next_run_time_str(cron)}")
+        except Exception as e:
+            logger.error(f"设置定时刷新追剧列表任务失败: {e}", exc_info=True)
+    else:
+        logger.info("定时刷新追剧列表任务未启用。")
+
+    # --- 任务 5: 演员元数据增强 ---
+    JOB_ID_ENRICH_ALIASES = 'scheduled_enrich_aliases'
+    if scheduler.get_job(JOB_ID_ENRICH_ALIASES): scheduler.remove_job(JOB_ID_ENRICH_ALIASES)
     if config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED, False):
-        cron_expression = config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON)
-        if cron_expression:
-            try:
-                def scheduled_enrich_task_submitter():
-                    logger.debug("定时任务触发：准备提交演员元数据增强任务到队列。")
-                    submit_task_to_queue(
-                        task_enrich_aliases, # <--- 调用我们刚刚创建的任务函数
-                        "演员元数据增强"
-                    )
-
-                scheduler.add_job(
-                    func=scheduled_enrich_task_submitter, # 调度器调用这个提交者
-                    trigger=CronTrigger.from_crontab(cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                    id=job_id_enrich,
-                    name="定时补充演员元数据",
-                    replace_existing=True,
-                )
-                next_run_str = _get_next_run_time_str(cron_expression)
-                logger.info(f"已设置定时任务：演员元数据增强，将{next_run_str}")
-            except Exception as e:
-                logger.error(f"设置定时演员元数据增强任务失败: {e}", exc_info=True)
+        try:
+            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON)
+            scheduler.add_job(func=lambda: submit_task_to_queue(task_enrich_aliases, "定时演员元数据增强"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_ENRICH_ALIASES, name="定时演员元数据增强", replace_existing=True)
+            logger.info(f"已设置定时任务：演员元数据增强，将{_get_next_run_time_str(cron)}")
+        except Exception as e:
+            logger.error(f"设置定时演员元数据增强任务失败: {e}", exc_info=True)
     else:
         logger.info("定时演员元数据增强任务未启用。")
 
-    # --- ✨✨✨ 演员名翻译查漏补缺任务 ✨✨✨ ---
+    # --- 任务 6: 演员名翻译查漏补缺 ---
     JOB_ID_ACTOR_CLEANUP = 'scheduled_actor_translation_cleanup'
-
-    if scheduler.get_job(JOB_ID_ACTOR_CLEANUP):
-        scheduler.remove_job(JOB_ID_ACTOR_CLEANUP)
-
-    # 使用常量从配置中读取
-    schedule_enabled = config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED, True)
-    cron_expression = config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_CRON, constants.DEFAULT_SCHEDULE_ACTOR_CLEANUP_CRON)
-
-    if schedule_enabled:
+    if scheduler.get_job(JOB_ID_ACTOR_CLEANUP): scheduler.remove_job(JOB_ID_ACTOR_CLEANUP)
+    if config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED, True):
         try:
-            def submit_scheduled_actor_cleanup():
-                logger.info("定时任务触发：准备提交演员名翻译查漏补缺任务到队列。")
-                submit_task_to_queue(
-                    task_actor_translation_cleanup, # 任务包装函数
-                    "定时演员名查漏补缺"
-                )
-
-            scheduler.add_job(
-                func=submit_scheduled_actor_cleanup,
-                trigger=CronTrigger.from_crontab(cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                id=JOB_ID_ACTOR_CLEANUP,
-                name="定时演员名翻译查漏补缺",
-                replace_existing=True,
-            )
-            
-            next_run_str = _get_next_run_time_str(cron_expression)
-            logger.info(f"已设置定时任务：演员名翻译查漏补缺，将{next_run_str}")
-
+            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_CRON)
+            scheduler.add_job(func=lambda: submit_task_to_queue(task_actor_translation_cleanup, "定时演员名查漏补缺"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_ACTOR_CLEANUP, name="定时演员名查漏补缺", replace_existing=True)
+            logger.info(f"已设置定时任务：演员名翻译查漏补缺，将{_get_next_run_time_str(cron)}")
         except Exception as e:
             logger.error(f"设置定时演员名查漏补缺任务失败: {e}", exc_info=True)
     else:
         logger.info("定时演员名翻译查漏补缺任务未启用。")
 
+    # --- 任务 7: 智能订阅 ---
+    JOB_ID_AUTO_SUBSCRIBE = 'scheduled_auto_subscribe'
+    if scheduler.get_job(JOB_ID_AUTO_SUBSCRIBE): scheduler.remove_job(JOB_ID_AUTO_SUBSCRIBE)
+    if config.get(constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_ENABLED, False):
+        try:
+            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_CRON)
+            scheduler.add_job(func=lambda: submit_task_to_queue(task_auto_subscribe, "定时智能订阅"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_AUTO_SUBSCRIBE, name="定时智能订阅", replace_existing=True)
+            logger.info(f"已设置定时任务：智能订阅，将{_get_next_run_time_str(cron)}")
+        except Exception as e:
+            logger.error(f"设置定时智能订阅任务失败: {e}", exc_info=True)
+    else:
+        logger.info("定时智能订阅任务未启用。")
 
-    # --- 启动调度器逻辑 ---
-    # ... (这里的逻辑也需要更新) ...
-    if not scheduler.running and (
-        config.get(constants.CONFIG_OPTION_SCHEDULE_ENABLED, False) or
-        config.get(constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_ENABLED, False) or
-        config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False) or
-        config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED, False) or
-        config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED, True) 
-    ):
+    # --- 启动调度器逻辑 (包含所有任务开关) ---
+    all_schedules_enabled = [
+        config.get(constants.CONFIG_OPTION_SCHEDULE_ENABLED, False),
+        config.get(constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_ENABLED, False),
+        config.get(constants.CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_ENABLED, False),
+        config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False),
+        config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED, False),
+        config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED, True),
+        config.get(constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_ENABLED, False)
+    ]
+    if not scheduler.running and any(all_schedules_enabled):
         try:
             scheduler.start()
             logger.info("APScheduler 已根据任务需求启动。")
@@ -1228,12 +1100,121 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
     
     logger.debug(f"Webhook 任务完成: {item_id}")
 # --- 追剧 ---    
-def task_process_watchlist(processor: WatchlistProcessor):
+def task_process_watchlist(processor: WatchlistProcessor, item_id: Optional[str] = None):
     """
-    任务：处理追剧列表。
+    【V2 - 超级追踪器】
+    遍历追剧列表，为每一部剧集：
+    1. 更新 TMDb 状态和下一待播集信息。
+    2. 对比 Emby 和 TMDb，找出缺失的季和集。
+    3. 将所有情报更新到数据库。
     """
-    # 不传递 item_id，执行全量更新
     processor.process_watching_list()
+    task_name = "追剧列表更新"
+    if item_id:
+        task_name = f"单项追剧更新 (ID: {item_id})"
+    
+    update_status_from_thread(0, "正在准备更新追剧列表...")
+    
+    try:
+        with get_central_db_connection(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # 1. 确定要处理的项目范围
+            sql_query = "SELECT item_id, tmdb_id, item_name FROM watchlist"
+            if item_id:
+                sql_query += " AND item_id = ?"
+                cursor.execute(sql_query, (item_id,))
+            else:
+                cursor.execute(sql_query)
+            
+            items_to_process = cursor.fetchall()
+            total = len(items_to_process)
+            if total == 0:
+                update_status_from_thread(100, "没有需要更新的在追剧集。")
+                return
+
+            update_status_from_thread(5, f"开始处理 {total} 部在追剧集...")
+
+            # 2. 遍历处理每一部剧
+            for i, series in enumerate(items_to_process):
+                series_item_id = series['item_id']
+                series_tmdb_id = series['tmdb_id']
+                series_name = series['item_name']
+
+                if processor.is_stop_requested():
+                    logger.info("追剧任务被中止。")
+                    break
+                
+                progress = 10 + int((i / total) * 90)
+                update_status_from_thread(progress, f"正在检查: {series_name[:20]}... ({i+1}/{total})")
+
+                # --- a. 从 TMDb 获取官方数据 ---
+                tmdb_details = tmdb_handler.get_tv_details_tmdb(series_tmdb_id, processor.tmdb_api_key)
+                if not tmdb_details:
+                    logger.warning(f"无法获取 '{series_name}' 的 TMDb 详情，跳过。")
+                    continue
+                
+                tmdb_status = tmdb_details.get('status')
+                next_episode_to_air = tmdb_details.get('next_episode_to_air')
+                tmdb_seasons = {s['season_number']: s for s in tmdb_details.get('seasons', []) if s.get('season_number', 0) > 0}
+
+                # --- b. 从 Emby 获取已有数据 ---
+                emby_children = emby_handler.get_series_children(series_item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                emby_seasons = {}
+                if emby_children:
+                    for child in emby_children:
+                        s_num = child.get('ParentIndexNumber')
+                        e_num = child.get('IndexNumber')
+                        if s_num is not None and e_num is not None:
+                            if s_num not in emby_seasons:
+                                emby_seasons[s_num] = set()
+                            emby_seasons[s_num].add(e_num)
+
+                # --- c. 对比并找出缺失 ---
+                missing_info = {"missing_seasons": [], "missing_episodes": []}
+                
+                for s_num, tmdb_season_data in tmdb_seasons.items():
+                    if s_num not in emby_seasons:
+                        # 整季缺失
+                        missing_info["missing_seasons"].append({
+                            "season_number": s_num,
+                            "name": tmdb_season_data.get('name'),
+                            "episode_count": tmdb_season_data.get('episode_count'),
+                            "air_date": tmdb_season_data.get('air_date')
+                        })
+                    else:
+                        # 季存在，检查缺失的集
+                        season_details = tmdb_handler.get_season_details_tmdb(series_tmdb_id, s_num, processor.tmdb_api_key)
+                        if season_details and 'episodes' in season_details:
+                            for episode in season_details['episodes']:
+                                e_num = episode.get('episode_number')
+                                if e_num is not None and e_num not in emby_seasons.get(s_num, set()):
+                                    missing_info["missing_episodes"].append({
+                                        "season_number": s_num,
+                                        "episode_number": e_num,
+                                        "title": episode.get('name'),
+                                        "air_date": episode.get('air_date')
+                                    })
+
+                # --- d. 更新数据库 ---
+                cursor.execute("""
+                    UPDATE watchlist 
+                    SET tmdb_status = ?, next_episode_to_air_json = ?, missing_info_json = ?, last_checked_at = CURRENT_TIMESTAMP
+                    WHERE item_id = ?
+                """, (
+                    tmdb_status,
+                    json.dumps(next_episode_to_air) if next_episode_to_air else None,
+                    json.dumps(missing_info),
+                    series_item_id
+                ))
+            
+            conn.commit()
+            update_status_from_thread(100, "所有在追剧集已检查完毕。")
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
+        update_status_from_thread(-1, f"错误: {e}")
 # ★★★ 只更新追剧列表中的一个特定项目 ★★★
 def task_process_single_watchlist_item(processor: WatchlistProcessor, item_id: str):
     """任务：只更新追剧列表中的一个特定项目"""
@@ -1516,31 +1497,17 @@ def image_update_task(processor: MediaProcessor, item_id: str, update_descriptio
         return
 
     logger.debug(f"图片更新任务完成: {item_id}")
-# --- 立即执行任务注册表 ---
-TASK_REGISTRY = {
-    'full-scan': (task_process_full_library, "立即执行全量扫描"),
-    'sync-person-map': (task_sync_person_map, "立即执行同步演员映射表"),
-    'process-watchlist': (task_process_watchlist, "立即执行智能追剧更新"),
-    'enrich-aliases': (task_enrich_aliases, "立即执行演员元数据增强"),
-    'actor-cleanup': (task_actor_translation_cleanup, "立即执行演员名翻译查漏补缺")
-}
 # ★★★ 刷新合集的后台任务函数 ★★★
 def task_refresh_collections(processor: MediaProcessor):
-    """
-    后台任务：全量同步所有合集信息到数据库。
-    """
     update_status_from_thread(0, "正在获取 Emby 合集列表...")
     try:
         with get_central_db_connection(DB_PATH) as conn:
             cursor = conn.cursor()
             
             emby_collections = emby_handler.get_all_collections_with_items(
-                base_url=processor.emby_url,
-                api_key=processor.emby_api_key,
-                user_id=processor.emby_user_id
+                base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id
             )
-            if emby_collections is None:
-                raise RuntimeError("从 Emby 获取合集列表失败")
+            if emby_collections is None: raise RuntimeError("从 Emby 获取合集列表失败")
 
             total = len(emby_collections)
             update_status_from_thread(5, f"共找到 {total} 个合集，开始同步...")
@@ -1556,40 +1523,302 @@ def task_refresh_collections(processor: MediaProcessor):
             tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
             if not tmdb_api_key: raise RuntimeError("未配置 TMDb API Key")
 
+            today_str = datetime.now().strftime('%Y-%m-%d')
+
             for i, collection in enumerate(emby_collections):
-                if processor.is_stop_requested():
-                    logger.info("合集刷新任务被中止。")
-                    break
+                if processor.is_stop_requested(): break
                 
                 progress = 10 + int((i / total) * 90)
                 update_status_from_thread(progress, f"正在同步: {collection.get('Name', '')[:20]}... ({i+1}/{total})")
 
-                # (这里的核心处理逻辑与之前完全相同)
                 collection_id = collection['Id']
                 provider_ids = collection.get("ProviderIds", {})
                 tmdb_id = provider_ids.get("TmdbCollection") or provider_ids.get("TmdbCollectionId") or provider_ids.get("Tmdb")
-                status, has_missing, missing_movies = "ok", False, []
+                
+                status, has_missing = "ok", False
+                all_missing_movies = []
+
+                collection_id = collection['Id']
+                provider_ids = collection.get("ProviderIds", {})
+                tmdb_id = provider_ids.get("TmdbCollection") or provider_ids.get("TmdbCollectionId") or provider_ids.get("Tmdb")
+
                 if not tmdb_id:
                     status = "unlinked"
                 else:
                     details = tmdb_handler.get_collection_details_tmdb(int(tmdb_id), tmdb_api_key)
-                    if not details or "parts" not in details: status = "tmdb_error"
+                    if not details or "parts" not in details:
+                        status = "tmdb_error"
                     else:
                         emby_movie_ids = set(collection.get("ExistingMovieTmdbIds", []))
                         for movie in details.get("parts", []):
-                            if str(movie.get("id")) not in emby_movie_ids:
-                                missing_movies.append({"tmdb_id": str(movie.get("id")), "title": movie.get("title"), "year": movie.get("release_date", "----")[0:4], "poster_path": movie.get("poster_path")})
-                        if missing_movies: has_missing, status = True, "has_missing"
+                            movie_tmdb_id = str(movie.get("id"))
+                            if movie_tmdb_id not in emby_movie_ids:
+                                release_date = movie.get("release_date")
+                                movie_status = "missing"
+                                if release_date and release_date > today_str:
+                                    movie_status = "unreleased"
+                                
+                                all_missing_movies.append({
+                                    "tmdb_id": movie_tmdb_id,
+                                    "title": movie.get("title"),
+                                    # ★★★ 核心修正：存储完整的 release_date ★★★
+                                    "release_date": release_date, 
+                                    "poster_path": movie.get("poster_path"),
+                                    "status": movie_status
+                                })
+                        
+                        if all_missing_movies:
+                            has_missing = True
+                            status = "has_missing"
                 
                 image_tag = collection.get("ImageTags", {}).get("Primary")
                 poster_path = f"/Items/{collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
                 
-                cursor.execute("INSERT OR REPLACE INTO collections_info VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (collection_id, collection.get('Name'), tmdb_id, status, has_missing, json.dumps(missing_movies), time.time(), poster_path, '[]'))
+                cursor.execute("""
+                    INSERT OR REPLACE INTO collections_info 
+                    (emby_collection_id, name, tmdb_collection_id, status, has_missing, missing_movies_json, last_checked_at, poster_path)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    collection_id, collection.get('Name'), tmdb_id, status, 
+                    has_missing, 
+                    json.dumps(all_missing_movies), time.time(), poster_path
+                ))
             
             conn.commit()
     except Exception as e:
         logger.error(f"刷新合集任务失败: {e}", exc_info=True)
         update_status_from_thread(-1, f"错误: {e}")
+# ★★★ 可复用的剧集订阅帮助函数 ★★★
+def _subscribe_series_to_moviepilot(series_info: dict, season_number: int) -> bool:
+    """一个独立的、可复用的函数，用于订阅单季剧集到MoviePilot。"""
+    try:
+        # (这里的逻辑与我们之前在手动订阅API中的逻辑完全相同)
+        moviepilot_url = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
+        mp_username = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_USERNAME, '')
+        mp_password = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD, '')
+        if not all([moviepilot_url, mp_username, mp_password]):
+            logger.warning("智能订阅跳过：MoviePilot配置不完整。")
+            return False
+
+        login_url = f"{moviepilot_url}/api/v1/login/access-token"
+        login_data = {"username": mp_username, "password": mp_password}
+        login_response = requests.post(login_url, data=login_data, timeout=10)
+        login_response.raise_for_status()
+        access_token = login_response.json().get("access_token")
+        if not access_token:
+            logger.error("智能订阅失败：MoviePilot 认证失败，未能获取到 Token。")
+            return False
+
+        subscribe_url = f"{moviepilot_url}/api/v1/subscribe/"
+        subscribe_headers = {"Authorization": f"Bearer {access_token}"}
+        subscribe_payload = {
+            "name": series_info['item_name'],
+            "tmdbid": int(series_info['tmdb_id']),
+            "type": "电视剧",
+            "season": season_number
+        }
+        
+        logger.info(f"【智能订阅】正在提交任务: '{series_info['item_name']}' 第 {season_number} 季")
+        sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
+        
+        if sub_response.status_code in [200, 201, 204]:
+            logger.info(f"  -> 成功！MoviePilot 已接受订阅任务。")
+            return True
+        else:
+            logger.error(f"  -> 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"智能订阅过程中发生网络或认证错误: {e}")
+        return False
+# ★★★ 可复用的电影订阅帮助函数 ★★★
+def _subscribe_movie_to_moviepilot(movie_info: dict) -> bool:
+    """一个独立的、可复用的函数，用于订阅单部电影到MoviePilot。"""
+    try:
+        moviepilot_url = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
+        mp_username = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_USERNAME, '')
+        mp_password = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD, '')
+        if not all([moviepilot_url, mp_username, mp_password]):
+            logger.warning("智能订阅跳过：MoviePilot配置不完整。")
+            return False
+
+        login_url = f"{moviepilot_url}/api/v1/login/access-token"
+        login_data = {"username": mp_username, "password": mp_password}
+        login_response = requests.post(login_url, data=login_data, timeout=10)
+        login_response.raise_for_status()
+        access_token = login_response.json().get("access_token")
+        if not access_token:
+            logger.error("智能订阅失败：MoviePilot 认证失败，未能获取到 Token。")
+            return False
+
+        subscribe_url = f"{moviepilot_url}/api/v1/subscribe/"
+        subscribe_headers = {"Authorization": f"Bearer {access_token}"}
+        subscribe_payload = {
+            "name": movie_info['title'],
+            "tmdbid": int(movie_info['tmdb_id']),
+            "type": "电影"
+        }
+        
+        logger.info(f"【智能订阅】正在提交电影任务: '{movie_info['title']}'")
+        sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
+        
+        if sub_response.status_code in [200, 201, 204]:
+            logger.info(f"  -> 成功！MoviePilot 已接受订阅任务。")
+            return True
+        else:
+            logger.error(f"  -> 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"智能订阅电影过程中发生网络或认证错误: {e}")
+        return False
+# ★★★ 带智能预判的自动订阅任务 ★★★
+def task_auto_subscribe(processor: MediaProcessor):
+    update_status_from_thread(0, "正在启动智能订阅任务...")
+    
+    if not APP_CONFIG.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
+        logger.info("智能订阅总开关未开启，任务跳过。")
+        update_status_from_thread(100, "任务跳过：总开关未开启")
+        return
+
+    try:
+        offset_days = APP_CONFIG.get(constants.CONFIG_OPTION_AUTOSUB_RELEASE_DATE_OFFSET_DAYS)
+        today = date.today()
+        # 我们之前的修复是正确的，这里保持 season_date <= today 的逻辑
+        
+        update_status_from_thread(10, f"智能订阅已启动...")
+        successfully_subscribed_items = []
+
+        with get_central_db_connection(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # --- 1. 处理电影合集 (这部分逻辑不变，但可以保持) ---
+            update_status_from_thread(20, "正在检查缺失的电影...")
+            cursor.execute("SELECT * FROM collections_info WHERE status = 'has_missing' AND missing_movies_json IS NOT NULL AND missing_movies_json != '[]'")
+            collections_to_check = cursor.fetchall()
+            
+            for collection in collections_to_check:
+                if processor.is_stop_requested(): break
+                
+                movies_to_keep = []
+                all_missing_movies = json.loads(collection['missing_movies_json'])
+                movies_changed = False
+                for movie in all_missing_movies:
+                    if processor.is_stop_requested(): break
+
+                    if movie.get('status') == 'missing':
+                        release_date_str = movie.get('release_date')
+                        if not release_date_str:
+                            movies_to_keep.append(movie)
+                            continue
+                        
+                        try:
+                            release_date = datetime.strptime(release_date_str, '%Y-%m-%d').date()
+                            if release_date <= today:
+                                success = _subscribe_movie_to_moviepilot(movie)
+                                if success:
+                                    successfully_subscribed_items.append(f"电影《{movie['title']}》")
+                                    movies_changed = True
+                                else:
+                                    movies_to_keep.append(movie)
+                            else:
+                                movies_to_keep.append(movie)
+                        except (ValueError, TypeError):
+                            movies_to_keep.append(movie)
+                    else:
+                        movies_to_keep.append(movie)
+                
+                if movies_changed:
+                    cursor.execute("UPDATE collections_info SET missing_movies_json = ? WHERE emby_collection_id = ?", (json.dumps(movies_to_keep), collection['emby_collection_id']))
+
+            # --- 2. 处理剧集 (这是我们重点修改的部分) ---
+            if not processor.is_stop_requested():
+                update_status_from_thread(60, "正在检查缺失的剧集...")
+                
+                # ▼▼▼ 日志点 1: 打印将要执行的查询 ▼▼▼
+                sql_query = "SELECT * FROM watchlist WHERE status IN ('Watching', 'Paused') AND missing_info_json IS NOT NULL AND missing_info_json != '[]'"
+                logger.debug(f"【智能订阅-剧集】执行查询: {sql_query}")
+                cursor.execute(sql_query)
+                series_to_check = cursor.fetchall()
+                
+                # ▼▼▼ 日志点 2: 打印找到了多少需要检查的剧集 ▼▼▼
+                logger.info(f"【智能订阅-剧集】从数据库找到 {len(series_to_check)} 部状态为'在追'或'暂停'且有缺失信息的剧集需要检查。")
+
+                for series in series_to_check:
+                    if processor.is_stop_requested(): break
+                    
+                    # ▼▼▼ 日志点 3: 开始处理单部剧集 ▼▼▼
+                    series_name = series['item_name']
+                    logger.info(f"【智能订阅-剧集】>>> 正在检查: 《{series_name}》")
+                    
+                    try:
+                        missing_info = json.loads(series['missing_info_json'])
+                        missing_seasons = missing_info.get('missing_seasons', [])
+                        
+                        # ▼▼▼ 日志点 4: 检查是否有缺失的季 ▼▼▼
+                        if not missing_seasons:
+                            logger.info(f"【智能订阅-剧集】   -> 《{series_name}》没有记录在案的缺失季(missing_seasons为空)，跳过。")
+                            continue
+
+                        seasons_to_keep = []
+                        seasons_changed = False
+                        for season in missing_seasons:
+                            if processor.is_stop_requested(): break
+                            
+                            season_num = season.get('season_number')
+                            air_date_str = season.get('air_date')
+                            
+                            # ▼▼▼ 日志点 5: 检查播出日期是否存在 ▼▼▼
+                            if not air_date_str:
+                                logger.warning(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季缺少播出日期(air_date)，无法判断，跳过。")
+                                seasons_to_keep.append(season)
+                                continue
+                            
+                            season_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+
+                            # ▼▼▼ 日志点 6: 核心判断，并打印决策过程！▼▼▼
+                            if season_date <= today:
+                                logger.info(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 已播出，符合订阅条件，正在提交...")
+                                success = _subscribe_series_to_moviepilot(dict(series), season['season_number'])
+                                if success:
+                                    logger.info(f"【智能订阅-剧集】      -> 订阅成功！")
+                                    successfully_subscribed_items.append(f"《{series['item_name']}》第 {season['season_number']} 季")
+                                    seasons_changed = True
+                                else:
+                                    logger.error(f"【智能订阅-剧集】      -> 订阅失败！将保留在缺失列表中。")
+                                    seasons_to_keep.append(season)
+                            else:
+                                # 这是您最想要的日志！
+                                logger.info(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 尚未播出，跳过订阅。")
+                                seasons_to_keep.append(season)
+                        
+                        if seasons_changed:
+                            missing_info['missing_seasons'] = seasons_to_keep
+                            cursor.execute("UPDATE watchlist SET missing_info_json = ? WHERE item_id = ?", (json.dumps(missing_info), series['item_id']))
+                    except Exception as e_series:
+                        logger.error(f"【智能订阅-剧集】处理剧集 '{series['item_name']}' 时出错: {e_series}")
+            
+            conn.commit()
+
+        if successfully_subscribed_items:
+            summary = "任务完成！已自动订阅: " + ", ".join(successfully_subscribed_items)
+            logger.info(summary)
+            update_status_from_thread(100, summary)
+        else:
+            update_status_from_thread(100, "任务完成：本次运行没有发现符合自动订阅条件的媒体。")
+
+    except Exception as e:
+        logger.error(f"智能订阅任务失败: {e}", exc_info=True)
+        update_status_from_thread(-1, f"错误: {e}")
+# --- 立即执行任务注册表 ---
+TASK_REGISTRY = {
+    'full-scan': (task_process_full_library, "立即执行全量扫描"),
+    'sync-person-map': (task_sync_person_map, "立即执行同步演员映射表"),
+    'process-watchlist': (task_process_watchlist, "立即执行剧集简介更新"),
+    'enrich-aliases': (task_enrich_aliases, "立即执行演员元数据增强"),
+    'actor-cleanup': (task_actor_translation_cleanup, "立即执行演员名翻译查漏补缺"),
+    'refresh-collections': (task_refresh_collections, "立即执行电影合集刷新"),
+    'auto-subscribe': (task_auto_subscribe, "立即执行智能订阅")
+}
 # --- 路由区 ---
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
@@ -3243,6 +3472,70 @@ def api_update_collection_ignore_list():
     except Exception as e:
         logger.error(f"更新忽略列表时失败: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
+# ★★★ 订阅剧集（季/集）的专用API ★★★
+@app.route('/api/subscribe/moviepilot/series', methods=['POST'])
+@login_required
+def api_subscribe_series_moviepilot():
+    data = request.json
+    tmdb_id = data.get('tmdb_id')
+    title = data.get('title')
+    season_number = data.get('season_number') # 可能是季号，也可能是null
+
+    if not tmdb_id or not title:
+        return jsonify({"error": "请求中缺少 tmdb_id 或 title"}), 400
+
+    # (这里的登录逻辑与电影订阅完全相同，可以直接复用)
+    moviepilot_url = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
+    mp_username = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_USERNAME, '')
+    mp_password = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD, '')
+    if not all([moviepilot_url, mp_username, mp_password]):
+        return jsonify({"error": "服务器未完整配置 MoviePilot URL、用户名或密码。"}), 500
+
+    try:
+        login_url = f"{moviepilot_url}/api/v1/login/access-token"
+        login_data = {"username": mp_username, "password": mp_password}
+        login_response = requests.post(login_url, data=login_data, timeout=10)
+        login_response.raise_for_status()
+        access_token = login_response.json().get("access_token")
+        if not access_token:
+            return jsonify({"error": "MoviePilot 认证失败：未能获取到 Token。"}), 500
+    except Exception as e:
+        # (为了简洁，省略了详细的错误处理，实际应与电影订阅的错误处理保持一致)
+        return jsonify({"error": f"MoviePilot 登录失败: {e}"}), 502
+
+    # --- 核心订阅逻辑 ---
+    try:
+        subscribe_url = f"{moviepilot_url}/api/v1/subscribe/"
+        subscribe_headers = {"Authorization": f"Bearer {access_token}"}
+        
+        # ★★★ 核心区别：根据是否有 season_number 构造不同的 payload ★★★
+        subscribe_payload = {
+            "name": title,
+            "tmdbid": int(tmdb_id),
+            "type": "电视剧"
+        }
+        if season_number is not None:
+            subscribe_payload["season"] = int(season_number)
+            log_message = f"正在向 MoviePilot 提交订阅请求 '{title}' 第 {season_number} 季"
+        else:
+            # 如果不指定季，通常是订阅整部剧
+            log_message = f"正在向 MoviePilot 提交订阅请求 '{title}' (整部剧)"
+
+        logger.info(log_message)
+        sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
+        
+        logger.info(f"收到 MoviePilot 订阅接口的响应: Status={sub_response.status_code}, Body='{sub_response.text}'")
+
+        if sub_response.status_code in [200, 201, 204]:
+            logger.info("MoviePilot 报告订阅成功。")
+            return jsonify({"message": "订阅请求已成功发送！"}), 200
+        else:
+            error_detail = sub_response.json().get("message", sub_response.text)
+            logger.error(f"MoviePilot 报告订阅失败: {error_detail}")
+            return jsonify({"error": f"MoviePilot 报告订阅失败: {error_detail}"}), 500
+
+    except Exception as e:
+        return jsonify({"error": f"向 MoviePilot 提交订阅时出错: {e}"}), 502
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})

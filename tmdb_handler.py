@@ -52,12 +52,13 @@ def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] 
 # --- 获取电视剧的详细信息 ---
 def get_tv_details_tmdb(tv_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,content_ratings") -> Optional[Dict[str, Any]]:
     """
-    【新增】获取电视剧的详细信息。
+    【已升级】获取电视剧的详细信息。
     """
     endpoint = f"/tv/{tv_id}"
     params = {
         "language": DEFAULT_LANGUAGE,
-        "append_to_response": append_to_response
+        # ★★★ 确保 append_to_response 不为空，即使外部没传 ★★★
+        "append_to_response": append_to_response or "" 
     }
     logger.debug(f"TMDb: 获取电视剧详情 (ID: {tv_id})")
     details = _tmdb_request(endpoint, api_key, params)

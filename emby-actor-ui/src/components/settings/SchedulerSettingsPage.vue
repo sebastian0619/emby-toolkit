@@ -65,36 +65,31 @@
             </template>
           </n-card>
         </n-gi>
-
-        <!-- 卡片 3: 智能追剧 -->
+        <!-- 卡片 5: 演员名翻译查漏补缺 -->
         <n-gi>
-          <n-card title="智能追剧更新定时任务" class="glass-section" :bordered="false" style="height: 100%;">
+          <n-card title="演员名翻译查漏补缺" class="glass-section" :bordered="false" style="height: 100%;">
             <template #header-extra>
-              <n-tooltip trigger="hover">
-                <template #trigger><n-switch v-model:value="configModel.schedule_watchlist_enabled" /></template>
-                <span>启用/禁用智能追剧更新定时任务</span>
-              </n-tooltip>
+              <n-switch v-model:value="configModel.schedule_actor_cleanup_enabled" />
             </template>
             <n-form :model="configModel" label-placement="top">
               <n-grid :cols="1">
-                <n-form-item-grid-item label="CRON表达式" path="schedule_watchlist_cron">
-                  <n-input v-model:value="configModel.schedule_watchlist_cron" :disabled="!configModel.schedule_watchlist_enabled" placeholder="例如: 0 */6 * * * (每6小时)" />
-                  <template #feedback>高频率地检查追剧列表中的剧集是否有更新。</template>
+                <n-form-item-grid-item label="CRON表达式" path="schedule_actor_cleanup_cron">
+                  <n-input v-model:value="configModel.schedule_actor_cleanup_cron" :disabled="!configModel.schedule_actor_cleanup_enabled" placeholder="例如: 0 4 * * * (每天凌晨4点)" />
+                  <template #feedback>自动翻译Emby中所有非中文的演员名，用于修正处理流程中的“漏网之鱼”。</template>
                 </n-form-item-grid-item>
               </n-grid>
             </n-form>
-            <!-- ✨ 立即执行按钮 ✨ -->
+            <!-- ✨ 立即执行按钮 (修正了 taskIdentifier) ✨ -->
             <template #action>
               <n-space justify="end">
-                <n-button size="small" type="primary" ghost @click="triggerTaskNow('process-watchlist')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
+                <n-button size="small" type="primary" ghost @click="triggerTaskNow('actor-cleanup')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
                   <template #icon><n-icon :component="Play24Regular" /></template>
                   立即执行一次
                 </n-button>
               </n-space>
             </template>
           </n-card>
-        </n-gi>
-        
+        </n-gi>        
         <!-- 卡片 4: 演员元数据增强 -->
         <n-gi>
           <n-card title="演员元数据增强定时任务" class="glass-section" :bordered="false" style="height: 100%;">
@@ -120,25 +115,27 @@
             </template>
           </n-card>
         </n-gi>
-
-        <!-- 卡片 5: 演员名翻译查漏补缺 -->
+        <!-- 卡片 5: 剧集简介更新 -->
         <n-gi>
-          <n-card title="演员名翻译查漏补缺" class="glass-section" :bordered="false" style="height: 100%;">
+          <n-card title="剧集简介更新定时任务" class="glass-section" :bordered="false" style="height: 100%;">
             <template #header-extra>
-              <n-switch v-model:value="configModel.schedule_actor_cleanup_enabled" />
+              <n-tooltip trigger="hover">
+                <template #trigger><n-switch v-model:value="configModel.schedule_watchlist_enabled" /></template>
+                <span>启用/禁用剧集简介更新定时任务</span>
+              </n-tooltip>
             </template>
             <n-form :model="configModel" label-placement="top">
               <n-grid :cols="1">
-                <n-form-item-grid-item label="CRON表达式" path="schedule_actor_cleanup_cron">
-                  <n-input v-model:value="configModel.schedule_actor_cleanup_cron" :disabled="!configModel.schedule_actor_cleanup_enabled" placeholder="例如: 0 4 * * * (每天凌晨4点)" />
-                  <template #feedback>自动翻译Emby中所有非中文的演员名，用于修正处理流程中的“漏网之鱼”。</template>
+                <n-form-item-grid-item label="CRON表达式" path="schedule_watchlist_cron">
+                  <n-input v-model:value="configModel.schedule_watchlist_cron" :disabled="!configModel.schedule_watchlist_enabled" placeholder="例如: 0 */6 * * * (每6小时)" />
+                  <template #feedback>高频率地检查追剧列表中的剧集是否有更新。</template>
                 </n-form-item-grid-item>
               </n-grid>
             </n-form>
-            <!-- ✨ 立即执行按钮 (修正了 taskIdentifier) ✨ -->
+            <!-- ✨ 立即执行按钮 ✨ -->
             <template #action>
               <n-space justify="end">
-                <n-button size="small" type="primary" ghost @click="triggerTaskNow('actor-cleanup')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
+                <n-button size="small" type="primary" ghost @click="triggerTaskNow('process-watchlist')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
                   <template #icon><n-icon :component="Play24Regular" /></template>
                   立即执行一次
                 </n-button>
@@ -147,6 +144,37 @@
           </n-card>
         </n-gi>
 
+        
+        <!-- ★★★ 卡片 6: 智能订阅 ★★★ -->
+        <n-gi>
+          <n-card title="智能订阅定时任务" class="glass-section" :bordered="false" style="height: 100%;">
+            <template #header-extra><n-switch v-model:value="configModel.schedule_autosub_enabled" /></template>
+            <n-form :model="configModel" label-placement="top">
+              <n-grid :cols="1">
+                <n-form-item-grid-item label="CRON表达式" path="schedule_autosub_cron">
+                  <n-input v-model:value="configModel.schedule_autosub_cron" :disabled="!configModel.schedule_autosub_enabled" placeholder="例如: 0 5 * * *" />
+                  <template #feedback>根据规则，自动订阅缺失的电影和剧集。</template>
+                </n-form-item-grid-item>
+              </n-grid>
+            </n-form>
+            <template #action><n-space justify="end"><n-button size="small" type="primary" ghost @click="triggerTaskNow('auto-subscribe')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning"><template #icon><n-icon :component="Play24Regular" /></template>立即执行一次</n-button></n-space></template>
+          </n-card>
+        </n-gi>
+        <!-- ★★★ 电影合集刷新任务卡片 ★★★ -->
+        <n-gi>
+          <n-card title="电影合集刷新定时任务" class="glass-section" :bordered="false" style="height: 100%;">
+            <template #header-extra><n-switch v-model:value="configModel.schedule_refresh_collections_enabled" /></template>
+            <n-form :model="configModel" label-placement="top">
+              <n-grid :cols="1">
+                <n-form-item-grid-item label="CRON表达式" path="schedule_refresh_collections_cron">
+                  <n-input v-model:value="configModel.schedule_refresh_collections_cron" :disabled="!configModel.schedule_refresh_collections_enabled" placeholder="例如: 0 2 * * *" />
+                  <template #feedback>定时检查所有电影合集的缺失情况。</template>
+                </n-form-item-grid-item>
+              </n-grid>
+            </n-form>
+            <template #action><n-space justify="end"><n-button size="small" type="primary" ghost @click="triggerTaskNow('refresh-collections')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning"><template #icon><n-icon :component="Play24Regular" /></template>立即执行一次</n-button></n-space></template>
+          </n-card>
+        </n-gi>
       </n-grid>
 
       <!-- 保存按钮 -->
