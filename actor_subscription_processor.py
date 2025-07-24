@@ -3,6 +3,7 @@
 import sqlite3
 import json
 import time
+import re
 from datetime import datetime, timedelta
 import logging
 from typing import Optional, Dict, Any, List, Set, Callable
@@ -212,6 +213,8 @@ class ActorSubscriptionProcessor:
         six_months_ago = datetime.now() - timedelta(days=grace_period_months * 30)
         grace_period_end_date_str = six_months_ago.strftime('%Y-%m-%d')
         # ★★★ 新增结束 ★★★
+        # --- 预编译用于匹配中文字符的正则表达式 ---
+        chinese_char_regex = re.compile(r'[\u4e00-\u9fff]')
 
         for work in works:
             media_id = work.get('id')
@@ -249,6 +252,13 @@ class ActorSubscriptionProcessor:
                     if vote_count > 50 and vote_average < config_min_rating:
                         logger.trace(f"过滤老片: '{work.get('title') or work.get('name')}' (评分 {vote_average} < {config_min_rating})")
                         continue # 不满足条件，跳到下一个作品
+            
+            # ★★★ 跳过无中文片名 ★★★
+            title = work.get('title') or work.get('name', '')
+            if not chinese_char_regex.search(title):
+                # 如果正则表达式在标题中找不到任何中文字符
+                logger.trace(f"过滤作品: '{title}' (硬编码规则: 未包含中文字符)。")
+                continue # 跳过这个作品，不将它加入到 filtered 列表中
             
             handled_media_ids.add(media_id)
             filtered.append(work)
