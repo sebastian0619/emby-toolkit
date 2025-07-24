@@ -244,7 +244,7 @@ def init_db():
         with get_central_db_connection(DB_PATH) as conn:
             cursor = conn.cursor()
 
-            # --- 1. ★★★ 性能优化：启用 WAL 模式 (必须保留) ★★★ ---
+            # --- 1. ★★★ 性能优化：启用 WAL 模式  ★★★ ---
             try:
                 cursor.execute("PRAGMA journal_mode=WAL;")
                 result = cursor.fetchone()
@@ -255,17 +255,12 @@ def init_db():
             except Exception as e_wal:
                 logger.error(f"  -> 启用 WAL 模式时出错: {e_wal}")
 
-            # --- 2. 创建基础表 (日志、用户) ---
+            # --- 2. 创建基础表 (日志、缓存、用户) ---
             logger.trace("  -> 正在创建基础表...")
             cursor.execute("CREATE TABLE IF NOT EXISTS processed_log (item_id TEXT PRIMARY KEY, item_name TEXT, processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, score REAL)")
             cursor.execute("CREATE TABLE IF NOT EXISTS failed_log (item_id TEXT PRIMARY KEY, item_name TEXT, reason TEXT, failed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, error_message TEXT, item_type TEXT, score REAL)")
             cursor.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS translation_cache (
-                    original_text TEXT PRIMARY KEY, translated_text TEXT,
-                    engine_used TEXT, last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+            cursor.execute("CREATE TABLE IF NOT EXISTS translation_cache (original_text TEXT PRIMARY KEY, translated_text TEXT, engine_used TEXT, last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # --- 3. 创建核心功能表 ---
             # 电影合集检查
             logger.trace("  -> 正在创建 'collections_info' 表...")
@@ -275,14 +270,14 @@ def init_db():
                     name TEXT,
                     tmdb_collection_id TEXT,
                     status TEXT,
-                    has_missing BOOLEAN, -- ★★★ 把这个字段加回来！ ★★★
+                    has_missing BOOLEAN, 
                     missing_movies_json TEXT,
                     last_checked_at TIMESTAMP,
                     poster_path TEXT
                 )
             """)
 
-            # 剧集追踪 (追剧列表) - ★★★ 已更新 ★★★
+            # 剧集追踪 (追剧列表) 
             logger.trace("  -> 正在创建/更新 'watchlist' 表...")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS watchlist (
@@ -296,7 +291,7 @@ def init_db():
                     tmdb_status TEXT,
                     next_episode_to_air_json TEXT,
                     missing_info_json TEXT,
-                    paused_until DATE DEFAULT NULL  -- ★★★ 新增字段：用于记录暂停至何时 ★★★
+                    paused_until DATE DEFAULT NULL 
                 )
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
@@ -337,7 +332,7 @@ def init_db():
                 )
             """)
 
-            # --- 4. ★★★ 演员订阅功能表 ★★★ ---
+            # 演员订阅功能表
             logger.trace("  -> 正在创建 'actor_subscriptions' 表 (演员订阅)...")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS actor_subscriptions (
