@@ -10,6 +10,7 @@ import SchedulerSettingsPage from '../components/settings/SchedulerSettingsPage.
 import GeneralSettingsPage from '../components/settings/GeneralSettingsPage.vue';
 import WatchlistPage from '../components/WatchlistPage.vue';
 import CollectionsPage from '../components/CollectionsPage.vue';
+import ActorSubscriptionPage from '../components/ActorSubscriptionPage.vue';
 import Login from '../components/Login.vue'; 
 
 // --- 2. 定义路由规则 (修改版) ---
@@ -73,6 +74,12 @@ const routes = [
     name: 'MediaEditPage', // ✨✨✨ [修改] 将名字改为 MediaEditSA，以明确区分
     component: () => import('../components/MediaEditPage.vue'),
     props: true,
+    meta: { requiresAuth: true },
+  },
+  { 
+    path: '/actor-subscriptions',
+    name: 'ActorSubscriptions',
+    component: ActorSubscriptionPage,
     meta: { requiresAuth: true },
   },
 ];

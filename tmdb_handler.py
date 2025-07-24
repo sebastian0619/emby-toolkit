@@ -160,3 +160,41 @@ def get_collection_details_tmdb(collection_id: int, api_key: str) -> Optional[Di
     
     logger.debug(f"TMDb: 获取合集详情 (ID: {collection_id})")
     return _tmdb_request(endpoint, api_key, params)
+# --- 搜索演员 ---
+def search_person_tmdb(query: str, api_key: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    【新】通过名字在 TMDb 上搜索演员。
+    """
+    if not query or not api_key:
+        return None
+    endpoint = "/search/person"
+    # 我们可以添加一些参数来优化搜索，比如只搜索非成人内容，并优先中文结果
+    params = {
+        "query": query,
+        "include_adult": "false",
+        "language": DEFAULT_LANGUAGE # 使用模块内定义的默认语言
+    }
+    logger.debug(f"TMDb: 正在搜索演员: '{query}'")
+    data = _tmdb_request(endpoint, api_key, params)
+    return data.get("results") if data else None
+# --- 获取演员的所有影视作品 ---
+def get_person_credits_tmdb(person_id: int, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    【新】获取一个演员参与的所有电影和电视剧作品。
+    使用 append_to_response 来一次性获取 movie_credits 和 tv_credits。
+    """
+    if not person_id or not api_key:
+        return None
+    
+    endpoint = f"/person/{person_id}"
+    # ★★★ 关键：一次请求同时获取电影和电视剧作品 ★★★
+    params = {
+        "append_to_response": "movie_credits,tv_credits"
+    }
+    logger.debug(f"TMDb: 正在获取演员 (ID: {person_id}) 的所有作品...")
+    
+    # 这里我们直接调用 get_person_details_tmdb，因为它内部已经包含了 _tmdb_request 的逻辑
+    # 并且我们不需要它的其他附加信息，所以第三个参数传我们自己的 append_to_response
+    details = get_person_details_tmdb(person_id, api_key, append_to_response="movie_credits,tv_credits")
+
+    return details

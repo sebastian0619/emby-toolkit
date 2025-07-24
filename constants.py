@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "2.9.0.1"  # 更新版本号
+APP_VERSION = "2.9.0.2"  # 更新版本号
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 CONFIG_FILE_NAME = "config.ini" # 主配置文件名
@@ -101,6 +101,10 @@ DEFAULT_SCHEDULE_WATCHLIST_CRON = "0 */6 * * *" # 默认每6小时执行一次
 # --- 演员处理相关配置 ---
 CONFIG_SECTION_ACTOR = "Actor"
 CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX = "actor_role_add_prefix"
+
+# --- 演员订阅 ---
+CONFIG_OPTION_SCHEDULE_ACTOR_TRACKING_ENABLED = "schedule_actor_tracking_enabled"
+CONFIG_OPTION_SCHEDULE_ACTOR_TRACKING_CRON = "schedule_actor_tracking_cron"
 
 # --- 演员元数据增强任务 ---
 CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED = "schedule_enrich_aliases_enabled" # 是否启用演员元数据增强任务

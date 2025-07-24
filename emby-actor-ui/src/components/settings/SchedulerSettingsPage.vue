@@ -175,6 +175,30 @@
             <template #action><n-space justify="end"><n-button size="small" type="primary" ghost @click="triggerTaskNow('refresh-collections')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning"><template #icon><n-icon :component="Play24Regular" /></template>立即执行一次</n-button></n-space></template>
           </n-card>
         </n-gi>
+        <!-- ★★★ 新增卡片: 演员订阅扫描 ★★★ -->
+        <n-gi>
+          <n-card title="演员订阅" class="glass-section" :bordered="false" style="height: 100%;">
+            <template #header-extra>
+              <n-switch v-model:value="configModel.schedule_actor_tracking_enabled" />
+            </template>
+            <n-form :model="configModel" label-placement="top">
+              <n-grid :cols="1">
+                <n-form-item-grid-item label="CRON表达式" path="schedule_actor_tracking_cron">
+                  <n-input v-model:value="configModel.schedule_actor_tracking_cron" :disabled="!configModel.schedule_actor_tracking_enabled" placeholder="例如: 0 5 * * *" />
+                  <template #feedback>定时扫描所有已订阅演员的作品，检查更新并订阅缺失项。</template>
+                </n-form-item-grid-item>
+              </n-grid>
+            </n-form>
+            <template #action>
+              <n-space justify="end">
+                <n-button size="small" type="primary" ghost @click="triggerTaskNow('actor-tracking')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
+                  <template #icon><n-icon :component="Play24Regular" /></template>
+                  立即执行一次
+                </n-button>
+              </n-space>
+            </template>
+          </n-card>
+        </n-gi>
       </n-grid>
 
       <!-- 保存按钮 -->

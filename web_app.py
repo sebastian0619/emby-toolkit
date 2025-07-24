@@ -8,6 +8,7 @@ import shutil
 from datetime import date, timedelta, datetime
 from actor_sync_handler import UnifiedSyncHandler
 import emby_handler
+import moviepilot_handler
 import utils
 from utils import LogDBManager
 import configparser
@@ -29,6 +30,7 @@ from apscheduler.triggers.cron import CronTrigger
 import pytz # 用于处理时区
 import atexit # 用于应用退出处理
 from core_processor import MediaProcessor
+from actor_subscription_processor import ActorSubscriptionProcessor
 import csv
 from io import StringIO
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -133,6 +135,8 @@ CONFIG_DEFINITION = {
     constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', constants.DEFAULT_SCHEDULE_AUTOSUB_CRON),
     constants.CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_ENABLED: ('Scheduler', 'boolean', False),
     constants.CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_CRON: ('Scheduler', 'string', constants.DEFAULT_SCHEDULE_REFRESH_COLLECTIONS_CRON),
+    constants.CONFIG_OPTION_SCHEDULE_ACTOR_TRACKING_ENABLED: ('Scheduler', 'boolean', False),
+    constants.CONFIG_OPTION_SCHEDULE_ACTOR_TRACKING_CRON: ('Scheduler', 'string', "0 5 * * *"), # 默认每天早上5点
     # [Authentication]
     constants.CONFIG_OPTION_AUTH_ENABLED: (constants.CONFIG_SECTION_AUTH, 'boolean', False),
     constants.CONFIG_OPTION_AUTH_USERNAME: (constants.CONFIG_SECTION_AUTH, 'string', constants.DEFAULT_USERNAME),
@@ -197,6 +201,7 @@ logger.info(f"数据库文件路径 (DB_PATH) 设置为: {DB_PATH}")
 # --- 全局变量 ---
 EMBY_SERVER_ID: Optional[str] = None # ★★★ 新增：用于存储 Emby Server ID
 media_processor_instance: Optional[MediaProcessor] = None
+actor_subscription_processor_instance: Optional[ActorSubscriptionProcessor] = None
 background_task_status = {
     "is_running": False,
     "current_action": "无",
@@ -326,6 +331,55 @@ def init_db():
                     FOREIGN KEY(tmdb_id) REFERENCES person_identity_map(tmdb_person_id) ON DELETE CASCADE
                 )
             """)
+
+            # --- 4. ★★★ 演员订阅功能表 ★★★ ---
+            logger.trace("  -> 正在创建 'actor_subscriptions' 表 (演员订阅)...")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS actor_subscriptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tmdb_person_id INTEGER NOT NULL UNIQUE,      -- 演员在TMDb的唯一ID，这是关联的核心
+                    actor_name TEXT NOT NULL,                    -- 演员名字 (用于UI显示)
+                    profile_path TEXT,                           -- 演员头像路径 (用于UI显示)
+
+                    -- 订阅配置 --
+                    config_start_year INTEGER DEFAULT 1900,      -- 起始年份筛选
+                    config_media_types TEXT DEFAULT 'Movie,TV',  -- 订阅的媒体类型 (逗号分隔, e.g., "Movie,TV")
+                    config_genres_include_json TEXT,             -- 包含的类型ID (JSON数组, e.g., "[28, 12]")
+                    config_genres_exclude_json TEXT,             -- 排除的类型ID (JSON数组, e.g., "[99]")
+
+                    -- 状态与维护 --
+                    status TEXT DEFAULT 'active',                -- 订阅状态 ('active', 'paused')
+                    last_checked_at TIMESTAMP,                   -- 上次计划任务检查的时间
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- 添加订阅的时间
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_tmdb_person_id ON actor_subscriptions (tmdb_person_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_status ON actor_subscriptions (status)")
+
+            logger.trace("  -> 正在创建 'tracked_actor_media' 表 (追踪的演员媒体)...")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tracked_actor_media (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    subscription_id INTEGER NOT NULL,            -- 外键，关联到 actor_subscriptions.id
+                    tmdb_media_id INTEGER NOT NULL,              -- 影视项目在TMDb的ID (电影或剧集)
+                    media_type TEXT NOT NULL,                    -- 'Movie' 或 'Series'
+
+                    -- 用于UI显示和筛选的基本信息 --
+                    title TEXT NOT NULL,
+                    release_date TEXT,
+                    poster_path TEXT,
+
+                    -- 核心状态字段 --
+                    status TEXT NOT NULL,                        -- 'IN_LIBRARY', 'PENDING_RELEASE', 'SUBSCRIBED', 'MISSING'
+                    emby_item_id TEXT,                           -- 如果已入库，其在Emby中的ID
+                    last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                    FOREIGN KEY(subscription_id) REFERENCES actor_subscriptions(id) ON DELETE CASCADE,
+                    UNIQUE(subscription_id, tmdb_media_id) -- 确保每个订阅下，一个媒体项只被追踪一次
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_subscription_id ON tracked_actor_media (subscription_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_status ON tracked_actor_media (status)")
 
             conn.commit()
             logger.info("数据库初始化完成，所有表结构已更新至最新版本。")
@@ -511,7 +565,7 @@ def initialize_processors():
     【修复版】初始化所有需要的处理器实例，包括 MediaProcessor 和 WatchlistProcessor。
     """
     # ★★★ 1. 声明所有需要修改的全局变量 ★★★
-    global media_processor_instance, watchlist_processor_instance, EMBY_SERVER_ID
+    global media_processor_instance, watchlist_processor_instance, EMBY_SERVER_ID, actor_subscription_processor_instance
     if not APP_CONFIG:
         logger.error("无法初始化处理器：全局配置 APP_CONFIG 为空。")
         return
@@ -542,7 +596,7 @@ def initialize_processors():
         logger.error(f"创建 MediaProcessor 实例失败: {e}", exc_info=True)
         media_processor_instance = None
 
-    # --- ★★★ 2. 新增：初始化 WatchlistProcessor ★★★ ---
+    # --- ★★★ 初始化 WatchlistProcessor ★★★ ---
     if watchlist_processor_instance:
         try:
             watchlist_processor_instance.close()
@@ -562,6 +616,22 @@ def initialize_processors():
     else:
         logger.warning("WatchlistProcessor 未初始化，因为缺少必要的 Emby 配置。")
         watchlist_processor_instance = None
+
+    # --- ★★★ 初始化 ActorSubscriptionProcessor ★★★ ---
+    if actor_subscription_processor_instance:
+        try:
+            # 如果以后这个类有 close 方法，可以在这里调用
+            pass
+        except Exception as e:
+            logger.warning(f"关闭旧的 actor_subscription_processor_instance 时出错: {e}")
+
+    try:
+        # 假设它的构造函数也接收一个 config 字典
+        actor_subscription_processor_instance = ActorSubscriptionProcessor(config=current_config)
+        logger.trace("ActorSubscriptionProcessor 实例已成功初始化，随时待命。")
+    except Exception as e:
+        logger.error(f"创建 ActorSubscriptionProcessor 实例失败: {e}", exc_info=True)
+        actor_subscription_processor_instance = None # 初始化失败，明确设为 None
 # --- 后台任务回调 ---
 def update_status_from_thread(progress: int, message: str):
     global background_task_status
@@ -657,6 +727,9 @@ def task_worker_function():
             if "追剧" in task_name or "watchlist" in task_function.__name__:
                 processor_to_use = watchlist_processor_instance
                 logger.debug(f"任务 '{task_name}' 将使用 WatchlistProcessor。")
+            elif "演员" in task_name or "actor" in task_function.__name__: 
+                processor_to_use = actor_subscription_processor_instance
+                logger.debug(f"任务 '{task_name}' 将使用 ActorSubscriptionProcessor。")
             else:
                 processor_to_use = media_processor_instance
                 logger.debug(f"任务 '{task_name}' 将使用 MediaProcessor。")
@@ -896,6 +969,25 @@ def setup_scheduled_tasks():
     else:
         logger.info("定时智能订阅任务未启用。")
 
+    # --- ★★★ 任务 8: 演员订阅扫描 ★★★ ---
+    JOB_ID_ACTOR_TRACKING = 'scheduled_actor_tracking'
+    if scheduler.get_job(JOB_ID_ACTOR_TRACKING): scheduler.remove_job(JOB_ID_ACTOR_TRACKING)
+    if config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_TRACKING_ENABLED, False):
+        try:
+            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_TRACKING_CRON)
+            scheduler.add_job(
+                func=lambda: submit_task_to_queue(task_process_actor_subscriptions, "定时演员订阅扫描"),
+                trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                id=JOB_ID_ACTOR_TRACKING,
+                name="定时演员订阅扫描",
+                replace_existing=True
+            )
+            logger.info(f"已设置定时任务：演员订阅扫描，将{_get_next_run_time_str(cron)}")
+        except Exception as e:
+            logger.error(f"设置定时演员订阅扫描任务失败: {e}", exc_info=True)
+    else:
+        logger.info("定时演员订阅扫描任务未启用。")
+
     # --- 启动调度器逻辑 (包含所有任务开关) ---
     all_schedules_enabled = [
         config.get(constants.CONFIG_OPTION_SCHEDULE_ENABLED, False),
@@ -1109,6 +1201,14 @@ def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list
         manual_cast_list=manual_cast_list,
         item_name=item_name
     )
+# --- 扫描单个演员订阅的所有作品 ---
+def task_scan_actor_media(processor: ActorSubscriptionProcessor, subscription_id: int):
+    """【新】后台任务：扫描单个演员订阅的所有作品。"""
+    processor.run_full_scan_for_actor(subscription_id)
+# --- 演员订阅 ---
+def task_process_actor_subscriptions(processor: ActorSubscriptionProcessor):
+    """【新】后台任务：执行所有启用的演员订阅扫描。"""
+    processor.run_scheduled_task()
 # ★★★ 1. 定义一个webhoo专用追剧、用于编排任务的函数 ★★★
 def webhook_processing_task(processor: MediaProcessor, item_id: str, force_reprocess: bool, process_episodes: bool):
     """
@@ -1548,88 +1648,6 @@ def task_refresh_collections(processor: MediaProcessor):
     except Exception as e:
         logger.error(f"刷新合集任务失败: {e}", exc_info=True)
         update_status_from_thread(-1, f"错误: {e}")
-# ★★★ 可复用的剧集订阅帮助函数 ★★★
-def _subscribe_series_to_moviepilot(series_info: dict, season_number: int) -> bool:
-    """一个独立的、可复用的函数，用于订阅单季剧集到MoviePilot。"""
-    try:
-        # (这里的逻辑与我们之前在手动订阅API中的逻辑完全相同)
-        moviepilot_url = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
-        mp_username = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_USERNAME, '')
-        mp_password = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD, '')
-        if not all([moviepilot_url, mp_username, mp_password]):
-            logger.warning("智能订阅跳过：MoviePilot配置不完整。")
-            return False
-
-        login_url = f"{moviepilot_url}/api/v1/login/access-token"
-        login_data = {"username": mp_username, "password": mp_password}
-        login_response = requests.post(login_url, data=login_data, timeout=10)
-        login_response.raise_for_status()
-        access_token = login_response.json().get("access_token")
-        if not access_token:
-            logger.error("智能订阅失败：MoviePilot 认证失败，未能获取到 Token。")
-            return False
-
-        subscribe_url = f"{moviepilot_url}/api/v1/subscribe/"
-        subscribe_headers = {"Authorization": f"Bearer {access_token}"}
-        subscribe_payload = {
-            "name": series_info['item_name'],
-            "tmdbid": int(series_info['tmdb_id']),
-            "type": "电视剧",
-            "season": season_number
-        }
-        
-        logger.info(f"【智能订阅】正在提交任务: '{series_info['item_name']}' 第 {season_number} 季")
-        sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
-        
-        if sub_response.status_code in [200, 201, 204]:
-            logger.info(f"  -> 成功！MoviePilot 已接受订阅任务。")
-            return True
-        else:
-            logger.error(f"  -> 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
-            return False
-    except Exception as e:
-        logger.error(f"智能订阅过程中发生网络或认证错误: {e}")
-        return False
-# ★★★ 可复用的电影订阅帮助函数 ★★★
-def _subscribe_movie_to_moviepilot(movie_info: dict) -> bool:
-    """一个独立的、可复用的函数，用于订阅单部电影到MoviePilot。"""
-    try:
-        moviepilot_url = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
-        mp_username = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_USERNAME, '')
-        mp_password = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD, '')
-        if not all([moviepilot_url, mp_username, mp_password]):
-            logger.warning("智能订阅跳过：MoviePilot配置不完整。")
-            return False
-
-        login_url = f"{moviepilot_url}/api/v1/login/access-token"
-        login_data = {"username": mp_username, "password": mp_password}
-        login_response = requests.post(login_url, data=login_data, timeout=10)
-        login_response.raise_for_status()
-        access_token = login_response.json().get("access_token")
-        if not access_token:
-            logger.error("智能订阅失败：MoviePilot 认证失败，未能获取到 Token。")
-            return False
-
-        subscribe_url = f"{moviepilot_url}/api/v1/subscribe/"
-        subscribe_headers = {"Authorization": f"Bearer {access_token}"}
-        subscribe_payload = {
-            "name": movie_info['title'],
-            "tmdbid": int(movie_info['tmdb_id']),
-            "type": "电影"
-        }
-        
-        logger.info(f"【智能订阅】正在提交电影任务: '{movie_info['title']}'")
-        sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
-        
-        if sub_response.status_code in [200, 201, 204]:
-            logger.info(f"  -> 成功！MoviePilot 已接受订阅任务。")
-            return True
-        else:
-            logger.error(f"  -> 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
-            return False
-    except Exception as e:
-        logger.error(f"智能订阅电影过程中发生网络或认证错误: {e}")
-        return False
 # ★★★ 带智能预判的自动订阅任务 ★★★
 def task_auto_subscribe(processor: MediaProcessor):
     update_status_from_thread(0, "正在启动智能订阅任务...")
@@ -1673,7 +1691,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                         try:
                             release_date = datetime.strptime(release_date_str, '%Y-%m-%d').date()
                             if release_date <= today:
-                                success = _subscribe_movie_to_moviepilot(movie)
+                                success = moviepilot_handler.subscribe_movie_to_moviepilot(movie)
                                 if success:
                                     successfully_subscribed_items.append(f"电影《{movie['title']}》")
                                     movies_changed = True
@@ -1737,7 +1755,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                             # ▼▼▼ 日志点 6: 核心判断，并打印决策过程！▼▼▼
                             if season_date <= today:
                                 logger.info(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 已播出，符合订阅条件，正在提交...")
-                                success = _subscribe_series_to_moviepilot(dict(series), season['season_number'])
+                                success = moviepilot_handler.subscribe_series_to_moviepilot(dict(series), season['season_number'])
                                 if success:
                                     logger.info(f"【智能订阅-剧集】      -> 订阅成功！")
                                     successfully_subscribed_items.append(f"《{series['item_name']}》第 {season['season_number']} 季")
@@ -1776,7 +1794,8 @@ TASK_REGISTRY = {
     'enrich-aliases': (task_enrich_aliases, "立即执行演员元数据补充"),
     'actor-cleanup': (task_actor_translation_cleanup, "立即执行演员名翻译"),
     'refresh-collections': (task_refresh_collections, "立即执行电影合集刷新"),
-    'auto-subscribe': (task_auto_subscribe, "立即执行智能订阅")
+    'auto-subscribe': (task_auto_subscribe, "立即执行智能订阅"),
+    'actor-tracking': (task_process_actor_subscriptions, "立即执行演员订阅")
 }
 # --- 路由区 ---
 # --- webhook通知任务 ---
@@ -1878,36 +1897,6 @@ def emby_webhook():
         return jsonify({"status": "precise_image_task_queued", "item_id": original_item_id}), 202
     
     return jsonify({"status": "event_unhandled"}), 500
-    
-@app.route('/trigger_sync_person_map', methods=['POST'])
-def trigger_sync_person_map(): # WebUI 用的
-
-    task_name = "同步Emby演员映射表 (WebUI)"
-    logger.info(f"收到手动触发 '{task_name}' 的请求。")
-
-    submit_task_to_queue(
-        task_sync_person_map,
-        task_name
-    )
-
-    flash(f"'{task_name}' 任务已在后台启动。", "info")
-    return redirect(url_for('settings_page'))
-
-@app.route('/trigger_stop_task', methods=['POST'])
-def trigger_stop_task():
-    global background_task_status
-    if media_processor_instance and hasattr(media_processor_instance, 'signal_stop'):
-        media_processor_instance.signal_stop()
-        flash("已发送停止后台任务的请求。任务将在当前步骤完成后停止。", "info")
-        background_task_status["message"] = "正在尝试停止任务..."
-    else:
-        flash("错误：服务未就绪或不支持停止操作。", "error")
-    return redirect(url_for('settings_page'))
-
-@app.route('/status')
-def get_status():
-    return jsonify(background_task_status)
-
 #--- 日志 ---
 @app.route('/api/status', methods=['GET'])
 def api_get_task_status():
@@ -1919,7 +1908,6 @@ def api_get_task_status():
     status_data['logs'] = list(frontend_log_queue)
     
     return jsonify(status_data)
-
 @app.route('/api/emby_libraries')
 def api_get_emby_libraries():
     # 确保 media_processor_instance 已初始化并且 Emby 配置有效
@@ -1940,7 +1928,6 @@ def api_get_emby_libraries():
     else: # get_emby_libraries 返回了 None，表示获取失败
         logger.error("/api/emby_libraries: 无法获取Emby媒体库列表 (emby_handler返回None)。")
         return jsonify({"error": "无法获取Emby媒体库列表，请检查Emby连接和日志"}), 500
-
 # --- 应用退出处理 ---
 def application_exit_handler():
     global media_processor_instance, scheduler, task_worker_thread
@@ -1978,10 +1965,8 @@ def application_exit_handler():
         scheduler.shutdown(wait=False)
     
     logger.info("atexit 清理操作执行完毕。")
-
 atexit.register(application_exit_handler)
 # --- 应用退出处理结束 ---
-
 # --- API 端点 搜索媒体库 ---
 @app.route('/api/search_emby_library', methods=['GET'])
 @processor_ready_required
@@ -2038,7 +2023,6 @@ def auth_status():
         "username": session.get('username')
     }
     return jsonify(response)
-
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     data = request.json
@@ -2070,14 +2054,12 @@ def login():
     
     logger.warning(f"用户 '{username_from_req}' 登录失败：用户名或密码错误。")
     return jsonify({"error": "用户名或密码错误"}), 401
-
 @app.route('/api/auth/logout', methods=['POST'])
 def logout():
     username = session.get('username', '未知用户')
     session.clear()
     logger.info(f"用户 '{username}' 已注销。")
     return jsonify({"message": "注销成功"})
-
 # --- 认证 API 端点结束 ---
 @app.route('/api/auth/change_password', methods=['POST'])
 @login_required
@@ -2143,7 +2125,6 @@ def api_get_config():
     except Exception as e:
         logger.error(f"API /api/config (GET) 获取配置时发生错误: {e}", exc_info=True)
         return jsonify({"error": "获取配置信息时发生服务器内部错误"}), 500
-
 # --- API 端点：保存配置 ---
 @app.route('/api/config', methods=['POST'])
 def api_save_config():
@@ -2179,7 +2160,6 @@ def api_save_config():
     except Exception as e:
         logger.error(f"API /api/config (POST) 保存配置时发生错误: {e}", exc_info=True)
         return jsonify({"error": f"保存配置时发生服务器内部错误: {str(e)}"}), 500
-
 # --- API 端点：获取待复核列表 ---
 @app.route('/api/review_items', methods=['GET'])
 def api_get_review_items():
@@ -2352,18 +2332,31 @@ def api_handle_trigger_sync_map():
     except Exception as e:
         logger.error(f"API /api/trigger_sync_person_map error: {e}", exc_info=True)
         return jsonify({"error": "启动同步映射表时发生服务器内部错误"}), 500
-
 @app.route('/api/trigger_stop_task', methods=['POST'])
 def api_handle_trigger_stop_task():
     logger.debug("API Endpoint: Received request to stop current task.")
+    
+    stopped_any = False
+    # --- ★★★ 核心修复：尝试停止所有可能的处理器 ★★★ ---
     if media_processor_instance:
         media_processor_instance.signal_stop()
+        stopped_any = True
+        
+    if watchlist_processor_instance:
+        watchlist_processor_instance.signal_stop()
+        stopped_any = True
+
+    if actor_subscription_processor_instance:
+        actor_subscription_processor_instance.signal_stop()
+        stopped_any = True
+    # --- 修复结束 ---
+
+    if stopped_any:
         logger.info("已发送停止信号给当前正在运行的任务。")
         return jsonify({"message": "已发送停止任务请求。"}), 200
     else:
-        logger.warning("API: MediaProcessor 未初始化，无法发送停止信号。")
+        logger.warning("API: 没有任何处理器实例被初始化，无法发送停止信号。")
         return jsonify({"error": "核心处理器未就绪"}), 503
-    
 # ✨✨✨ 保存手动编辑结果的 API ✨✨✨
 @app.route('/api/update_media_cast_sa/<item_id>', methods=['POST'])
 @login_required
@@ -2785,7 +2778,6 @@ def api_clear_review_items_revised():
     message = f"操作成功！已将 {deleted_count} 个项目从待复核列表移至已处理列表。"
     logger.info(message)
     return jsonify({"message": message}), 200
-
 # # ★★★ 获取追剧列表的API ★★★
 @app.route('/api/watchlist', methods=['GET']) 
 @login_required
@@ -2847,7 +2839,6 @@ def api_add_to_watchlist():
         logger.error(f"手动添加项目到追剧列表时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在添加时发生内部错误"}), 500
     # ✨✨✨ 修改结束 ✨✨✨
-
 #★★★ 手动触发追剧列表更新的API ★★★
 @app.route('/api/watchlist/trigger_full_update', methods=['POST']) 
 @login_required
@@ -2893,8 +2884,6 @@ def api_update_watchlist_status():
     except Exception as e:
         logger.error(f"更新追剧状态时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在更新状态时发生内部错误"}), 500
-
-
 # ★★★ 新增：手动从追剧列表移除的API ★★★
 @app.route('/api/watchlist/remove/<item_id>', methods=['POST'])
 @login_required
@@ -3000,7 +2989,6 @@ def api_reprocess_item(item_id):
     )
     
     return jsonify({"message": f"重新处理项目 '{item_name_for_ui}' 的任务已提交。"}), 202
-
 # ★★★ 重新处理所有待复核项 ★★★
 @app.route('/api/actions/reprocess_all_review_items', methods=['POST'])
 @login_required
@@ -3504,6 +3492,213 @@ def api_subscribe_series_moviepilot():
 
     except Exception as e:
         return jsonify({"error": f"向 MoviePilot 提交订阅时出错: {e}"}), 502
+# --- 演员订阅 API ---
+@app.route('/api/actor-subscriptions/search', methods=['GET'])
+@login_required
+@processor_ready_required
+def api_search_actors():
+    """
+    API: 根据提供的名字搜索演员。
+    """
+    query = request.args.get('name', '').strip()
+    if not query:
+        return jsonify({"error": "必须提供搜索关键词 'name'"}), 400
+
+    tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+    if not tmdb_api_key:
+        return jsonify({"error": "服务器未配置TMDb API Key"}), 503
+
+    try:
+        search_results = tmdb_handler.search_person_tmdb(query, tmdb_api_key)
+        if search_results is None:
+            return jsonify({"error": "从TMDb搜索演员时发生错误"}), 500
+        
+        # 为了前端方便，我们可以稍微处理一下结果，让信息更清晰
+        formatted_results = []
+        for person in search_results:
+            # 只选择有头像和有知名作品的演员，过滤掉一些无关结果
+            if person.get('profile_path') and person.get('known_for'):
+                 formatted_results.append({
+                     "id": person.get("id"),
+                     "name": person.get("name"),
+                     "profile_path": person.get("profile_path"),
+                     "known_for_department": person.get("known_for_department"),
+                     # 将 "known_for" 里的作品标题拼接起来，方便前端展示
+                     "known_for": ", ".join([
+                         item.get('title', item.get('name', '')) 
+                         for item in person.get('known_for', [])
+                     ])
+                 })
+
+        return jsonify(formatted_results)
+    except Exception as e:
+        logger.error(f"API /api/actor-subscriptions/search 发生错误: {e}", exc_info=True)
+        return jsonify({"error": "搜索演员时发生未知的服务器错误"}), 500
+# --- 获取所有演员订阅列表，或新增一个演员订阅 ---
+@app.route('/api/actor-subscriptions', methods=['GET', 'POST'])
+@login_required
+def handle_actor_subscriptions():
+    """
+    API: 获取所有演员订阅列表，或新增一个演员订阅。
+    """
+    # --- 处理 GET 请求：获取列表 ---
+    if request.method == 'GET':
+        try:
+            with get_central_db_connection(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, tmdb_person_id, actor_name, profile_path, status, last_checked_at FROM actor_subscriptions ORDER BY added_at DESC")
+                subscriptions = [dict(row) for row in cursor.fetchall()]
+            return jsonify(subscriptions)
+        except Exception as e:
+            logger.error(f"API 获取演员订阅列表失败: {e}", exc_info=True)
+            return jsonify({"error": "获取订阅列表时发生服务器内部错误"}), 500
+
+    # --- 处理 POST 请求：新增订阅 ---
+    if request.method == 'POST':
+        data = request.json
+        tmdb_person_id = data.get('tmdb_person_id')
+        actor_name = data.get('actor_name')
+        profile_path = data.get('profile_path')
+        config = data.get('config', {}) # <<< 1. 获取配置字典
+
+        # 从配置字典中提取具体值，并提供默认值
+        start_year = config.get('start_year', 1900)
+        media_types = config.get('media_types', 'Movie,TV')
+        genres_include = config.get('genres_include_json', '[]')
+        genres_exclude = config.get('genres_exclude_json', '[]')
+
+        if not all([tmdb_person_id, actor_name]):
+            return jsonify({"error": "缺少必要的参数 (tmdb_person_id, actor_name)"}), 400
+
+        try:
+            with get_central_db_connection(DB_PATH) as conn:
+                cursor = conn.cursor()
+                # vvv 2. 修改 INSERT 语句以包含新字段 vvv
+                cursor.execute(
+                    """
+                    INSERT INTO actor_subscriptions 
+                    (tmdb_person_id, actor_name, profile_path, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (tmdb_person_id, actor_name, profile_path, start_year, media_types, genres_include, genres_exclude)
+                )
+                conn.commit()
+                new_sub_id = cursor.lastrowid
+            
+
+            logger.info(f"成功添加新的演员订阅: {actor_name} (TMDb ID: {tmdb_person_id})")
+            return jsonify({"message": f"演员 {actor_name} 已成功订阅！", "id": new_sub_id}), 201
+
+        except sqlite3.IntegrityError:
+            return jsonify({"error": "该演员已经被订阅过了"}), 409
+        except Exception as e:
+            logger.error(f"API 添加演员订阅失败: {e}", exc_info=True)
+            return jsonify({"error": "添加订阅时发生服务器内部错误"}), 500
+# --- 手动触发对单个演员订阅的刷新任务 ---
+@app.route('/api/actor-subscriptions/<int:sub_id>/refresh', methods=['POST'])
+@login_required
+@task_lock_required
+def refresh_single_actor_subscription(sub_id):
+    """【新】API: 手动触发对单个演员订阅的刷新任务。"""
+    logger.info(f"API: 收到对订阅ID {sub_id} 的手动刷新请求。")
+    
+    # 为了让任务名更友好，可以先从数据库查一下演员名字
+    actor_name = f"订阅ID {sub_id}"
+    try:
+        with get_central_db_connection(DB_PATH) as conn:
+            cursor = conn.cursor()
+            name = cursor.execute("SELECT actor_name FROM actor_subscriptions WHERE id = ?", (sub_id,)).fetchone()
+            if name:
+                actor_name = name[0]
+    except Exception:
+        pass # 查不到也无所谓
+
+    submit_task_to_queue(
+        task_scan_actor_media,
+        f"手动刷新演员: {actor_name}",
+        sub_id
+    )
+    return jsonify({"message": f"刷新演员 {actor_name} 作品的任务已提交！"}), 202
+# --- 获取、更新或删除单个演员的订阅详情 ---
+@app.route('/api/actor-subscriptions/<int:sub_id>', methods=['GET', 'PUT', 'DELETE'])
+@login_required
+def handle_single_actor_subscription(sub_id):
+    """
+    API: 获取、更新或删除单个演员的订阅详情。
+    """
+    # --- 处理 GET 请求：获取详情 ---
+    if request.method == 'GET':
+        try:
+            with get_central_db_connection(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+
+                # 1. 获取订阅主信息
+                cursor.execute("SELECT * FROM actor_subscriptions WHERE id = ?", (sub_id,))
+                subscription = cursor.fetchone()
+                if not subscription:
+                    return jsonify({"error": "未找到指定的订阅"}), 404
+                
+                # 2. 获取该订阅追踪的所有媒体项目
+                cursor.execute("SELECT * FROM tracked_actor_media WHERE subscription_id = ? ORDER BY release_date DESC", (sub_id,))
+                tracked_media = [dict(row) for row in cursor.fetchall()]
+
+            # 3. 组合成一个对象返回给前端
+            response_data = dict(subscription)
+            response_data['tracked_media'] = tracked_media
+            
+            return jsonify(response_data)
+
+        except Exception as e:
+            logger.error(f"API 获取订阅详情 {sub_id} 失败: {e}", exc_info=True)
+            return jsonify({"error": "获取订阅详情时发生服务器内部错误"}), 500
+    
+    # --- ★★★ 新增：处理 PUT 请求：更新配置 ★★★ ---
+    if request.method == 'PUT':
+        try:
+            config = request.json.get('config', {})
+            if not config:
+                return jsonify({"error": "请求体中缺少配置数据"}), 400
+
+            # 从配置字典中提取具体值
+            start_year = config.get('start_year', 1900)
+            media_types = config.get('media_types', 'Movie,TV')
+            genres_include = config.get('genres_include_json', '[]')
+            genres_exclude = config.get('genres_exclude_json', '[]')
+
+            with get_central_db_connection(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE actor_subscriptions SET
+                    config_start_year = ?, config_media_types = ?, 
+                    config_genres_include_json = ?, config_genres_exclude_json = ?
+                    WHERE id = ?
+                """, (start_year, media_types, genres_include, genres_exclude, sub_id))
+                conn.commit()
+
+            logger.info(f"成功更新订阅ID {sub_id} 的配置。")
+            return jsonify({"message": "配置已成功保存！"}), 200
+        except Exception as e:
+            logger.error(f"API 更新订阅配置 {sub_id} 失败: {e}", exc_info=True)
+            return jsonify({"error": "保存配置时发生服务器内部错误"}), 500
+
+    # --- ★★★ 新增：处理 DELETE 请求：删除订阅 ★★★ ---
+    if request.method == 'DELETE':
+        try:
+            with get_central_db_connection(DB_PATH) as conn:
+                cursor = conn.cursor()
+                # ON DELETE CASCADE 会自动删除 tracked_actor_media 中的关联数据
+                cursor.execute("DELETE FROM actor_subscriptions WHERE id = ?", (sub_id,))
+                conn.commit()
+            
+            logger.info(f"成功删除订阅ID {sub_id}。")
+            return jsonify({"message": "订阅已成功删除。"}), 200
+        except Exception as e:
+            logger.error(f"API 删除订阅 {sub_id} 失败: {e}", exc_info=True)
+            return jsonify({"error": "删除订阅时发生服务器内部错误"}), 500
+
+    return jsonify({"error": "Method Not Allowed"}), 405
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})

@@ -58,6 +58,7 @@ COPY requirements.txt \
      watchlist_processor.py \
      actor_sync_handler.py \
      actor_utils.py \
+     actor_subscription_processor.py \
      ./
 
 COPY templates/ ./templates/
