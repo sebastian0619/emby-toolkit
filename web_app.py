@@ -346,6 +346,7 @@ def init_db():
                     config_media_types TEXT DEFAULT 'Movie,TV',  -- 订阅的媒体类型 (逗号分隔, e.g., "Movie,TV")
                     config_genres_include_json TEXT,             -- 包含的类型ID (JSON数组, e.g., "[28, 12]")
                     config_genres_exclude_json TEXT,             -- 排除的类型ID (JSON数组, e.g., "[99]")
+                    config_min_rating REAL DEFAULT 6.0,          -- 最低评分筛选，0表示不筛选
 
                     -- 状态与维护 --
                     status TEXT DEFAULT 'active',                -- 订阅状态 ('active', 'paused')
@@ -353,6 +354,17 @@ def init_db():
                     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- 添加订阅的时间
                 )
             """)
+            # ★★★ 新增：为老用户平滑升级数据库结构 ★★★
+            try:
+                cursor.execute("PRAGMA table_info(actor_subscriptions)")
+                columns = [row[1] for row in cursor.fetchall()]
+                if 'config_min_rating' not in columns:
+                    logger.info("    -> 检测到旧版 'actor_subscriptions' 表，正在添加 'config_min_rating' 字段...")
+                    cursor.execute("ALTER TABLE actor_subscriptions ADD COLUMN config_min_rating REAL DEFAULT 6.0;")
+                    logger.info("    -> 'config_min_rating' 字段添加成功。")
+            except Exception as e_alter:
+                logger.error(f"  -> 为 'actor_subscriptions' 表添加新字段时出错: {e_alter}")
+            # ★★★ 升级逻辑结束 ★★★
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_tmdb_person_id ON actor_subscriptions (tmdb_person_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_status ON actor_subscriptions (status)")
 
@@ -3592,6 +3604,7 @@ def handle_actor_subscriptions():
         media_types = config.get('media_types', 'Movie,TV')
         genres_include = config.get('genres_include_json', '[]')
         genres_exclude = config.get('genres_exclude_json', '[]')
+        min_rating = config.get('min_rating', 6.0)
 
         if not all([tmdb_person_id, actor_name]):
             return jsonify({"error": "缺少必要的参数 (tmdb_person_id, actor_name)"}), 400
@@ -3606,7 +3619,7 @@ def handle_actor_subscriptions():
                     (tmdb_person_id, actor_name, profile_path, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (tmdb_person_id, actor_name, profile_path, start_year, media_types, genres_include, genres_exclude)
+                    (tmdb_person_id, actor_name, profile_path, start_year, media_types, genres_include, genres_exclude, min_rating)
                 )
                 conn.commit()
                 new_sub_id = cursor.lastrowid
@@ -3652,34 +3665,26 @@ def handle_single_actor_subscription(sub_id):
     """
     API: 获取、更新或删除单个演员的订阅详情。
     """
-    # --- 处理 GET 请求：获取详情 ---
+    # --- 处理 GET 请求：获取详情 (这部分不变) ---
     if request.method == 'GET':
         try:
             with get_central_db_connection(DB_PATH) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-
-                # 1. 获取订阅主信息
                 cursor.execute("SELECT * FROM actor_subscriptions WHERE id = ?", (sub_id,))
                 subscription = cursor.fetchone()
                 if not subscription:
                     return jsonify({"error": "未找到指定的订阅"}), 404
-                
-                # 2. 获取该订阅追踪的所有媒体项目
                 cursor.execute("SELECT * FROM tracked_actor_media WHERE subscription_id = ? ORDER BY release_date DESC", (sub_id,))
                 tracked_media = [dict(row) for row in cursor.fetchall()]
-
-            # 3. 组合成一个对象返回给前端
             response_data = dict(subscription)
             response_data['tracked_media'] = tracked_media
-            
             return jsonify(response_data)
-
         except Exception as e:
             logger.error(f"API 获取订阅详情 {sub_id} 失败: {e}", exc_info=True)
             return jsonify({"error": "获取订阅详情时发生服务器内部错误"}), 500
     
-    # --- ★★★ 新增：处理 PUT 请求：更新配置 ★★★ ---
+    # --- [修正后] 处理 PUT 请求：更新状态和/或配置 ---
     if request.method == 'PUT':
         try:
             data = request.json
@@ -3689,16 +3694,15 @@ def handle_single_actor_subscription(sub_id):
             status = data.get('status')
             config = data.get('config')
 
-            # 如果 status 和 config 都没提供，则请求无效
             if status is None and config is None:
                 return jsonify({"error": "请求体中缺少需要更新的数据 (status 或 config)"}), 400
 
             with get_central_db_connection(DB_PATH) as conn:
-                conn.row_factory = sqlite3.Row # 确保可以按列名访问
+                conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
-                # 为了避免覆盖，先获取当前值
-                cursor.execute("SELECT status, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json FROM actor_subscriptions WHERE id = ?", (sub_id,))
+                # 为了避免覆盖，先获取当前值 (包含了 config_min_rating)
+                cursor.execute("SELECT * FROM actor_subscriptions WHERE id = ?", (sub_id,))
                 current_sub = cursor.fetchone()
                 if not current_sub:
                     return jsonify({"error": "未找到指定的订阅"}), 404
@@ -3712,22 +3716,25 @@ def handle_single_actor_subscription(sub_id):
                     new_media_types = config.get('media_types', current_sub['config_media_types'])
                     new_genres_include = config.get('genres_include_json', current_sub['config_genres_include_json'])
                     new_genres_exclude = config.get('genres_exclude_json', current_sub['config_genres_exclude_json'])
+                    new_min_rating = config.get('min_rating', current_sub['config_min_rating'])
                 else: # 如果请求中没有 config，则使用所有旧的 config 值
                     new_start_year = current_sub['config_start_year']
                     new_media_types = current_sub['config_media_types']
                     new_genres_include = current_sub['config_genres_include_json']
                     new_genres_exclude = current_sub['config_genres_exclude_json']
+                    new_min_rating = current_sub['config_min_rating'] # ★★★ 确保在 else 分支中也为 new_min_rating 赋值 ★★★
 
-                # 执行包含 status 的完整更新
+                # 执行包含 status 和 min_rating 的完整更新
                 cursor.execute("""
                     UPDATE actor_subscriptions SET
                     status = ?, 
                     config_start_year = ?, 
                     config_media_types = ?, 
                     config_genres_include_json = ?, 
-                    config_genres_exclude_json = ?
+                    config_genres_exclude_json = ?,
+                    config_min_rating = ?
                     WHERE id = ?
-                """, (new_status, new_start_year, new_media_types, new_genres_include, new_genres_exclude, sub_id))
+                """, (new_status, new_start_year, new_media_types, new_genres_include, new_genres_exclude, new_min_rating, sub_id))
                 conn.commit()
 
             logger.info(f"成功更新订阅ID {sub_id}。")
@@ -3736,6 +3743,21 @@ def handle_single_actor_subscription(sub_id):
         except Exception as e:
             logger.error(f"API 更新订阅 {sub_id} 失败: {e}", exc_info=True)
             return jsonify({"error": "更新订阅时发生服务器内部错误"}), 500
+
+    # --- 处理 DELETE 请求 (这部分不变) ---
+    if request.method == 'DELETE':
+        try:
+            with get_central_db_connection(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM actor_subscriptions WHERE id = ?", (sub_id,))
+                conn.commit()
+            logger.info(f"成功删除订阅ID {sub_id}。")
+            return jsonify({"message": "订阅已成功删除。"}), 200
+        except Exception as e:
+            logger.error(f"API 删除订阅 {sub_id} 失败: {e}", exc_info=True)
+            return jsonify({"error": "删除订阅时发生服务器内部错误"}), 500
+
+    return jsonify({"error": "Method Not Allowed"}), 405
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})

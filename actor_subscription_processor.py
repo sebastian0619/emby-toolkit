@@ -3,7 +3,7 @@
 import sqlite3
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from typing import Optional, Dict, Any, List, Set, Callable
 import threading
@@ -205,6 +205,13 @@ class ActorSubscriptionProcessor:
 
         config_genres_include = set(json.loads(sub_config['config_genres_include_json'] or '[]'))
         config_genres_exclude = set(json.loads(sub_config['config_genres_exclude_json'] or '[]'))
+        # ★★★ 新增：获取评分和豁免期相关的配置 ★★★
+        config_min_rating = sub_config['config_min_rating']
+        grace_period_months = 6 # 豁免期（6个月），可以硬编码或未来做成配置
+        # 计算豁免期的截止日期字符串，格式为 'YYYY-MM-DD'
+        six_months_ago = datetime.now() - timedelta(days=grace_period_months * 30)
+        grace_period_end_date_str = six_months_ago.strftime('%Y-%m-%d')
+        # ★★★ 新增结束 ★★★
 
         for work in works:
             media_id = work.get('id')
@@ -227,6 +234,21 @@ class ActorSubscriptionProcessor:
             genre_ids = set(work.get('genre_ids', []))
             if config_genres_exclude and not genre_ids.isdisjoint(config_genres_exclude): continue
             if config_genres_include and genre_ids.isdisjoint(config_genres_include): continue
+
+            # ★★★ 新增：评分筛选核心逻辑 ★★★
+            if config_min_rating > 0:
+                is_new_movie = release_date_str >= grace_period_end_date_str
+                
+                # 如果不是新电影（即老片），则需要检查评分
+                if not is_new_movie:
+                    vote_average = work.get('vote_average', 0.0)
+                    vote_count = work.get('vote_count', 0)
+                    
+                    # 规则：对于老片，如果评分人数足够多（例如超过50人）但评分未达标，则过滤掉
+                    # 评分人数少或为0的作品会被豁免，给冷门老片一个机会
+                    if vote_count > 50 and vote_average < config_min_rating:
+                        logger.trace(f"过滤老片: '{work.get('title') or work.get('name')}' (评分 {vote_average} < {config_min_rating})")
+                        continue # 不满足条件，跳到下一个作品
             
             handled_media_ids.add(media_id)
             filtered.append(work)

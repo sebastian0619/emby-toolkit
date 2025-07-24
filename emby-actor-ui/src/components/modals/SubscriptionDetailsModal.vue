@@ -139,6 +139,7 @@ const resetConfig = () => {
     media_types: (subscriptionData.value.config_media_types || 'Movie,TV').split(','),
     genres_include: JSON.parse(subscriptionData.value.config_genres_include_json || '[]'),
     genres_exclude: JSON.parse(subscriptionData.value.config_genres_exclude_json || '[]'),
+    min_rating: subscriptionData.value.config_min_rating || 6.0,
   };
 };
 
@@ -151,6 +152,7 @@ const saveConfig = async () => {
         media_types: editableConfig.value.media_types.join(','),
         genres_include_json: JSON.stringify(editableConfig.value.genres_include),
         genres_exclude_json: JSON.stringify(editableConfig.value.genres_exclude),
+        min_rating: editableConfig.value.min_rating || 0.0,
       }
     };
     await axios.put(`/api/actor-subscriptions/${props.subscriptionId}`, payload);
