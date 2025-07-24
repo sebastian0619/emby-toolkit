@@ -68,6 +68,8 @@ class ActorSubscriptionProcessor:
             
         total_subs = len(subs_to_process)
         logger.info(f"定时任务：共找到 {total_subs} 个启用的订阅需要处理。")
+
+        submitted_media_ids_this_session = set()
         
         # ▼▼▼ 核心修改点 3：修改循环，同时处理 id 和 name ▼▼▼
         for i, sub in enumerate(subs_to_process):
@@ -85,7 +87,7 @@ class ActorSubscriptionProcessor:
             logger.info(message)
             
             # 传递给下一层函数的仍然是 ID
-            self.run_full_scan_for_actor(sub_id)
+            self.run_full_scan_for_actor(sub_id, submitted_in_session=submitted_media_ids_this_session)
             
             if not self.is_stop_requested():
                 time.sleep(1) 
@@ -94,7 +96,7 @@ class ActorSubscriptionProcessor:
             logger.info("--- 定时演员订阅扫描任务执行完毕 ---")
             _update_status(100, "所有订阅扫描完成。")
 
-    def run_full_scan_for_actor(self, subscription_id: int):
+    def run_full_scan_for_actor(self, subscription_id: int, submitted_in_session: Set[int]):
         logger.info(f"--- 开始为订阅ID {subscription_id} 执行全量作品扫描 ---")
         try:
             with get_db_connection(self.db_path) as conn:
@@ -166,16 +168,22 @@ class ActorSubscriptionProcessor:
                     if media_id_str in emby_tmdb_ids:
                         status = 'IN_LIBRARY'
                     else:
-                        if release_date_str > today_str:
-                            status = 'PENDING_RELEASE'
+                        media_id_int = work.get('id')
+                        if media_id_int in submitted_in_session:
+                            logger.debug(f"作品 '{work.get('title') or work.get('name')}' 在本次任务中已被提交过，跳过重复订阅。")
+                            status = 'SUBSCRIBED' # 状态依然是已订阅
                         else:
                             logger.info(f"发现缺失作品: {work.get('title') or work.get('name')}，准备提交订阅...")
                             success = False
                             if media_type == 'Movie':
-                                success = moviepilot_handler.subscribe_movie_to_moviepilot(movie_info={'title': work.get('title'), 'tmdb_id': work.get('id')}, config=self.config)
+                                success = moviepilot_handler.subscribe_movie_to_moviepilot(...)
                             elif media_type == 'TV':
-                                success = moviepilot_handler.subscribe_series_to_moviepilot(series_info={'item_name': work.get('name'), 'tmdb_id': work.get('id')}, season_number=None, config=self.config)
+                                success = moviepilot_handler.subscribe_series_to_moviepilot(...)
+                            
                             status = 'SUBSCRIBED' if success else 'MISSING'
+                            # ▼▼▼ 核心修改点 3：如果订阅成功，就把它记到“短时记忆”里 ▼▼▼
+                            if success:
+                                submitted_in_session.add(media_id_int)
                     if self.is_stop_requested():
                         logger.info("演员作品扫描任务在订阅后被用户中断。")
                         break
