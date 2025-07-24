@@ -3614,15 +3614,16 @@ def handle_actor_subscriptions():
                 cursor = conn.cursor()
                 # vvv 2. 修改 INSERT 语句以包含新字段 vvv
                 cursor.execute(
-                    """
-                    INSERT INTO actor_subscriptions 
-                    (tmdb_person_id, actor_name, profile_path, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (tmdb_person_id, actor_name, profile_path, start_year, media_types, genres_include, genres_exclude, min_rating)
-                )
-                conn.commit()
-                new_sub_id = cursor.lastrowid
+                """
+                INSERT INTO actor_subscriptions 
+                (tmdb_person_id, actor_name, profile_path, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json, config_min_rating)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                # 确保这里的值有 8 个，与上面的 '?' 一一对应
+                (tmdb_person_id, actor_name, profile_path, start_year, media_types, genres_include, genres_exclude, min_rating)
+            )
+            conn.commit()
+            new_sub_id = cursor.lastrowid
             
 
             logger.info(f"成功添加新的演员订阅: {actor_name} (TMDb ID: {tmdb_person_id})")
