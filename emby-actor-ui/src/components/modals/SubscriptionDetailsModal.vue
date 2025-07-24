@@ -77,7 +77,18 @@ const columns = [
     }
   },
   { title: '标题', key: 'title', ellipsis: { tooltip: true } },
-  { title: '类型', key: 'media_type', width: 80 },
+  { 
+    title: '类型', 
+    key: 'media_type', 
+    width: 80,
+    render(row) {
+      const typeMap = {
+        'Series': '电视剧',
+        'Movie': '电影'
+      };
+      return typeMap[row.media_type] || row.media_type;
+    }
+  },
   { title: '发行日期', key: 'release_date', width: 120 },
   {
     title: '状态',
