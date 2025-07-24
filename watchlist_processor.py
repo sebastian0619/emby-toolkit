@@ -385,7 +385,11 @@ class WatchlistProcessor:
     # --- 通过对比计算真正的下一待看集 ---
     def _calculate_real_next_episode(self, all_tmdb_episodes: List[Dict], emby_seasons: Dict, series_details: Dict) -> Optional[Dict]:
         """通过对比计算真正的下一待看集。"""
-        episodes_with_air_date = sorted([ep for ep in all_tmdb_episodes if ep.get('air_date')], key=lambda x: x['air_date'])
+        # ★★★ 修改：硬编码忽略所有第0季（特别篇）★★★
+        episodes_with_air_date = sorted([
+            ep for ep in all_tmdb_episodes 
+            if ep.get('air_date') and ep.get('season_number') != 0
+        ], key=lambda x: x['air_date'])
         today_str = datetime.now().date().isoformat()
         
         for episode in episodes_with_air_date:
@@ -397,6 +401,11 @@ class WatchlistProcessor:
                     return episode
         
         api_next_episode = series_details.get('next_episode_to_air')
+        # ★★★ 新增：硬编码忽略官方待播集中的第0季 ★★★
+        if api_next_episode and api_next_episode.get('season_number') == 0:
+            logger.info("  TMDb官方的下一待播集是第0季（特别篇），已忽略。")
+            api_next_episode = None # 将其视为空，以便后续逻辑能正确处理
+
         if api_next_episode and api_next_episode.get('air_date', '') >= today_str:
             logger.info("  本地媒体库已追平，采用TMDb官方的未来待播集信息。")
             return api_next_episode
@@ -412,12 +421,15 @@ class WatchlistProcessor:
         tmdb_episodes_by_season = {}
         for ep in all_tmdb_episodes:
             s_num = ep.get('season_number')
-            if s_num is not None:
+            # ★★★ 新增：硬编码忽略所有第0季（特别篇）★★★
+            if s_num is not None and s_num != 0:
                 tmdb_episodes_by_season.setdefault(s_num, []).append(ep)
 
         for season_summary in tmdb_seasons:
             s_num = season_summary.get('season_number')
-            if s_num is None: continue
+            # ★★★ 新增：硬编码忽略所有第0季（特别篇）★★★
+            if s_num is None or s_num == 0: 
+                continue
 
             if s_num not in emby_seasons:
                 missing_info["missing_seasons"].append(season_summary)
@@ -457,6 +469,10 @@ class WatchlistProcessor:
         for season_info in existing_seasons:
             season_num = season_info.get("season_number")
             
+            # ★★★ 新增：硬编码忽略所有第0季（特别篇）★★★
+            if season_num == 0:
+                logger.info(f"  -> 忽略第 0 季 (特别篇)。")
+                continue
             # 如果 season_number 不存在，则跳过，保证代码健壮性
             if season_num is None:
                 continue
@@ -497,9 +513,10 @@ class WatchlistProcessor:
         if not all_episodes:
             return True
 
+        # ★★★ 修改：硬编码忽略所有第0季（特别篇）★★★
         missing_overview_episodes = [
             f"S{ep.get('season_number', 'N/A'):02d}E{ep.get('episode_number', 'N/A'):02d}"
-            for ep in all_episodes if not ep.get("overview")
+            for ep in all_episodes if not ep.get("overview") and ep.get("season_number") != 0
         ]
 
         if missing_overview_episodes:
