@@ -257,7 +257,7 @@ class ActorSubscriptionProcessor:
             title = work.get('title') or work.get('name', '')
             if not chinese_char_regex.search(title):
                 # 如果正则表达式在标题中找不到任何中文字符
-                logger.trace(f"过滤作品: '{title}' (硬编码规则: 未包含中文字符)。")
+                logger.trace(f"过滤作品: '{title}' (排除无中文片名)。")
                 continue # 跳过这个作品，不将它加入到 filtered 列表中
             
             handled_media_ids.add(media_id)
