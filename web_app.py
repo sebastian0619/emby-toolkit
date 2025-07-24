@@ -3682,48 +3682,60 @@ def handle_single_actor_subscription(sub_id):
     # --- ★★★ 新增：处理 PUT 请求：更新配置 ★★★ ---
     if request.method == 'PUT':
         try:
-            config = request.json.get('config', {})
-            if not config:
-                return jsonify({"error": "请求体中缺少配置数据"}), 400
+            data = request.json
+            if not data:
+                return jsonify({"error": "请求体为空"}), 400
 
-            # 从配置字典中提取具体值
-            start_year = config.get('start_year', 1900)
-            media_types = config.get('media_types', 'Movie,TV')
-            genres_include = config.get('genres_include_json', '[]')
-            genres_exclude = config.get('genres_exclude_json', '[]')
+            status = data.get('status')
+            config = data.get('config')
+
+            # 如果 status 和 config 都没提供，则请求无效
+            if status is None and config is None:
+                return jsonify({"error": "请求体中缺少需要更新的数据 (status 或 config)"}), 400
 
             with get_central_db_connection(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row # 确保可以按列名访问
                 cursor = conn.cursor()
+
+                # 为了避免覆盖，先获取当前值
+                cursor.execute("SELECT status, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json FROM actor_subscriptions WHERE id = ?", (sub_id,))
+                current_sub = cursor.fetchone()
+                if not current_sub:
+                    return jsonify({"error": "未找到指定的订阅"}), 404
+
+                # 使用新值，如果新值不存在，则使用当前数据库中的旧值
+                # 这样，只传 status 就不会把 config 清空，反之亦然
+                new_status = status if status is not None else current_sub['status']
+                
+                if config is not None:
+                    new_start_year = config.get('start_year', current_sub['config_start_year'])
+                    new_media_types = config.get('media_types', current_sub['config_media_types'])
+                    new_genres_include = config.get('genres_include_json', current_sub['config_genres_include_json'])
+                    new_genres_exclude = config.get('genres_exclude_json', current_sub['config_genres_exclude_json'])
+                else: # 如果请求中没有 config，则使用所有旧的 config 值
+                    new_start_year = current_sub['config_start_year']
+                    new_media_types = current_sub['config_media_types']
+                    new_genres_include = current_sub['config_genres_include_json']
+                    new_genres_exclude = current_sub['config_genres_exclude_json']
+
+                # 执行包含 status 的完整更新
                 cursor.execute("""
                     UPDATE actor_subscriptions SET
-                    config_start_year = ?, config_media_types = ?, 
-                    config_genres_include_json = ?, config_genres_exclude_json = ?
+                    status = ?, 
+                    config_start_year = ?, 
+                    config_media_types = ?, 
+                    config_genres_include_json = ?, 
+                    config_genres_exclude_json = ?
                     WHERE id = ?
-                """, (start_year, media_types, genres_include, genres_exclude, sub_id))
+                """, (new_status, new_start_year, new_media_types, new_genres_include, new_genres_exclude, sub_id))
                 conn.commit()
 
-            logger.info(f"成功更新订阅ID {sub_id} 的配置。")
-            return jsonify({"message": "配置已成功保存！"}), 200
-        except Exception as e:
-            logger.error(f"API 更新订阅配置 {sub_id} 失败: {e}", exc_info=True)
-            return jsonify({"error": "保存配置时发生服务器内部错误"}), 500
-
-    # --- ★★★ 新增：处理 DELETE 请求：删除订阅 ★★★ ---
-    if request.method == 'DELETE':
-        try:
-            with get_central_db_connection(DB_PATH) as conn:
-                cursor = conn.cursor()
-                # ON DELETE CASCADE 会自动删除 tracked_actor_media 中的关联数据
-                cursor.execute("DELETE FROM actor_subscriptions WHERE id = ?", (sub_id,))
-                conn.commit()
+            logger.info(f"成功更新订阅ID {sub_id}。")
+            return jsonify({"message": "订阅已成功更新！"}), 200
             
-            logger.info(f"成功删除订阅ID {sub_id}。")
-            return jsonify({"message": "订阅已成功删除。"}), 200
         except Exception as e:
-            logger.error(f"API 删除订阅 {sub_id} 失败: {e}", exc_info=True)
-            return jsonify({"error": "删除订阅时发生服务器内部错误"}), 500
-
-    return jsonify({"error": "Method Not Allowed"}), 405
+            logger.error(f"API 更新订阅 {sub_id} 失败: {e}", exc_info=True)
+            return jsonify({"error": "更新订阅时发生服务器内部错误"}), 500
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})

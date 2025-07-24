@@ -36,12 +36,22 @@
     </div>
     <template #footer>
       <n-space justify="space-between">
+        <n-space>
         <n-popconfirm @positive-click="handleDelete">
           <template #trigger>
             <n-button type="error" ghost>删除此订阅</n-button>
           </template>
           确定要删除对该演员的订阅吗？所有追踪记录将一并清除。
         </n-popconfirm>
+        <n-button
+            v-if="subscriptionData"
+            :type="subscriptionData.status === 'active' ? 'warning' : 'success'"
+            ghost
+            @click="handleToggleStatus"
+        >
+            {{ subscriptionData.status === 'active' ? '暂停订阅' : '恢复订阅' }}
+        </n-button>
+        </n-space>
         <n-button type="primary" @click="handleRefresh">手动刷新</n-button>
       </n-space>
     </template>
@@ -175,7 +185,40 @@ const handleRefresh = async () => {
     message.error(err.response?.data?.error || '启动刷新任务失败。');
   }
 };
+const handleToggleStatus = async () => {
+  if (!props.subscriptionId || !subscriptionData.value) return;
 
+  const newStatus = subscriptionData.value.status === 'active' ? 'paused' : 'active';
+  const actionText = newStatus === 'paused' ? '暂停' : '恢复';
+
+  try {
+    // 构造一个符合后端要求的、完整的 payload
+    // 我们将新的 status 和当前已保存的 config 一起发送
+    const payload = {
+      status: newStatus,
+      config: {
+        start_year: subscriptionData.value.config_start_year,
+        media_types: subscriptionData.value.config_media_types,
+        genres_include_json: subscriptionData.value.config_genres_include_json,
+        genres_exclude_json: subscriptionData.value.config_genres_exclude_json,
+      }
+    };
+
+    // 发送带有完整 payload 的 PUT 请求
+    await axios.put(`/api/actor-subscriptions/${props.subscriptionId}`, payload);
+
+    message.success(`订阅已成功${actionText}！`);
+    
+    // 通知父组件刷新列表
+    emit('subscription-updated');
+    
+    // 重新获取当前详情以更新模态框内的状态
+    await fetchDetails(props.subscriptionId);
+
+  } catch (err) {
+    message.error(err.response?.data?.error || `${actionText}订阅失败。`);
+  }
+};
 watch(() => props.subscriptionId, (newId) => {
   if (newId && props.show) {
     fetchDetails(newId);
