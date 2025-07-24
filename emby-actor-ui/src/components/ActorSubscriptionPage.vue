@@ -41,7 +41,7 @@
           <div class="actor-name">{{ sub.actor_name }}</div>
           <div class="actor-status">
             <n-tag :type="sub.status === 'active' ? 'success' : 'warning'" size="small" round>
-              {{ sub.status === 'active' ? '追踪中' : '已暂停' }}
+              {{ sub.status === 'active' ? '订阅中' : '已暂停' }}
             </n-tag>
           </div>
         </n-card>

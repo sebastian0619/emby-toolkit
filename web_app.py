@@ -1220,7 +1220,7 @@ def task_scan_actor_media(processor: ActorSubscriptionProcessor, subscription_id
         emby_items = emby_handler.get_emby_library_items(base_url=emby_url, api_key=emby_api_key, user_id=emby_user_id, library_ids=library_ids_to_scan, media_type_filter="Movie,Series")
         
         emby_tmdb_ids = {item['ProviderIds'].get('Tmdb') for item in emby_items if item.get('ProviderIds', {}).get('Tmdb')}
-        logger.info(f"手动刷新任务：已从 Emby 获取 {len(emby_tmdb_ids)} 个媒体ID。")
+        logger.debug(f"手动刷新任务：已从 Emby 获取 {len(emby_tmdb_ids)} 个媒体ID。")
 
     except Exception as e:
         logger.error(f"手动刷新任务：在获取Emby媒体库信息时失败: {e}", exc_info=True)

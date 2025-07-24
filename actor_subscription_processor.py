@@ -92,7 +92,7 @@ class ActorSubscriptionProcessor:
                 return
 
             emby_tmdb_ids = {item['ProviderIds'].get('Tmdb') for item in emby_items if item.get('ProviderIds', {}).get('Tmdb')}
-            logger.info(f"已从 Emby 获取 {len(emby_tmdb_ids)} 个已入库媒体的 TMDb ID 用于后续对比。")
+            logger.debug(f"已从 Emby 获取 {len(emby_tmdb_ids)} 个已入库媒体的 TMDb ID 用于后续对比。")
         except Exception as e:
             logger.error(f"定时任务：从 Emby 获取媒体库信息时发生严重错误: {e}", exc_info=True)
             _update_status(-1, "错误：连接 Emby 或获取数据失败。")
@@ -119,7 +119,7 @@ class ActorSubscriptionProcessor:
 
 
     def run_full_scan_for_actor(self, subscription_id: int, emby_tmdb_ids: Set[str]):
-        logger.info(f"--- 开始为订阅ID {subscription_id} 执行全量作品扫描 ---")
+        logger.trace(f"--- 开始为订阅ID {subscription_id} 执行全量作品扫描 ---")
         try:
             with get_db_connection(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
@@ -128,7 +128,7 @@ class ActorSubscriptionProcessor:
                 sub = cursor.execute("SELECT * FROM actor_subscriptions WHERE id = ?", (subscription_id,)).fetchone()
                 if not sub: return
                 
-                logger.info(f"正在处理演员: {sub['actor_name']} (TMDb ID: {sub['tmdb_person_id']})")
+                logger.trace(f"正在处理演员: {sub['actor_name']} (TMDb ID: {sub['tmdb_person_id']})")
 
                 old_tracked_media = self._get_existing_tracked_media(cursor, subscription_id)
                 
@@ -172,7 +172,7 @@ class ActorSubscriptionProcessor:
                 self._update_database_records(cursor, subscription_id, media_to_insert, media_to_update, media_ids_to_delete)
                 
                 conn.commit()
-                logger.info(f"--- 订阅ID {subscription_id} 的全量扫描成功完成 ---")
+                logger.info(f"--- {sub['actor_name']} 的全量扫描成功完成 ---")
 
         except Exception as e:
             logger.error(f"为订阅ID {subscription_id} 执行扫描时发生严重错误: {e}", exc_info=True)

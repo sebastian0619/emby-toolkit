@@ -419,7 +419,7 @@ def get_emby_library_items(
             if user_id:
                 params["UserId"] = user_id
 
-            logger.debug(f"Requesting items from library '{library_name}' (ID: {lib_id}).")
+            logger.trace(f"Requesting items from library '{library_name}' (ID: {lib_id}).")
             
             response = requests.get(api_url, params=params, timeout=30)
             response.raise_for_status()

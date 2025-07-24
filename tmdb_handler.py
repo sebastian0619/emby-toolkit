@@ -191,7 +191,7 @@ def get_person_credits_tmdb(person_id: int, api_key: str) -> Optional[Dict[str, 
     params = {
         "append_to_response": "movie_credits,tv_credits"
     }
-    logger.debug(f"TMDb: 正在获取演员 (ID: {person_id}) 的所有作品...")
+    logger.trace(f"TMDb: 正在获取演员 (ID: {person_id}) 的所有作品...")
     
     # 这里我们直接调用 get_person_details_tmdb，因为它内部已经包含了 _tmdb_request 的逻辑
     # 并且我们不需要它的其他附加信息，所以第三个参数传我们自己的 append_to_response
