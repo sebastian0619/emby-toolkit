@@ -39,52 +39,57 @@ class ActorSubscriptionProcessor:
     def run_scheduled_task(self, update_status_callback: Optional[Callable] = None):
         
         def _update_status(progress, message):
-            """一个安全的内部函数，用于调用回调"""
             if update_status_callback:
-                # 确保进度在0-100之间
                 safe_progress = max(0, min(100, int(progress)))
                 update_status_callback(safe_progress, message)
 
         logger.info("--- 开始执行定时演员订阅扫描任务 ---")
-        _update_status(0, "正在准备订阅列表...") # <-- 任务开始时，先报个到
+        _update_status(0, "正在准备订阅列表...")
         
-        sub_ids_to_process = []
+        # ▼▼▼ 核心修改点 1：修改变量名，让它更清晰 ▼▼▼
+        subs_to_process = []
         try:
             with get_db_connection(self.db_path) as conn:
+                # 为了方便按列名访问，我们使用 Row 工厂
+                conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                cursor.execute("SELECT id FROM actor_subscriptions WHERE status = 'active'")
-                sub_ids_to_process = [row[0] for row in cursor.fetchall()]
+                # ▼▼▼ 核心修改点 2：同时查询 id 和 actor_name ▼▼▼
+                cursor.execute("SELECT id, actor_name FROM actor_subscriptions WHERE status = 'active'")
+                subs_to_process = cursor.fetchall()
         except Exception as e:
             logger.error(f"定时任务：获取启用的订阅列表时失败: {e}", exc_info=True)
-            _update_status(-1, "错误：获取订阅列表失败。") # <-- 出错了也要汇报
+            _update_status(-1, "错误：获取订阅列表失败。")
             return
             
-        if not sub_ids_to_process:
+        if not subs_to_process:
             logger.info("定时任务：没有找到需要处理的演员订阅，任务结束。")
-            _update_status(100, "没有需要处理的演员订阅。") # <-- 任务完成也要汇报
+            _update_status(100, "没有需要处理的演员订阅。")
             return
             
-        total_subs = len(sub_ids_to_process)
+        total_subs = len(subs_to_process)
         logger.info(f"定时任务：共找到 {total_subs} 个启用的订阅需要处理。")
         
-        for i, sub_id in enumerate(sub_ids_to_process):
+        # ▼▼▼ 核心修改点 3：修改循环，同时处理 id 和 name ▼▼▼
+        for i, sub in enumerate(subs_to_process):
             if self.is_stop_requested():
                 logger.info("定时演员订阅扫描任务被用户中断。")
                 break
             
-            # ▼▼▼ 核心修改点 2：在循环中，通过回调函数汇报进度和状态 ▼▼▼
-            progress = int(((i + 1) / total_subs) * 100)
-            message = f"({i+1}/{total_subs}) 正在处理订阅ID: {sub_id}"
-            _update_status(progress, message)
-            logger.info(message) # 日志也照常打印
+            sub_id = sub['id']
+            actor_name = sub['actor_name']
             
+            progress = int(((i + 1) / total_subs) * 100)
+            # ▼▼▼ 核心修改点 4：构造对用户友好的消息！▼▼▼
+            message = f"({i+1}/{total_subs}) 正在扫描演员: {actor_name}"
+            _update_status(progress, message)
+            logger.info(message)
+            
+            # 传递给下一层函数的仍然是 ID
             self.run_full_scan_for_actor(sub_id)
             
             if not self.is_stop_requested():
-                # 可以把这里的延时改短一点，让UI更新更及时
                 time.sleep(1) 
                 
-        # ▼▼▼ 核心修改点 3：任务正常结束后，汇报最终状态 ▼▼▼
         if not self.is_stop_requested():
             logger.info("--- 定时演员订阅扫描任务执行完毕 ---")
             _update_status(100, "所有订阅扫描完成。")
