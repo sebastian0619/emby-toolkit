@@ -1208,7 +1208,7 @@ def task_scan_actor_media(processor: ActorSubscriptionProcessor, subscription_id
 # --- 演员订阅 ---
 def task_process_actor_subscriptions(processor: ActorSubscriptionProcessor):
     """【新】后台任务：执行所有启用的演员订阅扫描。"""
-    processor.run_scheduled_task()
+    processor.run_scheduled_task(update_status_callback=update_status_from_thread)
 # ★★★ 1. 定义一个webhoo专用追剧、用于编排任务的函数 ★★★
 def webhook_processing_task(processor: MediaProcessor, item_id: str, force_reprocess: bool, process_episodes: bool):
     """

@@ -5,7 +5,7 @@ import json
 import time
 from datetime import datetime
 import logging
-from typing import Optional, Dict, Any, List, Set
+from typing import Optional, Dict, Any, List, Set, Callable
 import threading
 
 import tmdb_handler
@@ -36,9 +36,18 @@ class ActorSubscriptionProcessor:
 
     def close(self): logger.trace("ActorSubscriptionProcessor closed.")
 
-    def run_scheduled_task(self):
-        # ... 这个函数保持不变 ...
+    def run_scheduled_task(self, update_status_callback: Optional[Callable] = None):
+        
+        def _update_status(progress, message):
+            """一个安全的内部函数，用于调用回调"""
+            if update_status_callback:
+                # 确保进度在0-100之间
+                safe_progress = max(0, min(100, int(progress)))
+                update_status_callback(safe_progress, message)
+
         logger.info("--- 开始执行定时演员订阅扫描任务 ---")
+        _update_status(0, "正在准备订阅列表...") # <-- 任务开始时，先报个到
+        
         sub_ids_to_process = []
         try:
             with get_db_connection(self.db_path) as conn:
@@ -47,20 +56,38 @@ class ActorSubscriptionProcessor:
                 sub_ids_to_process = [row[0] for row in cursor.fetchall()]
         except Exception as e:
             logger.error(f"定时任务：获取启用的订阅列表时失败: {e}", exc_info=True)
+            _update_status(-1, "错误：获取订阅列表失败。") # <-- 出错了也要汇报
             return
+            
         if not sub_ids_to_process:
             logger.info("定时任务：没有找到需要处理的演员订阅，任务结束。")
+            _update_status(100, "没有需要处理的演员订阅。") # <-- 任务完成也要汇报
             return
-        logger.info(f"定时任务：共找到 {len(sub_ids_to_process)} 个启用的订阅需要处理。")
+            
+        total_subs = len(sub_ids_to_process)
+        logger.info(f"定时任务：共找到 {total_subs} 个启用的订阅需要处理。")
+        
         for i, sub_id in enumerate(sub_ids_to_process):
             if self.is_stop_requested():
                 logger.info("定时演员订阅扫描任务被用户中断。")
                 break
-            logger.info(f"({i+1}/{len(sub_ids_to_process)}) 正在处理订阅ID: {sub_id}")
+            
+            # ▼▼▼ 核心修改点 2：在循环中，通过回调函数汇报进度和状态 ▼▼▼
+            progress = int(((i + 1) / total_subs) * 100)
+            message = f"({i+1}/{total_subs}) 正在处理订阅ID: {sub_id}"
+            _update_status(progress, message)
+            logger.info(message) # 日志也照常打印
+            
             self.run_full_scan_for_actor(sub_id)
+            
             if not self.is_stop_requested():
-                time.sleep(5) 
-        logger.info("--- 定时演员订阅扫描任务执行完毕 ---")
+                # 可以把这里的延时改短一点，让UI更新更及时
+                time.sleep(1) 
+                
+        # ▼▼▼ 核心修改点 3：任务正常结束后，汇报最终状态 ▼▼▼
+        if not self.is_stop_requested():
+            logger.info("--- 定时演员订阅扫描任务执行完毕 ---")
+            _update_status(100, "所有订阅扫描完成。")
 
     def run_full_scan_for_actor(self, subscription_id: int):
         logger.info(f"--- 开始为订阅ID {subscription_id} 执行全量作品扫描 ---")
