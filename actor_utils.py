@@ -345,7 +345,7 @@ def evaluate_cast_processing_quality(
     logger.debug(f"  - 基础平均分 (惩罚前): {avg_score:.2f}")
 
     if is_animation:
-        logger.debug("  - 惩罚: 检测到为动画片，跳过所有数量相关的惩罚。")
+        logger.debug("  - 惩罚: 检测到为动画片或纪录片，跳过所有数量相关的惩罚。")
     else:
         # 只有在不是动画片时，才执行原来的数量惩罚逻辑
         if total_actors < 10:

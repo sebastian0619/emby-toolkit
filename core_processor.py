@@ -735,7 +735,7 @@ class MediaProcessor:
         log_prefix = f"[{'在线模式' if force_fetch_from_tmdb else '本地模式'}]"
         # --- 定义动画片 ---
         genres = item_details_from_emby.get("Genres", [])
-        is_animation = "Animation" in genres or "动画" in genres
+        is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
         # ★★★ 现在 item_name_for_log 已经定义好了 ★★★
         original_emby_actor_count = len(item_details_from_emby.get("People", []))
         
@@ -1439,7 +1439,7 @@ class MediaProcessor:
                     #      应用与自动处理流程完全相同的最终格式化和补全逻辑
                     # =================================================================
                     genres = item_details.get("Genres", [])
-                    is_animation = "Animation" in genres or "动画" in genres
+                    is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
                     
                     logger.debug("正在对合并后的演员列表应用最终的格式化、补全和排序...")
                     final_cast_perfect = actor_utils.format_and_complete_cast_list(

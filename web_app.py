@@ -260,7 +260,12 @@ def init_db():
             cursor.execute("CREATE TABLE IF NOT EXISTS processed_log (item_id TEXT PRIMARY KEY, item_name TEXT, processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, score REAL)")
             cursor.execute("CREATE TABLE IF NOT EXISTS failed_log (item_id TEXT PRIMARY KEY, item_name TEXT, reason TEXT, failed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, error_message TEXT, item_type TEXT, score REAL)")
             cursor.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS translation_cache (
+                    original_text TEXT PRIMARY KEY, translated_text TEXT,
+                    engine_used TEXT, last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             # --- 3. 创建核心功能表 ---
             # 电影合集检查
             logger.trace("  -> 正在创建 'collections_info' 表...")
