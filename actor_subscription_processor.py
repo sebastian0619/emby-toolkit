@@ -189,7 +189,20 @@ class ActorSubscriptionProcessor:
         handled_media_ids = set()
         
         config_start_year = sub_config['config_start_year']
-        config_media_types = set(sub_config['config_media_types'].split(','))
+        
+        # --- 终极核心修正：标准化处理，将 'TV' 统一映射为 'Series' ---
+        raw_types_from_db = sub_config['config_media_types'].split(',')
+        
+        # 这个列表推导式会：
+        # 1. 去掉首尾空格 (strip)
+        # 2. 如果处理后的词是 'tv' (不区分大小写)，则统一换成 'Series'
+        # 3. 否则，将首字母大写 (比如 'movie' -> 'Movie')
+        config_media_types = {
+            'Series' if t.strip().lower() == 'tv' else t.strip().capitalize()
+            for t in raw_types_from_db if t.strip()
+        }
+        # --- 修正结束 ---
+
         config_genres_include = set(json.loads(sub_config['config_genres_include_json'] or '[]'))
         config_genres_exclude = set(json.loads(sub_config['config_genres_exclude_json'] or '[]'))
 
@@ -205,9 +218,11 @@ class ActorSubscriptionProcessor:
                 if int(release_date_str.split('-')[0]) < config_start_year: continue
             except (ValueError, IndexError): pass
 
+            # 此处的逻辑现在可以完美工作了
             media_type_raw = work.get('media_type', 'movie' if 'title' in work else 'tv')
             media_type = MediaType.MOVIE.value if media_type_raw == 'movie' else MediaType.SERIES.value
-            if media_type not in config_media_types: continue
+            if media_type not in config_media_types:
+                continue
 
             genre_ids = set(work.get('genre_ids', []))
             if config_genres_exclude and not genre_ids.isdisjoint(config_genres_exclude): continue
