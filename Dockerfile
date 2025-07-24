@@ -59,6 +59,7 @@ COPY requirements.txt \
      actor_sync_handler.py \
      actor_utils.py \
      actor_subscription_processor.py \
+     moviepilot_handler.py \
      ./
 
 COPY templates/ ./templates/
