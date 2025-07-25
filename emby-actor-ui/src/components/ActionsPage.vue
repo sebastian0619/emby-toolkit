@@ -475,29 +475,8 @@ const cancelImport = () => {
 };
 
 const confirmImport = () => {
-  importModalVisible.value = false;
-  startImportProcess();
-  isImporting.value = true;
-  message.loading('正在上传并处理文件...', { duration: 0 });
-
-  const formData = new FormData();
-  formData.append('file', fileToImport.value);
-  formData.append('mode', importOptions.value.mode);
-  formData.append('tables', importOptions.value.tables.join(','));
-
-  axios.post('/api/database/import', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' }
-  })
-  .then(response => {
-    isImporting.value = false;
-    message.destroyAll();
-    message.success(response.data?.message || '导入任务已提交！');
-  })
-  .catch(error => {
-    isImporting.value = false;
-    message.destroyAll();
-    message.error(error.response?.data?.error || '导入失败，未知错误。');
-  });
+  importModalVisible.value = false; 
+  startImportProcess();   
 };
 const startImportProcess = (force = false) => {
   isImporting.value = true;

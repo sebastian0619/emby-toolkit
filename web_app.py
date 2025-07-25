@@ -2753,15 +2753,15 @@ def api_import_database():
         if import_mode == 'overwrite':
             # 检查1：备份文件必须有ID指纹
             if not backup_server_id:
-                error_msg = "此备份文件缺少来源服务器ID，为安全起见，禁止使用“本地恢复”模式导入。这通常意味着它是一个旧版备份。请使用“共享合并”模式。"
-                logger.warning(f"API 导入拒绝: {error_msg}")
+                error_msg = "此备份文件缺少来源服务器ID，为安全起见，禁止使用“本地恢复”模式导入，这通常意味着它是一个旧版备份，请使用“共享合并”模式。"
+                logger.warning(f"禁止导入: {error_msg}")
                 return jsonify({"error": error_msg}), 403 # 403 Forbidden
 
             # 检查2：当前服务器必须能获取到ID
             current_server_id = EMBY_SERVER_ID
             if not current_server_id:
                 error_msg = "无法获取当前Emby服务器的ID，可能连接已断开。为安全起见，暂时禁止使用“本地恢复”模式。"
-                logger.warning(f"API 导入拒绝: {error_msg}")
+                logger.warning(f"禁止导入: {error_msg}")
                 return jsonify({"error": error_msg}), 503 # 503 Service Unavailable
 
             # 检查3：两个ID必须完全匹配
@@ -2771,7 +2771,7 @@ def api_import_database():
                            f"备份来源ID: ...{backup_server_id[-12:]}\n"
                            f"当前服务器ID: ...{current_server_id[-12:]}\n\n"
                            "如果您确实想合并数据，请改用“共享合并”模式。")
-                logger.warning(f"API 导入拒绝: {error_msg}")
+                logger.warning(f"禁止导入: {error_msg}")
                 return jsonify({"error": error_msg}), 403 # 403 Forbidden
         # ▲▲▲ 安全校验逻辑结束 ▲▲▲
         logger.trace(f"已接收上传的备份文件 '{file.filename}'，将以 '{import_mode_cn}' 模式导入表: {tables_to_import}")
