@@ -1,4 +1,4 @@
-<!-- src/components/ActionsPage.vue (V3 - 友好中文翻译版) -->
+<!-- src/components/ActionsPage.vue (V4 - 可配置共享标签版) -->
 
 <template>
   <n-space vertical :size="24" style="margin-top: 15px;">
@@ -9,6 +9,7 @@
         <!-- 左侧列：任务操作区 -->
         <n-gi span="1">
           <n-space vertical :size="24">
+            <!-- ... 其他卡片代码保持不变 ... -->
             <n-alert 
               v-if="taskStatus.is_running" 
               title="后台任务运行中" 
@@ -20,7 +21,6 @@
               建议等待当前任务完成后再进行其他操作。
             </n-alert>
 
-            <!-- 卡片1: 全量扫描 (保持不变) -->
             <n-card title="全量媒体库扫描" class="glass-section" :bordered="false">
               <n-space vertical size="large">
                 <n-checkbox v-model:checked="forceReprocessAll" :disabled="taskStatus.is_running">
@@ -65,7 +65,6 @@
               </n-space>
             </n-card>
 
-            <!-- 卡片2: 同步映射表 (已简化) -->
             <n-card title="同步Emby演员映射表" class="glass-section" :bordered="false">
               <n-space vertical>
                 <n-space align="center">
@@ -94,7 +93,6 @@
               </n-space>
             </n-card>
 
-            <!-- 卡片3: 数据管理 -->
             <n-card title="数据管理 (备份与恢复)" class="glass-section" :bordered="false">
               <n-space vertical>
                 <n-space align="center">
@@ -120,7 +118,6 @@
               </n-space>
             </n-card>
 
-            <!-- 卡片4: 全量海报同步 (保持不变) -->
             <n-card title="全量海报同步" class="glass-section" :bordered="false">
               <n-space vertical>
                 <p class="description-text">
@@ -136,11 +133,10 @@
                 </n-button>
               </n-space>
             </n-card>
-
           </n-space>
         </n-gi>
 
-        <!-- 右侧列：实时日志区 (保持不变) -->
+        <!-- 右侧列：实时日志区 -->
         <n-gi span="1" style="display: flex;">
           <n-card title="实时日志" class="glass-section" :bordered="false" style="flex-grow: 1;" content-style="display: flex; flex-direction: column;">
             <template #header-extra>
@@ -149,20 +145,14 @@
                 历史日志
               </n-button>
             </template>
-            <n-log
-              ref="logRef"
-              :log="logContent"
-              trim
-              class="log-panel"
-              style="flex-grow: 1;"
-            />
+            <n-log ref="logRef" :log="logContent" trim class="log-panel" style="flex-grow: 1;"/>
           </n-card>
         </n-gi>
       </n-grid>
       
       <LogViewer v-model:show="isLogViewerVisible" />
 
-      <!-- ★★★ 升级版：导出选项模态框 ★★★ -->
+      <!-- 导出选项模态框 -->
       <n-modal v-model:show="exportModalVisible" preset="dialog" title="选择要导出的数据表">
         <n-space justify="end" style="margin-bottom: 10px;">
           <n-button text type="primary" @click="selectAllForExport">全选</n-button>
@@ -172,9 +162,9 @@
           <n-grid :y-gap="8" :cols="2">
             <n-gi v-for="table in allDbTables" :key="table">
               <n-checkbox :value="table">
-                <span :class="{ 'core-data-label': tableInfo[table]?.isCore }">
-                  {{ tableInfo[table]?.cn || table }}
-                </span>
+                {{ tableInfo[table]?.cn || table }}
+                <!-- ★★★ 核心修改点 1: 动态渲染标签 ★★★ -->
+                <span v-if="tableInfo[table]?.isSharable" class="sharable-label"> [可共享数据]</span>
               </n-checkbox>
             </n-gi>
           </n-grid>
@@ -185,7 +175,7 @@
         </template>
       </n-modal>
 
-      <!-- ★★★ 升级版：导入选项模态框 ★★★ -->
+      <!-- 导入选项模态框 -->
       <n-modal v-model:show="importModalVisible" preset="dialog" title="确认导入选项">
         <n-space vertical>
           <div><p><strong>文件名:</strong> {{ fileToImport?.name }}</p></div>
@@ -209,9 +199,9 @@
                 <n-grid :y-gap="8" :cols="2">
                   <n-gi v-for="table in tablesInBackupFile" :key="table">
                     <n-checkbox :value="table">
-                      <span :class="{ 'core-data-label': tableInfo[table]?.isCore }">
-                        {{ tableInfo[table]?.cn || table }}
-                      </span>
+                      {{ tableInfo[table]?.cn || table }}
+                      <!-- ★★★ 核心修改点 2: 同样应用到导入模态框 ★★★ -->
+                      <span v-if="tableInfo[table]?.isSharable" class="sharable-label"> [可共享数据]</span>
                     </n-checkbox>
                   </n-gi>
                 </n-grid>
@@ -244,18 +234,18 @@ import {
   DocumentTextOutline 
 } from '@vicons/ionicons5';
 
-// --- ★★★ 新增：集中的表名翻译和信息 ★★★ ---
+// --- ★★★ 核心修改点 3: 在这里配置所有表的显示信息 ★★★ ---
 const tableInfo = {
-  'person_identity_map': { cn: '演员身份映射表', isCore: true },
-  'ActorMetadata': { cn: '演员元数据', isCore: true },
-  'watchlist': { cn: '追剧列表', isCore: false },
-  'actor_subscriptions': { cn: '演员订阅配置', isCore: false },
-  'tracked_actor_media': { cn: '已追踪的演员作品', isCore: false },
-  'collections_info': { cn: '电影合集信息', isCore: false },
-  'translation_cache': { cn: '翻译缓存', isCore: false },
-  'processed_log': { cn: '已处理日志', isCore: false },
-  'failed_log': { cn: '待复核日志', isCore: false },
-  'users': { cn: '用户账户', isCore: false },
+  'person_identity_map': { cn: '演员身份映射表', isSharable: true },
+  'ActorMetadata': { cn: '演员元数据', isSharable: true },
+  'translation_cache': { cn: '翻译缓存', isSharable: true },
+  'watchlist': { cn: '追剧列表', isSharable: true },
+  'actor_subscriptions': { cn: '演员订阅配置', isSharable: false },
+  'tracked_actor_media': { cn: '已追踪的演员作品', isSharable: false },
+  'collections_info': { cn: '电影合集信息', isSharable: false },
+  'processed_log': { cn: '已处理日志', isSharable: false },
+  'failed_log': { cn: '待复核日志', isSharable: false },
+  'users': { cn: '用户账户', isSharable: false },
 };
 
 // --- Refs and Props ---
@@ -363,7 +353,7 @@ const handleClearCaches = async () => {
   }
 };
 
-// --- ★★★ NEW: Methods for Data Management ★★★ ---
+// --- Methods for Data Management ---
 
 // --- Export Logic ---
 const isExporting = ref(false);
@@ -375,7 +365,8 @@ const showExportModal = async () => {
   try {
     const response = await axios.get('/api/database/tables');
     allDbTables.value = response.data;
-    tablesToExport.value = response.data.filter(t => tableInfo[t]?.isCore);
+    // 默认勾选所有可共享的表
+    tablesToExport.value = response.data.filter(t => tableInfo[t]?.isSharable);
     exportModalVisible.value = true;
   } catch (error) {
     message.error('无法获取数据库表列表，请检查后端日志。');
@@ -429,7 +420,6 @@ const importOptions = ref({
   tables: [],
 });
 
-// 使用 custom-request 来完全接管上传流程
 const handleCustomImportRequest = ({ file }) => {
   const reader = new FileReader();
   reader.onload = (e) => {
@@ -445,7 +435,7 @@ const handleCustomImportRequest = ({ file }) => {
         return;
       }
       importOptions.value.tables = [...tablesInBackupFile.value];
-      fileToImport.value = file.file; // file.file 是真实的 File 对象
+      fileToImport.value = file.file;
       importModalVisible.value = true;
     } catch (err) {
       message.error('无法解析JSON文件，请确保文件格式正确。');
@@ -515,20 +505,11 @@ const deselectAllForImport = () => importOptions.value.tables = [];
   line-height: 1.6;
   background-color: rgba(0, 0, 0, 0.3);
 }
-/* ★★★ 新增样式 ★★★ */
-.original-name-label {
-  color: var(--n-text-color-disabled);
+/* ★★★ 核心修改点 4: 更新样式 ★★★ */
+.sharable-label {
+  color: var(--n-info-color-suppl); /* 使用一个柔和的颜色 */
   font-size: 0.9em;
   margin-left: 4px;
-}
-.core-data-label {
-  font-weight: bold;
-  color: var(--n-info-color);
-}
-.core-data-label::after {
-  content: ' [核心数据]';
-  font-size: 0.9em;
   font-weight: normal;
-  color: var(--n-info-color-suppl);
 }
 </style>
