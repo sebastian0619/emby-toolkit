@@ -1332,6 +1332,16 @@ def task_import_database(processor, file_content: str, tables_to_import: list, i
     
     AUTOINCREMENT_KEYS_TO_IGNORE = ['map_id', 'id']
 
+    # ★★★ 核心配置：定义翻译来源的优先级 ★★★
+    # 数字越大，优先级越高。未在列表中的引擎默认为0。
+    TRANSLATION_SOURCE_PRIORITY = {
+        'manual': 2,
+        'openai': 1,
+        'zhipuai': 1,
+        'gemini': 1,
+        # 您未来可以添加其他AI引擎，例如 'deepseek': 1
+    }
+
     try:
         backup = json.loads(file_content)
         backup_data = backup.get("data", {})
@@ -1402,6 +1412,52 @@ def task_import_database(processor, file_content: str, tables_to_import: list, i
                             cursor.executemany(sql, data)
                             logger.info(f"模式[智能合并]: 更新了 '{table_name}' 中 {len(updates)} 条现有记录。")
 
+                    # --- 翻译缓存优先级判断 ---
+                    elif table_name == 'translation_cache' and import_mode == 'merge':
+                        logger.info(f"模式[智能合并]: 正在为 '{table_name}' 表执行基于优先级的合并策略...")
+                        
+                        # 1. 预加载本地缓存的 engine_used
+                        cursor.execute("SELECT original_text, engine_used FROM translation_cache")
+                        local_cache_priority = {row['original_text']: TRANSLATION_SOURCE_PRIORITY.get(row['engine_used'], 0) for row in cursor.fetchall()}
+                        
+                        inserts = [] # 存放需要插入的新翻译
+                        updates = [] # 存放需要用更高优先级翻译覆盖的旧翻译
+
+                        # 2. 遍历备份文件中的每一行
+                        for backup_row in table_data:
+                            original_text = backup_row.get('original_text')
+                            if not original_text: continue
+
+                            backup_priority = TRANSLATION_SOURCE_PRIORITY.get(backup_row.get('engine_used'), 0)
+                            
+                            # 3. 决策
+                            if original_text not in local_cache_priority:
+                                # 本地没有，直接插入
+                                inserts.append(backup_row)
+                            else:
+                                # 本地有，比较优先级
+                                local_priority = local_cache_priority[original_text]
+                                if backup_priority > local_priority:
+                                    updates.append(backup_row)
+                        
+                        # 4. 批量执行
+                        if inserts:
+                            cols = list(inserts[0].keys())
+                            col_str = ", ".join(f'"{c}"' for c in cols)
+                            val_ph = ", ".join(["?"] * len(cols))
+                            sql = f"INSERT INTO translation_cache ({col_str}) VALUES ({val_ph})"
+                            data = [[row.get(c) for c in cols] for row in inserts]
+                            cursor.executemany(sql, data)
+                            logger.info(f"模式[智能合并]: 向 '{table_name}' 插入了 {len(inserts)} 条新翻译。")
+                        
+                        if updates:
+                            cols = list(updates[0].keys())
+                            col_str = ", ".join(f'"{c}"' for c in cols)
+                            val_ph = ", ".join(["?"] * len(cols))
+                            sql = f"INSERT OR REPLACE INTO translation_cache ({col_str}) VALUES ({val_ph})"
+                            data = [[row.get(c) for c in cols] for row in updates]
+                            cursor.executemany(sql, data)
+                            logger.info(f"模式[智能合并]: 用更高优先级的翻译更新了 '{table_name}' 中 {len(updates)} 条记录。")
                     # --- ★★★ 升级后的通用合并/覆盖逻辑 ★★★ ---
                     else:
                         mode_str = "覆盖" if import_mode == 'overwrite' else "合并"
