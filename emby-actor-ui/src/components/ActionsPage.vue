@@ -175,7 +175,6 @@
                 <span :class="{ 'core-data-label': tableInfo[table]?.isCore }">
                   {{ tableInfo[table]?.cn || table }}
                 </span>
-                <span class="original-name-label"> ({{ table }})</span>
               </n-checkbox>
             </n-gi>
           </n-grid>
@@ -213,7 +212,6 @@
                       <span :class="{ 'core-data-label': tableInfo[table]?.isCore }">
                         {{ tableInfo[table]?.cn || table }}
                       </span>
-                      <span class="original-name-label"> ({{ table }})</span>
                     </n-checkbox>
                   </n-gi>
                 </n-grid>
