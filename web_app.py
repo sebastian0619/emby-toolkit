@@ -1216,7 +1216,7 @@ def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list
 # --- 扫描单个演员订阅的所有作品 ---
 def task_scan_actor_media(processor: ActorSubscriptionProcessor, subscription_id: int):
     """【新】后台任务：扫描单个演员订阅的所有作品。"""
-    logger.info(f"手动刷新任务(ID: {subscription_id})：开始准备Emby媒体库数据...")
+    logger.trace(f"手动刷新任务(ID: {subscription_id})：开始准备Emby媒体库数据...")
     
     # 在调用核心扫描函数前，必须先获取Emby数据
     emby_tmdb_ids = set()

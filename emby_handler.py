@@ -434,8 +434,20 @@ def get_emby_library_items(
             logger.error(f"请求库 '{library_name}' 中的项目失败: {e}", exc_info=True)
             continue
 
-    type_to_chinese = {"Movie": "电影", "Series": "电视剧"}
-    media_type_in_chinese = type_to_chinese.get(media_type_filter, media_type_filter or '所有')
+    type_to_chinese = {"Movie": "电影", "Series": "电视剧", "Video": "视频"}
+    media_type_in_chinese = ""
+
+    if media_type_filter:
+        # 分割字符串，例如 "Movie,Series" -> ["Movie", "Series"]
+        types = media_type_filter.split(',')
+        # 为每个类型查找翻译，如果找不到就用原名
+        translated_types = [type_to_chinese.get(t, t) for t in types]
+        # 将翻译后的列表组合成一个字符串，例如 ["电影", "电视剧"] -> "电影、电视剧"
+        media_type_in_chinese = "、".join(translated_types)
+    else:
+        # 如果 media_type_filter 未提供，则为“所有”
+        media_type_in_chinese = '所有'
+
     logger.debug(f"总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
     
     return all_items_from_selected_libraries
