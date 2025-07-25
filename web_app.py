@@ -1795,8 +1795,13 @@ def task_refresh_collections(processor: MediaProcessor):
                             release_date = movie.get("release_date")
                             # 过滤掉没有发布日期的影片
                             if not release_date:
+                                logger.info(f"合集《{collection.get('Name')}》中的影片 '{title}' 因无上映日期而被跳过。")
                                 continue  # 跳过没有日期的影片
                             movie_tmdb_id = str(movie.get("id"))
+                            title = movie.get("title", "")
+                            if not re.search(r'[\u4e00-\u9fa5]', title):
+                                logger.info(f"合集《{collection.get('Name')}》中的影片 '{title}' 因无中文片名而被跳过。")
+                                continue # 跳过没有中文标题的电影
                             if movie_tmdb_id not in emby_movie_ids:
                                 release_date = movie.get("release_date")
                                 movie_status = "missing"
@@ -1805,7 +1810,7 @@ def task_refresh_collections(processor: MediaProcessor):
                                 
                                 all_missing_movies.append({
                                     "tmdb_id": movie_tmdb_id,
-                                    "title": movie.get("title"),
+                                    "title": title, # 使用已经验证过的标题
                                     "release_date": release_date, 
                                     "poster_path": movie.get("poster_path"),
                                     "status": movie_status
@@ -1919,8 +1924,15 @@ def task_auto_subscribe(processor: MediaProcessor):
                             logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》(上映日期: {release_date}) 尚未上映，跳过订阅。")
                             movies_to_keep.append(movie)
                     else:
+                        status_translation = {
+                            'unreleased': '未上映',
+                            # 可以在这里添加更多翻译
+                            'unknown': '未知状态'
+                        }
+                        # 使用 .get() 方法，如果找不到翻译，则显示原始状态，保证程序不会出错
+                        display_status = status_translation.get(movie_status, movie_status)
                         # 此处会处理 'unreleased' 等其他所有状态
-                        logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》因状态为 '{movie_status}'，本次跳过订阅检查。")
+                        logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》因状态为 '{display_status}'，本次跳过订阅检查。")
                         movies_to_keep.append(movie)
                 
                 # 只有在订阅成功导致列表变化时才更新数据库
