@@ -566,11 +566,11 @@ const deselectAllForImport = () => importOptions.value.tables = [];
 .log-panel {
   font-size: 13px;
   line-height: 1.6;
-  background-color: rgba(0, 0, 0, 0.3);
+  /* ▼▼▼ 核心修改点 ▼▼▼ */
+  background-color: transparent; /* 将独立的背景色改为透明 */
 }
-/* ★★★ 核心修改点 4: 更新样式 ★★★ */
 .sharable-label {
-  color: var(--n-info-color-suppl); /* 使用一个柔和的颜色 */
+  color: var(--n-info-color-suppl);
   font-size: 0.9em;
   margin-left: 4px;
   font-weight: normal;
