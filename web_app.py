@@ -1843,8 +1843,6 @@ def task_auto_subscribe(processor: MediaProcessor):
 
     try:
         today = date.today()
-        # 我们之前的修复是正确的，这里保持 season_date <= today 的逻辑
-        
         update_status_from_thread(10, f"智能订阅已启动...")
         successfully_subscribed_items = []
 
@@ -1852,14 +1850,25 @@ def task_auto_subscribe(processor: MediaProcessor):
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            # --- 1. 处理电影合集 (这部分逻辑不变，但可以保持) ---
+            # --- 1. 处理电影合集 (★★★ 新增详细日志 ★★★) ---
             update_status_from_thread(20, "正在检查缺失的电影...")
-            cursor.execute("SELECT * FROM collections_info WHERE status = 'has_missing' AND missing_movies_json IS NOT NULL AND missing_movies_json != '[]'")
-            collections_to_check = cursor.fetchall()
             
+            # ▼▼▼ 日志点 1: 打印将要执行的查询 ▼▼▼
+            sql_query_movies = "SELECT * FROM collections_info WHERE status = 'has_missing' AND missing_movies_json IS NOT NULL AND missing_movies_json != '[]'"
+            logger.debug(f"【智能订阅-电影】执行查询: {sql_query_movies}")
+            cursor.execute(sql_query_movies)
+            collections_to_check = cursor.fetchall()
+
+            # ▼▼▼ 日志点 2: 打印找到了多少需要检查的合集 ▼▼▼
+            logger.info(f"【智能订阅-电影】从数据库找到 {len(collections_to_check)} 个有缺失影片的电影合集需要检查。")
+
             for collection in collections_to_check:
                 if processor.is_stop_requested(): break
                 
+                # ▼▼▼ 日志点 3: 开始处理单个合集 ▼▼▼
+                collection_name = collection['name']
+                logger.info(f"【智能订阅-电影】>>> 正在检查合集: 《{collection_name}》")
+
                 movies_to_keep = []
                 all_missing_movies = json.loads(collection['missing_movies_json'])
                 movies_changed = False
@@ -1868,22 +1877,33 @@ def task_auto_subscribe(processor: MediaProcessor):
 
                     if movie.get('status') == 'missing':
                         release_date_str = movie.get('release_date')
+                        movie_title = movie.get('title', '未知电影')
+                        
+                        # ▼▼▼ 日志点 4: 检查播出日期是否存在 ▼▼▼
                         if not release_date_str:
+                            logger.warning(f"【智能订阅-电影】   -> 《{collection_name}》中的影片《{movie_title}》缺少上映日期，无法判断，跳过。")
                             movies_to_keep.append(movie)
                             continue
                         
                         try:
                             release_date = datetime.strptime(release_date_str, '%Y-%m-%d').date()
+                            
+                            # ▼▼▼ 日志点 5: 核心判断，并打印决策过程！▼▼▼
                             if release_date <= today:
+                                logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》(上映日期: {release_date}) 已上映，符合订阅条件，正在提交...")
                                 success = moviepilot_handler.subscribe_movie_to_moviepilot(movie)
                                 if success:
+                                    logger.info(f"【智能订阅-电影】      -> 订阅成功！")
                                     successfully_subscribed_items.append(f"电影《{movie['title']}》")
                                     movies_changed = True
                                 else:
+                                    logger.error(f"【智能订阅-电影】      -> 订阅失败！将保留在缺失列表中。")
                                     movies_to_keep.append(movie)
                             else:
+                                logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》(上映日期: {release_date}) 尚未上映，跳过订阅。")
                                 movies_to_keep.append(movie)
                         except (ValueError, TypeError):
+                            logger.warning(f"【智能订阅-电影】   -> 影片《{movie_title}》的上映日期 '{release_date_str}' 格式无效，跳过。")
                             movies_to_keep.append(movie)
                     else:
                         movies_to_keep.append(movie)
