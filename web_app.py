@@ -1322,24 +1322,29 @@ def task_refresh_single_watchlist_item(processor: WatchlistProcessor, item_id: s
 # ★★★ 执行数据库导入的后台任务 ★★★
 def task_import_database(processor, file_content: str, tables_to_import: list, import_mode: str):
     """
-    【后台任务 V5 - 生产就绪版】
-    - 为 person_identity_map 表实现了定制的智能合并策略。
-    - 通用合并逻辑现已支持单主键和复合主键（元组），彻底解决所有 UNIQUE constraint 错误。
+    【后台任务 V12 - 最终完整正确版】
+    - 修正了所有摘要日志的收集和打印逻辑，确保在正确的循环层级执行，每个表只生成一条摘要。
     """
     task_name = f"数据库导入 ({import_mode}模式)"
     logger.info(f"后台任务开始：{task_name}，处理表: {tables_to_import}。")
     update_status_from_thread(0, "准备开始导入...")
     
     AUTOINCREMENT_KEYS_TO_IGNORE = ['map_id', 'id']
+    TRANSLATION_SOURCE_PRIORITY = {'manual': 2, 'openai': 1, 'zhipuai': 1, 'gemini': 1}
+    
+    summary_lines = []
 
-    # ★★★ 核心配置：定义翻译来源的优先级 ★★★
-    # 数字越大，优先级越高。未在列表中的引擎默认为0。
-    TRANSLATION_SOURCE_PRIORITY = {
-        'manual': 2,
-        'openai': 1,
-        'zhipuai': 1,
-        'gemini': 1,
-        # 您未来可以添加其他AI引擎，例如 'deepseek': 1
+    TABLE_TRANSLATIONS = {
+        'person_identity_map': '演员映射表',
+        'ActorMetadata': '演员元数据',
+        'translation_cache': '翻译缓存',
+        'watchlist': '智能追剧列表',
+        'actor_subscriptions': '演员订阅配置',
+        'tracked_actor_media': '已追踪的演员作品',
+        'collections_info': '电影合集信息',
+        'processed_log': '已处理列表',
+        'failed_log': '待复核列表',
+        'users': '用户账户',
     }
 
     try:
@@ -1347,93 +1352,138 @@ def task_import_database(processor, file_content: str, tables_to_import: list, i
         backup_data = backup.get("data", {})
         stop_event = processor.get_stop_event()
 
-        # ... (预检查逻辑保持不变) ...
         for table_name in tables_to_import:
             if table_name not in backup_data:
-                msg = f"任务中止：请求恢复的表 '{table_name}' 在备份文件中不存在。"
-                logger.error(msg)
-                update_status_from_thread(-1, msg)
-                return
+                logger.warning(f"请求恢复的表 '{table_name}' 在备份文件中不存在，将跳过。")
 
         with get_central_db_connection(DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row # 确保可以按列名访问
+            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("BEGIN TRANSACTION;")
             logger.info("数据库事务已开始。")
 
             try:
-                for i, table_name in enumerate(tables_to_import):
+                # 外层循环：遍历所有要处理的表
+                for table_name in tables_to_import:
+                    cn_name = TABLE_TRANSLATIONS.get(table_name, table_name)
                     if stop_event and stop_event.is_set():
                         logger.info("导入任务被用户中止。")
                         break
                     
                     table_data = backup_data.get(table_name, [])
                     if not table_data:
-                        logger.info(f"表 '{table_name}' 在备份中没有数据，跳过。")
+                        logger.debug(f"表 '{cn_name}' 在备份中没有数据，跳过。")
+                        summary_lines.append(f"  - 表 '{cn_name}': 跳过 (备份中无数据)。")
                         continue
 
-                    # --- 特殊处理 person_identity_map (逻辑不变) ---
+                    # --- 特殊处理 person_identity_map ---
                     if table_name == 'person_identity_map' and import_mode == 'merge':
-                        # ... (这里的智能合并逻辑和上个版本完全一样，无需改动)
-                        logger.info(f"模式[智能合并]: 正在为 '{table_name}' 表执行定制的合并策略...")
+                        cn_name = TABLE_TRANSLATIONS.get(table_name, table_name)
+                        logger.info(f"模式[共享合并]: 正在为 '{cn_name}' 表执行合并策略...")
+                        
                         cursor.execute("SELECT * FROM person_identity_map")
                         local_rows = cursor.fetchall()
                         id_to_local_row = {row['map_id']: dict(row) for row in local_rows}
-                        tmdb_to_map_id = {row['tmdb_person_id']: row['map_id'] for row in local_rows if row['tmdb_person_id']}
-                        emby_to_map_id = {row['emby_person_id']: row['map_id'] for row in local_rows if row['emby_person_id']}
-                        imdb_to_map_id = {row['imdb_id']: row['map_id'] for row in local_rows if row['imdb_id']}
-                        douban_to_map_id = {row['douban_celebrity_id']: row['map_id'] for row in local_rows if row['douban_celebrity_id']}
-                        inserts, updates = [], []
+                        
+                        # --- 阶段 A: 在内存中计算最终合并方案 ---
+                        inserts, simple_updates, complex_merges = [], [], []
+                        
+                        live_tmdb_map = {row['tmdb_person_id']: row['map_id'] for row in local_rows if row['tmdb_person_id']}
+                        live_emby_map = {row['emby_person_id']: row['map_id'] for row in local_rows if row['emby_person_id']}
+                        live_imdb_map = {row['imdb_id']: row['map_id'] for row in local_rows if row['imdb_id']}
+                        live_douban_map = {row['douban_celebrity_id']: row['map_id'] for row in local_rows if row['douban_celebrity_id']}
+
                         for backup_row in table_data:
-                            existing_map_id = None
-                            if backup_row.get('tmdb_person_id') in tmdb_to_map_id: existing_map_id = tmdb_to_map_id[backup_row['tmdb_person_id']]
-                            elif backup_row.get('emby_person_id') in emby_to_map_id: existing_map_id = emby_to_map_id[backup_row['emby_person_id']]
-                            elif backup_row.get('imdb_id') in imdb_to_map_id: existing_map_id = imdb_to_map_id[backup_row['imdb_id']]
-                            elif backup_row.get('douban_celebrity_id') in douban_to_map_id: existing_map_id = douban_to_map_id[backup_row['douban_celebrity_id']]
-                            if existing_map_id:
-                                local_row = id_to_local_row[existing_map_id]
-                                for key in ['primary_name', 'emby_person_id', 'tmdb_person_id', 'imdb_id', 'douban_celebrity_id']:
-                                    if backup_row.get(key) and not local_row.get(key): local_row[key] = backup_row[key]
-                                updates.append(local_row)
-                            else: inserts.append(backup_row)
-                        if inserts:
-                            cols = [c for c in inserts[0].keys() if c not in AUTOINCREMENT_KEYS_TO_IGNORE]
-                            col_str = ", ".join(f'"{c}"' for c in cols)
-                            val_ph = ", ".join(["?"] * len(cols))
-                            sql = f"INSERT INTO person_identity_map ({col_str}) VALUES ({val_ph})"
-                            data = [[row.get(c) for c in cols] for row in inserts]
-                            cursor.executemany(sql, data)
-                            logger.info(f"模式[智能合并]: 向 '{table_name}' 插入了 {len(inserts)} 条新记录。")
-                        if updates:
-                            cols = [c for c in updates[0].keys() if c not in AUTOINCREMENT_KEYS_TO_IGNORE]
+                            matched_map_ids = set()
+                            for key, lookup_map in [('tmdb_person_id', live_tmdb_map), ('emby_person_id', live_emby_map), ('imdb_id', live_imdb_map), ('douban_celebrity_id', live_douban_map)]:
+                                backup_id = backup_row.get(key)
+                                if backup_id and backup_id in lookup_map:
+                                    matched_map_ids.add(lookup_map[backup_id])
+                            
+                            if not matched_map_ids:
+                                inserts.append(backup_row)
+                            elif len(matched_map_ids) == 1:
+                                survivor_id = matched_map_ids.pop()
+                                consolidated_row = id_to_local_row[survivor_id].copy()
+                                needs_update = False
+                                for key in backup_row:
+                                    if backup_row.get(key) and not consolidated_row.get(key):
+                                        consolidated_row[key] = backup_row[key]
+                                        needs_update = True
+                                if needs_update:
+                                    simple_updates.append(consolidated_row)
+                            else:
+                                survivor_id = min(matched_map_ids)
+                                victim_ids = list(matched_map_ids - {survivor_id})
+                                complex_merges.append({'survivor_id': survivor_id, 'victim_ids': victim_ids, 'backup_row': backup_row})
+                                # 更新动态查找字典，将牺牲者的ID重定向到幸存者
+                                for vid in victim_ids:
+                                    victim_row = id_to_local_row[vid]
+                                    for key, lookup_map in [('tmdb_person_id', live_tmdb_map), ('emby_person_id', live_emby_map), ('imdb_id', live_imdb_map), ('douban_celebrity_id', live_douban_map)]:
+                                        if victim_row.get(key) and victim_row[key] in lookup_map:
+                                            lookup_map[victim_row[key]] = survivor_id
+
+                        # --- 阶段 B: 根据计算出的最终方案，执行数据库操作 ---
+                        
+                        # 1. 逐个处理最危险的复杂合并
+                        processed_complex_merges = 0
+                        deleted_from_complex = 0
+                        for merge_case in complex_merges:
+                            survivor_id = merge_case['survivor_id']
+                            victim_ids = merge_case['victim_ids']
+                            backup_row = merge_case['backup_row']
+                            
+                            # 重新获取最新的幸存者数据
+                            cursor.execute("SELECT * FROM person_identity_map WHERE map_id = ?", (survivor_id,))
+                            survivor_row = dict(cursor.fetchone())
+                            
+                            all_sources = [id_to_local_row[vid] for vid in victim_ids] + [backup_row]
+                            for source_row in all_sources:
+                                for key in source_row:
+                                    if source_row.get(key) and not survivor_row.get(key):
+                                        survivor_row[key] = source_row[key]
+                            
+                            # 腾位 -> 入住 -> 清理
+                            sql_clear = "UPDATE person_identity_map SET tmdb_person_id=NULL, emby_person_id=NULL, imdb_id=NULL, douban_celebrity_id=NULL WHERE map_id = ?"
+                            cursor.executemany(sql_clear, [(vid,) for vid in victim_ids])
+                            
+                            cols = [c for c in survivor_row.keys() if c not in AUTOINCREMENT_KEYS_TO_IGNORE]
                             set_str = ", ".join([f'"{c}" = ?' for c in cols])
-                            sql = f"UPDATE person_identity_map SET {set_str} WHERE map_id = ?"
-                            data = [[row.get(c) for c in cols] + [row['map_id']] for row in updates]
-                            cursor.executemany(sql, data)
-                            logger.info(f"模式[智能合并]: 更新了 '{table_name}' 中 {len(updates)} 条现有记录。")
+                            sql_update = f"UPDATE person_identity_map SET {set_str} WHERE map_id = ?"
+                            data = [survivor_row.get(c) for c in cols] + [survivor_id]
+                            cursor.execute(sql_update, tuple(data))
+                            
+                            cursor.executemany("DELETE FROM person_identity_map WHERE map_id = ?", [(vid,) for vid in victim_ids])
+                            processed_complex_merges += 1
+                            deleted_from_complex += len(victim_ids)
 
-                    # --- 翻译缓存优先级判断 ---
+                        # 2. 批量处理简单的增补更新
+                        if simple_updates:
+                            unique_updates = {row['map_id']: row for row in simple_updates}.values()
+                            sql_update = "UPDATE person_identity_map SET primary_name = ?, tmdb_person_id = ?, imdb_id = ?, douban_celebrity_id = ? WHERE map_id = ?"
+                            data = [(r.get('primary_name'), r.get('tmdb_person_id'), r.get('imdb_id'), r.get('douban_celebrity_id'), r['map_id']) for r in unique_updates]
+                            cursor.executemany(sql_update, data)
+
+                        # 3. 批量处理全新的插入
+                        if inserts:
+                            sql_insert = "INSERT INTO person_identity_map (primary_name, tmdb_person_id, imdb_id, douban_celebrity_id) VALUES (?, ?, ?, ?)"
+                            data = [(r.get('primary_name'), r.get('tmdb_person_id'), r.get('imdb_id'), r.get('douban_celebrity_id')) for r in inserts]
+                            cursor.executemany(sql_insert, data)
+                        
+                        summary_lines.append(f"  - 表 '{cn_name}': 新增 {len(inserts)} 条, 简单增补 {len(simple_updates)} 条, 复杂合并 {processed_complex_merges} 组 (清理冗余 {deleted_from_complex} 条)。")
+
+                    # --- 特殊处理 translation_cache ---
                     elif table_name == 'translation_cache' and import_mode == 'merge':
-                        logger.info(f"模式[智能合并]: 正在为 '{table_name}' 表执行基于优先级的合并策略...")
-                        
+                        cn_name = TABLE_TRANSLATIONS.get(table_name, table_name)
+                        logger.info(f"模式[共享合并]: 正在为 '{cn_name}' 表执行基于优先级的合并策略...")
                         cursor.execute("SELECT original_text, translated_text, engine_used FROM translation_cache")
-                        local_cache_data = {
-                            row['original_text']: {
-                                'text': row['translated_text'],
-                                'engine': row['engine_used'],
-                                'priority': TRANSLATION_SOURCE_PRIORITY.get(row['engine_used'], 0)
-                            } for row in cursor.fetchall()
-                        }
-                        
+                        local_cache_data = {row['original_text']: {'text': row['translated_text'], 'engine': row['engine_used'], 'priority': TRANSLATION_SOURCE_PRIORITY.get(row['engine_used'], 0)} for row in cursor.fetchall()}
                         inserts, updates, kept = [], [], 0
-
                         for backup_row in table_data:
                             original_text = backup_row.get('original_text')
                             if not original_text: continue
-
                             backup_engine = backup_row.get('engine_used')
                             backup_priority = TRANSLATION_SOURCE_PRIORITY.get(backup_engine, 0)
-                            
                             if original_text not in local_cache_data:
                                 inserts.append(backup_row)
                             else:
@@ -1444,67 +1494,62 @@ def task_import_database(processor, file_content: str, tables_to_import: list, i
                                 else:
                                     kept += 1
                                     logger.trace(f"  -> 冲突: '{original_text}'. 本地源({local_data['engine']}|P{local_data['priority']}) >= 备份源({backup_engine}|P{backup_priority}). [决策: 保留]")
-                        
-                        logger.info(
-                            f"模式[智能合并]: '{table_name}' 处理完成。 "
-                            f"新增: {len(inserts)}条, 更新: {len(updates)}条, 保留本地: {kept}条。"
-                        )
-                        
-                        # (批量执行代码不变)
                         if inserts:
-                            cols = list(inserts[0].keys())
-                            col_str = ", ".join(f'"{c}"' for c in cols)
-                            val_ph = ", ".join(["?"] * len(cols))
+                            cols = list(inserts[0].keys()); col_str = ", ".join(f'"{c}"' for c in cols); val_ph = ", ".join(["?"] * len(cols))
                             sql = f"INSERT INTO translation_cache ({col_str}) VALUES ({val_ph})"
                             data = [[row.get(c) for c in cols] for row in inserts]
                             cursor.executemany(sql, data)
                         if updates:
-                            cols = list(updates[0].keys())
-                            col_str = ", ".join(f'"{c}"' for c in cols)
-                            val_ph = ", ".join(["?"] * len(cols))
+                            cols = list(updates[0].keys()); col_str = ", ".join(f'"{c}"' for c in cols); val_ph = ", ".join(["?"] * len(cols))
                             sql = f"INSERT OR REPLACE INTO translation_cache ({col_str}) VALUES ({val_ph})"
                             data = [[row.get(c) for c in cols] for row in updates]
                             cursor.executemany(sql, data)
-                    # --- ★★★ 升级后的通用合并/覆盖逻辑 ★★★ ---
+                        summary_lines.append(f"  - 表 '{cn_name}': 新增 {len(inserts)} 条, 更新 {len(updates)} 条, 保留本地 {kept} 条。")
+                    
+                    # --- 通用合并/覆盖逻辑 ---
                     else:
-                        mode_str = "覆盖" if import_mode == 'overwrite' else "合并"
+                        mode_str = "本地恢复" if import_mode == 'overwrite' else "共享合并"
+                        logger.info(f"模式[{mode_str}]: 正在处理表 '{cn_name}'...")
                         if import_mode == 'overwrite':
                             cursor.execute(f"DELETE FROM {table_name};")
-
                         logical_key = TABLE_PRIMARY_KEYS.get(table_name)
                         if import_mode == 'merge' and not logical_key:
-                            logger.warning(f"模式[合并]: 表 '{table_name}' 未定义主键，跳过。")
+                            logger.warning(f"表 '{cn_name}' 未定义主键，跳过合并。")
+                            summary_lines.append(f"  - 表 '{table_name}': 跳过 (未定义合并键)。")
                             continue
-
                         all_cols = list(table_data[0].keys())
                         cols_for_op = [c for c in all_cols if c not in AUTOINCREMENT_KEYS_TO_IGNORE]
                         col_str = ", ".join(f'"{c}"' for c in cols_for_op)
                         val_ph = ", ".join(["?"] * len(cols_for_op))
-                        
                         sql = ""
                         if import_mode == 'merge':
-                            # ★★★ 核心升级：处理单键和复合键 ★★★
-                            conflict_key_str = ""
-                            logical_key_set = set()
+                            conflict_key_str = ""; logical_key_set = set()
                             if isinstance(logical_key, str):
-                                conflict_key_str = logical_key
-                                logical_key_set = {logical_key}
+                                conflict_key_str = logical_key; logical_key_set = {logical_key}
                             elif isinstance(logical_key, tuple):
-                                conflict_key_str = ", ".join(logical_key)
-                                logical_key_set = set(logical_key)
-                            
+                                conflict_key_str = ", ".join(logical_key); logical_key_set = set(logical_key)
                             update_cols = [c for c in cols_for_op if c not in logical_key_set]
                             update_str = ", ".join([f'"{col}" = excluded."{col}"' for col in update_cols])
                             sql = (f"INSERT INTO {table_name} ({col_str}) VALUES ({val_ph}) "
                                    f"ON CONFLICT({conflict_key_str}) DO UPDATE SET {update_str}")
-                        else: # overwrite
+                        else:
                             sql = f"INSERT INTO {table_name} ({col_str}) VALUES ({val_ph})"
-                        
                         data = [[row.get(c) for c in cols_for_op] for row in table_data]
                         cursor.executemany(sql, data)
-                        logger.info(f"模式[{mode_str}]: 成功向表 '{table_name}' 处理了 {len(data)} 行。")
-                
-                # ... (事务提交和回滚逻辑保持不变) ...
+                        if import_mode == 'overwrite':
+                            summary_lines.append(f"  - 表 '{cn_name}': 清空并插入 {len(data)} 条。")
+                        else:
+                            summary_lines.append(f"  - 表 '{cn_name}': 合并处理了 {len(data)} 条。")
+
+                # --- 打印统一的摘要报告 ---
+                logger.info("="*11 + " 数据库导入摘要 " + "="*11)
+                if not summary_lines:
+                    logger.info("  -> 本次操作没有对任何表进行改动。")
+                else:
+                    for line in summary_lines:
+                        logger.info(line)
+                logger.info("="*36)
+
                 if not (stop_event and stop_event.is_set()):
                     conn.commit()
                     logger.info("数据库事务已成功提交！所有选择的表已恢复。")
@@ -2630,6 +2675,7 @@ def api_export_database():
             "metadata": {
                 "export_date": datetime.utcnow().isoformat() + "Z",
                 "app_version": constants.APP_VERSION,
+                "source_emby_server_id": EMBY_SERVER_ID,
                 "tables": tables_to_export
             },
             "data": {}
@@ -2688,21 +2734,58 @@ def api_import_database():
     import_mode = request.form.get('mode', 'merge').lower()
     if import_mode not in ['overwrite', 'merge']:
         return jsonify({"error": "无效的导入模式。只支持 'overwrite' 或 'merge'"}), 400
+    
+    mode_translations = {
+        'overwrite': '本地恢复模式',
+        'merge': '共享合并模式',
+    }
+    # 使用 .get() 以防万一，如果找不到就用回英文原名
+    import_mode_cn = mode_translations.get(import_mode, import_mode)
 
     try:
         file_content = file.stream.read().decode("utf-8-sig")
-        logger.info(f"已接收上传的备份文件 '{file.filename}'，将以 '{import_mode}' 模式导入表: {tables_to_import}")
+        # ▼▼▼ 新增的安全校验逻辑 ▼▼▼
+        backup_json = json.loads(file_content)
+        backup_metadata = backup_json.get("metadata", {})
+        backup_server_id = backup_metadata.get("source_emby_server_id")
+
+        # 只对最危险的“本地恢复”模式进行强制校验
+        if import_mode == 'overwrite':
+            # 检查1：备份文件必须有ID指纹
+            if not backup_server_id:
+                error_msg = "此备份文件缺少来源服务器ID，为安全起见，禁止使用“本地恢复”模式导入。这通常意味着它是一个旧版备份。请使用“共享合并”模式。"
+                logger.warning(f"API 导入拒绝: {error_msg}")
+                return jsonify({"error": error_msg}), 403 # 403 Forbidden
+
+            # 检查2：当前服务器必须能获取到ID
+            current_server_id = EMBY_SERVER_ID
+            if not current_server_id:
+                error_msg = "无法获取当前Emby服务器的ID，可能连接已断开。为安全起见，暂时禁止使用“本地恢复”模式。"
+                logger.warning(f"API 导入拒绝: {error_msg}")
+                return jsonify({"error": error_msg}), 503 # 503 Service Unavailable
+
+            # 检查3：两个ID必须完全匹配
+            if backup_server_id != current_server_id:
+                error_msg = (f"服务器ID不匹配！此备份来自另一个Emby服务器，"
+                           "直接使用“本地恢复”会造成数据严重混乱。操作已禁止。\n\n"
+                           f"备份来源ID: ...{backup_server_id[-12:]}\n"
+                           f"当前服务器ID: ...{current_server_id[-12:]}\n\n"
+                           "如果您确实想合并数据，请改用“共享合并”模式。")
+                logger.warning(f"API 导入拒绝: {error_msg}")
+                return jsonify({"error": error_msg}), 403 # 403 Forbidden
+        # ▲▲▲ 安全校验逻辑结束 ▲▲▲
+        logger.trace(f"已接收上传的备份文件 '{file.filename}'，将以 '{import_mode_cn}' 模式导入表: {tables_to_import}")
 
         submit_task_to_queue(
             task_import_database,  # ★ 调用新的后台任务函数
-            f"以 {import_mode} 模式恢复数据库表",
+            f"以 {import_mode_cn} 模式恢复数据库表",
             # 传递任务所需的所有参数
             file_content=file_content,
             tables_to_import=tables_to_import,
             import_mode=import_mode
         )
         
-        return jsonify({"message": f"文件上传成功，已提交后台任务以 '{import_mode}' 模式恢复 {len(tables_to_import)} 个表。"}), 202
+        return jsonify({"message": f"文件上传成功，已提交后台任务以 '{import_mode_cn}' 模式恢复 {len(tables_to_import)} 个表。"}), 202
 
     except Exception as e:
         logger.error(f"处理数据库导入请求时发生错误: {e}", exc_info=True)

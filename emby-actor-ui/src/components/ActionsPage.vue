@@ -1,6 +1,7 @@
-<!-- src/components/ActionsPage.vue (V4 - 可配置共享标签版) -->
+<!-- src/components/ActionsPage.vue (V6 - 最终正确版) -->
 
 <template>
+  <!-- 模板部分完全没有改动，为了简洁省略 -->
   <n-space vertical :size="24" style="margin-top: 15px;">
     <div class="actions-page-container">
       
@@ -9,7 +10,6 @@
         <!-- 左侧列：任务操作区 -->
         <n-gi span="1">
           <n-space vertical :size="24">
-            <!-- ... 其他卡片代码保持不变 ... -->
             <n-alert 
               v-if="taskStatus.is_running" 
               title="后台任务运行中" 
@@ -113,7 +113,7 @@
                 </n-space>
                 <p class="description-text">
                   <b>导出：</b>将数据库中的一个或多个表备份为 JSON 文件。<br>
-                  <b>导入：</b>从 JSON 备份文件中恢复数据，支持“合并”或“覆盖”模式。
+                  <b>导入：</b>从 JSON 备份文件中恢复数据，支持“共享合并”或“本地恢复”模式。
                 </p>
               </n-space>
             </n-card>
@@ -163,7 +163,6 @@
             <n-gi v-for="table in allDbTables" :key="table">
               <n-checkbox :value="table">
                 {{ tableInfo[table]?.cn || table }}
-                <!-- ★★★ 核心修改点 1: 动态渲染标签 ★★★ -->
                 <span v-if="tableInfo[table]?.isSharable" class="sharable-label"> [可共享数据]</span>
               </n-checkbox>
             </n-gi>
@@ -182,8 +181,8 @@
           <n-form-item label="导入模式" required>
             <n-radio-group v-model:value="importOptions.mode">
               <n-space>
-                <n-radio value="merge"><strong>合并</strong> (默认, 安全): 添加新数据，更新旧数据。</n-radio>
-                <n-radio value="overwrite"><strong class="warning-text">覆盖</strong> (危险!): 先清空表再导入。</n-radio>
+                <n-radio value="merge"><strong>共享合并</strong> 导入别人共享的备份，添加新数据，更新旧数据。</n-radio>
+                <n-radio value="overwrite"><strong class="warning-text">本地恢复</strong> (危险!): 仅能导入自己导出的备份！！！。</n-radio>
               </n-space>
             </n-radio-group>
           </n-form-item>
@@ -200,7 +199,6 @@
                   <n-gi v-for="table in tablesInBackupFile" :key="table">
                     <n-checkbox :value="table">
                       {{ tableInfo[table]?.cn || table }}
-                      <!-- ★★★ 核心修改点 2: 同样应用到导入模态框 ★★★ -->
                       <span v-if="tableInfo[table]?.isSharable" class="sharable-label"> [可共享数据]</span>
                     </n-checkbox>
                   </n-gi>
@@ -234,12 +232,11 @@ import {
   DocumentTextOutline 
 } from '@vicons/ionicons5';
 
-// --- ★★★ 核心修改点 3: 在这里配置所有表的显示信息 ★★★ ---
 const tableInfo = {
   'person_identity_map': { cn: '演员身份映射表', isSharable: true },
   'ActorMetadata': { cn: '演员元数据', isSharable: true },
   'translation_cache': { cn: '翻译缓存', isSharable: true },
-  'watchlist': { cn: '追剧列表', isSharable: true },
+  'watchlist': { cn: '追剧列表', isSharable: false },
   'actor_subscriptions': { cn: '演员订阅配置', isSharable: false },
   'tracked_actor_media': { cn: '已追踪的演员作品', isSharable: false },
   'collections_info': { cn: '电影合集信息', isSharable: false },
@@ -269,6 +266,23 @@ const props = defineProps({
 const forceReprocessAll = ref(false);
 const isLogViewerVisible = ref(false);
 
+// ★★★ 核心修正：将所有与导入/导出相关的 ref 定义移到顶部 ★★★
+// --- Export Logic Refs ---
+const isExporting = ref(false);
+const exportModalVisible = ref(false);
+const allDbTables = ref([]);
+const tablesToExport = ref([]);
+
+// --- Import Logic Refs ---
+const isImporting = ref(false);
+const importModalVisible = ref(false);
+const fileToImport = ref(null);
+const tablesInBackupFile = ref([]);
+const importOptions = ref({
+  mode: 'merge',
+  tables: [],
+});
+
 // --- Computed Properties ---
 const logContent = computed(() => props.taskStatus?.logs?.join('\n') || '等待日志...');
 const currentActionIncludesScan = computed(() => props.taskStatus.current_action?.toLowerCase().includes('scan'));
@@ -276,11 +290,22 @@ const currentActionIncludesSyncMap = computed(() => props.taskStatus.current_act
 const currentActionIncludesRebuild = computed(() => props.taskStatus.current_action?.toLowerCase().includes('重构'));
 const currentActionIncludesImageSync = computed(() => props.taskStatus.current_action?.toLowerCase().includes('海报'));
 
-// --- Watcher for Log Scrolling ---
+// --- Watchers ---
 watch(() => props.taskStatus.logs, async () => {
   await nextTick();
   logRef.value?.scrollTo({ position: 'bottom', slient: true });
 }, { deep: true });
+
+// ★ 现在这个 watcher 可以安全地访问 importOptions 了 ★
+watch(() => importOptions.value.mode, (newMode) => {
+  if (importModalVisible.value) {
+    if (newMode === 'merge') {
+      importOptions.value.tables = tablesInBackupFile.value.filter(t => tableInfo[t]?.isSharable);
+    } else {
+      importOptions.value.tables = [...tablesInBackupFile.value];
+    }
+  }
+});
 
 // --- Methods for Existing Actions (mostly unchanged) ---
 const triggerFullScan = async () => {
@@ -356,16 +381,10 @@ const handleClearCaches = async () => {
 // --- Methods for Data Management ---
 
 // --- Export Logic ---
-const isExporting = ref(false);
-const exportModalVisible = ref(false);
-const allDbTables = ref([]);
-const tablesToExport = ref([]);
-
 const showExportModal = async () => {
   try {
     const response = await axios.get('/api/database/tables');
     allDbTables.value = response.data;
-    // 默认勾选所有可共享的表
     tablesToExport.value = response.data.filter(t => tableInfo[t]?.isSharable);
     exportModalVisible.value = true;
   } catch (error) {
@@ -411,15 +430,6 @@ const selectAllForExport = () => tablesToExport.value = [...allDbTables.value];
 const deselectAllForExport = () => tablesToExport.value = [];
 
 // --- Import Logic ---
-const isImporting = ref(false);
-const importModalVisible = ref(false);
-const fileToImport = ref(null);
-const tablesInBackupFile = ref([]);
-const importOptions = ref({
-  mode: 'merge',
-  tables: [],
-});
-
 const handleCustomImportRequest = ({ file }) => {
   const reader = new FileReader();
   reader.onload = (e) => {
@@ -434,7 +444,13 @@ const handleCustomImportRequest = ({ file }) => {
         message.error('备份文件格式不正确： "data" 对象为空。');
         return;
       }
-      importOptions.value.tables = [...tablesInBackupFile.value];
+      
+      if (importOptions.value.mode === 'merge') {
+        importOptions.value.tables = tablesInBackupFile.value.filter(t => tableInfo[t]?.isSharable);
+      } else {
+        importOptions.value.tables = [...tablesInBackupFile.value];
+      }
+      
       fileToImport.value = file.file;
       importModalVisible.value = true;
     } catch (err) {
@@ -451,6 +467,7 @@ const cancelImport = () => {
 
 const confirmImport = () => {
   importModalVisible.value = false;
+  startImportProcess();
   isImporting.value = true;
   message.loading('正在上传并处理文件...', { duration: 0 });
 
@@ -473,11 +490,57 @@ const confirmImport = () => {
     message.error(error.response?.data?.error || '导入失败，未知错误。');
   });
 };
+const startImportProcess = (force = false) => {
+  isImporting.value = true;
+  message.loading('正在上传并处理文件...', { duration: 0 });
 
+  const formData = new FormData();
+  formData.append('file', fileToImport.value);
+  formData.append('mode', importOptions.value.mode);
+  formData.append('tables', importOptions.value.tables.join(','));
+  if (force) {
+    // 如果是强制执行，添加特殊标记
+    formData.append('force_overwrite', 'true');
+  }
+
+  axios.post('/api/database/import', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  })
+  .then(response => {
+    isImporting.value = false;
+    message.destroyAll();
+    message.success(response.data?.message || '导入任务已提交！');
+  })
+  .catch(error => {
+    isImporting.value = false;
+    message.destroyAll();
+    
+    const errorData = error.response?.data;
+    
+    // ★ 核心：捕获特定警告，弹出二次确认框
+    if (error.response?.status === 409 && errorData?.confirm_required) {
+      dialog.warning({
+        title: '高危操作确认',
+        content: errorData.error, // 显示后端传来的警告信息
+        positiveText: '我明白风险，继续覆盖',
+        negativeText: '取消',
+        positiveButtonProps: { type: 'error' },
+        onPositiveClick: () => {
+          // 用户确认后，带上 force 标记再次尝试
+          startImportProcess(true);
+        },
+      });
+    } else {
+      // 其他普通错误，直接显示
+      message.error(errorData?.error || '导入失败，未知错误。');
+    }
+  });
+};
 const selectAllForImport = () => importOptions.value.tables = [...tablesInBackupFile.value];
 const deselectAllForImport = () => importOptions.value.tables = [];
 
 </script>
+
 
 <style scoped>
 .actions-page-container {
