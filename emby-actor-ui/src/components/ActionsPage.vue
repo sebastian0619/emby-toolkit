@@ -3,13 +3,8 @@
   <n-layout content-style="padding: 24px;">
   <n-space vertical :size="24" style="margin-top: 15px;">
     <div class="actions-page-container">
-      
-      <!-- ▼▼▼ 核心修正：移除 align-items: flex-start，让列高自动拉伸 ▼▼▼ -->
       <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
-        
-        <!-- ====================================================== -->
-        <!-- 左侧列：内容保持不变 -->
-        <!-- ====================================================== -->
+        <!-- 左侧列 -->
         <n-gi span="1">
           <n-space vertical :size="24">
             <n-alert 
@@ -125,9 +120,7 @@
           </n-space>
         </n-gi>
 
-        <!-- ====================================================== -->
-        <!-- 右侧列：内容和样式保持不变，但其父容器行为已改变 -->
-        <!-- ====================================================== -->
+        <!-- 右侧列 -->
         <n-gi span="1" style="display: flex; flex-direction: column; gap: 24px;">
           
           <!-- 卡片 4: 全量海报同步 -->
@@ -167,15 +160,66 @@
         </n-gi>
       </n-grid>
       
-      <!-- 模态框部分保持不变 -->
+      <!-- 导出选项模态框 -->
       <LogViewer v-model:show="isLogViewerVisible" />
       <n-modal v-model:show="exportModalVisible" preset="dialog" title="选择要导出的数据表">
-        <!-- ... 导出模态框内容 ... -->
-      </n-modal>
-      <n-modal v-model:show="importModalVisible" preset="dialog" title="确认导入选项">
-        <!-- ... 导入模态框内容 ... -->
+        <n-space justify="end" style="margin-bottom: 10px;">
+          <n-button text type="primary" @click="selectAllForExport">全选</n-button>
+          <n-button text type="primary" @click="deselectAllForExport">全不选</n-button>
+        </n-space>
+        <n-checkbox-group v-model:value="tablesToExport" vertical>
+          <n-grid :y-gap="8" :cols="2">
+            <n-gi v-for="table in allDbTables" :key="table">
+              <n-checkbox :value="table">
+                {{ tableInfo[table]?.cn || table }}
+                <span v-if="tableInfo[table]?.isSharable" class="sharable-label"> [可共享数据]</span>
+              </n-checkbox>
+            </n-gi>
+          </n-grid>
+        </n-checkbox-group>
+        <template #action>
+          <n-button @click="exportModalVisible = false">取消</n-button>
+          <n-button type="primary" @click="handleExport" :disabled="tablesToExport.length === 0">确认导出</n-button>
+        </template>
       </n-modal>
 
+      <!-- 导入选项模态框 -->
+      <n-modal v-model:show="importModalVisible" preset="dialog" title="确认导入选项">
+        <n-space vertical>
+          <div><p><strong>文件名:</strong> {{ fileToImport?.name }}</p></div>
+          <n-form-item label="导入模式" required>
+            <n-radio-group v-model:value="importOptions.mode">
+              <n-space>
+                <n-radio value="merge"><strong>共享合并</strong> 导入别人共享的备份，添加新数据，更新旧数据。</n-radio>
+                <n-radio value="overwrite"><strong class="warning-text">本地恢复</strong> (危险!): 仅能导入自己导出的备份！！！。</n-radio>
+              </n-space>
+            </n-radio-group>
+          </n-form-item>
+          <n-form-item required>
+             <template #label>
+                <span>要导入的表 (从文件中自动读取)</span>
+                <n-space style="margin-left: 20px;">
+                  <n-button size="tiny" text type="primary" @click="selectAllForImport">全选</n-button>
+                  <n-button size="tiny" text type="primary" @click="deselectAllForImport">全不选</n-button>
+                </n-space>
+             </template>
+             <n-checkbox-group v-model:value="importOptions.tables" vertical>
+                <n-grid :y-gap="8" :cols="2">
+                  <n-gi v-for="table in tablesInBackupFile" :key="table">
+                    <n-checkbox :value="table">
+                      {{ tableInfo[table]?.cn || table }}
+                      <span v-if="tableInfo[table]?.isSharable" class="sharable-label"> [可共享数据]</span>
+                    </n-checkbox>
+                  </n-gi>
+                </n-grid>
+            </n-checkbox-group>
+          </n-form-item>
+        </n-space>
+        <template #action>
+          <n-button @click="cancelImport">取消</n-button>
+          <n-button type="primary" @click="confirmImport" :disabled="importOptions.tables.length === 0">开始导入</n-button>
+        </template>
+      </n-modal>
     </div>
   </n-space>
   </n-layout>
