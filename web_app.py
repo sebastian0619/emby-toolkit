@@ -735,16 +735,25 @@ def task_worker_function():
 
             # 解包任务信息
             task_function, task_name, args, kwargs = task_info
-            # ★★★ 核心修复：在任务执行前，检查全局实例是否可用 ★★★
+            
+            # ▼▼▼【最终修正】使用更精确的逻辑来选择处理器 ▼▼▼
+            processor_to_use = None
+            
+            # 规则1：精确匹配需要 WatchlistProcessor 的任务
             if "追剧" in task_name or "watchlist" in task_function.__name__:
                 processor_to_use = watchlist_processor_instance
                 logger.debug(f"任务 '{task_name}' 将使用 WatchlistProcessor。")
-            elif "演员" in task_name or "actor" in task_function.__name__: 
+            
+            # 规则2：精确匹配需要 ActorSubscriptionProcessor 的任务
+            elif task_function.__name__ in ['task_process_actor_subscriptions', 'task_scan_actor_media']:
                 processor_to_use = actor_subscription_processor_instance
                 logger.debug(f"任务 '{task_name}' 将使用 ActorSubscriptionProcessor。")
+            
+            # 规则3：所有其他任务都默认使用核心的 MediaProcessor
             else:
                 processor_to_use = media_processor_instance
                 logger.debug(f"任务 '{task_name}' 将使用 MediaProcessor。")
+            # ▲▲▲ 修正结束 ▲▲▲
 
             if not processor_to_use:
                 logger.error(f"任务 '{task_name}' 无法执行：对应的处理器未初始化。")
