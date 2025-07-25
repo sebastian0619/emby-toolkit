@@ -1319,117 +1319,147 @@ def task_refresh_single_watchlist_item(processor: WatchlistProcessor, item_id: s
         task_name = f"单项追剧刷新 (ID: {item_id})"
         logger.error(f"执行 '{task_name}' 时发生顶层错误: {e}", exc_info=True)
         progress_updater(-1, f"启动任务时发生错误: {e}")
-# ★★★ 导入映射表 + 元数据 ★★★
-def task_import_person_map(processor, file_content: str, **kwargs):
+# ★★★ 执行数据库导入的后台任务 ★★★
+def task_import_database(processor, file_content: str, tables_to_import: list, import_mode: str):
     """
-    【V3 - 元数据增强版】从CSV文件字符串中，导入演员映射表和元数据。
+    【后台任务 V5 - 生产就绪版】
+    - 为 person_identity_map 表实现了定制的智能合并策略。
+    - 通用合并逻辑现已支持单主键和复合主键（元组），彻底解决所有 UNIQUE constraint 错误。
     """
-    task_name = "导入完整演员数据"
-    logger.info(f"后台任务 '{task_name}' 开始执行...")
+    task_name = f"数据库导入 ({import_mode}模式)"
+    logger.info(f"后台任务开始：{task_name}，处理表: {tables_to_import}。")
     update_status_from_thread(0, "准备开始导入...")
+    
+    AUTOINCREMENT_KEYS_TO_IGNORE = ['map_id', 'id']
 
     try:
-        # ✨ 1. 从 processor 获取必要的配置和工具 ✨
-        config = processor.config
-        tmdb_api_key = config.get("tmdb_api_key")
+        backup = json.loads(file_content)
+        backup_data = backup.get("data", {})
         stop_event = processor.get_stop_event()
 
-        # --- 数据准备 (这部分逻辑不变) ---
-        lines = file_content.splitlines()
-        total_lines = len(lines) - 1 if len(lines) > 0 else 0
-        if total_lines <= 0:
-            update_status_from_thread(100, "导入完成：文件为空或只有表头。")
-            return
-            
-        stream_for_reader = StringIO(file_content, newline=None)
-        csv_reader = csv.DictReader(stream_for_reader)
-        
-        stats = {"total": total_lines, "processed": 0, "skipped": 0, "errors": 0}
-        
-        # ✨✨✨ 核心修改在这里 ✨✨✨
-        # 1. 创建 ActorDBManager 的实例
-        db_manager = ActorDBManager(DB_PATH) 
+        # ... (预检查逻辑保持不变) ...
+        for table_name in tables_to_import:
+            if table_name not in backup_data:
+                msg = f"任务中止：请求恢复的表 '{table_name}' 在备份文件中不存在。"
+                logger.error(msg)
+                update_status_from_thread(-1, msg)
+                return
 
-        # 2. 使用 with 和中央函数获取连接
         with get_central_db_connection(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row # 确保可以按列名访问
             cursor = conn.cursor()
-            
-            for i, row in enumerate(csv_reader):
-                if stop_event and stop_event.is_set():
-                    logger.info("导入任务被用户中止。")
-                    break
+            cursor.execute("BEGIN TRANSACTION;")
+            logger.info("数据库事务已开始。")
 
-                # ★★★ 1. 拆分数据：为两个表分别准备数据字典 ★★★
-                
-                # 1.1 准备 person_identity_map 的数据
-                person_map_data = {
-                    "name": row.get('primary_name'),
-                    "tmdb_id": row.get('tmdb_person_id') or None,
-                    "imdb_id": row.get('imdb_id') or None,
-                    "douban_id": row.get('douban_celebrity_id') or None,
-                }
-
-                # 1.2 准备 ActorMetadata 的数据
-                actor_metadata = {
-                    "tmdb_id": row.get('tmdb_person_id'),
-                    "profile_path": row.get('profile_path') or None,
-                    "gender": row.get('gender') or None,
-                    "adult": row.get('adult') or None,
-                    "popularity": row.get('popularity') or None,
-                    "original_name": row.get('original_name') or None,
-                }
-
-                # 如果连最基本的ID都没有，就跳过
-                if not person_map_data["name"] and not person_map_data["tmdb_id"]:
-                    stats["skipped"] += 1
-                    continue
-
-                try:
-                    # ★★★ 2. 执行数据库操作：分两步走 ★★★
+            try:
+                for i, table_name in enumerate(tables_to_import):
+                    if stop_event and stop_event.is_set():
+                        logger.info("导入任务被用户中止。")
+                        break
                     
-                    # 2.1 先插入或更新身份映射表
-                    db_manager.upsert_person(cursor, person_map_data)
-                    
-                    # 2.2 如果有元数据，再插入或更新元数据表
-                    #     我们只在有 tmdb_id 的情况下才操作元数据表
-                    if actor_metadata["tmdb_id"]:
-                        # 为了健壮性，将 None 转换为空字符串或0
-                        # 注意：SQLite对布尔值的处理，通常是 1 和 0
-                        adult_val = row.get('adult')
-                        is_adult = 1 if adult_val and str(adult_val).lower() in ['true', '1', 'yes'] else 0
+                    table_data = backup_data.get(table_name, [])
+                    if not table_data:
+                        logger.info(f"表 '{table_name}' 在备份中没有数据，跳过。")
+                        continue
 
-                        sql_upsert_metadata = """
-                            INSERT OR REPLACE INTO ActorMetadata 
-                            (tmdb_id, profile_path, gender, adult, popularity, original_name, last_updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                        """
-                        cursor.execute(sql_upsert_metadata, (
-                            actor_metadata["tmdb_id"],
-                            actor_metadata["profile_path"],
-                            actor_metadata["gender"],
-                            is_adult,
-                            actor_metadata["popularity"],
-                            actor_metadata["original_name"]
-                        ))
+                    # --- 特殊处理 person_identity_map (逻辑不变) ---
+                    if table_name == 'person_identity_map' and import_mode == 'merge':
+                        # ... (这里的智能合并逻辑和上个版本完全一样，无需改动)
+                        logger.info(f"模式[智能合并]: 正在为 '{table_name}' 表执行定制的合并策略...")
+                        cursor.execute("SELECT * FROM person_identity_map")
+                        local_rows = cursor.fetchall()
+                        id_to_local_row = {row['map_id']: dict(row) for row in local_rows}
+                        tmdb_to_map_id = {row['tmdb_person_id']: row['map_id'] for row in local_rows if row['tmdb_person_id']}
+                        emby_to_map_id = {row['emby_person_id']: row['map_id'] for row in local_rows if row['emby_person_id']}
+                        imdb_to_map_id = {row['imdb_id']: row['map_id'] for row in local_rows if row['imdb_id']}
+                        douban_to_map_id = {row['douban_celebrity_id']: row['map_id'] for row in local_rows if row['douban_celebrity_id']}
+                        inserts, updates = [], []
+                        for backup_row in table_data:
+                            existing_map_id = None
+                            if backup_row.get('tmdb_person_id') in tmdb_to_map_id: existing_map_id = tmdb_to_map_id[backup_row['tmdb_person_id']]
+                            elif backup_row.get('emby_person_id') in emby_to_map_id: existing_map_id = emby_to_map_id[backup_row['emby_person_id']]
+                            elif backup_row.get('imdb_id') in imdb_to_map_id: existing_map_id = imdb_to_map_id[backup_row['imdb_id']]
+                            elif backup_row.get('douban_celebrity_id') in douban_to_map_id: existing_map_id = douban_to_map_id[backup_row['douban_celebrity_id']]
+                            if existing_map_id:
+                                local_row = id_to_local_row[existing_map_id]
+                                for key in ['primary_name', 'emby_person_id', 'tmdb_person_id', 'imdb_id', 'douban_celebrity_id']:
+                                    if backup_row.get(key) and not local_row.get(key): local_row[key] = backup_row[key]
+                                updates.append(local_row)
+                            else: inserts.append(backup_row)
+                        if inserts:
+                            cols = [c for c in inserts[0].keys() if c not in AUTOINCREMENT_KEYS_TO_IGNORE]
+                            col_str = ", ".join(f'"{c}"' for c in cols)
+                            val_ph = ", ".join(["?"] * len(cols))
+                            sql = f"INSERT INTO person_identity_map ({col_str}) VALUES ({val_ph})"
+                            data = [[row.get(c) for c in cols] for row in inserts]
+                            cursor.executemany(sql, data)
+                            logger.info(f"模式[智能合并]: 向 '{table_name}' 插入了 {len(inserts)} 条新记录。")
+                        if updates:
+                            cols = [c for c in updates[0].keys() if c not in AUTOINCREMENT_KEYS_TO_IGNORE]
+                            set_str = ", ".join([f'"{c}" = ?' for c in cols])
+                            sql = f"UPDATE person_identity_map SET {set_str} WHERE map_id = ?"
+                            data = [[row.get(c) for c in cols] + [row['map_id']] for row in updates]
+                            cursor.executemany(sql, data)
+                            logger.info(f"模式[智能合并]: 更新了 '{table_name}' 中 {len(updates)} 条现有记录。")
 
-                    stats["processed"] += 1
-                except Exception as e_row:
-                    logger.error(f"处理导入文件第 {i+2} 行时发生错误: {e_row}", exc_info=True)
-                    stats["errors"] += 1
+                    # --- ★★★ 升级后的通用合并/覆盖逻辑 ★★★ ---
+                    else:
+                        mode_str = "覆盖" if import_mode == 'overwrite' else "合并"
+                        if import_mode == 'overwrite':
+                            cursor.execute(f"DELETE FROM {table_name};")
+
+                        logical_key = TABLE_PRIMARY_KEYS.get(table_name)
+                        if import_mode == 'merge' and not logical_key:
+                            logger.warning(f"模式[合并]: 表 '{table_name}' 未定义主键，跳过。")
+                            continue
+
+                        all_cols = list(table_data[0].keys())
+                        cols_for_op = [c for c in all_cols if c not in AUTOINCREMENT_KEYS_TO_IGNORE]
+                        col_str = ", ".join(f'"{c}"' for c in cols_for_op)
+                        val_ph = ", ".join(["?"] * len(cols_for_op))
+                        
+                        sql = ""
+                        if import_mode == 'merge':
+                            # ★★★ 核心升级：处理单键和复合键 ★★★
+                            conflict_key_str = ""
+                            logical_key_set = set()
+                            if isinstance(logical_key, str):
+                                conflict_key_str = logical_key
+                                logical_key_set = {logical_key}
+                            elif isinstance(logical_key, tuple):
+                                conflict_key_str = ", ".join(logical_key)
+                                logical_key_set = set(logical_key)
+                            
+                            update_cols = [c for c in cols_for_op if c not in logical_key_set]
+                            update_str = ", ".join([f'"{col}" = excluded."{col}"' for col in update_cols])
+                            sql = (f"INSERT INTO {table_name} ({col_str}) VALUES ({val_ph}) "
+                                   f"ON CONFLICT({conflict_key_str}) DO UPDATE SET {update_str}")
+                        else: # overwrite
+                            sql = f"INSERT INTO {table_name} ({col_str}) VALUES ({val_ph})"
+                        
+                        data = [[row.get(c) for c in cols_for_op] for row in table_data]
+                        cursor.executemany(sql, data)
+                        logger.info(f"模式[{mode_str}]: 成功向表 '{table_name}' 处理了 {len(data)} 行。")
                 
-                if i > 0 and i % 100 == 0 and total_lines > 0:
-                    progress = int(((i + 1) / total_lines) * 100)
-                    update_status_from_thread(progress, f"正在导入... ({i+1}/{total_lines})")
-            
-            conn.commit()
+                # ... (事务提交和回滚逻辑保持不变) ...
+                if not (stop_event and stop_event.is_set()):
+                    conn.commit()
+                    logger.info("数据库事务已成功提交！所有选择的表已恢复。")
+                    update_status_from_thread(100, "导入成功完成！")
+                else:
+                    conn.rollback()
+                    logger.warning("任务被中止，数据库操作已回滚。")
+                    update_status_from_thread(-1, "任务已中止，所有更改已回滚。")
 
-        message = f"导入完成。总行数: {stats['total']}, 成功处理: {stats['processed']}, 跳过: {stats['skipped']}, 错误: {stats['errors']}"
-        logger.info(f"导入任务完成: {message}")
-        update_status_from_thread(100, "导入完成！")
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"在事务处理期间发生严重错误，操作已回滚: {e}", exc_info=True)
+                update_status_from_thread(-1, f"数据库错误，操作已回滚: {e}")
+                raise
 
     except Exception as e:
-        logger.error(f"后台导入任务失败: {e}", exc_info=True)
-        update_status_from_thread(-1, f"导入失败: {e}")
+        logger.error(f"数据库恢复任务执行失败: {e}", exc_info=True)
+        update_status_from_thread(-1, f"任务失败: {e}")
 # ★★★ 重新处理单个项目 ★★★
 def task_reprocess_single_item(processor: MediaProcessor, item_id: str, item_name_for_ui: str):
     """
@@ -2486,100 +2516,134 @@ def api_update_edited_cast_api(item_id):
     except Exception as outer_e:
         logger.error(f"API /api/update_media_cast 顶层错误 for {item_id}: {outer_e}", exc_info=True)
         return jsonify({"error": "保存演员信息时发生服务器内部错误"}), 500
-# ★★★ 导出演员映射表 + 元数据 ★★★
-@app.route('/api/actors/export', methods=['GET'])
+# ★★★ 获取数据库中所有用户表的列表 ★★★
+@app.route('/api/database/tables', methods=['GET'])
 @login_required
-def api_export_person_map():
+def api_get_db_tables():
     """
-    【V2 - 元数据增强版】导出演员身份映射表和TMDb元数据缓存。
+    获取数据库中所有用户表的名称列表。
+    排除 sqlite_ 开头的系统表。
     """
-    # ★★★ 1. 扩展表头，加入 ActorMetadata 的字段 ★★★
-    headers = [
-        'primary_name', 
-        'tmdb_person_id', 'imdb_id', 'douban_celebrity_id',
-        'profile_path', 'gender', 'adult', 'popularity', 'original_name'
-    ]
-    logger.info(f"API: 收到导出完整演员数据 (map + metadata) 的请求。")
+    try:
+        with get_central_db_connection(DB_PATH) as conn:
+            cursor = conn.cursor()
+            # 查询 sqlite_master 表来获取所有表名
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+            tables = [row[0] for row in cursor.fetchall()]
+            logger.info(f"API: 成功获取到数据库表列表: {tables}")
+            return jsonify(tables)
+    except Exception as e:
+        logger.error(f"获取数据库表列表时出错: {e}", exc_info=True)
+        return jsonify({"error": "无法获取数据库表列表"}), 500
+# 数据库表结构。
+TABLE_PRIMARY_KEYS = {
+    "person_identity_map": "tmdb_person_id",
+    "ActorMetadata": "tmdb_id",
+    "translation_cache": "original_text",
+    "collections_info": "emby_collection_id",
+    "watchlist": "item_id",
+    "actor_subscriptions": "tmdb_person_id",
+    # ★★★ 核心修改：使用元组表示复合主键 ★★★
+    "tracked_actor_media": ("subscription_id", "tmdb_media_id"),
+    "processed_log": "item_id",
+    "failed_log": "item_id",
+    "users": "username",
+}
+# ★★★ 通用数据库表导出  ★★★
+@app.route('/api/database/export', methods=['POST'])
+@login_required
+def api_export_database():
+    """
+    【通用版】根据请求中指定的表名列表，导出一个包含这些表数据的JSON文件。
+    """
+    try:
+        tables_to_export = request.json.get('tables')
+        if not tables_to_export or not isinstance(tables_to_export, list):
+            return jsonify({"error": "请求体中必须包含一个 'tables' 数组"}), 400
 
-    def generate_csv():
-        string_io = StringIO()
-        try:
-            with get_central_db_connection(DB_PATH) as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-                writer = csv.DictWriter(string_io, fieldnames=headers, extrasaction='ignore')
+        logger.info(f"API: 收到数据库导出请求，目标表: {tables_to_export}")
+
+        backup_data = {
+            "metadata": {
+                "export_date": datetime.utcnow().isoformat() + "Z",
+                "app_version": constants.APP_VERSION,
+                "tables": tables_to_export
+            },
+            "data": {}
+        }
+
+        with get_central_db_connection(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            for table_name in tables_to_export:
+                # 安全性检查：确保表名是合法的
+                if not re.match(r'^[a-zA-Z0-9_]+$', table_name):
+                     logger.warning(f"跳过无效的表名: {table_name}")
+                     continue
                 
-                writer.writeheader()
-                yield string_io.getvalue()
-                string_io.seek(0); string_io.truncate(0)
+                logger.debug(f"正在导出表: {table_name}...")
+                cursor.execute(f"SELECT * FROM {table_name}")
+                rows = cursor.fetchall()
+                backup_data["data"][table_name] = [dict(row) for row in rows]
+                logger.debug(f"表 {table_name} 导出完成，共 {len(rows)} 行。")
 
-                # ★★★ 2. 改造SQL查询，使用 LEFT JOIN 合并两张表 ★★★
-                query = """
-                    SELECT
-                        p.primary_name,
-                        p.tmdb_person_id,
-                        p.imdb_id,
-                        p.douban_celebrity_id,
-                        m.profile_path,
-                        m.gender,
-                        m.adult,
-                        m.popularity,
-                        m.original_name
-                    FROM
-                        person_identity_map AS p
-                    LEFT JOIN
-                        ActorMetadata AS m ON p.tmdb_person_id = m.tmdb_id
-                """
-                cursor.execute(query)
-                
-                for row in cursor:
-                    writer.writerow(dict(row))
-                    yield string_io.getvalue()
-                    string_io.seek(0); string_io.truncate(0)
-        except Exception as e:
-            logger.error(f"导出完整演员数据时发生错误: {e}", exc_info=True)
-            yield f"Error: {e}"
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        filename = f"database_backup_{timestamp}.json"
+        
+        json_output = json.dumps(backup_data, indent=2, ensure_ascii=False)
 
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    filename = f"full_actor_data_backup_{timestamp}.csv" # 文件名也更新一下
-    
-    response = Response(stream_with_context(generate_csv()), mimetype='text/csv; charset=utf-8')
-    response.headers.set("Content-Disposition", "attachment", filename=filename)
-    return response
-# ★★★ 导入演员映射表 ★★★
-@app.route('/api/actors/import', methods=['POST'])
+        response = Response(json_output, mimetype='application/json; charset=utf-8')
+        response.headers.set("Content-Disposition", "attachment", filename=filename)
+        return response
+
+    except Exception as e:
+        logger.error(f"导出数据库时发生错误: {e}", exc_info=True)
+        return jsonify({"error": f"导出时发生服务器错误: {e}"}), 500
+# ★★★ 通用数据库表导入 ★★★
+@app.route('/api/database/import', methods=['POST'])
 @login_required
 @task_lock_required
-def api_import_person_map():
+def api_import_database():
     """
-    【队列版】接收上传的CSV文件，读取内容，并提交一个后台任务来处理它。
+    【通用队列版】接收备份文件、要导入的表名列表以及导入模式，
+    并提交一个后台任务来处理恢复。
     """
     if 'file' not in request.files:
         return jsonify({"error": "请求中未找到文件部分"}), 400
     
     file = request.files['file']
-    if not file.filename or not file.filename.endswith('.csv'):
-        return jsonify({"error": "未选择文件或文件类型不正确"}), 400
+    if not file.filename or not file.filename.endswith('.json'):
+        return jsonify({"error": "未选择文件或文件类型必须是 .json"}), 400
+
+    tables_to_import_str = request.form.get('tables')
+    if not tables_to_import_str:
+        return jsonify({"error": "必须通过 'tables' 字段指定要导入的表"}), 400
+    tables_to_import = [table.strip() for table in tables_to_import_str.split(',')]
+
+    # ★ 关键：从表单获取导入模式，默认为 'merge'，更安全 ★
+    import_mode = request.form.get('mode', 'merge').lower()
+    if import_mode not in ['overwrite', 'merge']:
+        return jsonify({"error": "无效的导入模式。只支持 'overwrite' 或 'merge'"}), 400
 
     try:
-        # 1. 直接将文件内容读入内存字符串
         file_content = file.stream.read().decode("utf-8-sig")
-        logger.info(f"已接收上传文件 '{file.filename}'，内容长度: {len(file_content)}")
+        logger.info(f"已接收上传的备份文件 '{file.filename}'，将以 '{import_mode}' 模式导入表: {tables_to_import}")
 
-        # 2. 提交一个后台任务，把文件内容和需要的配置传过去
         submit_task_to_queue(
-            task_import_person_map,
-            "导入演员映射表",
-            # ★★★ 把任务需要的所有东西，都作为关键字参数传递 ★★★
+            task_import_database,  # ★ 调用新的后台任务函数
+            f"以 {import_mode} 模式恢复数据库表",
+            # 传递任务所需的所有参数
             file_content=file_content,
-            tmdb_api_key=app.config.get("tmdb_api_key", "")
+            tables_to_import=tables_to_import,
+            import_mode=import_mode
         )
         
-        return jsonify({"message": "文件上传成功，已提交到后台队列进行导入。"}), 202
+        return jsonify({"message": f"文件上传成功，已提交后台任务以 '{import_mode}' 模式恢复 {len(tables_to_import)} 个表。"}), 202
 
     except Exception as e:
-        logger.error(f"处理导入文件请求时发生错误: {e}", exc_info=True)
-        return jsonify({"error": f"处理上传文件时发生服务器错误"}), 500
+        logger.error(f"处理数据库导入请求时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "处理上传文件时发生服务器错误"}), 500
 # ✨✨✨ 编辑页面的API接口 ✨✨✨
 @app.route('/api/media_for_editing_sa/<item_id>', methods=['GET'])
 @login_required

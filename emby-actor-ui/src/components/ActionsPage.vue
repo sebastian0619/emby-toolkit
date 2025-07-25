@@ -1,198 +1,243 @@
-<!-- src/components/ActionsPage.vue -->
+<!-- src/components/ActionsPage.vue (V3 - 友好中文翻译版) -->
 
 <template>
   <n-space vertical :size="24" style="margin-top: 15px;">
-  <div class="actions-page-container">
-    
-    <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
+    <div class="actions-page-container">
       
-      <!-- 左侧列：任务操作区 -->
-      <n-gi span="1">
-        <n-space vertical :size="24">
-          <n-alert 
-            v-if="taskStatus.is_running" 
-            title="后台任务运行中" 
-            type="warning" 
-            closable
-          >
-            当前有后台任务正在执行 ({{ taskStatus.current_action }})。
-            在此期间，任何需要写入数据库的操作都可能会失败。
-            建议等待当前任务完成后再进行其他操作。
-          </n-alert>
+      <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen" style="align-items: stretch;">
+        
+        <!-- 左侧列：任务操作区 -->
+        <n-gi span="1">
+          <n-space vertical :size="24">
+            <n-alert 
+              v-if="taskStatus.is_running" 
+              title="后台任务运行中" 
+              type="warning" 
+              closable
+            >
+              当前有后台任务正在执行 ({{ taskStatus.current_action }})。
+              在此期间，任何需要写入数据库的操作都可能会失败。
+              建议等待当前任务完成后再进行其他操作。
+            </n-alert>
 
-          <!-- 卡片1: 全量扫描 -->
-          <n-card title="全量媒体库扫描" class="glass-section" :bordered="false">
-            <!-- 使用 n-space 来实现灵活的对齐 -->
-            <n-space vertical size="large">
+            <!-- 卡片1: 全量扫描 (保持不变) -->
+            <n-card title="全量媒体库扫描" class="glass-section" :bordered="false">
+              <n-space vertical size="large">
+                <n-checkbox v-model:checked="forceReprocessAll" :disabled="taskStatus.is_running">
+                  强制重新处理所有项目 (将清空已处理记录)
+                </n-checkbox>
+                <p class="description-text">
+                  <b>强制重处理：</b>会忽略已处理记录，对媒体库所有项目重新执行核心逻辑。<br>
+                  <b>清除缓存：</b>用于解决数据循环污染问题，建议在勾选“强制重处理”后、启动扫描前执行。
+                </p>
+                <n-divider style="margin: 0;" />
+                <n-space align="center" justify="space-between" style="width: 100%;">
+                  <n-space>
+                    <n-button
+                      type="primary"
+                      @click="triggerFullScan"
+                      :loading="taskStatus.is_running && currentActionIncludesScan"
+                      :disabled="taskStatus.is_running && !currentActionIncludesScan"
+                    >
+                      启动全量扫描
+                    </n-button>
+                    <n-button type="error" @click="triggerStopTask" :disabled="!taskStatus.is_running" ghost>
+                      停止当前任务
+                    </n-button>
+                  </n-space>
+                  <n-popconfirm
+                    @positive-click="handleClearCaches"
+                    positive-text="我确定，清空！"
+                    negative-text="算了"
+                    :positive-button-props="{ type: 'error' }"
+                  >
+                    <template #trigger>
+                      <n-button type="error" text :loading="isClearing" :disabled="taskStatus.is_running" style="font-size: 13px;">
+                        <template #icon><n-icon :component="TrashIcon" /></template>
+                        清除TMDb缓存
+                      </n-button>
+                    </template>
+                    您确定要删除所有TMDb相关的缓存和覆盖文件吗？<br>
+                    这将强制下次处理时从网络重新获取所有数据。<br>
+                    <strong>此操作不可恢复！</strong>
+                  </n-popconfirm>
+                </n-space>
+              </n-space>
+            </n-card>
 
-              <!-- 上半部分：选项和说明 -->
-              <n-checkbox v-model:checked="forceReprocessAll" :disabled="taskStatus.is_running">
-                强制重新处理所有项目 (将清空已处理记录)
-              </n-checkbox>
-              <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0; padding-bottom: 12px;">
-                <b>强制重处理：</b>会忽略已处理记录，对媒体库所有项目重新执行核心逻辑。<br>
-                <b>清除缓存：</b>用于解决数据循环污染问题，建议在勾选“强制重处理”后、启动扫描前执行。
-              </p>
-
-              <n-divider style="margin: 0;" />
-
-              <!-- 下半部分：操作按钮区 -->
-              <n-space align="center" justify="space-between" style="width: 100%;">
-                
-                <!-- 左侧的操作按钮 -->
-                <n-space>
+            <!-- 卡片2: 同步映射表 (已简化) -->
+            <n-card title="同步Emby演员映射表" class="glass-section" :bordered="false">
+              <n-space vertical>
+                <n-space align="center">
                   <n-button
                     type="primary"
-                    @click="triggerFullScan"
-                    :loading="taskStatus.is_running && currentActionIncludesScan"
-                    :disabled="taskStatus.is_running && !currentActionIncludesScan"
+                    @click="triggerSyncMap"
+                    :loading="taskStatus.is_running && currentActionIncludesSyncMap"
+                    :disabled="taskStatus.is_running && !currentActionIncludesSyncMap"
                   >
-                    启动全量扫描
+                    启动同步
                   </n-button>
-                  
-                  <!-- ★★★ 找回来的停止任务按钮 ★★★ -->
                   <n-button
-                    type="error"
-                    @click="triggerStopTask"
-                    :disabled="!taskStatus.is_running"
+                    type="warning"
+                    @click="triggerRebuildActors"
+                    :loading="taskStatus.is_running && currentActionIncludesRebuild"
+                    :disabled="taskStatus.is_running && !currentActionIncludesRebuild"
                     ghost
                   >
-                    停止当前任务
+                    重构演员库
                   </n-button>
                 </n-space>
-
-                <!-- ★★★ 右侧的清除缓存按钮 ★★★ -->
-                <n-popconfirm
-                  @positive-click="handleClearCaches"
-                  positive-text="我确定，清空！"
-                  negative-text="算了"
-                  :positive-button-props="{ type: 'error' }"
-                >
-                  <template #trigger>
-                    <n-button 
-                      type="error" 
-                      text 
-                      :loading="isClearing"
-                      :disabled="taskStatus.is_running"
-                      style="font-size: 13px;"
-                    >
-                      <template #icon><n-icon :component="TrashIcon" /></template>
-                      清除TMDb缓存
-                    </n-button>
-                  </template>
-                  您确定要删除所有TMDb相关的缓存和覆盖文件吗？<br>
-                  这将强制下次处理时从网络重新获取所有数据。<br>
-                  <strong>此操作不可恢复！</strong>
-                </n-popconfirm>
-
+                <p class="description-text">
+                  <b>同步：</b>读取所有演员信息为后续创建各数据源ID映射表。<br>
+                  <b>重构演员库：</b><span class="warning-text">【高危】</span>清空并重建Emby演员数据库，解决数据污染、索引损坏等疑难杂症。
+                </p>
               </n-space>
+            </n-card>
 
-            </n-space>
-          </n-card>
+            <!-- 卡片3: 数据管理 -->
+            <n-card title="数据管理 (备份与恢复)" class="glass-section" :bordered="false">
+              <n-space vertical>
+                <n-space align="center">
+                  <n-button @click="showExportModal" :loading="isExporting" class="action-button">
+                    <template #icon><n-icon :component="ExportIcon" /></template>
+                    导出数据
+                  </n-button>
+                  <n-upload
+                    :custom-request="handleCustomImportRequest"
+                    :show-file-list="false"
+                    accept=".json"
+                  >
+                    <n-button :loading="isImporting" class="action-button">
+                      <template #icon><n-icon :component="ImportIcon" /></template>
+                      导入数据
+                    </n-button>
+                  </n-upload>
+                </n-space>
+                <p class="description-text">
+                  <b>导出：</b>将数据库中的一个或多个表备份为 JSON 文件。<br>
+                  <b>导入：</b>从 JSON 备份文件中恢复数据，支持“合并”或“覆盖”模式。
+                </p>
+              </n-space>
+            </n-card>
 
-          <!-- 卡片2: 同步映射表 -->
-          <n-card title="同步Emby演员映射表" class="glass-section" :bordered="false">
-            <n-space vertical>
-              <n-space align="center">
+            <!-- 卡片4: 全量海报同步 (保持不变) -->
+            <n-card title="全量海报同步" class="glass-section" :bordered="false">
+              <n-space vertical>
+                <p class="description-text">
+                  此功能会遍历所有**已处理**的媒体，将 Emby 中的海报、背景图等同步到 override 缓存目录。
+                </p>
                 <n-button
                   type="primary"
-                  @click="triggerSyncMap"
-                  :loading="taskStatus.is_running && currentActionIncludesSyncMap"
-                  :disabled="taskStatus.is_running && !currentActionIncludesSyncMap"
+                  @click="triggerFullImageSync"
+                  :loading="taskStatus.is_running && currentActionIncludesImageSync"
+                  :disabled="taskStatus.is_running && !currentActionIncludesImageSync"
                 >
-                  启动同步
+                  开始同步
                 </n-button>
-                
-                <!-- ★★★ 新增：一键重构按钮 ★★★ -->
-                <n-button
-                  type="warning"
-                  @click="triggerRebuildActors"
-                  :loading="taskStatus.is_running && currentActionIncludesRebuild"
-                  :disabled="taskStatus.is_running && !currentActionIncludesRebuild"
-                  ghost
-                >
-                  重构演员库
-                </n-button>
-                <!-- ★★★ 新增结束 ★★★ -->
-
-                <n-button @click="exportMap" :loading="isExporting" class="action-button">
-                  <template #icon><n-icon :component="ExportIcon" /></template>
-                  导出
-                </n-button>
-                <n-upload
-                  action="/api/actors/import"
-                  :show-file-list="false"
-                  @before-upload="beforeImport"
-                  @finish="afterImport"
-                  @error="errorImport"
-                  accept=".csv"
-                >
-                  <n-button :loading="isImporting" class="action-button">
-                    <template #icon><n-icon :component="ImportIcon" /></template>
-                    导入
-                  </n-button>
-                </n-upload>
               </n-space>
-              <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">
-                <b>同步：</b>读取所有演员信息为后续创建各数据源ID映射表。<br>
-                <!-- ★★★ 新增：对重构功能的说明 ★★★ -->
-                <b>一键重构：</b><span style="color: var(--n-warning-color);">【高危】</span>清空并重建Emby演员数据库，解决数据污染、索引损坏等疑难杂症。<br>
-                <b>导出/导入：</b>用于备份或迁移演员映射数据。导入会追加更新现有演员的记录。
-              </p>
-            </n-space>
-          </n-card>
-          <n-card title="全量海报同步" class="glass-section" :bordered="false">
-            <n-space vertical>
-              <p style="font-size: 0.85em; color: var(--n-text-color-3); margin: 0;">
-                此功能会遍历所有**已处理**的媒体，将 Emby 中的海报、背景图等同步到 override 缓存目录。
-              </p>
-              <n-button
-                type="primary"
-                @click="triggerFullImageSync"
-                :loading="taskStatus.is_running && currentActionIncludesImageSync"
-                :disabled="taskStatus.is_running && !currentActionIncludesImageSync"
-              >
-                开始同步
-              </n-button>
-            </n-space>
-          </n-card>
-        </n-space>
-      </n-gi>
+            </n-card>
 
-      <!-- 右侧列：实时日志区 -->
-      <n-gi span="1">
-        <n-card title="实时日志" class="glass-section" :bordered="false" content-style="padding: 0;">
-          <!-- ★★★ 1. 在卡片标题栏添加一个按钮 ★★★ -->
-          <template #header-extra>
-            <n-button text @click="isLogViewerVisible = true" title="查看历史归档日志">
-              <template #icon><n-icon :component="DocumentTextOutline" /></template>
-              历史日志
-            </n-button>
-          </template>
-          <n-log
-            ref="logRef"
-            :log="logContent"
-            trim
-            :rows="30"
-            style="font-size: 13px; line-height: 1.6;"
-          />
-        </n-card>
-      </n-gi>
-    </n-grid>
-    <LogViewer v-model:show="isLogViewerVisible" />
-  </div>
+          </n-space>
+        </n-gi>
+
+        <!-- 右侧列：实时日志区 (保持不变) -->
+        <n-gi span="1" style="display: flex;">
+          <n-card title="实时日志" class="glass-section" :bordered="false" style="flex-grow: 1;" content-style="display: flex; flex-direction: column;">
+            <template #header-extra>
+              <n-button text @click="isLogViewerVisible = true" title="查看历史归档日志">
+                <template #icon><n-icon :component="DocumentTextOutline" /></template>
+                历史日志
+              </n-button>
+            </template>
+            <n-log
+              ref="logRef"
+              :log="logContent"
+              trim
+              class="log-panel"
+              style="flex-grow: 1;"
+            />
+          </n-card>
+        </n-gi>
+      </n-grid>
+      
+      <LogViewer v-model:show="isLogViewerVisible" />
+
+      <!-- ★★★ 升级版：导出选项模态框 ★★★ -->
+      <n-modal v-model:show="exportModalVisible" preset="dialog" title="选择要导出的数据表">
+        <n-space justify="end" style="margin-bottom: 10px;">
+          <n-button text type="primary" @click="selectAllForExport">全选</n-button>
+          <n-button text type="primary" @click="deselectAllForExport">全不选</n-button>
+        </n-space>
+        <n-checkbox-group v-model:value="tablesToExport" vertical>
+          <n-grid :y-gap="8" :cols="2">
+            <n-gi v-for="table in allDbTables" :key="table">
+              <n-checkbox :value="table">
+                <span :class="{ 'core-data-label': tableInfo[table]?.isCore }">
+                  {{ tableInfo[table]?.cn || table }}
+                </span>
+                <span class="original-name-label"> ({{ table }})</span>
+              </n-checkbox>
+            </n-gi>
+          </n-grid>
+        </n-checkbox-group>
+        <template #action>
+          <n-button @click="exportModalVisible = false">取消</n-button>
+          <n-button type="primary" @click="handleExport" :disabled="tablesToExport.length === 0">确认导出</n-button>
+        </template>
+      </n-modal>
+
+      <!-- ★★★ 升级版：导入选项模态框 ★★★ -->
+      <n-modal v-model:show="importModalVisible" preset="dialog" title="确认导入选项">
+        <n-space vertical>
+          <div><p><strong>文件名:</strong> {{ fileToImport?.name }}</p></div>
+          <n-form-item label="导入模式" required>
+            <n-radio-group v-model:value="importOptions.mode">
+              <n-space>
+                <n-radio value="merge"><strong>合并</strong> (默认, 安全): 添加新数据，更新旧数据。</n-radio>
+                <n-radio value="overwrite"><strong class="warning-text">覆盖</strong> (危险!): 先清空表再导入。</n-radio>
+              </n-space>
+            </n-radio-group>
+          </n-form-item>
+          <n-form-item required>
+             <template #label>
+                <span>要导入的表 (从文件中自动读取)</span>
+                <n-space style="margin-left: 20px;">
+                  <n-button size="tiny" text type="primary" @click="selectAllForImport">全选</n-button>
+                  <n-button size="tiny" text type="primary" @click="deselectAllForImport">全不选</n-button>
+                </n-space>
+             </template>
+             <n-checkbox-group v-model:value="importOptions.tables" vertical>
+                <n-grid :y-gap="8" :cols="2">
+                  <n-gi v-for="table in tablesInBackupFile" :key="table">
+                    <n-checkbox :value="table">
+                      <span :class="{ 'core-data-label': tableInfo[table]?.isCore }">
+                        {{ tableInfo[table]?.cn || table }}
+                      </span>
+                      <span class="original-name-label"> ({{ table }})</span>
+                    </n-checkbox>
+                  </n-gi>
+                </n-grid>
+            </n-checkbox-group>
+          </n-form-item>
+        </n-space>
+        <template #action>
+          <n-button @click="cancelImport">取消</n-button>
+          <n-button type="primary" @click="confirmImport" :disabled="importOptions.tables.length === 0">开始导入</n-button>
+        </template>
+      </n-modal>
+
+    </div>
   </n-space>
 </template>
 
 <script setup>
-// ★★★ 变化点2: 重新引入 nextTick，因为简化后的 watch 仍然需要它 ★★★
 import { ref, computed, watch, nextTick } from 'vue';
 import LogViewer from './LogViewer.vue';
 import axios from 'axios';
 import { 
   NCard, NButton, NCheckbox, NSpace, NAlert, NLog, NIcon, useMessage, 
-  NUpload, NGrid, NGi,
-  useDialog, NPopconfirm,
+  NUpload, NGrid, NGi, useDialog, NPopconfirm, NDivider, NModal,
+  NCheckboxGroup, NFormItem, NRadioGroup, NRadio
 } from 'naive-ui';
 import { 
   TrashOutline as TrashIcon,
@@ -200,6 +245,20 @@ import {
   CloudUploadOutline as ImportIcon,
   DocumentTextOutline 
 } from '@vicons/ionicons5';
+
+// --- ★★★ 新增：集中的表名翻译和信息 ★★★ ---
+const tableInfo = {
+  'person_identity_map': { cn: '演员身份映射表', isCore: true },
+  'ActorMetadata': { cn: '演员元数据', isCore: true },
+  'watchlist': { cn: '追剧列表', isCore: false },
+  'actor_subscriptions': { cn: '演员订阅配置', isCore: false },
+  'tracked_actor_media': { cn: '已追踪的演员作品', isCore: false },
+  'collections_info': { cn: '电影合集信息', isCore: false },
+  'translation_cache': { cn: '翻译缓存', isCore: false },
+  'processed_log': { cn: '已处理日志', isCore: false },
+  'failed_log': { cn: '待复核日志', isCore: false },
+  'users': { cn: '用户账户', isCore: false },
+};
 
 // --- Refs and Props ---
 const logRef = ref(null);
@@ -220,45 +279,22 @@ const props = defineProps({
   }
 });
 const forceReprocessAll = ref(false);
-const isExporting = ref(false);
-const isImporting = ref(false);
 const isLogViewerVisible = ref(false);
 
-// --- Computed Properties (保持不变) ---
-const logContent = computed(() => {
-  if (props.taskStatus && Array.isArray(props.taskStatus.logs)) {
-    return props.taskStatus.logs.join('\n');
-  }
-  return '等待日志...';
-});
+// --- Computed Properties ---
+const logContent = computed(() => props.taskStatus?.logs?.join('\n') || '等待日志...');
+const currentActionIncludesScan = computed(() => props.taskStatus.current_action?.toLowerCase().includes('scan'));
+const currentActionIncludesSyncMap = computed(() => props.taskStatus.current_action?.toLowerCase().includes('同步'));
+const currentActionIncludesRebuild = computed(() => props.taskStatus.current_action?.toLowerCase().includes('重构'));
+const currentActionIncludesImageSync = computed(() => props.taskStatus.current_action?.toLowerCase().includes('海报'));
 
-const currentActionIncludesScan = computed(() => 
-  props.taskStatus.current_action && props.taskStatus.current_action.toLowerCase().includes('scan')
-);
-const currentActionIncludesSyncMap = computed(() => 
-  props.taskStatus.current_action && props.taskStatus.current_action.toLowerCase().includes('sync')
-);
-const currentActionIncludesRebuild = computed(() => 
-  props.taskStatus.current_action && props.taskStatus.current_action.toLowerCase().includes('rebuild')
-);
-const currentActionIncludesImageSync = computed(() => 
-  props.taskStatus.current_action && props.taskStatus.current_action.toLowerCase().includes('image_sync')
-);
-
-// ★★★ 变化点4: 使用一个极其简化的 watch 监听器，实现无条件自动滚动 ★★★
+// --- Watcher for Log Scrolling ---
 watch(() => props.taskStatus.logs, async () => {
-  // 等待 Vue 将新的日志内容渲染到 DOM 上
   await nextTick();
-  
-  // 只要 log 组件存在，就滚动到底部
-  if (logRef.value) {
-    logRef.value.scrollTo({ position: 'bottom', slient: true });
-  }
+  logRef.value?.scrollTo({ position: 'bottom', slient: true });
 }, { deep: true });
 
-
-// --- Methods ---
-
+// --- Methods for Existing Actions (mostly unchanged) ---
 const triggerFullScan = async () => {
   try {
     const formData = new FormData();
@@ -268,7 +304,6 @@ const triggerFullScan = async () => {
     await axios.post('/api/trigger_full_scan', formData);
     message.success('全量扫描任务已启动！');
   } catch (error) {
-    console.error('启动全量扫描失败:', error);
     message.error(error.response?.data?.error || '启动全量扫描失败，请查看日志。');
   }
 };
@@ -278,7 +313,6 @@ const triggerSyncMap = async () => {
     await axios.post('/api/trigger_sync_person_map', {});
     message.success('同步任务已启动！');
   } catch (error) {
-    console.error('启动同步映射表失败:', error);
     message.error(error.response?.data?.error || '启动同步映射表失败，请查看日志。');
   }
 };
@@ -288,76 +322,7 @@ const triggerStopTask = async () => {
     await axios.post('/api/trigger_stop_task');
     message.info('已发送停止任务请求。');
   } catch (error) {
-    console.error('发送停止任务请求失败:', error);
     message.error(error.response?.data?.error || '发送停止任务请求失败，请查看日志。');
-  }
-};
-
-// ★★★ 变化点5: 移除了 clearLogs 函数 ★★★
-
-const exportMap = async () => {
-  isExporting.value = true;
-  try {
-    const response = await axios({
-      url: '/api/actors/export',
-      method: 'GET',
-      responseType: 'blob',
-    });
-
-    const contentDisposition = response.headers['content-disposition'];
-    let filename = 'person_map_backup.csv';
-    if (contentDisposition) {
-      const match = contentDisposition.match(/filename="?(.+?)"?$/);
-      if (match?.[1]) filename = match[1];
-    }
-
-    const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
-    const link = document.createElement('a');
-    link.href = blobUrl;
-    link.setAttribute('download', filename);
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.URL.revokeObjectURL(blobUrl);
-
-    message.success('映射表已开始导出下载！');
-  } catch (err) {
-    console.error('导出失败:', err);
-    message.error('导出映射表失败，请查看日志。');
-  } finally {
-    isExporting.value = false;
-  }
-};
-
-const beforeImport = () => {
-  isImporting.value = true;
-  message.loading('正在上传并处理文件...', { duration: 0 });
-  return true;
-};
-
-const afterImport = ({ event }) => {
-  isImporting.value = false;
-  message.destroyAll();
-  try {
-    const response = JSON.parse(event?.target?.response ?? '{}');
-    if (response?.message) {
-      message.success(response.message);
-    } else {
-      message.error('导入完成，但响应无明确信息。');
-    }
-  } catch (e) {
-    message.error('导入成功，但无法解析服务器响应。');
-  }
-};
-
-const errorImport = ({ event }) => {
-  isImporting.value = false;
-  message.destroyAll();
-  try {
-    const response = JSON.parse(event?.target?.response ?? '{}');
-    message.error(response?.error || '导入失败，未知错误。');
-  } catch (e) {
-    message.error('导入失败，并且无法解析服务器错误响应。');
   }
 };
 
@@ -366,7 +331,6 @@ const triggerFullImageSync = async () => {
     const response = await axios.post('/api/actions/trigger_full_image_sync');
     message.success(response.data.message || '全量海报同步任务已启动！');
   } catch (error) {
-    console.error('启动全量海报同步失败:', error);
     message.error(error.response?.data?.error || '启动任务失败，请查看日志。');
   }
 };
@@ -382,7 +346,6 @@ const triggerRebuildActors = () => {
         const response = await axios.post('/api/tasks/rebuild-actors');
         message.success(response.data.message || '重构任务已成功提交！');
       } catch (error) {
-        console.error('启动重构任务失败:', error);
         message.error(error.response?.data?.message || '启动任务失败，请查看日志。');
       }
     },
@@ -396,10 +359,178 @@ const handleClearCaches = async () => {
     const response = await axios.post('/api/actions/clear_tmdb_caches');
     message.success(response.data.message || "TMDb缓存已成功清除！");
   } catch (error) {
-    console.error("清除缓存失败:", error);
     message.error(error.response?.data?.message || "清除缓存失败，请检查后端日志。");
   } finally {
     isClearing.value = false;
   }
 };
+
+// --- ★★★ NEW: Methods for Data Management ★★★ ---
+
+// --- Export Logic ---
+const isExporting = ref(false);
+const exportModalVisible = ref(false);
+const allDbTables = ref([]);
+const tablesToExport = ref([]);
+
+const showExportModal = async () => {
+  try {
+    const response = await axios.get('/api/database/tables');
+    allDbTables.value = response.data;
+    tablesToExport.value = response.data.filter(t => tableInfo[t]?.isCore);
+    exportModalVisible.value = true;
+  } catch (error) {
+    message.error('无法获取数据库表列表，请检查后端日志。');
+  }
+};
+
+const handleExport = async () => {
+  isExporting.value = true;
+  exportModalVisible.value = false;
+  try {
+    const response = await axios.post('/api/database/export', {
+      tables: tablesToExport.value
+    }, {
+      responseType: 'blob',
+    });
+
+    const contentDisposition = response.headers['content-disposition'];
+    let filename = 'database_backup.json';
+    if (contentDisposition) {
+      const match = contentDisposition.match(/filename="?(.+?)"?$/);
+      if (match?.[1]) filename = match[1];
+    }
+
+    const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(blobUrl);
+
+    message.success('数据已开始导出下载！');
+  } catch (err) {
+    message.error('导出数据失败，请查看日志。');
+  } finally {
+    isExporting.value = false;
+  }
+};
+
+const selectAllForExport = () => tablesToExport.value = [...allDbTables.value];
+const deselectAllForExport = () => tablesToExport.value = [];
+
+// --- Import Logic ---
+const isImporting = ref(false);
+const importModalVisible = ref(false);
+const fileToImport = ref(null);
+const tablesInBackupFile = ref([]);
+const importOptions = ref({
+  mode: 'merge',
+  tables: [],
+});
+
+// 使用 custom-request 来完全接管上传流程
+const handleCustomImportRequest = ({ file }) => {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const content = JSON.parse(e.target.result);
+      if (!content.data || typeof content.data !== 'object') {
+        message.error('备份文件格式不正确：缺少 "data" 对象。');
+        return;
+      }
+      tablesInBackupFile.value = Object.keys(content.data);
+      if (tablesInBackupFile.value.length === 0) {
+        message.error('备份文件格式不正确： "data" 对象为空。');
+        return;
+      }
+      importOptions.value.tables = [...tablesInBackupFile.value];
+      fileToImport.value = file.file; // file.file 是真实的 File 对象
+      importModalVisible.value = true;
+    } catch (err) {
+      message.error('无法解析JSON文件，请确保文件格式正确。');
+    }
+  };
+  reader.readAsText(file.file);
+};
+
+const cancelImport = () => {
+  importModalVisible.value = false;
+  fileToImport.value = null;
+};
+
+const confirmImport = () => {
+  importModalVisible.value = false;
+  isImporting.value = true;
+  message.loading('正在上传并处理文件...', { duration: 0 });
+
+  const formData = new FormData();
+  formData.append('file', fileToImport.value);
+  formData.append('mode', importOptions.value.mode);
+  formData.append('tables', importOptions.value.tables.join(','));
+
+  axios.post('/api/database/import', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  })
+  .then(response => {
+    isImporting.value = false;
+    message.destroyAll();
+    message.success(response.data?.message || '导入任务已提交！');
+  })
+  .catch(error => {
+    isImporting.value = false;
+    message.destroyAll();
+    message.error(error.response?.data?.error || '导入失败，未知错误。');
+  });
+};
+
+const selectAllForImport = () => importOptions.value.tables = [...tablesInBackupFile.value];
+const deselectAllForImport = () => importOptions.value.tables = [];
+
 </script>
+
+<style scoped>
+.actions-page-container {
+  max-width: 1200px;
+  margin: auto;
+}
+.glass-section {
+  background-color: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+.description-text {
+  font-size: 0.85em;
+  color: var(--n-text-color-3);
+  margin: 0;
+  line-height: 1.6;
+}
+.warning-text {
+  color: var(--n-warning-color);
+  font-weight: bold;
+}
+.log-panel {
+  font-size: 13px;
+  line-height: 1.6;
+  background-color: rgba(0, 0, 0, 0.3);
+}
+/* ★★★ 新增样式 ★★★ */
+.original-name-label {
+  color: var(--n-text-color-disabled);
+  font-size: 0.9em;
+  margin-left: 4px;
+}
+.core-data-label {
+  font-weight: bold;
+  color: var(--n-info-color);
+}
+.core-data-label::after {
+  content: ' [核心数据]';
+  font-size: 0.9em;
+  font-weight: normal;
+  color: var(--n-info-color-suppl);
+}
+</style>
