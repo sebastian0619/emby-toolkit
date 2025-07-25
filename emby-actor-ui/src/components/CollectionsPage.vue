@@ -55,47 +55,59 @@
     <n-modal v-model:show="showModal" preset="card" style="width: 90%; max-width: 1200px;" :title="selectedCollection ? `详情 - ${selectedCollection.name}` : ''" :bordered="false" size="huge">
       <div v-if="selectedCollection">
         <n-tabs type="line" animated>
+          <!-- ★★★ 缺失影片标签页 ★★★ -->
           <n-tab-pane name="missing" :tab="`缺失影片 (${missingMoviesInModal.length})`" :disabled="missingMoviesInModal.length === 0">
-            <n-empty v-if="missingMoviesInModal.length === 0" description="所有已上映的缺失影片都已被订阅。" style="margin-top: 40px;"></n-empty>
+            <n-empty v-if="missingMoviesInModal.length === 0" description="所有已上映的缺失影片都已被订阅或忽略。" style="margin-top: 40px;"></n-empty>
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
               <n-gi v-for="movie in missingMoviesInModal" :key="movie.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
-                <template #cover>
-                    <img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster" />
-                </template>
-                <div class="movie-info">
-                    <div class="movie-title">
-                    {{ movie.title }}<br />
-                    ({{ extractYear(movie.release_date) || '未知年份' }})
-                    </div>
-                </div>
-                <template #action>
-                    <n-button
-                    @click="subscribeToMovie(movie.tmdb_id, movie.title)"
-                    type="primary"
-                    size="small"
-                    block
-                    :loading="subscribing[movie.tmdb_id]"
-                    >
-                    订阅
-                    </n-button>
-                </template>
+                  <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster" /></template>
+                  <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
+                  <template #action>
+                    <!-- ★★★ 新增：按钮组，包含订阅和忽略 ★★★ -->
+                    <n-button-group size="small" style="width: 100%;">
+                      <n-button @click="subscribeToMovie(movie.tmdb_id, movie.title)" type="primary" :loading="subscribing[movie.tmdb_id]" style="width: 50%;">订阅</n-button>
+                      <n-tooltip>
+                        <template #trigger>
+                          <n-button @click="ignoreMovie(selectedCollection.emby_collection_id, movie.tmdb_id)" style="width: 50%;"><template #icon><n-icon :component="IgnoreIcon" /></template>忽略</n-button>
+                        </template>
+                        不再自动订阅此电影
+                      </n-tooltip>
+                    </n-button-group>
+                  </template>
                 </n-card>
               </n-gi>
             </n-grid>
           </n-tab-pane>
+          
+          <!-- ★★★ 未上映标签页 ★★★ -->
           <n-tab-pane name="unreleased" :tab="`未上映 (${unreleasedMoviesInModal.length})`" :disabled="unreleasedMoviesInModal.length === 0">
             <n-empty v-if="unreleasedMoviesInModal.length === 0" description="该合集没有已知的未上映影片。" style="margin-top: 40px;"></n-empty>
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
               <n-gi v-for="movie in unreleasedMoviesInModal" :key="movie.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
                   <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster"></template>
-                  <div class="movie-info">
-                    <div class="movie-title">
-                    {{ movie.title }}<br />
-                    ({{ extractYear(movie.release_date) || '未知年份' }})
-                    </div>
-                </div>
+                  <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
+                </n-card>
+              </n-gi>
+            </n-grid>
+          </n-tab-pane>
+
+          <!-- ★★★ 新增：已忽略标签页 ★★★ -->
+          <n-tab-pane name="ignored" :tab="`已忽略 (${ignoredMoviesInModal.length})`" :disabled="ignoredMoviesInModal.length === 0">
+            <n-empty v-if="ignoredMoviesInModal.length === 0" description="您没有忽略此合集中的任何影片。" style="margin-top: 40px;"></n-empty>
+            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
+              <n-gi v-for="movie in ignoredMoviesInModal" :key="movie.tmdb_id">
+                <n-card class="movie-card" content-style="padding: 0;">
+                  <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster" /></template>
+                  <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
+                  <template #action>
+                    <!-- ★★★ 新增：取消忽略按钮 ★★★ -->
+                    <n-button @click="unignoreMovie(selectedCollection.emby_collection_id, movie.tmdb_id)" type="info" size="small" block ghost>
+                      <template #icon><n-icon :component="UnignoreIcon" /></template>
+                      取消忽略
+                    </n-button>
+                  </template>
                 </n-card>
               </n-gi>
             </n-grid>
@@ -109,8 +121,9 @@
 <script setup>
 import { ref, onMounted, computed, watch, h } from 'vue';
 import axios from 'axios';
-import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NModal, NTabs, NTabPane } from 'naive-ui';
-import { SyncOutline, AlbumsOutline as AlbumsIcon, EyeOutline as EyeIcon } from '@vicons/ionicons5';
+import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NModal, NTabs, NTabPane, NButtonGroup } from 'naive-ui';
+// ★★★ 新增：导入新图标 ★★★
+import { SyncOutline, AlbumsOutline as AlbumsIcon, EyeOutline as EyeIcon, BanOutline as IgnoreIcon, CheckmarkCircleOutline as UnignoreIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
@@ -129,13 +142,10 @@ const subscribing = ref({});
 const showModal = ref(false);
 const selectedCollection = ref(null);
 
-// ★★★ 最终的、正确的过滤逻辑 ★★★
 const missingCollections = computed(() => {
-  // 直接相信后端传来的 has_missing 字段
   return collections.value.filter(c => c.has_missing === true || c.has_missing === 1);
 });
 
-// ★★★ 最终的、正确的模态框数据逻辑 ★★★
 const missingMoviesInModal = computed(() => {
   if (!selectedCollection.value || !Array.isArray(selectedCollection.value.missing_movies)) return [];
   return selectedCollection.value.missing_movies.filter(movie => movie.status === 'missing');
@@ -144,6 +154,12 @@ const missingMoviesInModal = computed(() => {
 const unreleasedMoviesInModal = computed(() => {
   if (!selectedCollection.value || !Array.isArray(selectedCollection.value.missing_movies)) return [];
   return selectedCollection.value.missing_movies.filter(movie => movie.status === 'unreleased');
+});
+
+// ★★★ 新增：已忽略电影的计算属性 ★★★
+const ignoredMoviesInModal = computed(() => {
+  if (!selectedCollection.value || !Array.isArray(selectedCollection.value.missing_movies)) return [];
+  return selectedCollection.value.missing_movies.filter(movie => movie.status === 'ignored');
 });
 
 const loadCachedData = async () => {
@@ -174,8 +190,8 @@ const triggerFullRefresh = async () => {
 onMounted(loadCachedData);
 
 watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {
-  if (wasRunning && !isRunning) {
-    message.info('后台任务已结束，正在刷新合集数据...');
+  if (wasRunning && !isRunning && props.taskStatus.current_action.includes('合集')) {
+    message.info('后台合集任务已结束，正在刷新数据...');
     loadCachedData();
   }
 });
@@ -191,7 +207,10 @@ const subscribeToMovie = async (tmdb_id, title) => {
     await axios.post('/api/subscribe/moviepilot', { tmdb_id, title });
     message.success(`《${title}》已提交订阅`);
     if (selectedCollection.value) {
-      selectedCollection.value.missing_movies = selectedCollection.value.missing_movies.filter(m => m.tmdb_id !== tmdb_id);
+      const movieIndex = selectedCollection.value.missing_movies.findIndex(m => m.tmdb_id === tmdb_id);
+      if (movieIndex > -1) {
+        selectedCollection.value.missing_movies.splice(movieIndex, 1);
+      }
       
       const mainCollection = collections.value.find(c => c.emby_collection_id === selectedCollection.value.emby_collection_id);
       if(mainCollection) {
@@ -206,6 +225,35 @@ const subscribeToMovie = async (tmdb_id, title) => {
   } finally {
     subscribing.value[tmdb_id] = false;
   }
+};
+
+// ★★★ 新增：更新电影状态的核心函数 ★★★
+const updateMovieStatus = async (collectionId, movieTmdbId, newStatus) => {
+  try {
+    await axios.post('/api/collections/ignore_movie', {
+      collection_id: collectionId,
+      movie_tmdb_id: movieTmdbId,
+      new_status: newStatus // 将新状态传递给后端
+    });
+    
+    // 在本地立即更新状态，提供即时反馈
+    const movie = selectedCollection.value.missing_movies.find(m => String(m.tmdb_id) === String(movieTmdbId));
+    if (movie) {
+      movie.status = newStatus;
+    }
+    message.success(`操作成功！`);
+  } catch (err) {
+    message.error(err.response?.data?.error || '操作失败');
+  }
+};
+
+// ★★★ 新增：忽略和取消忽略的调用函数 ★★★
+const ignoreMovie = (collectionId, movieTmdbId) => {
+  updateMovieStatus(collectionId, movieTmdbId, 'ignored');
+};
+
+const unignoreMovie = (collectionId, movieTmdbId) => {
+  updateMovieStatus(collectionId, movieTmdbId, 'missing');
 };
 
 const getEmbyUrl = (itemId) => {
@@ -263,11 +311,12 @@ const extractYear = (dateStr) => {
 .modal-header { display: flex; justify-content: space-between; align-items: center; width: 100%; }
 .movie-card { overflow: hidden; border-radius: 8px; }
 .movie-poster { width: 100%; height: auto; aspect-ratio: 2 / 3; object-fit: cover; background-color: #eee; }
-.movie-info { padding: 8px; text-align: center; }
+.movie-info { padding: 8px; text-align: center; height: 70px; display: flex; align-items: center; justify-content: center; }
 .movie-title {
   font-weight: bold;
   max-width: 100%;
   word-break: break-word;
   white-space: normal;
+  line-height: 1.3;
 }
 </style>

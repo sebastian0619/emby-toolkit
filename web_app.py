@@ -1850,7 +1850,7 @@ def task_auto_subscribe(processor: MediaProcessor):
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            # --- 1. 处理电影合集  ---
+            # --- 1. 处理电影合集 ---
             update_status_from_thread(20, "正在检查缺失的电影...")
             
             sql_query_movies = "SELECT * FROM collections_info WHERE status = 'has_missing' AND missing_movies_json IS NOT NULL AND missing_movies_json != '[]'"
@@ -1873,9 +1873,17 @@ def task_auto_subscribe(processor: MediaProcessor):
                     if processor.is_stop_requested(): break
                     
                     movie_title = movie.get('title', '未知电影')
+                    movie_status = movie.get('status', 'unknown')
 
-                    # ▼▼▼ 核心判断，为 else 分支添加日志 ▼▼▼
-                    if movie.get('status') == 'missing':
+                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                    # ★★★  核心逻辑修改：在这里处理 ignored 状态，打破死循环！ ★★★
+                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                    if movie_status == 'ignored':
+                        logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》已被用户忽略，跳过。")
+                        movies_to_keep.append(movie) # 保持 ignored 状态，下次不再处理
+                        continue
+                    
+                    if movie_status == 'missing':
                         release_date_str = movie.get('release_date')
                         if release_date_str:
                             release_date_str = release_date_str.strip()
@@ -1887,48 +1895,56 @@ def task_auto_subscribe(processor: MediaProcessor):
                         
                         try:
                             release_date = datetime.strptime(release_date_str, '%Y-%m-%d').date()
-                            
-                            if release_date <= today:
-                                logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》(上映日期: {release_date}) 已上映，符合订阅条件，正在提交...")
-                                success = moviepilot_handler.subscribe_movie_to_moviepilot(movie)
-                                if success:
-                                    logger.info(f"【智能订阅-电影】      -> 订阅成功！")
-                                    successfully_subscribed_items.append(f"电影《{movie['title']}》")
-                                    movies_changed = True
-                                else:
-                                    logger.error(f"【智能订阅-电影】      -> 订阅失败！将保留在缺失列表中。")
-                                    movies_to_keep.append(movie)
-                            else:
-                                logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》(上映日期: {release_date}) 尚未上映，跳过订阅。")
-                                movies_to_keep.append(movie)
                         except (ValueError, TypeError):
                             logger.warning(f"【智能订阅-电影】   -> 影片《{movie_title}》的上映日期 '{release_date_str}' 格式无效，跳过。")
                             movies_to_keep.append(movie)
+                            continue
+
+                        if release_date <= today:
+                            logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》(上映日期: {release_date}) 已上映，符合订阅条件，正在提交...")
+                            
+                            try:
+                                success = moviepilot_handler.subscribe_movie_to_moviepilot(movie, APP_CONFIG)
+                                if success:
+                                    logger.info(f"【智能订阅-电影】      -> 订阅成功！")
+                                    successfully_subscribed_items.append(f"电影《{movie['title']}》")
+                                    movies_changed = True # 订阅成功后，从缺失列表移除
+                                else:
+                                    logger.error(f"【智能订阅-电影】      -> MoviePilot报告订阅失败！将保留在缺失列表中。")
+                                    movies_to_keep.append(movie)
+                            except Exception as e:
+                                logger.error(f"【智能订阅-电影】      -> 提交订阅到MoviePilot时发生内部错误: {e}", exc_info=True)
+                                movies_to_keep.append(movie)
+                        else:
+                            logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》(上映日期: {release_date}) 尚未上映，跳过订阅。")
+                            movies_to_keep.append(movie)
                     else:
-                        movie_status = movie.get('status', '未知')
-                        logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》因状态为 '{movie_status}' (不是 'missing')，本次跳过订阅检查。")
+                        # 此处会处理 'unreleased' 等其他所有状态
+                        logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》因状态为 '{movie_status}'，本次跳过订阅检查。")
                         movies_to_keep.append(movie)
                 
+                # 只有在订阅成功导致列表变化时才更新数据库
                 if movies_changed:
-                    cursor.execute("UPDATE collections_info SET missing_movies_json = ? WHERE emby_collection_id = ?", (json.dumps(movies_to_keep), collection['emby_collection_id']))
+                    # 重新生成缺失电影的JSON，只包含未被成功订阅的
+                    new_missing_json = json.dumps(movies_to_keep)
+                    # 如果更新后列表为空，可以顺便更新合集的状态
+                    new_status = 'ok' if not movies_to_keep else 'has_missing'
+                    cursor.execute("UPDATE collections_info SET missing_movies_json = ?, status = ? WHERE emby_collection_id = ?", (new_missing_json, new_status, collection['emby_collection_id']))
 
-            # --- 2. 处理剧集 (这是我们重点修改的部分) ---
+            # --- 2. 处理剧集 ---
             if not processor.is_stop_requested():
                 update_status_from_thread(60, "正在检查缺失的剧集...")
                 
-                # ▼▼▼ 日志点 1: 打印将要执行的查询 ▼▼▼
                 sql_query = "SELECT * FROM watchlist WHERE status IN ('Watching', 'Paused') AND missing_info_json IS NOT NULL AND missing_info_json != '[]'"
                 logger.debug(f"【智能订阅-剧集】执行查询: {sql_query}")
                 cursor.execute(sql_query)
                 series_to_check = cursor.fetchall()
                 
-                # ▼▼▼ 日志点 2: 打印找到了多少需要检查的剧集 ▼▼▼
                 logger.info(f"【智能订阅-剧集】从数据库找到 {len(series_to_check)} 部状态为'在追'或'暂停'且有缺失信息的剧集需要检查。")
 
                 for series in series_to_check:
                     if processor.is_stop_requested(): break
                     
-                    # ▼▼▼ 日志点 3: 开始处理单部剧集 ▼▼▼
                     series_name = series['item_name']
                     logger.info(f"【智能订阅-剧集】>>> 正在检查: 《{series_name}》")
                     
@@ -1936,7 +1952,6 @@ def task_auto_subscribe(processor: MediaProcessor):
                         missing_info = json.loads(series['missing_info_json'])
                         missing_seasons = missing_info.get('missing_seasons', [])
                         
-                        # ▼▼▼ 日志点 4: 检查是否有缺失的季 ▼▼▼
                         if not missing_seasons:
                             logger.info(f"【智能订阅-剧集】   -> 《{series_name}》没有记录在案的缺失季(missing_seasons为空)，跳过。")
                             continue
@@ -1948,28 +1963,39 @@ def task_auto_subscribe(processor: MediaProcessor):
                             
                             season_num = season.get('season_number')
                             air_date_str = season.get('air_date')
+                            if air_date_str:
+                                air_date_str = air_date_str.strip()
                             
-                            # ▼▼▼ 日志点 5: 检查播出日期是否存在 ▼▼▼
                             if not air_date_str:
                                 logger.warning(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季缺少播出日期(air_date)，无法判断，跳过。")
                                 seasons_to_keep.append(season)
                                 continue
                             
-                            season_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                            try:
+                                season_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                            except (ValueError, TypeError):
+                                logger.warning(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季的播出日期 '{air_date_str}' 格式无效，跳过。")
+                                seasons_to_keep.append(season)
+                                continue
 
-                            # ▼▼▼ 日志点 6: 核心判断，并打印决策过程！▼▼▼
                             if season_date <= today:
                                 logger.info(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 已播出，符合订阅条件，正在提交...")
-                                success = moviepilot_handler.subscribe_series_to_moviepilot(dict(series), season['season_number'])
-                                if success:
-                                    logger.info(f"【智能订阅-剧集】      -> 订阅成功！")
-                                    successfully_subscribed_items.append(f"《{series['item_name']}》第 {season['season_number']} 季")
-                                    seasons_changed = True
-                                else:
-                                    logger.error(f"【智能订阅-剧集】      -> 订阅失败！将保留在缺失列表中。")
+                                try:
+                                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                                    # ★★★  核心修复：剧集订阅也需要传递 APP_CONFIG！ ★★★
+                                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                                    success = moviepilot_handler.subscribe_series_to_moviepilot(dict(series), season['season_number'], APP_CONFIG)
+                                    if success:
+                                        logger.info(f"【智能订阅-剧集】      -> 订阅成功！")
+                                        successfully_subscribed_items.append(f"《{series['item_name']}》第 {season['season_number']} 季")
+                                        seasons_changed = True
+                                    else:
+                                        logger.error(f"【智能订阅-剧集】      -> MoviePilot报告订阅失败！将保留在缺失列表中。")
+                                        seasons_to_keep.append(season)
+                                except Exception as e:
+                                    logger.error(f"【智能订阅-剧集】      -> 提交订阅到MoviePilot时发生内部错误: {e}", exc_info=True)
                                     seasons_to_keep.append(season)
                             else:
-                                # 这是您最想要的日志！
                                 logger.info(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 尚未播出，跳过订阅。")
                                 seasons_to_keep.append(season)
                         
@@ -3705,6 +3731,58 @@ def api_subscribe_moviepilot():
         error_msg = f"连接 MoviePilot 时发生网络错误: {e}"
         logger.error(error_msg)
         return jsonify({"error": error_msg}), 503
+# ★★★ 忽略合集中某个电影的 API 端点 ★★★
+@app.route('/api/collections/ignore_movie', methods=['POST'])
+@login_required
+def api_ignore_collection_movie():
+    data = request.json
+    collection_id = data.get('collection_id')
+    movie_tmdb_id = data.get('movie_tmdb_id')
+    # ★★★ 新增：从请求中获取新的状态，默认为 'ignored' 以兼容旧版 ★★★
+    new_status = data.get('new_status', 'ignored')
+
+    if not collection_id or not movie_tmdb_id:
+        return jsonify({"error": "缺少 collection_id 或 movie_tmdb_id"}), 400
+    
+    if new_status not in ['ignored', 'missing']:
+        return jsonify({"error": "无效的状态，只允许 'ignored' 或 'missing'"}), 400
+
+    logger.info(f"API: 收到请求，将合集 {collection_id} 中的电影 {movie_tmdb_id} 状态更新为 '{new_status}'。")
+
+    try:
+        with get_central_db_connection(DB_PATH) as conn:
+            conn.execute("BEGIN TRANSACTION;")
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT missing_movies_json FROM collections_info WHERE emby_collection_id = ?", (collection_id,))
+            row = cursor.fetchone()
+            if not row:
+                conn.rollback()
+                return jsonify({"error": "未找到指定的合集"}), 404
+            
+            missing_movies = json.loads(row[0])
+            
+            movie_found = False
+            for movie in missing_movies:
+                if str(movie.get('tmdb_id')) == str(movie_tmdb_id):
+                    movie['status'] = new_status # ★★★ 使用从请求中获取的新状态 ★★★
+                    movie_found = True
+                    break
+            
+            if not movie_found:
+                conn.rollback()
+                return jsonify({"error": "未在该合集的缺失列表中找到指定的电影"}), 404
+
+            new_missing_json = json.dumps(missing_movies)
+            cursor.execute("UPDATE collections_info SET missing_movies_json = ? WHERE emby_collection_id = ?", (new_missing_json, collection_id))
+            
+            conn.commit()
+            
+        return jsonify({"message": "电影状态已成功更新！"}), 200
+
+    except Exception as e:
+        logger.error(f"更新电影状态时发生数据库错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在处理请求时发生内部错误"}), 500
 # ★★★ 订阅剧集（季/集）的专用API ★★★
 @app.route('/api/subscribe/moviepilot/series', methods=['POST'])
 @login_required
