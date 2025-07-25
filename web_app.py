@@ -3663,74 +3663,23 @@ def api_subscribe_moviepilot():
     if not tmdb_id or not title:
         return jsonify({"error": "请求中缺少 tmdb_id 或 title"}), 400
 
-    # 1. 从配置中获取信息
-    moviepilot_url = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
-    mp_username = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_USERNAME, '')
-    mp_password = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD, '')
+    # 1. 准备传递给业务逻辑函数的数据
+    movie_info = {
+        'tmdb_id': tmdb_id,
+        'title': title
+    }
 
-    if not all([moviepilot_url, mp_username, mp_password]):
-        return jsonify({"error": "服务器未完整配置 MoviePilot URL、用户名或密码。"}), 500
+    # 2. 直接调用业务逻辑函数，并将全局配置传递进去
+    #    所有复杂的登录、请求、错误处理都已封装在函数内部
+    success = moviepilot_handler.subscribe_movie_to_moviepilot(movie_info, APP_CONFIG)
 
-    # --- 流程第一步：登录并获取 Token ---
-    try:
-        login_url = f"{moviepilot_url}/api/v1/login/access-token"
-        login_headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        login_data = {"username": mp_username, "password": mp_password}
-
-        logger.trace(f"正在向 MoviePilot ({login_url}) 请求 access token...")
-        login_response = requests.post(login_url, headers=login_headers, data=login_data, timeout=10)
-        login_response.raise_for_status()
-
-        login_json = login_response.json()
-        access_token = login_json.get("access_token")
-
-        if not access_token:
-            logger.error("MoviePilot 登录成功，但未在响应中找到 access_token。")
-            return jsonify({"error": "MoviePilot 认证失败：未能获取到 Token。"}), 500
-        
-        logger.trace("成功获取 MoviePilot access token。")
-
-    except requests.exceptions.HTTPError as e:
-        error_msg = f"MoviePilot 登录认证失败: {e.response.status_code}。请检查用户名和密码。"
-        logger.error(f"{error_msg} 响应: {e.response.text}")
-        return jsonify({"error": error_msg}), 502
-    except requests.exceptions.RequestException as e:
-        error_msg = f"连接 MoviePilot 时发生网络错误: {e}"
-        logger.error(error_msg)
-        return jsonify({"error": error_msg}), 503
-
-    # --- 流程第二步：使用 Token 提交订阅 (只有在第一步成功后才会执行) ---
-    try:
-        subscribe_url = f"{moviepilot_url}/api/v1/subscribe/"
-        subscribe_headers = {"Authorization": f"Bearer {access_token}"}
-        subscribe_payload = {"name": title, "tmdbid": int(tmdb_id), "type": "电影"}
-
-        logger.info(f"正在向 MoviePilot 提交订阅请求 '{title}'")
-        sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
-        
-        logger.trace(f"收到 MoviePilot 订阅接口的响应: Status={sub_response.status_code}, Body='{sub_response.text}'")
-
-        if sub_response.status_code in [200, 201, 204]:
-            logger.info("通过 MoviePilot 订阅成功。")
-            return jsonify({"message": f"《{title}》已成功提交到 MoviePilot 订阅！"}), 200
-        else:
-            error_detail = "未知错误"
-            try:
-                error_json = sub_response.json()
-                error_detail = error_json.get("message") or error_json.get("detail", sub_response.text)
-            except Exception:
-                error_detail = sub_response.text
-            logger.error(f"通过 MoviePilot 订阅失败: {error_detail}")
-            return jsonify({"error": f"MoviePilot 报告订阅失败: {error_detail}"}), 500
-
-    except requests.exceptions.HTTPError as e:
-        error_msg = f"向 MoviePilot 提交订阅时出错: {e.response.status_code} - {e.response.text}"
-        logger.error(error_msg)
-        return jsonify({"error": error_msg}), 502
-    except requests.exceptions.RequestException as e:
-        error_msg = f"连接 MoviePilot 时发生网络错误: {e}"
-        logger.error(error_msg)
-        return jsonify({"error": error_msg}), 503
+    # 3. 根据返回的布尔值，生成对应的API响应
+    if success:
+        return jsonify({"message": f"《{title}》已成功提交到 MoviePilot 订阅！"}), 200
+    else:
+        # 具体的错误原因已经被 moviepilot_handler 记录到日志中
+        # API层面只需返回一个通用的失败信息
+        return jsonify({"error": "订阅失败，请检查后端日志获取详细信息。"}), 500
 # ★★★ 忽略合集中某个电影的 API 端点 ★★★
 @app.route('/api/collections/ignore_movie', methods=['POST'])
 @login_required
