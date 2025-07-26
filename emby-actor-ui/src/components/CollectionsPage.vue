@@ -4,13 +4,25 @@
     <div class="collections-page">
       <n-page-header>
         <template #title>
-          <n-space align="center">
-            <span>电影合集检查</span>
-            <n-tag v-if="missingCollections.length > 0" type="warning" round :bordered="false" size="small">
-              {{ missingCollections.length }} 个合集有缺失
+          电影合集检查
+        </template>
+        <!-- ✨ [核心修改] 将统计摘要移动到 footer 插槽，信息更丰富 -->
+        <template #footer>
+          <n-space align="center" size="large">
+            <n-tag :bordered="false" round>
+              共 {{ globalStats.totalCollections }} 合集
             </n-tag>
-            <n-tag v-else-if="collections.length > 0" type="success" round :bordered="false" size="small">
-              所有合集完整
+            <n-tag v-if="globalStats.totalMissingMovies > 0" type="warning" :bordered="false" round>
+              {{ globalStats.collectionsWithMissing }} 合集缺失 {{ globalStats.totalMissingMovies }} 部
+            </n-tag>
+            <n-tag v-if="globalStats.totalUnreleased > 0" type="info" :bordered="false" round>
+              {{ globalStats.totalUnreleased }} 部未上映
+            </n-tag>
+            <n-tag v-if="globalStats.totalIgnored > 0" type="default" :bordered="false" round>
+              {{ globalStats.totalIgnored }} 部已忽略
+            </n-tag>
+            <n-tag v-if="globalStats.totalMissingMovies === 0 && globalStats.totalCollections > 0" type="success" :bordered="false" round>
+              所有合集均无缺失
             </n-tag>
           </n-space>
         </template>
@@ -168,6 +180,29 @@ const getMissingCount = (collection) => {
 
 const missingCollections = computed(() => {
   return collections.value.filter(c => getMissingCount(c) > 0);
+});
+
+const globalStats = computed(() => {
+  const stats = {
+    totalCollections: collections.value.length,
+    collectionsWithMissing: 0,
+    totalMissingMovies: 0,
+    totalUnreleased: 0,
+    totalIgnored: 0,
+  };
+
+  for (const collection of collections.value) {
+    if (Array.isArray(collection.missing_movies)) {
+      const missingCount = collection.missing_movies.filter(m => m.status === 'missing').length;
+      if (missingCount > 0) {
+        stats.collectionsWithMissing++;
+        stats.totalMissingMovies += missingCount;
+      }
+      stats.totalUnreleased += collection.missing_movies.filter(m => m.status === 'unreleased').length;
+      stats.totalIgnored += collection.missing_movies.filter(m => m.status === 'ignored').length;
+    }
+  }
+  return stats;
 });
 
 const sortedCollections = computed(() => {
