@@ -46,6 +46,7 @@ import logging
 from logger_setup import frontend_log_queue, add_file_handler # 日志记录器和前端日志队列
 import utils       # 例如，用于 /api/search_media
 import config_manager
+import task_manager
 # --- 核心模块导入结束 ---
 logger = logging.getLogger(__name__)
 logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
@@ -70,20 +71,8 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 EMBY_SERVER_ID: Optional[str] = None # ★★★ 新增：用于存储 Emby Server ID
 media_processor_instance: Optional[MediaProcessor] = None
 actor_subscription_processor_instance: Optional[ActorSubscriptionProcessor] = None
-background_task_status = {
-    "is_running": False,
-    "current_action": "无",
-    "progress": 0,
-    "message": "等待任务"
-}
-task_lock = threading.Lock() # 用于确保后台任务串行执行
 media_processor_instance: Optional[MediaProcessor] = None
 watchlist_processor_instance: Optional[WatchlistProcessor] = None
-
-# ✨✨✨ 任务队列 ✨✨✨
-task_queue = Queue()
-task_worker_thread: Optional[threading.Thread] = None
-task_worker_lock = threading.Lock()
 
 scheduler = BackgroundScheduler(timezone=str(pytz.timezone(constants.TIMEZONE)))
 JOB_ID_FULL_SCAN = "scheduled_full_scan"
@@ -302,7 +291,7 @@ def task_lock_required(f):
     """装饰器：检查后台任务锁是否被占用。"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if task_lock.locked():
+        if task_manager.is_task_running():
             return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
         return f(*args, **kwargs)
     return decorated_function
@@ -465,164 +454,23 @@ def initialize_processors():
     except Exception as e:
         logger.error(f"创建 ActorSubscriptionProcessor 实例失败: {e}", exc_info=True)
         actor_subscription_processor_instance = None # 初始化失败，明确设为 None
+
+    task_manager.initialize_task_manager(
+        media_proc=media_processor_instance,
+        watchlist_proc=watchlist_processor_instance,
+        actor_sub_proc=actor_subscription_processor_instance,
+        status_callback=update_status_from_thread # 将回调函数也一并传入
+    )
 # --- 后台任务回调 ---
 def update_status_from_thread(progress: int, message: str):
-    global background_task_status
-    if progress >= 0:
-        background_task_status["progress"] = progress
-    background_task_status["message"] = message
-# --- 后台任务封装 ---
-def _execute_task_with_lock(task_function, task_name: str, processor: Union[MediaProcessor, WatchlistProcessor], *args, **kwargs):
     """
-    【V2 - 工人专用版】通用后台任务执行器。
-    第一个参数必须是 MediaProcessor 实例。
+    这个回调函数由处理器调用，用于更新任务状态。
+    它通过 task_manager 模块来修改状态字典。
     """
-    global background_task_status
-    # 锁的检查可以移到提交任务的地方，或者保留作为双重保险
-    # if task_lock.locked(): ...
-
-    with task_lock:
-        # 1. 检查传入的处理器是否有效
-        if not processor:
-            logger.error(f"任务 '{task_name}' 无法启动：对应的处理器未初始化。")
-            # 可以在这里更新状态，但因为没有启动，所以只打日志可能更清晰
-            return
-
-        # 2. 清理当前任务处理器的停止信号
-        processor.clear_stop_signal()
-
-        # 3. 设置任务状态，准备执行
-        background_task_status["is_running"] = True
-        background_task_status["current_action"] = task_name
-        background_task_status["progress"] = 0
-        background_task_status["message"] = f"{task_name} 初始化..."
-        logger.info(f"后台任务 '{task_name}' 开始执行。")
-
-        task_completed_normally = False
-        try:
-            if processor.is_stop_requested():
-                raise InterruptedError("任务被取消")
-
-            # 执行核心任务
-            task_function(processor, *args, **kwargs)
-            
-            # ★★★ 核心修复：如果任务能顺利执行到这里，说明它正常完成了 ★★★
-            # 我们只在没有被用户中止的情况下，才标记为正常完成
-            if not processor.is_stop_requested():
-                task_completed_normally = True
-        finally:
-            final_message_for_status = "未知结束状态"
-            current_progress = background_task_status["progress"] # 获取当前进度
-
-            if processor and processor.is_stop_requested():
-                final_message_for_status = "任务已成功中断。"
-            elif task_completed_normally:
-                final_message_for_status = "处理完成。"
-                current_progress = 100 # 正常完成则进度100%
-            # else: 异常退出时，消息已在except中通过update_status_from_thread设置
-
-            update_status_from_thread(current_progress, final_message_for_status)
-            logger.info(f"后台任务 '{task_name}' 结束，最终状态: {final_message_for_status}")
-
-            if processor:
-                processor.close()
-                try:
-                    media_processor_instance.close()
-                except Exception as e_close_proc:
-                    logger.error(f"调用 media_processor_instance.close() 时发生错误: {e_close_proc}", exc_info=True)
-
-            time.sleep(1)
-        background_task_status["is_running"] = False
-        background_task_status["current_action"] = "无"
-        background_task_status["progress"] = 0
-        background_task_status["message"] = "等待任务"
-        if processor:
-            processor.clear_stop_signal()
-        logger.trace(f"后台任务 '{task_name}' 状态已重置。")
-# --- 通用队列 ---
-def task_worker_function():
-    """
-    通用工人线程，从队列中获取并处理各种后台任务。
-    """
-    logger.info("通用任务线程已启动，等待任务...")
-    while True:
-        try:
-            # 从队列中获取任务元组
-            task_info = task_queue.get()
-
-            if task_info is None: # 停止信号
-                logger.info("工人线程收到停止信号，即将退出。")
-                break
-
-            # 解包任务信息
-            task_function, task_name, args, kwargs = task_info
-            
-            # ▼▼▼【最终修正】使用更精确的逻辑来选择处理器 ▼▼▼
-            processor_to_use = None
-            
-            # 规则1：精确匹配需要 WatchlistProcessor 的任务
-            if "追剧" in task_name or "watchlist" in task_function.__name__:
-                processor_to_use = watchlist_processor_instance
-                logger.debug(f"任务 '{task_name}' 将使用 WatchlistProcessor。")
-            
-            # 规则2：精确匹配需要 ActorSubscriptionProcessor 的任务
-            elif task_function.__name__ in ['task_process_actor_subscriptions', 'task_scan_actor_media']:
-                processor_to_use = actor_subscription_processor_instance
-                logger.debug(f"任务 '{task_name}' 将使用 ActorSubscriptionProcessor。")
-            
-            # 规则3：所有其他任务都默认使用核心的 MediaProcessor
-            else:
-                processor_to_use = media_processor_instance
-                logger.debug(f"任务 '{task_name}' 将使用 MediaProcessor。")
-            # ▲▲▲ 修正结束 ▲▲▲
-
-            if not processor_to_use:
-                logger.error(f"任务 '{task_name}' 无法执行：对应的处理器未初始化。")
-                task_queue.task_done()
-                continue
-
-            _execute_task_with_lock(task_function, task_name, processor_to_use, *args, **kwargs)
-            
-            task_queue.task_done()
-        except Exception as e:
-            logger.error(f"通用工人线程发生未知错误: {e}", exc_info=True)
-            time.sleep(5)
-# --- 安全地启动通用工人线程 ---
-def start_task_worker_if_not_running():
-    """
-    安全地启动通用工人线程。
-    """
-    global task_worker_thread
-    with task_worker_lock:
-        if task_worker_thread is None or not task_worker_thread.is_alive():
-            logger.trace("通用任务线程未运行，正在启动...")
-            task_worker_thread = threading.Thread(target=task_worker_function, daemon=True)
-            task_worker_thread.start()
-        else:
-            logger.debug("通用任务线程已在运行。")
-# --- 为通用队列添加任务 ---
-def submit_task_to_queue(task_function, task_name: str, *args, **kwargs):
-    """
-    【修复版】将一个任务提交到通用队列中，并在这里清空日志。
-    """
-    # ★★★ 核心修改：在提交任务到队列之前，就清空旧日志 ★★★
-    # 这个操作应该在 task_lock 的保护下进行，以确保原子性
-    with task_lock:
-        # 检查是否可以启动新任务
-        if background_task_status["is_running"]:
-            # 这里可以抛出异常或返回一个状态，让调用方知道任务提交失败
-            # 为了简单起见，我们先打印日志并直接返回
-            logger.warning(f"任务 '{task_name}' 提交失败：已有任务正在运行。")
-            # 或者 raise RuntimeError("已有任务在运行")
-            return
-
-        # 如果可以启动，我们就在这里清空日志
-        frontend_log_queue.clear()
-        logger.info(f"任务 '{task_name}' 已提交到队列，并已清空前端日志。")
-        
-        task_info = (task_function, task_name, args, kwargs)
-        task_queue.put(task_info)
-        start_task_worker_if_not_running()
+    # 确保我们访问的是 task_manager 模块中的状态字典
+    if task_manager.background_task_status:
+        task_manager.background_task_status["progress"] = progress
+        task_manager.background_task_status["message"] = message
 # --- 将 CRON 表达式转换为人类可读的、干净的执行计划字符串 ---
 def _get_next_run_time_str(cron_expression: str) -> str:
     """
@@ -702,7 +550,7 @@ def setup_scheduled_tasks():
             def scheduled_scan_task():
                 logger.info(f"定时任务触发：全量扫描 (强制={force})。")
                 if force: media_processor_instance.clear_processed_log()
-                submit_task_to_queue(task_process_full_library, "定时全量扫描", process_episodes=config_manager.APP_CONFIG.get('process_episodes', True))
+                task_manager.submit_task_to_queue(task_process_full_library, "定时全量扫描", process_episodes=config_manager.APP_CONFIG.get('process_episodes', True))
             
             scheduler.add_job(func=scheduled_scan_task, trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_FULL_SCAN, name="定时全量扫描", replace_existing=True)
             logger.info(f"已设置定时任务：全量扫描，将{_get_next_run_time_str(cron)}{' (强制重处理)' if force else ''}")
@@ -717,7 +565,7 @@ def setup_scheduled_tasks():
     if config.get(constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_ENABLED, False):
         try:
             cron = config.get(constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_CRON)
-            scheduler.add_job(func=lambda: submit_task_to_queue(task_sync_person_map, "定时同步演员映射表"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_SYNC_PERSON_MAP, name="定时同步演员映射表", replace_existing=True)
+            scheduler.add_job(func=lambda: task_manager.submit_task_to_queue(task_sync_person_map, "定时同步演员映射表"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_SYNC_PERSON_MAP, name="定时同步演员映射表", replace_existing=True)
             logger.info(f"已设置定时任务：同步演员映射表，将{_get_next_run_time_str(cron)}")
         except Exception as e:
             logger.error(f"设置定时同步演员映射表任务失败: {e}", exc_info=True)
@@ -730,7 +578,7 @@ def setup_scheduled_tasks():
     if config.get(constants.CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_ENABLED, False):
         try:
             cron = config.get(constants.CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_CRON)
-            scheduler.add_job(func=lambda: submit_task_to_queue(task_refresh_collections, "定时刷新电影合集"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_REFRESH_COLLECTIONS, name="定时刷新电影合集", replace_existing=True)
+            scheduler.add_job(func=lambda: task_manager.submit_task_to_queue(task_refresh_collections, "定时刷新电影合集"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_REFRESH_COLLECTIONS, name="定时刷新电影合集", replace_existing=True)
             logger.info(f"已设置定时任务：刷新电影合集，将{_get_next_run_time_str(cron)}")
         except Exception as e:
             logger.error(f"设置定时刷新电影合集任务失败: {e}", exc_info=True)
@@ -745,7 +593,7 @@ def setup_scheduled_tasks():
             cron = config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON)
             # ★★★ 核心修改：让定时任务调用新的、职责更明确的函数 ★★★
             def scheduled_watchlist_task():
-                submit_task_to_queue(
+                task_manager.submit_task_to_queue(
                     lambda p: p.run_regular_processing_task(update_status_from_thread),
                     "定时智能追剧更新"
                 )
@@ -763,7 +611,7 @@ def setup_scheduled_tasks():
         # 硬编码为每周日的凌晨5点执行，这个时间点API调用压力小
         revival_cron = "0 5 * * 0" 
         def scheduled_revival_check_task():
-            submit_task_to_queue(
+            task_manager.submit_task_to_queue(
                 lambda p: p.run_revival_check_task(update_status_from_thread),
                 "每周已完结剧集复活检查"
             )
@@ -778,7 +626,7 @@ def setup_scheduled_tasks():
     if config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED, False):
         try:
             cron = config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON)
-            scheduler.add_job(func=lambda: submit_task_to_queue(task_enrich_aliases, "定时演员元数据增强"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_ENRICH_ALIASES, name="定时演员元数据增强", replace_existing=True)
+            scheduler.add_job(func=lambda: task_manager.submit_task_to_queue(task_enrich_aliases, "定时演员元数据增强"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_ENRICH_ALIASES, name="定时演员元数据增强", replace_existing=True)
             logger.info(f"已设置定时任务：演员元数据补充，将{_get_next_run_time_str(cron)}")
         except Exception as e:
             logger.error(f"设置定时演员元数据补充任务失败: {e}", exc_info=True)
@@ -791,7 +639,7 @@ def setup_scheduled_tasks():
     if config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED, True):
         try:
             cron = config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_CRON)
-            scheduler.add_job(func=lambda: submit_task_to_queue(task_actor_translation_cleanup, "定时演员名查漏补缺"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_ACTOR_CLEANUP, name="定时演员名查漏补缺", replace_existing=True)
+            scheduler.add_job(func=lambda: task_manager.submit_task_to_queue(task_actor_translation_cleanup, "定时演员名查漏补缺"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_ACTOR_CLEANUP, name="定时演员名查漏补缺", replace_existing=True)
             logger.info(f"已设置定时任务：演员名翻译，将{_get_next_run_time_str(cron)}")
         except Exception as e:
             logger.error(f"设置定时演员名翻译任务失败: {e}", exc_info=True)
@@ -804,7 +652,7 @@ def setup_scheduled_tasks():
     if config.get(constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_ENABLED, False):
         try:
             cron = config.get(constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_CRON)
-            scheduler.add_job(func=lambda: submit_task_to_queue(task_auto_subscribe, "定时智能订阅"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_AUTO_SUBSCRIBE, name="定时智能订阅", replace_existing=True)
+            scheduler.add_job(func=lambda: task_manager.submit_task_to_queue(task_auto_subscribe, "定时智能订阅"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_AUTO_SUBSCRIBE, name="定时智能订阅", replace_existing=True)
             logger.info(f"已设置定时任务：智能订阅，将{_get_next_run_time_str(cron)}")
         except Exception as e:
             logger.error(f"设置定时智能订阅任务失败: {e}", exc_info=True)
@@ -818,7 +666,7 @@ def setup_scheduled_tasks():
         try:
             cron = config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_TRACKING_CRON)
             scheduler.add_job(
-                func=lambda: submit_task_to_queue(task_process_actor_subscriptions, "定时演员订阅扫描"),
+                func=lambda: task_manager.submit_task_to_queue(task_process_actor_subscriptions, "定时演员订阅扫描"),
                 trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))),
                 id=JOB_ID_ACTOR_TRACKING,
                 name="定时演员订阅扫描",
@@ -2005,7 +1853,7 @@ def emby_webhook():
             
         logger.info(f"Webhook事件触发，最终处理项目 '{final_item_name}' (ID: {id_to_process}, TMDbID: {tmdb_id}) 已提交到任务队列。")
         
-        submit_task_to_queue(
+        success = task_manager.submit_task(
             webhook_processing_task,
             f"Webhook处理: {final_item_name}",
             id_to_process,
@@ -2022,7 +1870,7 @@ def emby_webhook():
         logger.info(f"Webhook 图片更新事件触发，项目 '{original_item_name}' (ID: {original_item_id})。描述: '{update_description}'")
         
         # ★★★ 核心修改点 2: 将 description 传递给任务队列 ★★★
-        submit_task_to_queue(
+        success = task_manager.submit_task(
             image_update_task,
             f"精准图片同步: {original_item_name}",
             # --- 传递给 image_update_task 的参数 ---
@@ -2038,11 +1886,8 @@ def emby_webhook():
 def api_get_task_status():
     global background_task_status, frontend_log_queue
     
-    status_data = background_task_status.copy() # 复制一份，避免线程问题
-    
-    # 将日志队列的内容添加到返回数据中
+    status_data = task_manager.get_task_status()
     status_data['logs'] = list(frontend_log_queue)
-    
     return jsonify(status_data)
 @app.route('/api/emby_libraries')
 def api_get_emby_libraries():
@@ -2074,25 +1919,8 @@ def application_exit_handler():
         logger.info("正在发送停止信号给当前任务...")
         media_processor_instance.signal_stop()
 
-    # 2. 清空任务队列，丢弃所有排队中的任务
-    if not task_queue.empty():
-        logger.info(f"队列中还有 {task_queue.qsize()} 个任务，正在清空...")
-        while not task_queue.empty():
-            try:
-                task_queue.get_nowait()
-            except Queue.Empty:
-                break
-        logger.info("任务队列已清空。")
-
-    # 3. 停止工人线程
-    if task_worker_thread and task_worker_thread.is_alive():
-        logger.info("正在发送停止信号给任务工人线程...")
-        task_queue.put(None) # 发送“毒丸”
-        task_worker_thread.join(timeout=5) # 等待线程退出
-        if task_worker_thread.is_alive():
-            logger.warning("任务工人线程在5秒内未能正常退出。")
-        else:
-            logger.info("任务工人线程已成功停止。")
+    task_manager.clear_task_queue()
+    task_manager.stop_task_worker()
 
     # 4. 关闭其他资源
     if media_processor_instance:
@@ -2367,9 +2195,8 @@ def api_get_review_items():
         "query": query_filter
     })
 @app.route('/api/actions/mark_item_processed/<item_id>', methods=['POST'])
+@task_lock_required
 def api_mark_item_processed(item_id):
-    if task_lock.locked():
-        return jsonify({"error": "后台有长时间任务正在运行，请稍后再试。"}), 409
     
     deleted_count = 0 # 在 try 块外部定义，以便 finally 之后能访问
 
@@ -2443,10 +2270,10 @@ def api_handle_trigger_full_scan():
     process_episodes = config_manager.APP_CONFIG.get('process_episodes', True)
     
     # 提交纯粹的扫描任务
-    submit_task_to_queue(
-        task_process_full_library, # 调用简化后的任务函数
+    success = task_manager.submit_task(
+        task_process_full_library,
         action_message,
-        process_episodes # 不再需要传递 force_reprocess
+        process_episodes
     )
     
     return jsonify({"message": f"{action_message} 任务已提交启动。"}), 202
@@ -2459,9 +2286,9 @@ def api_handle_trigger_sync_map():
         # ★★★ 核心修复：不再需要 full_sync，因为同步逻辑已经统一 ★★★
         task_name_for_api = "同步演员映射表"
         
-        submit_task_to_queue(
+        success = task_manager.submit_task(
             task_sync_person_map,
-            task_name_for_api
+            "同步演员映射表"
         )
 
         return jsonify({"message": f"'{task_name_for_api}' 任务已提交启动。"}), 202
@@ -2505,7 +2332,7 @@ def api_update_edited_cast_sa(item_id):
     edited_cast = data["cast"]
     item_name = data.get("item_name", f"未知项目(ID:{item_id})")
 
-    submit_task_to_queue(
+    success = task_manager.submit_task(
         task_manual_update, # 传递包装函数
         f"手动更新: {item_name}",
         # --- 后面是传递给 task_manual_update 的参数 ---
@@ -2737,7 +2564,7 @@ def api_import_database():
         # ▲▲▲ 安全校验逻辑结束 ▲▲▲
         logger.trace(f"已接收上传的备份文件 '{file.filename}'，将以 '{import_mode_cn}' 模式导入表: {tables_to_import}")
 
-        submit_task_to_queue(
+        success = task_manager.submit_task(
             task_import_database,  # ★ 调用新的后台任务函数
             f"以 {import_mode_cn} 模式恢复数据库表",
             # 传递任务所需的所有参数
@@ -3143,7 +2970,7 @@ def api_trigger_single_watchlist_refresh(item_id):
         logger.warning(f"获取项目 {item_id} 名称时出错: {e}")
 
     # 提交我们刚刚创建的、职责单一的新任务
-    submit_task_to_queue(
+    success = task_manager.submit_task(
         task_refresh_single_watchlist_item,
         f"手动刷新: {item_name}",
         item_id # 把 item_id 作为参数传给任务
@@ -3175,7 +3002,7 @@ def api_reprocess_item(item_id):
     logger.info(f"API: 将为 '{item_name_for_ui}' 提交重新处理任务。")
 
     # ✨ 关键修改：设置一个非常简单的初始状态，避免与后台任务冲突
-    submit_task_to_queue(
+    success = task_manager.submit_task(
         task_reprocess_single_item,
         f"任务已提交: {item_name_for_ui}",  # <--- 只说“已提交”
         item_id,
@@ -3194,7 +3021,7 @@ def api_reprocess_all_review_items():
     """
     logger.info("API: 收到重新处理所有待复核项的请求。")
     # 提交一个宏任务，让后台线程来做这件事
-    submit_task_to_queue(
+    success = task_manager.submit_task(
         task_reprocess_all_review_items, # <--- 我们需要创建这个新的任务函数
         "重新处理所有待复核项"
     )
@@ -3209,7 +3036,7 @@ def api_trigger_full_image_sync():
     """
     提交一个任务，用于全量同步所有已处理项目的海报。
     """
-    submit_task_to_queue(
+    success = task_manager.submit_task(
         task_full_image_sync,
         "全量同步媒体库海报"
     )
@@ -3227,7 +3054,7 @@ def trigger_rebuild_actors_task():
     try:
         # 假设你的处理器实例是全局可访问的，或者通过某种方式获取
         # 我们需要把这个函数本身，以及它的名字，提交到队列
-        submit_task_to_queue(
+        success = task_manager.submit_task(
             run_full_rebuild_task, # <--- 传递函数本身
             "重构演员数据库" # <--- 任务名
             # 注意：这里不需要传递 processor 实例，因为 task_worker_function 会自动选择
@@ -3259,18 +3086,12 @@ def api_clear_tmdb_caches():
         return jsonify({"success": False, "message": "服务器在执行清除操作时发生未知错误。"}), 500
 # ✨✨✨ “立即执行”API接口 ✨✨✨
 @app.route('/api/tasks/trigger/<task_identifier>', methods=['POST'])
+@task_lock_required
 def api_trigger_task_now(task_identifier: str):
     """
     一个通用的API端点，用于立即触发指定的后台任务。
     它会响应前端发送的 /api/tasks/trigger/full-scan, /api/tasks/trigger/sync-person-map 等请求。
     """
-    # 1. 检查是否有任务正在运行 (这是双重保险，防止前端禁用逻辑失效)
-    with task_lock:
-        if background_task_status["is_running"]:
-            return jsonify({
-                "status": "error",
-                "message": "已有其他任务正在运行，请稍后再试。"
-            }), 409 # 409 Conflict
 
     # 2. 从任务注册表中查找任务
     task_info = TASK_REGISTRY.get(task_identifier)
@@ -3293,7 +3114,7 @@ def api_trigger_task_now(task_identifier: str):
         kwargs['process_episodes'] = data.get('process_episodes', True)
         # 假设 task_process_full_library 接受 process_episodes 参数
     
-    submit_task_to_queue(
+    success = task_manager.submit_task(
         task_function,
         task_name,
         **kwargs # 使用字典解包来传递命名参数
@@ -3803,7 +3624,7 @@ def refresh_single_actor_subscription(sub_id):
     except Exception:
         pass # 查不到也无所谓
 
-    submit_task_to_queue(
+    success = task_manager.submit_task(
         task_scan_actor_media,
         f"手动刷新演员: {actor_name}",
         sub_id
@@ -3967,7 +3788,7 @@ if __name__ == '__main__':
     initialize_processors()
     
     # 6. 启动后台任务工人
-    start_task_worker_if_not_running()
+    task_manager.start_task_worker_if_not_running()
     
     # 7. 设置定时任务 (它会依赖全局配置和实例)
     if not scheduler.running:

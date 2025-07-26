@@ -60,6 +60,8 @@ COPY requirements.txt \
      actor_utils.py \
      actor_subscription_processor.py \
      moviepilot_handler.py \
+     config_manager.py \
+     task_manager.py \
      ./
 
 COPY templates/ ./templates/
