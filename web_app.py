@@ -3154,20 +3154,6 @@ def api_add_to_watchlist():
         logger.error(f"手动添加项目到追剧列表时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在添加时发生内部错误"}), 500
     # ✨✨✨ 修改结束 ✨✨✨
-#★★★ 手动触发追剧列表更新的API ★★★
-@app.route('/api/watchlist/trigger_full_update', methods=['POST']) 
-@login_required
-def api_trigger_watchlist_update(): # <-- 函数名可以不变，因为它和路径无关了
-    # 模式检查
-
-    # ... (这个函数的内部逻辑完全不变) ...
-    
-    logger.info("API: 收到手动触发追剧列表更新的请求。")
-    submit_task_to_queue(
-        task_process_watchlist,
-        "手动追剧更新"
-    )
-    return jsonify({"message": "追剧列表更新任务已在后台启动！"}), 202
 # ★★★ 新增：手动更新追剧状态的API ★★★
 @app.route('/api/watchlist/update_status', methods=['POST'])
 @login_required
@@ -3629,26 +3615,10 @@ def search_logs_with_context():
 @processor_ready_required
 def api_get_collections_status():
     """
-    获取所有 Emby 合集状态。
-    - 默认：直接从数据库读取。
-    - force_refresh=true：提交一个后台任务来执行全量同步。
-    【V5 - 任务化版】
+    【V6 - 职责单一版】
+    获取所有 Emby 合集状态，仅从数据库读取。
+    刷新操作已统一到 /api/tasks/trigger/refresh-collections。
     """
-    force_refresh = request.args.get('force_refresh', 'false').lower() == 'true'
-
-    # --- 模式一：强制刷新（提交后台任务） ---
-    if force_refresh:
-        # 使用我们现有的装饰器逻辑来检查任务锁
-        if task_lock.locked():
-            return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
-        
-        submit_task_to_queue(
-            task_refresh_collections,
-            "刷新合集列表"
-        )
-        return jsonify({"message": "刷新任务已在后台启动，请稍后查看结果。"}), 202
-
-    # --- 模式二：快速读取（默认行为） ---
     try:
         with get_central_db_connection(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row

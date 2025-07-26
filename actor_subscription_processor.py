@@ -38,7 +38,6 @@ class ActorSubscriptionProcessor:
         self.subscribe_delay_sec = config.get('subscribe_delay_sec', 0.5)
         self._stop_event = threading.Event()
 
-    # ... (signal_stop, is_stop_requested, clear_stop_signal, close 函数保持不变) ...
     def signal_stop(self):
         self._stop_event.set()
 
@@ -52,7 +51,6 @@ class ActorSubscriptionProcessor:
         logger.trace("ActorSubscriptionProcessor closed.")
 
     def run_scheduled_task(self, update_status_callback: Optional[Callable] = None):
-        # ... (此函数保持不变) ...
         def _update_status(progress, message):
             if update_status_callback:
                 safe_progress = max(0, min(100, int(progress)))
@@ -99,6 +97,9 @@ class ActorSubscriptionProcessor:
             _update_status(-1, "错误：连接 Emby 或获取数据失败。")
             return
 
+        # ★★★ 核心修复 1：初始化一个用于本次任务全局的、记录已订阅媒体的集合 ★★★
+        session_subscribed_ids: Set[str] = set()
+
         for i, sub in enumerate(subs_to_process):
             if self.is_stop_requested():
                 logger.info("定时演员订阅扫描任务被用户中断。")
@@ -109,7 +110,8 @@ class ActorSubscriptionProcessor:
             _update_status(progress, message)
             logger.info(message)
             
-            self.run_full_scan_for_actor(sub['id'], emby_tmdb_ids)
+            # ★★★ 核心修复 2：将这个会话集合传递给每个演员的处理函数 ★★★
+            self.run_full_scan_for_actor(sub['id'], emby_tmdb_ids, session_subscribed_ids)
             
             if not self.is_stop_requested() and i < total_subs - 1:
                 time.sleep(1) 
@@ -119,7 +121,15 @@ class ActorSubscriptionProcessor:
             _update_status(100, "所有订阅扫描完成。")
 
 
-    def run_full_scan_for_actor(self, subscription_id: int, emby_tmdb_ids: Set[str]):
+    def run_full_scan_for_actor(self, subscription_id: int, emby_tmdb_ids: Set[str], session_subscribed_ids: Optional[Set[str]] = None):
+        """
+        为单个订阅ID执行全量作品扫描。
+        现在可以接受一个可选的 session_subscribed_ids 集合来防止重复订阅。
+        """
+        # 如果是手动触发单个扫描（session_subscribed_ids 未提供），则创建一个临时的空集合
+        if session_subscribed_ids is None:
+            session_subscribed_ids = set()
+
         logger.trace(f"--- 开始为订阅ID {subscription_id} 执行全量作品扫描 ---")
         try:
             with get_db_connection(self.db_path) as conn:
@@ -152,11 +162,10 @@ class ActorSubscriptionProcessor:
                     media_id = work.get('id')
                     old_status = old_tracked_media.get(media_id)
 
-                    # --- 核心修正：将 old_status 传递给状态判断函数 ---
-                    current_status = self._determine_media_status(work, emby_tmdb_ids, today_str, old_status)
+                    # ★★★ 核心修复 3：将 session_subscribed_ids 进一步传递给状态判断函数 ★★★
+                    current_status = self._determine_media_status(work, emby_tmdb_ids, today_str, old_status, session_subscribed_ids)
                     if not current_status: continue
 
-                    # 增量更新逻辑 (此部分逻辑不变，依然正确)
                     if old_status is None:
                         media_to_insert.append(self._prepare_media_dict(work, subscription_id, current_status))
                     elif old_status != current_status.value:
@@ -178,7 +187,6 @@ class ActorSubscriptionProcessor:
         except Exception as e:
             logger.error(f"为订阅ID {subscription_id} 执行扫描时发生严重错误: {e}", exc_info=True)
 
-    # ... (_get_existing_tracked_media, _filter_works 函数保持不变) ...
     def _get_existing_tracked_media(self, cursor: sqlite3.Cursor, subscription_id: int) -> Dict[int, str]:
         """从数据库获取当前已追踪的媒体及其状态。"""
         cursor.execute("SELECT tmdb_media_id, status FROM tracked_actor_media WHERE subscription_id = ?", (subscription_id,))
@@ -191,29 +199,18 @@ class ActorSubscriptionProcessor:
         
         config_start_year = sub_config['config_start_year']
         
-        # --- 终极核心修正：标准化处理，将 'TV' 统一映射为 'Series' ---
         raw_types_from_db = sub_config['config_media_types'].split(',')
-        
-        # 这个列表推导式会：
-        # 1. 去掉首尾空格 (strip)
-        # 2. 如果处理后的词是 'tv' (不区分大小写)，则统一换成 'Series'
-        # 3. 否则，将首字母大写 (比如 'movie' -> 'Movie')
         config_media_types = {
             'Series' if t.strip().lower() == 'tv' else t.strip().capitalize()
             for t in raw_types_from_db if t.strip()
         }
-        # --- 修正结束 ---
 
         config_genres_include = set(json.loads(sub_config['config_genres_include_json'] or '[]'))
         config_genres_exclude = set(json.loads(sub_config['config_genres_exclude_json'] or '[]'))
-        # ★★★ 新增：获取评分和豁免期相关的配置 ★★★
         config_min_rating = sub_config['config_min_rating']
-        grace_period_months = 6 # 豁免期（6个月），可以硬编码或未来做成配置
-        # 计算豁免期的截止日期字符串，格式为 'YYYY-MM-DD'
+        grace_period_months = 6
         six_months_ago = datetime.now() - timedelta(days=grace_period_months * 30)
         grace_period_end_date_str = six_months_ago.strftime('%Y-%m-%d')
-        # ★★★ 新增结束 ★★★
-        # --- 预编译用于匹配中文字符的正则表达式 ---
         chinese_char_regex = re.compile(r'[\u4e00-\u9fff]')
 
         for work in works:
@@ -228,7 +225,6 @@ class ActorSubscriptionProcessor:
                 if int(release_date_str.split('-')[0]) < config_start_year: continue
             except (ValueError, IndexError): pass
 
-            # 此处的逻辑现在可以完美工作了
             media_type_raw = work.get('media_type', 'movie' if 'title' in work else 'tv')
             media_type = MediaType.MOVIE.value if media_type_raw == 'movie' else MediaType.SERIES.value
             if media_type not in config_media_types:
@@ -238,36 +234,30 @@ class ActorSubscriptionProcessor:
             if config_genres_exclude and not genre_ids.isdisjoint(config_genres_exclude): continue
             if config_genres_include and genre_ids.isdisjoint(config_genres_include): continue
 
-            # ★★★ 新增：评分筛选核心逻辑 ★★★
             if config_min_rating > 0:
                 is_new_movie = release_date_str >= grace_period_end_date_str
-                
-                # 如果不是新电影（即老片），则需要检查评分
                 if not is_new_movie:
                     vote_average = work.get('vote_average', 0.0)
                     vote_count = work.get('vote_count', 0)
-                    
-                    # 规则：对于老片，如果评分人数足够多（例如超过50人）但评分未达标，则过滤掉
-                    # 评分人数少或为0的作品会被豁免，给冷门老片一个机会
                     if vote_count > 50 and vote_average < config_min_rating:
                         logger.trace(f"过滤老片: '{work.get('title') or work.get('name')}' (评分 {vote_average} < {config_min_rating})")
-                        continue # 不满足条件，跳到下一个作品
+                        continue
             
-            # ★★★ 跳过无中文片名 ★★★
             title = work.get('title') or work.get('name', '')
             if not chinese_char_regex.search(title):
-                # 如果正则表达式在标题中找不到任何中文字符
                 logger.trace(f"过滤作品: '{title}' (排除无中文片名)。")
-                continue # 跳过这个作品，不将它加入到 filtered 列表中
+                continue
             
             handled_media_ids.add(media_id)
             filtered.append(work)
             
         return filtered
 
-    # --- 核心修正：修改函数签名，接收 old_status ---
-    def _determine_media_status(self, work: Dict, emby_tmdb_ids: Set[str], today_str: str, old_status: Optional[str]) -> Optional[MediaStatus]:
-        """判断单个作品的当前状态，如果需要则触发订阅。"""
+    def _determine_media_status(self, work: Dict, emby_tmdb_ids: Set[str], today_str: str, old_status: Optional[str], session_subscribed_ids: Set[str]) -> Optional[MediaStatus]:
+        """
+        判断单个作品的当前状态，如果需要则触发订阅。
+        现在会检查会话级的已订阅列表以防止重复。
+        """
         media_id_str = str(work.get('id'))
         release_date_str = work.get('release_date') or work.get('first_air_date', '')
 
@@ -275,9 +265,13 @@ class ActorSubscriptionProcessor:
         if media_id_str in emby_tmdb_ids:
             return MediaStatus.IN_LIBRARY
         
-        # --- 核心修正：检查旧状态，防止重复订阅 ---
-        # 2. 次高优先级：如果之前已经订阅过，就保持订阅状态，不再重复操作
+        # 2. 次高优先级：如果之前已经为【这个演员】订阅过，就保持订阅状态
         if old_status == MediaStatus.SUBSCRIBED.value:
+            return MediaStatus.SUBSCRIBED
+
+        # ★★★ 核心修复 4：在订阅前，检查是否已在【本次任务中】被其他演员订阅过 ★★★
+        if media_id_str in session_subscribed_ids:
+            logger.trace(f"作品 '{work.get('title') or work.get('name')}' (ID: {media_id_str}) 已在本次任务中被订阅，跳过重复请求。")
             return MediaStatus.SUBSCRIBED
 
         # 3. 检查是否是未来发行的作品
@@ -298,9 +292,13 @@ class ActorSubscriptionProcessor:
         
         time.sleep(self.subscribe_delay_sec)
 
-        return MediaStatus.SUBSCRIBED if success else MediaStatus.MISSING
+        # ★★★ 核心修复 5：如果订阅成功，将会话ID添加到集合中，供后续演员检查 ★★★
+        if success:
+            session_subscribed_ids.add(media_id_str)
+            return MediaStatus.SUBSCRIBED
+        else:
+            return MediaStatus.MISSING
 
-    # ... (_prepare_media_dict, _update_database_records 函数保持不变) ...
     def _prepare_media_dict(self, work: Dict, subscription_id: int, status: MediaStatus) -> Dict:
         """根据作品信息和状态，准备用于插入数据库的字典。"""
         media_type_raw = work.get('media_type', 'movie' if 'title' in work else 'tv')
