@@ -6,7 +6,6 @@
         <template #title>
           电影合集检查
         </template>
-        <!-- ✨ [核心修改] 将统计摘要移动到 footer 插槽，信息更丰富 -->
         <template #footer>
           <n-space align="center" size="large">
             <n-tag :bordered="false" round>
@@ -18,8 +17,8 @@
             <n-tag v-if="globalStats.totalUnreleased > 0" type="info" :bordered="false" round>
               {{ globalStats.totalUnreleased }} 部未上映
             </n-tag>
-            <n-tag v-if="globalStats.totalIgnored > 0" type="default" :bordered="false" round>
-              {{ globalStats.totalIgnored }} 部已忽略
+            <n-tag v-if="globalStats.totalSubscribed > 0" type="default" :bordered="false" round>
+              {{ globalStats.totalSubscribed }} 部已订阅
             </n-tag>
             <n-tag v-if="globalStats.totalMissingMovies === 0 && globalStats.totalCollections > 0" type="success" :bordered="false" round>
               所有合集均无缺失
@@ -28,18 +27,19 @@
         </template>
         <template #extra>
           <n-space>
-            <n-popconfirm @positive-click="ignoreAllMissingMovies" :disabled="globalStats.totalMissingMovies === 0">
+            <!-- ★★★ [核心修改] "一键忽略" 改为 "一键订阅" ★★★ -->
+            <n-popconfirm @positive-click="subscribeAllMissingMovies" :disabled="globalStats.totalMissingMovies === 0">
               <template #trigger>
                 <n-tooltip>
                   <template #trigger>
-                    <n-button circle :loading="isIgnoringAll" :disabled="globalStats.totalMissingMovies === 0">
-                      <template #icon><n-icon :component="IgnoreIcon" /></template>
+                    <n-button circle :loading="isSubscribingAll" :disabled="globalStats.totalMissingMovies === 0">
+                      <template #icon><n-icon :component="CloudDownloadIcon" /></template>
                     </n-button>
                   </template>
-                  一键忽略所有缺失
+                  一键订阅所有缺失
                 </n-tooltip>
               </template>
-              确定要忽略所有 {{ globalStats.totalMissingMovies }} 部缺失的电影吗？此操作会影响 {{ globalStats.collectionsWithMissing }} 个合集。
+              确定要将所有 {{ globalStats.totalMissingMovies }} 部缺失的电影提交到 MoviePilot 订阅吗？
             </n-popconfirm>
 
             <n-tooltip>
@@ -66,7 +66,6 @@
                 <div class="card-header"><n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.name }}</n-ellipsis></div>
                 <div class="card-status-area">
                   <n-space align="center">
-                    <!-- ✨ [核心修改] 使用 Tooltip 包裹 Tag -->
                     <n-tooltip :disabled="!isTooltipNeeded(item)">
                       <template #trigger>
                         <n-tag :type="getStatusTagType(item)" round>
@@ -100,30 +99,45 @@
       <div v-if="selectedCollection">
         <n-tabs type="line" animated>
           <!-- 缺失影片 -->
-          <n-tab-pane name="missing" :tab="`缺失影片 (${missingMoviesInModal.length})`" :disabled="missingMoviesInModal.length === 0">
-            <n-empty v-if="missingMoviesInModal.length === 0" description="所有已上映的缺失影片都已被订阅或忽略。" style="margin-top: 40px;"></n-empty>
+          <n-tab-pane name="missing" :tab="`缺失影片 (${missingMoviesInModal.length})`">
+            <n-empty v-if="missingMoviesInModal.length === 0" description="太棒了！没有已上映的缺失影片。" style="margin-top: 40px;"></n-empty>
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
               <n-gi v-for="movie in missingMoviesInModal" :key="movie.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
                   <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster" /></template>
                   <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
                   <template #action>
-                    <n-button-group size="small" style="width: 100%;">
-                      <n-button @click="subscribeToMovie(movie.tmdb_id, movie.title)" type="primary" :loading="subscribing[movie.tmdb_id]" style="width: 50%;">订阅</n-button>
-                      <n-tooltip>
-                        <template #trigger>
-                          <n-button @click="ignoreMovie(selectedCollection.emby_collection_id, movie.tmdb_id)" style="width: 50%;"><template #icon><n-icon :component="IgnoreIcon" /></template>忽略</n-button>
-                        </template>
-                        不再自动订阅此电影
-                      </n-tooltip>
-                    </n-button-group>
+                    <n-button @click="subscribeMovie(movie)" type="primary" size="small" block :loading="subscribing[movie.tmdb_id]">
+                      <template #icon><n-icon :component="CloudDownloadIcon" /></template>
+                      订阅
+                    </n-button>
                   </template>
                 </n-card>
               </n-gi>
             </n-grid>
           </n-tab-pane>
+          
+          <!-- ★★★ [核心修改] 新增 "已入库" 标签页 ★★★ -->
+          <n-tab-pane name="in_library" :tab="`已入库 (${inLibraryMoviesInModal.length})`">
+             <n-empty v-if="inLibraryMoviesInModal.length === 0" description="该合集在媒体库中没有任何影片。" style="margin-top: 40px;"></n-empty>
+            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
+              <n-gi v-for="movie in inLibraryMoviesInModal" :key="movie.tmdb_id">
+                <n-card class="movie-card" content-style="padding: 0;">
+                  <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster" /></template>
+                  <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
+                   <template #action>
+                    <n-tag type="success" size="small" style="width: 100%; justify-content: center;">
+                      <template #icon><n-icon :component="CheckmarkCircle" /></template>
+                      已在库
+                    </n-tag>
+                  </template>
+                </n-card>
+              </n-gi>
+            </n-grid>
+          </n-tab-pane>
+
           <!-- 未上映 -->
-          <n-tab-pane name="unreleased" :tab="`未上映 (${unreleasedMoviesInModal.length})`" :disabled="unreleasedMoviesInModal.length === 0">
+          <n-tab-pane name="unreleased" :tab="`未上映 (${unreleasedMoviesInModal.length})`">
             <n-empty v-if="unreleasedMoviesInModal.length === 0" description="该合集没有已知的未上映影片。" style="margin-top: 40px;"></n-empty>
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
               <n-gi v-for="movie in unreleasedMoviesInModal" :key="movie.tmdb_id">
@@ -134,18 +148,19 @@
               </n-gi>
             </n-grid>
           </n-tab-pane>
-          <!-- 已忽略 -->
-          <n-tab-pane name="ignored" :tab="`已忽略 (${ignoredMoviesInModal.length})`" :disabled="ignoredMoviesInModal.length === 0">
-            <n-empty v-if="ignoredMoviesInModal.length === 0" description="您没有忽略此合集中的任何影片。" style="margin-top: 40px;"></n-empty>
+
+          <!-- ★★★ [核心修改] "已忽略" 改为 "已订阅" ★★★ -->
+          <n-tab-pane name="subscribed" :tab="`已订阅 (${subscribedMoviesInModal.length})`">
+            <n-empty v-if="subscribedMoviesInModal.length === 0" description="您没有订阅此合集中的任何影片。" style="margin-top: 40px;"></n-empty>
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
-              <n-gi v-for="movie in ignoredMoviesInModal" :key="movie.tmdb_id">
+              <n-gi v-for="movie in subscribedMoviesInModal" :key="movie.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
                   <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster" /></template>
                   <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
                   <template #action>
-                    <n-button @click="unignoreMovie(selectedCollection.emby_collection_id, movie.tmdb_id)" type="info" size="small" block ghost>
-                      <template #icon><n-icon :component="UnignoreIcon" /></template>
-                      取消忽略
+                    <n-button @click="unsubscribeMovie(movie)" type="warning" size="small" block ghost>
+                      <template #icon><n-icon :component="CloseCircleIcon" /></template>
+                      取消订阅
                     </n-button>
                   </template>
                 </n-card>
@@ -161,8 +176,8 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, computed, watch, h } from 'vue';
 import axios from 'axios';
-import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NModal, NTabs, NTabPane, NButtonGroup } from 'naive-ui';
-import { SyncOutline, AlbumsOutline as AlbumsIcon, EyeOutline as EyeIcon, BanOutline as IgnoreIcon, CheckmarkCircleOutline as UnignoreIcon } from '@vicons/ionicons5';
+import { NLayout, NPageHeader, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NModal, NTabs, NTabPane, NPopconfirm } from 'naive-ui';
+import { SyncOutline, AlbumsOutline as AlbumsIcon, EyeOutline as EyeIcon, CloudDownloadOutline as CloudDownloadIcon, CloseCircleOutline as CloseCircleIcon, CheckmarkCircleOutline as CheckmarkCircle } from '@vicons/ionicons5';
 import { format } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
@@ -179,10 +194,8 @@ const isRefreshing = ref(false);
 const error = ref(null);
 const subscribing = ref({});
 const showModal = ref(false);
-
-// ✨ [核心修复] 回归到最简单的 ref，直接存储被点击的对象
 const selectedCollection = ref(null);
-const isIgnoringAll = ref(false);
+const isSubscribingAll = ref(false);
 const displayCount = ref(50);
 const INCREMENT = 50;
 const loaderRef = ref(null);
@@ -193,17 +206,13 @@ const getMissingCount = (collection) => {
   return collection.missing_movies.filter(m => m.status === 'missing').length;
 };
 
-const missingCollections = computed(() => {
-  return collections.value.filter(c => getMissingCount(c) > 0);
-});
-
 const globalStats = computed(() => {
   const stats = {
     totalCollections: collections.value.length,
     collectionsWithMissing: 0,
     totalMissingMovies: 0,
     totalUnreleased: 0,
-    totalIgnored: 0,
+    totalSubscribed: 0,
   };
 
   for (const collection of collections.value) {
@@ -214,7 +223,7 @@ const globalStats = computed(() => {
         stats.totalMissingMovies += missingCount;
       }
       stats.totalUnreleased += collection.missing_movies.filter(m => m.status === 'unreleased').length;
-      stats.totalIgnored += collection.missing_movies.filter(m => m.status === 'ignored').length;
+      stats.totalSubscribed += collection.missing_movies.filter(m => m.status === 'subscribed').length;
     }
   }
   return stats;
@@ -245,32 +254,30 @@ const loadMore = () => {
   }
 };
 
+// ★★★ [核心修改] 新的计算属性，用于分离不同状态的电影 ★★★
+const inLibraryMoviesInModal = computed(() => {
+  if (!selectedCollection.value || !Array.isArray(selectedCollection.value.missing_movies)) return [];
+  return selectedCollection.value.missing_movies.filter(movie => movie.status === 'in_library');
+});
 const missingMoviesInModal = computed(() => {
   if (!selectedCollection.value || !Array.isArray(selectedCollection.value.missing_movies)) return [];
   return selectedCollection.value.missing_movies.filter(movie => movie.status === 'missing');
 });
-
 const unreleasedMoviesInModal = computed(() => {
   if (!selectedCollection.value || !Array.isArray(selectedCollection.value.missing_movies)) return [];
   return selectedCollection.value.missing_movies.filter(movie => movie.status === 'unreleased');
 });
-
-const ignoredMoviesInModal = computed(() => {
+const subscribedMoviesInModal = computed(() => {
   if (!selectedCollection.value || !Array.isArray(selectedCollection.value.missing_movies)) return [];
-  return selectedCollection.value.missing_movies.filter(movie => movie.status === 'ignored');
+  return selectedCollection.value.missing_movies.filter(movie => movie.status === 'subscribed');
 });
 
 const loadCachedData = async () => {
   if (collections.value.length === 0) isInitialLoading.value = true;
   error.value = null;
   try {
-    // ✨ [核心修复] 添加 headers 配置，强制浏览器不缓存此 API 请求
     const response = await axios.get('/api/collections/status', {
-      headers: {
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Expires': '0',
-      },
+      headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache', 'Expires': '0' },
     });
     collections.value = response.data;
     displayCount.value = 50;
@@ -281,17 +288,17 @@ const loadCachedData = async () => {
   }
 };
 
-const ignoreAllMissingMovies = async () => {
-  isIgnoringAll.value = true;
+// ★★★ [核心修改] 调用新的 "一键订阅" API ★★★
+const subscribeAllMissingMovies = async () => {
+  isSubscribingAll.value = true;
   try {
-    const response = await axios.post('/api/collections/ignore_all_missing');
+    const response = await axios.post('/api/collections/subscribe_all_missing');
     message.success(response.data.message || '操作成功！');
-    // 操作成功后，立即刷新数据以更新UI
     await loadCachedData();
   } catch (err) {
-    message.error(err.response?.data?.error || '一键忽略操作失败。');
+    message.error(err.response?.data?.error || '一键订阅操作失败。');
   } finally {
-    isIgnoringAll.value = false;
+    isSubscribingAll.value = false;
   }
 };
 
@@ -310,31 +317,14 @@ const triggerFullRefresh = async () => {
 onMounted(() => {
   loadCachedData();
   observer = new IntersectionObserver(
-    (entries) => {
-      if (entries[0].isIntersecting) {
-        loadMore();
-      }
-    },
+    (entries) => { if (entries[0].isIntersecting) { loadMore(); } },
     { threshold: 1.0 }
   );
-
-  if (loaderRef.value) {
-    observer.observe(loaderRef.value);
-  }
+  if (loaderRef.value) { observer.observe(loaderRef.value); }
 });
 
-onBeforeUnmount(() => {
-  if (observer) {
-    observer.disconnect();
-  }
-});
-
-watch(loaderRef, (newEl) => {
-  if (observer && newEl) {
-    observer.observe(newEl);
-  }
-});
-
+onBeforeUnmount(() => { if (observer) { observer.disconnect(); } });
+watch(loaderRef, (newEl) => { if (observer && newEl) { observer.observe(newEl); } });
 watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {
   if (wasRunning && !isRunning && props.taskStatus.current_action.includes('合集')) {
     message.info('后台合集任务已结束，正在刷新数据...');
@@ -342,54 +332,46 @@ watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {
   }
 });
 
-// ✨ [核心修复] 函数现在接收完整的 collection 对象
 const openMissingMoviesModal = (collection) => {
   selectedCollection.value = collection;
   showModal.value = true;
 };
 
-const subscribeToMovie = async (tmdb_id, title) => {
-  subscribing.value[tmdb_id] = true;
+// ★★★ [核心修改] 统一的状态更新函数 ★★★
+const updateMovieStatus = async (movie, newStatus) => {
   try {
-    await axios.post('/api/subscribe/moviepilot', { tmdb_id, title });
-    message.success(`《${title}》已提交订阅`);
-    if (selectedCollection.value) {
-      const movieIndex = selectedCollection.value.missing_movies.findIndex(m => String(m.tmdb_id) === String(tmdb_id));
-      if (movieIndex > -1) {
-        selectedCollection.value.missing_movies.splice(movieIndex, 1);
-      }
-    }
-  } catch (err) {
-    message.error(err.response?.data?.error || '订阅失败');
-  } finally {
-    subscribing.value[tmdb_id] = false;
-  }
-};
-
-const updateMovieStatus = async (collectionId, movieTmdbId, newStatus) => {
-  try {
-    await axios.post('/api/collections/ignore_movie', {
-      collection_id: collectionId,
-      movie_tmdb_id: movieTmdbId,
+    await axios.post('/api/collections/update_movie_status', {
+      collection_id: selectedCollection.value.emby_collection_id,
+      movie_tmdb_id: movie.tmdb_id,
       new_status: newStatus
     });
-    
-    const movie = selectedCollection.value.missing_movies.find(m => String(m.tmdb_id) === String(movieTmdbId));
-    if (movie) {
-      movie.status = newStatus;
-    }
+    // 直接在本地更新状态，实现动态UI变化
+    movie.status = newStatus;
     message.success(`操作成功！`);
   } catch (err) {
     message.error(err.response?.data?.error || '操作失败');
   }
 };
 
-const ignoreMovie = (collectionId, movieTmdbId) => {
-  updateMovieStatus(collectionId, movieTmdbId, 'ignored');
+// ★★★ [核心修改] 单个订阅现在调用通用函数和 MoviePilot API ★★★
+const subscribeMovie = async (movie) => {
+  subscribing.value[movie.tmdb_id] = true;
+  try {
+    // 先提交到 MoviePilot
+    await axios.post('/api/subscribe/moviepilot', { tmdb_id: movie.tmdb_id, title: movie.title });
+    message.success(`《${movie.title}》已提交订阅`);
+    // MoviePilot 成功后，再更新我们自己的数据库状态
+    await updateMovieStatus(movie, 'subscribed');
+  } catch (err) {
+    message.error(err.response?.data?.error || '订阅失败');
+  } finally {
+    subscribing.value[movie.tmdb_id] = false;
+  }
 };
 
-const unignoreMovie = (collectionId, movieTmdbId) => {
-  updateMovieStatus(collectionId, movieTmdbId, 'missing');
+// ★★★ [核心修改] 新增取消订阅函数 ★★★
+const unsubscribeMovie = (movie) => {
+  updateMovieStatus(movie, 'missing');
 };
 
 const getEmbyUrl = (itemId) => {
@@ -398,17 +380,13 @@ const getEmbyUrl = (itemId) => {
   if (!embyServerUrl || !itemId) return '#';
   const baseUrl = embyServerUrl.endsWith('/') ? embyServerUrl.slice(0, -1) : embyServerUrl;
   let finalUrl = `${baseUrl}/web/index.html#!/item?id=${itemId}`;
-  if (serverId) {
-    finalUrl += `&serverId=${serverId}`;
-  }
+  if (serverId) { finalUrl += `&serverId=${serverId}`; }
   return finalUrl;
 };
 
 const openInEmby = (itemId) => {
   const url = getEmbyUrl(itemId);
-  if (url !== '#') {
-    window.open(url, '_blank');
-  }
+  if (url !== '#') { window.open(url, '_blank'); }
 };
 
 const formatTimestamp = (timestamp) => {
@@ -421,85 +399,38 @@ const getTmdbImageUrl = (posterPath) => posterPath ? `https://image.tmdb.org/t/p
 
 const getStatusTagType = (collection) => {
   if (collection.status === 'unlinked' || collection.status === 'tmdb_error') return 'error';
-  const missingCount = getMissingCount(collection);
-  if (missingCount > 0) return 'warning';
+  if (getMissingCount(collection) > 0) return 'warning';
   return 'success';
 };
+
 const getFullStatusText = (collection) => {
   if (collection.status === 'unlinked') return '未关联TMDb';
   if (collection.status === 'tmdb_error') return 'TMDb错误';
-
   const missingCount = getMissingCount(collection);
-  if (missingCount > 0) {
-    return `缺失 ${missingCount} 部`;
-  }
-
+  if (missingCount > 0) { return `缺失 ${missingCount} 部`; }
   const parts = [];
   const inLibraryCount = collection.in_library_count || 0;
-  if (inLibraryCount > 0) {
-    parts.push(`完整 ${inLibraryCount} 部`);
-  }
-
+  if (inLibraryCount > 0) { parts.push(`完整 ${inLibraryCount} 部`); }
   if (Array.isArray(collection.missing_movies)) {
       const unreleasedCount = collection.missing_movies.filter(m => m.status === 'unreleased').length;
-      const ignoredCount = collection.missing_movies.filter(m => m.status === 'ignored').length;
-      if (unreleasedCount > 0) {
-        parts.push(`未上映 ${unreleasedCount} 部`);
-      }
-      if (ignoredCount > 0) {
-        parts.push(`已忽略 ${ignoredCount} 部`);
-      }
+      const subscribedCount = collection.missing_movies.filter(m => m.status === 'subscribed').length;
+      if (unreleasedCount > 0) { parts.push(`未上映 ${unreleasedCount} 部`); }
+      if (subscribedCount > 0) { parts.push(`已订阅 ${subscribedCount} 部`); }
   }
-  
   return parts.join(' | ') || '完整';
 };
 
 const getShortStatusText = (collection) => {
   if (collection.status === 'unlinked') return '未关联TMDb';
   if (collection.status === 'tmdb_error') return 'TMDb错误';
-
   const missingCount = getMissingCount(collection);
-  if (missingCount > 0) {
-    return `缺失 ${missingCount} 部`;
-  }
-  
+  if (missingCount > 0) { return `缺失 ${missingCount} 部`; }
   const inLibraryCount = collection.in_library_count || 0;
   return `完整 ${inLibraryCount} 部`;
 };
 
 const isTooltipNeeded = (collection) => {
-  // 只有当完整文本和简洁文本不同时，才需要显示 Tooltip
   return getFullStatusText(collection) !== getShortStatusText(collection);
-};
-const getSmartStatusText = (collection) => {
-  if (collection.status === 'unlinked') return '未关联TMDb';
-  if (collection.status === 'tmdb_error') return 'TMDb错误';
-
-  const missingCount = getMissingCount(collection);
-  if (missingCount > 0) {
-    return `缺失 ${missingCount} 部`;
-  }
-
-  // 当缺失为0时，显示详细信息
-  const parts = [];
-  const inLibraryCount = collection.in_library_count || 0;
-  if (inLibraryCount > 0) {
-    parts.push(`完整 ${inLibraryCount} 部`);
-  }
-
-  if (Array.isArray(collection.missing_movies)) {
-      const unreleasedCount = collection.missing_movies.filter(m => m.status === 'unreleased').length;
-      const ignoredCount = collection.missing_movies.filter(m => m.status === 'ignored').length;
-      if (unreleasedCount > 0) {
-        parts.push(`未上映 ${unreleasedCount} 部`);
-      }
-      if (ignoredCount > 0) {
-        parts.push(`已忽略 ${ignoredCount} 部`);
-      }
-  }
-  
-  // 如果没有任何信息（例如一个空的合集），则显示“完整”
-  return parts.join(' | ') || '完整';
 };
 
 const extractYear = (dateStr) => {

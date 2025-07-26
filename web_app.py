@@ -1753,33 +1753,36 @@ def image_update_task(processor: MediaProcessor, item_id: str, update_descriptio
 # ✨ 辅助函数，并发刷新合集使用
 def _process_single_collection_concurrently(collection_data: dict, db_path: str, tmdb_api_key: str) -> dict:
     """
+    【V2 - 状态增强版】
     在单个线程中处理单个合集的所有逻辑。
-    它会自己连接数据库以保证线程安全，并返回一个包含所有结果的字典。
+    - 为合集中的每一部电影标记状态: in_library, missing, unreleased, subscribed
+    - 保留已有的 subscribed 状态
     """
     collection_id = collection_data['Id']
     collection_name = collection_data.get('Name', '')
     today_str = datetime.now().strftime('%Y-%m-%d')
     
-    # 每个线程创建自己的数据库连接，以确保线程安全
+    # 每个线程创建自己的数据库连接
     with get_central_db_connection(db_path) as conn:
         cursor = conn.cursor()
         
-        # 1. 读取历史“忽略”状态
+        # 1. 读取历史状态，主要是为了获取哪些电影之前是 'subscribed'
         cursor.execute("SELECT missing_movies_json FROM collections_info WHERE emby_collection_id = ?", (collection_id,))
         row = cursor.fetchone()
-        ignored_tmdb_ids = set()
+        previous_movies_map = {}
         if row and row[0]:
             try:
-                previous_missing_movies = json.loads(row[0])
-                ignored_tmdb_ids = {str(m['tmdb_id']) for m in previous_missing_movies if m.get('status') == 'ignored'}
+                previous_movies = json.loads(row[0])
+                # 创建一个以 tmdb_id 为键的字典，方便快速查找
+                previous_movies_map = {str(m['tmdb_id']): m for m in previous_movies}
             except (json.JSONDecodeError, TypeError):
-                pass # 忽略解析错误
+                pass
 
-    # 2. 执行核心的 API 请求和计算逻辑
+    # 2. 准备数据
+    all_movies_with_status = []
+    emby_movie_tmdb_ids = set(collection_data.get("ExistingMovieTmdbIds", []))
+    in_library_count = len(emby_movie_tmdb_ids)
     status, has_missing = "ok", False
-    all_missing_movies = []
-    emby_movie_ids = set(collection_data.get("ExistingMovieTmdbIds", []))
-    in_library_count = len(emby_movie_ids)
 
     provider_ids = collection_data.get("ProviderIds", {})
     tmdb_id = provider_ids.get("TmdbCollection") or provider_ids.get("TmdbCollectionId") or provider_ids.get("Tmdb")
@@ -1791,40 +1794,52 @@ def _process_single_collection_concurrently(collection_data: dict, db_path: str,
         if not details or "parts" not in details:
             status = "tmdb_error"
         else:
+            # 3. 遍历TMDb合集中的所有电影，并确定它们各自的状态
             for movie in details.get("parts", []):
-                release_date = movie.get("release_date")
-                if not release_date: continue
-                
                 movie_tmdb_id = str(movie.get("id"))
                 title = movie.get("title", "")
-                if not re.search(r'[\u4e00-\u9fa5]', title): continue
+                # 过滤掉一些不规范的数据
+                if not movie.get("release_date") or not re.search(r'[\u4e00-\u9fa5]', title):
+                    continue
 
-                if movie_tmdb_id not in emby_movie_ids:
-                    movie_status = "unknown"
-                    if movie_tmdb_id in ignored_tmdb_ids:
-                        movie_status = "ignored"
-                    else:
-                        if release_date and release_date > today_str:
-                            movie_status = "unreleased"
-                        else:
-                            movie_status = "missing"
-                    
-                    all_missing_movies.append({
-                        "tmdb_id": movie_tmdb_id, "title": title, "release_date": release_date, 
-                        "poster_path": movie.get("poster_path"), "status": movie_status
-                    })
+                movie_status = "unknown" # 默认状态
+                
+                # --- 状态判断优先级 ---
+                # 1. 已入库？ (最高优先级)
+                if movie_tmdb_id in emby_movie_tmdb_ids:
+                    movie_status = "in_library"
+                # 2. 未上映？
+                elif movie.get("release_date", '') > today_str:
+                    movie_status = "unreleased"
+                # 3. 之前是否已订阅？ (如果未入库，则保留订阅状态)
+                elif previous_movies_map.get(movie_tmdb_id, {}).get('status') == 'subscribed':
+                    movie_status = "subscribed"
+                # 4. 都不是，那就是缺失
+                else:
+                    movie_status = "missing"
+
+                all_movies_with_status.append({
+                    "tmdb_id": movie_tmdb_id, 
+                    "title": title, 
+                    "release_date": movie.get("release_date"), 
+                    "poster_path": movie.get("poster_path"), 
+                    "status": movie_status
+                })
             
-            if any(m['status'] == 'missing' for m in all_missing_movies):
+            # 4. 根据最终的电影状态列表，确定整个合集的状态
+            if any(m['status'] == 'missing' for m in all_movies_with_status):
                 has_missing = True
                 status = "has_missing"
     
     image_tag = collection_data.get("ImageTags", {}).get("Primary")
     poster_path = f"/Items/{collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
 
-    # 3. 将所有结果打包成一个字典返回
+    # 5. 将所有结果打包返回
     return {
         "emby_collection_id": collection_id, "name": collection_name, "tmdb_collection_id": tmdb_id, 
-        "status": status, "has_missing": has_missing, "missing_movies_json": json.dumps(all_missing_movies), 
+        "status": status, "has_missing": has_missing, 
+        # ★★★ 核心改变：现在存储的是包含所有状态的完整列表
+        "missing_movies_json": json.dumps(all_movies_with_status), 
         "last_checked_at": time.time(), "poster_path": poster_path, "in_library_count": in_library_count
     }
 # ★★★ 刷新合集的后台任务函数 ★★★
@@ -3703,45 +3718,53 @@ def api_get_collections_status():
     except Exception as e:
         logger.error(f"读取合集状态时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "读取合集时发生服务器内部错误"}), 500
-# ✨ 一键忽略所有缺失电影的 API 端点
-@app.route('/api/collections/ignore_all_missing', methods=['POST'])
+# ✨ 一键订阅所有缺失电影的 API 端点
+@app.route('/api/collections/subscribe_all_missing', methods=['POST'])
 @login_required
 @task_lock_required
-def api_ignore_all_missing():
+def api_subscribe_all_missing():
     """
-    遍历所有有缺失的合集，将其中所有状态为 'missing' 的电影批量更新为 'ignored'。
+    遍历所有有缺失的合集，将其中所有状态为 'missing' 的电影批量提交到 MoviePilot 订阅。
     """
-    logger.info("API: 收到一键忽略所有缺失电影的请求。")
-    total_ignored_count = 0
+    logger.info("API: 收到一键订阅所有缺失电影的请求。")
+    total_subscribed_count = 0
+    total_failed_count = 0
+    
     try:
         with get_central_db_connection(DB_PATH) as conn:
             cursor = conn.cursor()
-            # 优化：只选择那些确实有缺失的合集进行处理
-            cursor.execute("SELECT emby_collection_id, missing_movies_json FROM collections_info WHERE has_missing = 1")
+            cursor.execute("SELECT emby_collection_id, name, missing_movies_json FROM collections_info WHERE has_missing = 1")
             collections_to_process = cursor.fetchall()
 
             if not collections_to_process:
-                return jsonify({"message": "没有发现任何缺失的电影需要忽略。", "count": 0}), 200
+                return jsonify({"message": "没有发现任何缺失的电影需要订阅。", "count": 0}), 200
 
-            # 开启事务，确保数据一致性
+            # 开启事务
             cursor.execute("BEGIN TRANSACTION;")
             try:
-                for collection_id, missing_json in collections_to_process:
+                for collection_id, collection_name, missing_json in collections_to_process:
                     if not missing_json: continue
                     
                     movies = json.loads(missing_json)
-                    needs_update = False
+                    needs_db_update = False
                     
                     for movie in movies:
                         if movie.get('status') == 'missing':
-                            movie['status'] = 'ignored'
-                            total_ignored_count += 1
-                            needs_update = True
+                            # 尝试订阅
+                            success = moviepilot_handler.subscribe_movie_to_moviepilot(movie, APP_CONFIG)
+                            if success:
+                                # 订阅成功，更新状态为 'subscribed'
+                                movie['status'] = 'subscribed'
+                                total_subscribed_count += 1
+                                needs_db_update = True
+                                logger.info(f"合集《{collection_name}》中的《{movie['title']}》已成功提交订阅。")
+                            else:
+                                total_failed_count += 1
+                                logger.warning(f"合集《{collection_name}》中的《{movie['title']}》提交订阅失败。")
                     
-                    if needs_update:
+                    if needs_db_update:
                         # 检查更新后是否还有 'missing' 状态的电影
                         still_has_missing = any(m.get('status') == 'missing' for m in movies)
-                        
                         new_missing_json = json.dumps(movies)
                         cursor.execute(
                             "UPDATE collections_info SET missing_movies_json = ?, has_missing = ? WHERE emby_collection_id = ?",
@@ -3749,17 +3772,21 @@ def api_ignore_all_missing():
                         )
                 
                 conn.commit()
-                logger.info(f"一键忽略操作成功，共忽略了 {total_ignored_count} 部电影。")
-                return jsonify({"message": f"操作成功！共忽略了 {total_ignored_count} 部电影。", "count": total_ignored_count}), 200
+                message = f"操作完成！成功提交 {total_subscribed_count} 部电影订阅。"
+                if total_failed_count > 0:
+                    message += f" 有 {total_failed_count} 部电影订阅失败，请检查日志。"
+                
+                logger.info(message)
+                return jsonify({"message": message, "count": total_subscribed_count}), 200
 
             except Exception as e_inner:
                 conn.rollback()
-                logger.error(f"在一键忽略的事务处理中发生错误: {e_inner}", exc_info=True)
-                raise # 重新抛出，让外层捕获
+                logger.error(f"在一键订阅的事务处理中发生错误: {e_inner}", exc_info=True)
+                raise
 
     except Exception as e:
-        logger.error(f"执行一键忽略时发生严重错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器在处理一键忽略时发生内部错误"}), 500
+        logger.error(f"执行一键订阅时发生严重错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在处理一键订阅时发生内部错误"}), 500
 # ★★★ 将电影提交到 MoviePilot 订阅  ★★★
 @app.route('/api/subscribe/moviepilot', methods=['POST'])
 @login_required
@@ -3788,21 +3815,20 @@ def api_subscribe_moviepilot():
         # 具体的错误原因已经被 moviepilot_handler 记录到日志中
         # API层面只需返回一个通用的失败信息
         return jsonify({"error": "订阅失败，请检查后端日志获取详细信息。"}), 500
-# ★★★ 忽略合集中某个电影的 API 端点 ★★★
-@app.route('/api/collections/ignore_movie', methods=['POST'])
+# ★★★ 变更合集中某个电影的状态 端点 ★★★
+@app.route('/api/collections/update_movie_status', methods=['POST'])
 @login_required
-def api_ignore_collection_movie():
+def api_update_movie_status():
     data = request.json
     collection_id = data.get('collection_id')
     movie_tmdb_id = data.get('movie_tmdb_id')
-    # ★★★ 新增：从请求中获取新的状态，默认为 'ignored' 以兼容旧版 ★★★
-    new_status = data.get('new_status', 'ignored')
+    new_status = data.get('new_status') # 'subscribed' 或 'missing'
 
-    if not collection_id or not movie_tmdb_id:
-        return jsonify({"error": "缺少 collection_id 或 movie_tmdb_id"}), 400
+    if not all([collection_id, movie_tmdb_id, new_status]):
+        return jsonify({"error": "缺少 collection_id, movie_tmdb_id 或 new_status"}), 400
     
-    if new_status not in ['ignored', 'missing']:
-        return jsonify({"error": "无效的状态，只允许 'ignored' 或 'missing'"}), 400
+    if new_status not in ['subscribed', 'missing']:
+        return jsonify({"error": "无效的状态，只允许 'subscribed' 或 'missing'"}), 400
 
     logger.info(f"API: 收到请求，将合集 {collection_id} 中的电影 {movie_tmdb_id} 状态更新为 '{new_status}'。")
 
@@ -3817,21 +3843,25 @@ def api_ignore_collection_movie():
                 conn.rollback()
                 return jsonify({"error": "未找到指定的合集"}), 404
             
-            missing_movies = json.loads(row[0])
-            
+            movies = json.loads(row[0])
             movie_found = False
-            for movie in missing_movies:
+            for movie in movies:
                 if str(movie.get('tmdb_id')) == str(movie_tmdb_id):
-                    movie['status'] = new_status # ★★★ 使用从请求中获取的新状态 ★★★
+                    movie['status'] = new_status
                     movie_found = True
                     break
             
             if not movie_found:
                 conn.rollback()
-                return jsonify({"error": "未在该合集的缺失列表中找到指定的电影"}), 404
+                return jsonify({"error": "未在该合集的电影列表中找到指定的电影"}), 404
 
-            new_missing_json = json.dumps(missing_movies)
-            cursor.execute("UPDATE collections_info SET missing_movies_json = ? WHERE emby_collection_id = ?", (new_missing_json, collection_id))
+            # 状态更新后，重新计算合集的 has_missing 标志
+            still_has_missing = any(m.get('status') == 'missing' for m in movies)
+            new_missing_json = json.dumps(movies)
+            cursor.execute(
+                "UPDATE collections_info SET missing_movies_json = ?, has_missing = ? WHERE emby_collection_id = ?", 
+                (new_missing_json, still_has_missing, collection_id)
+            )
             
             conn.commit()
             
@@ -3840,70 +3870,6 @@ def api_ignore_collection_movie():
     except Exception as e:
         logger.error(f"更新电影状态时发生数据库错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在处理请求时发生内部错误"}), 500
-# ★★★ 订阅剧集（季/集）的专用API ★★★
-@app.route('/api/subscribe/moviepilot/series', methods=['POST'])
-@login_required
-def api_subscribe_series_moviepilot():
-    data = request.json
-    tmdb_id = data.get('tmdb_id')
-    title = data.get('title')
-    season_number = data.get('season_number') # 可能是季号，也可能是null
-
-    if not tmdb_id or not title:
-        return jsonify({"error": "请求中缺少 tmdb_id 或 title"}), 400
-
-    # (这里的登录逻辑与电影订阅完全相同，可以直接复用)
-    moviepilot_url = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
-    mp_username = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_USERNAME, '')
-    mp_password = APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD, '')
-    if not all([moviepilot_url, mp_username, mp_password]):
-        return jsonify({"error": "服务器未完整配置 MoviePilot URL、用户名或密码。"}), 500
-
-    try:
-        login_url = f"{moviepilot_url}/api/v1/login/access-token"
-        login_data = {"username": mp_username, "password": mp_password}
-        login_response = requests.post(login_url, data=login_data, timeout=10)
-        login_response.raise_for_status()
-        access_token = login_response.json().get("access_token")
-        if not access_token:
-            return jsonify({"error": "MoviePilot 认证失败：未能获取到 Token。"}), 500
-    except Exception as e:
-        # (为了简洁，省略了详细的错误处理，实际应与电影订阅的错误处理保持一致)
-        return jsonify({"error": f"MoviePilot 登录失败: {e}"}), 502
-
-    # --- 核心订阅逻辑 ---
-    try:
-        subscribe_url = f"{moviepilot_url}/api/v1/subscribe/"
-        subscribe_headers = {"Authorization": f"Bearer {access_token}"}
-        
-        # ★★★ 核心区别：根据是否有 season_number 构造不同的 payload ★★★
-        subscribe_payload = {
-            "name": title,
-            "tmdbid": int(tmdb_id),
-            "type": "电视剧"
-        }
-        if season_number is not None:
-            subscribe_payload["season"] = int(season_number)
-            log_message = f"正在向 MoviePilot 提交订阅请求 '{title}' 第 {season_number} 季"
-        else:
-            # 如果不指定季，通常是订阅整部剧
-            log_message = f"正在向 MoviePilot 提交订阅请求 '{title}' (整部剧)"
-
-        logger.info(log_message)
-        sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
-        
-        logger.info(f"收到 MoviePilot 订阅接口的响应: Status={sub_response.status_code}, Body='{sub_response.text}'")
-
-        if sub_response.status_code in [200, 201, 204]:
-            logger.info("MoviePilot 报告订阅成功。")
-            return jsonify({"message": "订阅请求已成功发送！"}), 200
-        else:
-            error_detail = sub_response.json().get("message", sub_response.text)
-            logger.error(f"MoviePilot 报告订阅失败: {error_detail}")
-            return jsonify({"error": f"MoviePilot 报告订阅失败: {error_detail}"}), 500
-
-    except Exception as e:
-        return jsonify({"error": f"向 MoviePilot 提交订阅时出错: {e}"}), 502
 # --- 演员订阅 API ---
 @app.route('/api/actor-subscriptions/search', methods=['GET'])
 @login_required
