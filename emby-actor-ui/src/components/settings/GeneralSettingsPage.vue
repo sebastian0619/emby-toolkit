@@ -88,30 +88,30 @@
               </template>
             </n-form-item>
           </n-card>
-          <n-card title="MoviePilot 订阅服务" size="small" class="glass-section">
-            <n-form-item-grid-item label="MoviePilot URL" path="moviepilot_url">
-              <n-input v-model:value="configModel.moviepilot_url" placeholder="例如: http://192.168.1.100:3000"/>
-            </n-form-item-grid-item>
-            <n-form-item-grid-item label="用户名" path="moviepilot_username">
-              <n-input v-model:value="configModel.moviepilot_username" placeholder="输入 MoviePilot 的登录用户名"/>
-            </n-form-item-grid-item>
-            <n-form-item-grid-item label="密码" path="moviepilot_password">
-              <n-input type="password" show-password-on="mousedown" v-model:value="configModel.moviepilot_password" placeholder="输入 MoviePilot 的登录密码"/>
-            </n-form-item-grid-item>
-            
-            <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">
-              智能订阅设置
-            </n-divider>
-
-            <n-form-item-grid-item label="启用智能订阅" path="autosub_enabled">
-              <n-switch v-model:value="configModel.autosub_enabled" />
+          <n-card title="日志配置（更改后重启生效）" size="small" class="glass-section">
+            <n-form-item-grid-item label="单个日志文件大小 (MB)" path="log_rotation_size_mb">
+              <n-input-number 
+                v-model:value="configModel.log_rotation_size_mb" 
+                :min="1" 
+                :step="1" 
+                placeholder="例如: 5"
+              />
               <template #feedback>
-                <n-text depth="3" style="font-size:0.8em;">
-                  总开关。开启后，智能订阅定时任务才会真正执行订阅操作。
-                </n-text>
+                <n-text depth="3" style="font-size:0.8em;">设置 app.log 文件的最大体积，超限后会轮转。</n-text>
               </template>
             </n-form-item-grid-item>
 
+            <n-form-item-grid-item label="日志备份数量" path="log_rotation_backup_count">
+              <n-input-number 
+                v-model:value="configModel.log_rotation_backup_count" 
+                :min="1" 
+                :step="1" 
+                placeholder="例如: 10"
+              />
+              <template #feedback>
+                <n-text depth="3" style="font-size:0.8em;">保留最近的日志文件数量 (app.log.1, app.log.2 ...)。</n-text>
+              </template>
+            </n-form-item-grid-item>
           </n-card>
         </n-space>
       </n-gi>
@@ -218,31 +218,32 @@
               </n-form-item>
             </div>
           </n-card>
-          <n-card title="日志配置（更改后重启生效）" size="small" class="glass-section">
-            <n-form-item-grid-item label="单个日志文件大小 (MB)" path="log_rotation_size_mb">
-              <n-input-number 
-                v-model:value="configModel.log_rotation_size_mb" 
-                :min="1" 
-                :step="1" 
-                placeholder="例如: 5"
-              />
+          <n-card title="MoviePilot 订阅服务" size="small" class="glass-section">
+            <n-form-item-grid-item label="MoviePilot URL" path="moviepilot_url">
+              <n-input v-model:value="configModel.moviepilot_url" placeholder="例如: http://192.168.1.100:3000"/>
+            </n-form-item-grid-item>
+            <n-form-item-grid-item label="用户名" path="moviepilot_username">
+              <n-input v-model:value="configModel.moviepilot_username" placeholder="输入 MoviePilot 的登录用户名"/>
+            </n-form-item-grid-item>
+            <n-form-item-grid-item label="密码" path="moviepilot_password">
+              <n-input type="password" show-password-on="mousedown" v-model:value="configModel.moviepilot_password" placeholder="输入 MoviePilot 的登录密码"/>
+            </n-form-item-grid-item>
+            
+            <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">
+              智能订阅设置
+            </n-divider>
+
+            <n-form-item-grid-item label="启用智能订阅" path="autosub_enabled">
+              <n-switch v-model:value="configModel.autosub_enabled" />
               <template #feedback>
-                <n-text depth="3" style="font-size:0.8em;">设置 app.log 文件的最大体积，超限后会轮转。</n-text>
+                <n-text depth="3" style="font-size:0.8em;">
+                  总开关。开启后，智能订阅定时任务才会真正执行订阅操作。
+                </n-text>
               </template>
             </n-form-item-grid-item>
 
-            <n-form-item-grid-item label="日志备份数量" path="log_rotation_backup_count">
-              <n-input-number 
-                v-model:value="configModel.log_rotation_backup_count" 
-                :min="1" 
-                :step="1" 
-                placeholder="例如: 10"
-              />
-              <template #feedback>
-                <n-text depth="3" style="font-size:0.8em;">保留最近的日志文件数量 (app.log.1, app.log.2 ...)。</n-text>
-              </template>
-            </n-form-item-grid-item>
           </n-card>
+          
         </n-space>
       </n-gi>
     </n-grid>

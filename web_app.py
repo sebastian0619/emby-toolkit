@@ -45,158 +45,26 @@ import constants # 你的常量定义\
 import logging
 from logger_setup import frontend_log_queue, add_file_handler # 日志记录器和前端日志队列
 import utils       # 例如，用于 /api/search_media
+import config_manager
 # --- 核心模块导入结束 ---
 logger = logging.getLogger(__name__)
 logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
-static_folder='static'
-app = Flask(__name__)
-# CORS(app) # 最简单的全局启用 CORS，允许所有源
-# app.secret_key = os.urandom(24) # 用于 flash 消息等
-# ✨✨✨ 新增：导入我们创建的网页解析器 ✨✨✨
+app = Flask(__name__, static_folder='static')
+app.secret_key = os.urandom(24)
+# ✨✨✨ 导入网页解析器 ✨✨✨
 try:
     from web_parser import parse_cast_from_url, ParserError
     WEB_PARSER_AVAILABLE = True
 except ImportError:
     logger.error("web_parser.py 未找到或无法导入，从URL提取功能将不可用。")
     WEB_PARSER_AVAILABLE = False
-# vue_dev_server_origin = "http://localhost:5173"
-# CORS(app, resources={r"/api/*": {"origins": vue_dev_server_origin}})
-# --- 路径和配置定义 ---
-APP_DATA_DIR_ENV = os.environ.get("APP_DATA_DIR")
-app = Flask(__name__, static_folder='static')
-app.secret_key = os.urandom(24)
-# ✨✨✨ “配置清单” ✨✨✨
-CONFIG_DEFINITION = {
-    # [Emby]
-    constants.CONFIG_OPTION_EMBY_SERVER_URL: (constants.CONFIG_SECTION_EMBY, 'string', ""),
-    constants.CONFIG_OPTION_EMBY_API_KEY: (constants.CONFIG_SECTION_EMBY, 'string', ""),
-    constants.CONFIG_OPTION_EMBY_USER_ID: (constants.CONFIG_SECTION_EMBY, 'string', ""),
-    constants.CONFIG_OPTION_REFRESH_AFTER_UPDATE: (constants.CONFIG_SECTION_EMBY, 'boolean', True),
-    constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS: (constants.CONFIG_SECTION_EMBY, 'list', []),
-
-    # [TMDB]
-    constants.CONFIG_OPTION_TMDB_API_KEY: (constants.CONFIG_SECTION_TMDB, 'string', ""),
-
-    # [DoubanAPI]
-    constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN: (constants.CONFIG_SECTION_API_DOUBAN, 'float', 1.0),
-    constants.CONFIG_OPTION_DOUBAN_COOKIE: (constants.CONFIG_SECTION_API_DOUBAN, 'string', ""),
-
-    # [MoviePilot]
-    constants.CONFIG_OPTION_MOVIEPILOT_URL: (constants.CONFIG_SECTION_MOVIEPILOT, 'string', ""),
-    constants.CONFIG_OPTION_MOVIEPILOT_USERNAME: (constants.CONFIG_SECTION_MOVIEPILOT, 'string', ""),
-    constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD: (constants.CONFIG_SECTION_MOVIEPILOT, 'string', ""),
-    constants.CONFIG_OPTION_AUTOSUB_ENABLED: (constants.CONFIG_SECTION_MOVIEPILOT, 'boolean', False),
-
-    # [Translation]
-    constants.CONFIG_OPTION_TRANSLATOR_ENGINES: (constants.CONFIG_SECTION_TRANSLATION, 'list', constants.DEFAULT_TRANSLATOR_ENGINES_ORDER),
-    
-    # [LocalDataSource]
-    constants.CONFIG_OPTION_LOCAL_DATA_PATH: (constants.CONFIG_SECTION_LOCAL_DATA, 'string', ""),
-
-    # [General]
-    "delay_between_items_sec": ("General", 'float', 0.5),
-    constants.CONFIG_OPTION_MIN_SCORE_FOR_REVIEW: ("General", 'float', constants.DEFAULT_MIN_SCORE_FOR_REVIEW),
-    constants.CONFIG_OPTION_PROCESS_EPISODES: ("General", 'boolean', True),
-    constants.CONFIG_OPTION_SYNC_IMAGES: ("General", 'boolean', False),
-    constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS: ("General", 'int', constants.DEFAULT_MAX_ACTORS_TO_PROCESS),
-
-    # [Network]
-    "user_agent": ("Network", 'string', 'Mozilla/5.0 ...'), # 省略默认值
-    "accept_language": ("Network", 'string', 'zh-CN,zh;q=0.9,en;q=0.8'),
-
-    # [AITranslation]
-    constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED: (constants.CONFIG_SECTION_AI_TRANSLATION, 'boolean', False),
-    constants.CONFIG_OPTION_AI_PROVIDER: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', "openai"),
-    constants.CONFIG_OPTION_AI_API_KEY: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', ""),
-    constants.CONFIG_OPTION_AI_MODEL_NAME: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', "deepseek-ai/DeepSeek-V2.5"),
-    constants.CONFIG_OPTION_AI_BASE_URL: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', "https://api.siliconflow.cn/v1"),
-    constants.CONFIG_OPTION_AI_TRANSLATION_MODE: (
-        constants.CONFIG_SECTION_AI_TRANSLATION, # 属于 AITranslation 部分
-        'string',                                # 它的值是一个字符串
-        'fast'                                   # 默认值为 'fast' (翻译模式)
-    ),
-
-    # [Scheduler]
-    constants.CONFIG_OPTION_SCHEDULE_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
-    constants.CONFIG_OPTION_SCHEDULE_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "0 3 * * *"),
-    constants.CONFIG_OPTION_SCHEDULE_FORCE_REPROCESS: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
-    constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
-    constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "0 1 * * *"),
-    constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
-    constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', constants.DEFAULT_SCHEDULE_WATCHLIST_CRON),
-    constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
-    constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "30 2 * * *"),
-    constants.CONFIG_OPTION_SCHEDULE_ENRICH_DURATION_MINUTES: (constants.CONFIG_SECTION_SCHEDULER, 'int', 420), # 默认420分钟 = 7小时
-    constants.CONFIG_OPTION_SCHEDULE_ENRICH_SYNC_INTERVAL_DAYS: (constants.CONFIG_SECTION_SCHEDULER, 'int', constants.DEFAULT_ENRICH_ALIASES_SYNC_INTERVAL_DAYS),
-    constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', True),
-    constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', constants.DEFAULT_SCHEDULE_ACTOR_CLEANUP_CRON),
-    constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
-    constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', constants.DEFAULT_SCHEDULE_AUTOSUB_CRON),
-    constants.CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_ENABLED: ('Scheduler', 'boolean', False),
-    constants.CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_CRON: ('Scheduler', 'string', constants.DEFAULT_SCHEDULE_REFRESH_COLLECTIONS_CRON),
-    constants.CONFIG_OPTION_SCHEDULE_ACTOR_TRACKING_ENABLED: ('Scheduler', 'boolean', False),
-    constants.CONFIG_OPTION_SCHEDULE_ACTOR_TRACKING_CRON: ('Scheduler', 'string', "0 5 * * *"), # 默认每天早上5点
-    # [Authentication]
-    constants.CONFIG_OPTION_AUTH_ENABLED: (constants.CONFIG_SECTION_AUTH, 'boolean', False),
-    constants.CONFIG_OPTION_AUTH_USERNAME: (constants.CONFIG_SECTION_AUTH, 'string', constants.DEFAULT_USERNAME),
-    constants.CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX: (constants.CONFIG_SECTION_ACTOR, 'boolean', False),
-
-    # ★★★日志轮转配置 ★★★
-    constants.CONFIG_OPTION_LOG_ROTATION_SIZE_MB: (
-        constants.CONFIG_SECTION_LOGGING, 
-        'int', 
-        constants.DEFAULT_LOG_ROTATION_SIZE_MB
-    ),
-    constants.CONFIG_OPTION_LOG_ROTATION_BACKUPS: (
-        constants.CONFIG_SECTION_LOGGING, 
-        'int', 
-        constants.DEFAULT_LOG_ROTATION_BACKUPS
-    ),
-
-}
-if APP_DATA_DIR_ENV:
-    # 如果在 Docker 中，并且设置了 APP_DATA_DIR 环境变量 (例如设置为 "/config")
-    PERSISTENT_DATA_PATH = APP_DATA_DIR_ENV
-    logger.info(f"检测到 APP_DATA_DIR 环境变量，将使用持久化数据路径: {PERSISTENT_DATA_PATH}")
-else:
-    # 本地开发环境：在 web_app.py 文件所在的目录的上一级，创建一个名为 'local_data' 的文件夹
-    # 或者，如果你希望 local_data 与 web_app.py 同级，可以调整 BASE_DIR_FOR_DATA
-    # BASE_DIR_FOR_DATA = os.path.dirname(os.path.abspath(__file__)) # web_app.py 所在目录
-    # PERSISTENT_DATA_PATH = os.path.join(BASE_DIR_FOR_DATA, "local_data")
-    
-    # 更常见的本地开发做法：数据目录在项目根目录（假设 web_app.py 在项目根目录或子目录）
-    # 如果 web_app.py 在项目根目录:
-    PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-    # 如果 web_app.py 在类似 src/ 的子目录，你可能需要 os.path.dirname(PROJECT_ROOT)
-    PERSISTENT_DATA_PATH = os.path.join(PROJECT_ROOT, "local_data")
-    logger.debug(f"未检测到 APP_DATA_DIR 环境变量，将使用本地开发数据路径: {PERSISTENT_DATA_PATH}")
-    LOG_DIRECTORY = os.path.join(PERSISTENT_DATA_PATH, 'logs')
-
-# 确保这个持久化数据目录存在 (无论是在本地还是在容器内)
-try:
-    if not os.path.exists(PERSISTENT_DATA_PATH):
-        os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
-        logger.info(f"持久化数据目录已创建/确认: {PERSISTENT_DATA_PATH}")
-except OSError as e:
-    logger.error(f"创建持久化数据目录 '{PERSISTENT_DATA_PATH}' 失败: {e}。程序可能无法正常读写配置文件和数据库。")
-    # 在这种情况下，程序可能无法继续，可以考虑退出或抛出异常
-    # raise RuntimeError(f"无法创建必要的数据目录: {PERSISTENT_DATA_PATH}") from e
-
-CONFIG_FILE_NAME = getattr(constants, 'CONFIG_FILE_NAME', "config.ini")
-CONFIG_FILE_PATH = os.path.join(PERSISTENT_DATA_PATH, CONFIG_FILE_NAME)
-
-DB_NAME = getattr(constants, 'DB_NAME', "emby_actor_processor.sqlite")
-DB_PATH = os.path.join(PERSISTENT_DATA_PATH, DB_NAME)
-
 #过滤底层日志
 logging.getLogger("requests").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
-logger.info(f"配置文件路径 (CONFIG_FILE_PATH) 设置为: {CONFIG_FILE_PATH}")
-logger.info(f"数据库文件路径 (DB_PATH) 设置为: {DB_PATH}")
 
 # --- 全局变量 ---
 EMBY_SERVER_ID: Optional[str] = None # ★★★ 新增：用于存储 Emby Server ID
@@ -209,7 +77,6 @@ background_task_status = {
     "message": "等待任务"
 }
 task_lock = threading.Lock() # 用于确保后台任务串行执行
-APP_CONFIG: Dict[str, Any] = {} # ✨✨✨ 新增：全局配置字典 ✨✨✨
 media_processor_instance: Optional[MediaProcessor] = None
 watchlist_processor_instance: Optional[WatchlistProcessor] = None
 
@@ -238,10 +105,10 @@ def init_db():
     conn: Optional[sqlite3.Connection] = None
     try:
         # 确保数据目录存在
-        if not os.path.exists(PERSISTENT_DATA_PATH):
-            os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
+        if not os.path.exists(config_manager.PERSISTENT_DATA_PATH):
+            os.makedirs(config_manager.PERSISTENT_DATA_PATH, exist_ok=True)
 
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
 
             # --- 1. ★★★ 性能优化：启用 WAL 模式  ★★★ ---
@@ -425,7 +292,7 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         # ★★★ 核心修复：正确地解包 load_config 返回的元组 ★★★
-        if not APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_ENABLED, False) or 'user_id' in session:
+        if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_ENABLED, False) or 'user_id' in session:
             return f(*args, **kwargs)
         
         return jsonify({"error": "未授权，请先登录"}), 401
@@ -453,17 +320,17 @@ def init_auth():
     """
     【V2 - 使用全局配置版】初始化认证系统。
     """
-    # ✨✨✨ 核心修复：不再自己调用 load_config，而是依赖已加载的 APP_CONFIG ✨✨✨
+    # ✨✨✨ 核心修复：不再自己调用 load_config，而是依赖已加载的 config_manager.APP_CONFIG ✨✨✨
     # load_config() 应该在主程序入口处被调用一次
     
-    auth_enabled = APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_ENABLED, False)
+    auth_enabled = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_ENABLED, False)
     env_username = os.environ.get("AUTH_USERNAME")
     
     if env_username:
         username = env_username.strip()
         logger.debug(f"检测到 AUTH_USERNAME 环境变量，将使用用户名: '{username}'")
     else:
-        username = APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_USERNAME, constants.DEFAULT_USERNAME).strip()
+        username = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_USERNAME, constants.DEFAULT_USERNAME).strip()
         logger.debug(f"未检测到 AUTH_USERNAME 环境变量，将使用配置文件中的用户名: '{username}'")
 
     if not auth_enabled:
@@ -473,7 +340,7 @@ def init_auth():
     # ... 函数的其余部分保持不变 ...
     conn = None
     try:
-        conn = get_central_db_connection(DB_PATH)
+        conn = get_central_db_connection(config_manager.DB_PATH)
         cursor = conn.cursor()
         
         cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
@@ -505,77 +372,17 @@ def init_auth():
         if conn:
             conn.close()
         logger.info("="*21 + " [基础配置加载完毕] " + "="*21)
-# --- 加载配置 ---
-def load_config() -> Tuple[Dict[str, Any], bool]:
-    """【清单驱动版】从 config.ini 加载配置。"""
-    global APP_CONFIG
-    config_parser = configparser.ConfigParser()
-    is_first_run = not os.path.exists(CONFIG_FILE_PATH)
-
-    if not is_first_run:
-        try:
-            config_parser.read(CONFIG_FILE_PATH, encoding='utf-8')
-        except Exception as e:
-            logger.error(f"解析配置文件时出错: {e}", exc_info=True)
-
-    app_cfg = {}
-    
-    # 遍历配置清单，自动加载所有配置项
-    for key, (section, type, default) in CONFIG_DEFINITION.items():
-        if not config_parser.has_section(section):
-            config_parser.add_section(section)
-            
-        if type == 'boolean':
-            # 特殊处理首次运行时的认证开关
-            if key == constants.CONFIG_OPTION_AUTH_ENABLED and is_first_run:
-                app_cfg[key] = True
-            else:
-                app_cfg[key] = config_parser.getboolean(section, key, fallback=default)
-        elif type == 'int':
-            app_cfg[key] = config_parser.getint(section, key, fallback=default)
-        elif type == 'float':
-            app_cfg[key] = config_parser.getfloat(section, key, fallback=default)
-        elif type == 'list':
-            value_str = config_parser.get(section, key, fallback=",".join(map(str, default)))
-            app_cfg[key] = [item.strip() for item in value_str.split(',') if item.strip()]
-        else: # string
-            app_cfg[key] = config_parser.get(section, key, fallback=default)
-
-    APP_CONFIG = app_cfg.copy()
-    logger.trace("全局配置 APP_CONFIG 已更新。")
-    return app_cfg, is_first_run
-# --- 保存配置 ---
-def save_config(new_config: Dict[str, Any]):
-    """【清单驱动版】将配置保存到 config.ini。"""
-    global APP_CONFIG
-    config_parser = configparser.ConfigParser()
-    
-    # 遍历配置清单，自动设置所有配置项
-    for key, (section, type, _) in CONFIG_DEFINITION.items():
-        if not config_parser.has_section(section):
-            config_parser.add_section(section)
-        
-        value = new_config.get(key)
-        
-        # 将值转换为适合写入ini文件的字符串格式
-        if isinstance(value, bool):
-            value_to_write = str(value).lower()
-        elif isinstance(value, list):
-            value_to_write = ",".join(map(str, value))
-        else:
-            value_to_write = str(value)
-        value_to_write = value_to_write.replace('%', '%%')
-        config_parser.set(section, key, value_to_write)
-
+# --- 保存配置并重新加载的函数 ---
+def save_config_and_reload(new_config: Dict[str, Any]):
+    """
+    调用配置管理器保存配置，并在此处执行所有必要的重新初始化操作。
+    """
     try:
-        # ... (写入文件和重新初始化的逻辑保持不变) ...
-        with open(CONFIG_FILE_PATH, 'w', encoding='utf-8') as configfile:
-            config_parser.write(configfile)
+        # 步骤 1: 调用 config_manager 来保存文件和更新内存中的 config_manager.APP_CONFIG
+        config_manager.save_config(new_config)
         
-        APP_CONFIG = new_config.copy()
-        logger.info(f"配置已成功写入到 {CONFIG_FILE_PATH}。")
-        
-        # 重新初始化相关服务
+        # 步骤 2: 执行所有依赖于新配置的重新初始化逻辑
+        # 这是从旧的 save_config 函数中移动过来的，现在的位置更合理
         initialize_processors()
         init_auth()
         setup_scheduled_tasks()
@@ -583,6 +390,8 @@ def save_config(new_config: Dict[str, Any]):
         
     except Exception as e:
         logger.error(f"保存配置文件或重新初始化时失败: {e}", exc_info=True)
+        # 向上抛出异常，让 API 端点可以捕获它并返回错误信息
+        raise
 # --- 始化所有需要的处理器实例 ---
 def initialize_processors():
     """
@@ -590,12 +399,12 @@ def initialize_processors():
     """
     # ★★★ 1. 声明所有需要修改的全局变量 ★★★
     global media_processor_instance, watchlist_processor_instance, EMBY_SERVER_ID, actor_subscription_processor_instance
-    if not APP_CONFIG:
-        logger.error("无法初始化处理器：全局配置 APP_CONFIG 为空。")
+    if not config_manager.APP_CONFIG:
+        logger.error("无法初始化处理器：全局配置 config_manager.APP_CONFIG 为空。")
         return
 
-    current_config = APP_CONFIG.copy()
-    current_config['db_path'] = DB_PATH
+    current_config = config_manager.APP_CONFIG.copy()
+    current_config['db_path'] = config_manager.DB_PATH
 
     # --- ★★★ 在初始化时自动发现 Server ID ★★★ ---
     emby_url = current_config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
@@ -880,7 +689,7 @@ def setup_scheduled_tasks():
     """
     【最终版】根据全局配置，设置或移除所有定时任务。
     """
-    config = APP_CONFIG
+    config = config_manager.APP_CONFIG
     
     # --- 任务 1: 全量扫描 ---
     JOB_ID_FULL_SCAN = "scheduled_full_scan"
@@ -893,7 +702,7 @@ def setup_scheduled_tasks():
             def scheduled_scan_task():
                 logger.info(f"定时任务触发：全量扫描 (强制={force})。")
                 if force: media_processor_instance.clear_processed_log()
-                submit_task_to_queue(task_process_full_library, "定时全量扫描", process_episodes=APP_CONFIG.get('process_episodes', True))
+                submit_task_to_queue(task_process_full_library, "定时全量扫描", process_episodes=config_manager.APP_CONFIG.get('process_episodes', True))
             
             scheduler.add_job(func=scheduled_scan_task, trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_FULL_SCAN, name="定时全量扫描", replace_existing=True)
             logger.info(f"已设置定时任务：全量扫描，将{_get_next_run_time_str(cron)}{' (强制重处理)' if force else ''}")
@@ -1160,7 +969,7 @@ def task_sync_person_map(processor):
         config = processor.config
         
         sync_handler = UnifiedSyncHandler(
-            db_path=DB_PATH,
+            db_path=config_manager.DB_PATH,
             emby_url=config.get("emby_server_url"),
             emby_api_key=config.get("emby_api_key"),
             emby_user_id=config.get("emby_user_id"),
@@ -1192,7 +1001,7 @@ def task_enrich_aliases(processor: MediaProcessor):
         config = processor.config
         
         # 获取必要的配置项
-        db_path = DB_PATH
+        db_path = config_manager.DB_PATH
         tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
 
         if not tmdb_api_key:
@@ -1377,7 +1186,7 @@ def task_import_database(processor, file_content: str, tables_to_import: list, i
             if table_name not in backup_data:
                 logger.warning(f"请求恢复的表 '{table_name}' 在备份文件中不存在，将跳过。")
 
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("BEGIN TRANSACTION;")
@@ -1857,7 +1666,7 @@ def task_refresh_collections(processor: MediaProcessor):
         update_status_from_thread(5, f"共找到 {total} 个合集，准备开始并发处理...")
 
         # 清理数据库中已不存在的合集
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
             emby_current_ids = {c['Id'] for c in emby_collections}
             cursor.execute("SELECT emby_collection_id FROM collections_info")
@@ -1867,7 +1676,7 @@ def task_refresh_collections(processor: MediaProcessor):
                 cursor.executemany("DELETE FROM collections_info WHERE emby_collection_id = ?", [(id,) for id in deleted_ids])
             conn.commit()
 
-        tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+        tmdb_api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
         if not tmdb_api_key: raise RuntimeError("未配置 TMDb API Key")
 
         processed_count = 0
@@ -1876,7 +1685,7 @@ def task_refresh_collections(processor: MediaProcessor):
         # ✨ 核心修改：使用线程池进行并发处理
         with ThreadPoolExecutor(max_workers=5) as executor:
             # 提交所有任务
-            futures = {executor.submit(_process_single_collection_concurrently, collection, DB_PATH, tmdb_api_key): collection for collection in emby_collections}
+            futures = {executor.submit(_process_single_collection_concurrently, collection, config_manager.DB_PATH, tmdb_api_key): collection for collection in emby_collections}
             
             # 实时获取已完成的结果并更新进度条
             for future in as_completed(futures):
@@ -1903,7 +1712,7 @@ def task_refresh_collections(processor: MediaProcessor):
         # ✨ 所有并发任务完成后，在主线程中安全地、一次性地写入数据库
         if all_results:
             logger.info(f"并发处理完成，准备将 {len(all_results)} 条结果写入数据库...")
-            with get_central_db_connection(DB_PATH) as conn:
+            with get_central_db_connection(config_manager.DB_PATH) as conn:
                 cursor = conn.cursor()
                 cursor.execute("BEGIN TRANSACTION;")
                 try:
@@ -1925,7 +1734,7 @@ def task_refresh_collections(processor: MediaProcessor):
 def task_auto_subscribe(processor: MediaProcessor):
     update_status_from_thread(0, "正在启动智能订阅任务...")
     
-    if not APP_CONFIG.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
+    if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
         logger.info("智能订阅总开关未开启，任务跳过。")
         update_status_from_thread(100, "任务跳过：总开关未开启")
         return
@@ -1935,7 +1744,7 @@ def task_auto_subscribe(processor: MediaProcessor):
         update_status_from_thread(10, f"智能订阅已启动...")
         successfully_subscribed_items = []
 
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -1993,7 +1802,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                             logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》(上映日期: {release_date}) 已上映，符合订阅条件，正在提交...")
                             
                             try:
-                                success = moviepilot_handler.subscribe_movie_to_moviepilot(movie, APP_CONFIG)
+                                success = moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG)
                                 if success:
                                     logger.info(f"【智能订阅-电影】      -> 订阅成功！")
                                     successfully_subscribed_items.append(f"电影《{movie['title']}》")
@@ -2078,9 +1887,9 @@ def task_auto_subscribe(processor: MediaProcessor):
                                 logger.info(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 已播出，符合订阅条件，正在提交...")
                                 try:
                                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                                    # ★★★  核心修复：剧集订阅也需要传递 APP_CONFIG！ ★★★
+                                    # ★★★  核心修复：剧集订阅也需要传递 config_manager.APP_CONFIG！ ★★★
                                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                                    success = moviepilot_handler.subscribe_series_to_moviepilot(dict(series), season['season_number'], APP_CONFIG)
+                                    success = moviepilot_handler.subscribe_series_to_moviepilot(dict(series), season['season_number'], config_manager.APP_CONFIG)
                                     if success:
                                         logger.info(f"【智能订阅-剧集】      -> 订阅成功！")
                                         successfully_subscribed_items.append(f"《{series['item_name']}》第 {season['season_number']} 季")
@@ -2341,7 +2150,7 @@ def api_search_emby_library():
 @app.route('/api/auth/status', methods=['GET'])
 def auth_status():
     """检查当前认证状态"""
-    config = APP_CONFIG
+    config = config_manager.APP_CONFIG
     auth_enabled = config.get(constants.CONFIG_OPTION_AUTH_ENABLED, False)
     
     response = {
@@ -2363,7 +2172,7 @@ def login():
     
     # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM users WHERE username = ?", (username_from_req,))
             user = cursor.fetchone()
@@ -2404,7 +2213,7 @@ def change_password():
     user_id = session.get('user_id')
     # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
             
             # 1. 查询用户
@@ -2440,14 +2249,14 @@ def change_password():
 def api_get_config():
     try:
         # ★★★ 确保这里正确解包了元组 ★★★
-        current_config = APP_CONFIG 
+        current_config = config_manager.APP_CONFIG 
         
         if current_config:
             current_config['emby_server_id'] = EMBY_SERVER_ID
             logger.trace(f"API /api/config (GET): 成功加载并返回配置。")
             return jsonify(current_config)
         else:
-            logger.error(f"API /api/config (GET): APP_CONFIG 为空或未初始化。")
+            logger.error(f"API /api/config (GET): config_manager.APP_CONFIG 为空或未初始化。")
             return jsonify({"error": "无法加载配置数据"}), 500
     except Exception as e:
         logger.error(f"API /api/config (GET) 获取配置时发生错误: {e}", exc_info=True)
@@ -2479,7 +2288,7 @@ def api_save_config():
         logger.info(f"API /api/config (POST): 收到新的配置数据，准备保存...")
         
         # 校验通过后，才调用保存函数
-        save_config(new_config_data) 
+        save_config_and_reload(new_config_data)  
         
         logger.debug("API /api/config (POST): 配置已成功传递给 save_config 函数。")
         return jsonify({"message": "配置已成功保存并已触发重新加载。"})
@@ -2505,7 +2314,7 @@ def api_get_review_items():
     
     # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             conn.row_factory = sqlite3.Row # 确保可以按列名访问，这很重要
             cursor = conn.cursor()
             
@@ -2566,7 +2375,7 @@ def api_mark_item_processed(item_id):
 
     # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             conn.row_factory = sqlite3.Row # 确保可以按列名访问
             cursor = conn.cursor()
             
@@ -2631,7 +2440,7 @@ def api_handle_trigger_full_scan():
         action_message += " (已清空已处理记录)"
 
     # 从全局配置获取处理深度
-    process_episodes = APP_CONFIG.get('process_episodes', True)
+    process_episodes = config_manager.APP_CONFIG.get('process_episodes', True)
     
     # 提交纯粹的扫描任务
     submit_task_to_queue(
@@ -2719,7 +2528,7 @@ def api_update_edited_cast_api(item_id):
         logger.info(f"API: 收到为 ItemID {item_id} 更新演员的请求，共 {len(edited_cast_from_frontend)} 位演员。")
 
         # ✨✨✨ 1. 使用 with 语句，在所有操作开始前获取数据库连接 ✨✨✨
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
 
             # ✨✨✨ 2. 手动开启一个事务 ✨✨✨
@@ -2785,7 +2594,7 @@ def api_get_db_tables():
     排除 sqlite_ 开头的系统表。
     """
     try:
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
             # 查询 sqlite_master 表来获取所有表名
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
@@ -2833,7 +2642,7 @@ def api_export_database():
             "data": {}
         }
 
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -2969,7 +2778,7 @@ def api_parse_cast_from_url():
         return jsonify({"error": "请求中未提供 'url' 参数"}), 400
 
     try:
-        current_config = APP_CONFIG
+        current_config = config_manager.APP_CONFIG
         headers = {'User-Agent': current_config.get('user_agent', '')}
         parsed_cast = parse_cast_from_url(url_to_parse, custom_headers=headers)
         
@@ -3112,7 +2921,7 @@ def api_clear_review_items_revised():
     
     # 首先，在事务外部获取初始计数，用于最终验证
     try:
-        with get_central_db_connection(DB_PATH) as pre_check_conn:
+        with get_central_db_connection(config_manager.DB_PATH) as pre_check_conn:
             initial_count = pre_check_conn.execute("SELECT COUNT(*) FROM failed_log").fetchone()[0]
             logger.info(f"防御性检查：在事务开始前，'failed_log' 表中有 {initial_count} 条记录。")
             if initial_count == 0:
@@ -3127,7 +2936,7 @@ def api_clear_review_items_revised():
     deleted_count = 0
 
     try:
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
             
             # 1. 将所有 failed_log 中的项目信息复制到 processed_log
@@ -3187,7 +2996,7 @@ def api_get_watchlist():
     
     # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             conn.row_factory = sqlite3.Row # 确保可以按列名访问
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM watchlist ORDER BY added_at DESC")
@@ -3220,7 +3029,7 @@ def api_add_to_watchlist():
     
     # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
             
             cursor.execute("""
@@ -3253,7 +3062,7 @@ def api_update_watchlist_status():
 
     logger.info(f"API: 收到请求，将项目 {item_id} 的追剧状态更新为 '{new_status}'。")
     try:
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "UPDATE watchlist SET status = ? WHERE item_id = ?",
@@ -3279,7 +3088,7 @@ def api_remove_from_watchlist(item_id):
     # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
         # 1. 将 with 语句放在 try 块内部
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
             
             logger.debug(f"准备执行 DELETE FROM watchlist WHERE item_id = {item_id}")
@@ -3324,7 +3133,7 @@ def api_trigger_single_watchlist_refresh(item_id):
     # 从数据库获取项目名称，让任务名更友好
     item_name = "未知剧集"
     try:
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT item_name FROM watchlist WHERE item_id = ?", (item_id,))
             row = cursor.fetchone()
@@ -3501,8 +3310,8 @@ def api_trigger_task_now(task_identifier: str):
 def list_log_files():
     """列出日志目录下的所有日志文件 (app.log*)"""
     try:
-        # PERSISTENT_DATA_PATH 变量在当前作用域中可以直接使用
-        all_files = os.listdir(LOG_DIRECTORY)
+        # config_manager.PERSISTENT_DATA_PATH 变量在当前作用域中可以直接使用
+        all_files = os.listdir(config_manager.LOG_DIRECTORY)
         log_files = [f for f in all_files if f.startswith('app.log')]
         
         # 对日志文件进行智能排序，确保 app.log 在最前，然后是 .1.gz, .2.gz ...
@@ -3529,10 +3338,10 @@ def view_log_file():
     if not filename or not filename.startswith('app.log'):
         abort(403, "禁止访问非日志文件或无效的文件名。")
 
-    full_path = os.path.join(LOG_DIRECTORY, filename)
+    full_path = os.path.join(config_manager.LOG_DIRECTORY, filename)
 
     # 再次确认最终路径仍然在合法的日志目录下
-    if not os.path.abspath(full_path).startswith(os.path.abspath(LOG_DIRECTORY)):
+    if not os.path.abspath(full_path).startswith(os.path.abspath(config_manager.LOG_DIRECTORY)):
         abort(403, "检测到非法路径访问。")
         
     if not os.path.exists(full_path):
@@ -3562,7 +3371,7 @@ def search_all_logs():
     
     try:
         # 1. 获取并排序所有日志文件，确保从新到旧搜索
-        all_files = os.listdir(LOG_DIRECTORY)
+        all_files = os.listdir(config_manager.LOG_DIRECTORY)
         log_files = [f for f in all_files if f.startswith('app.log')]
         
         # --- 代码修改点 ---
@@ -3580,7 +3389,7 @@ def search_all_logs():
 
         # 2. 遍历每个文件进行搜索
         for filename in log_files:
-            full_path = os.path.join(LOG_DIRECTORY, filename)
+            full_path = os.path.join(config_manager.LOG_DIRECTORY, filename)
             try:
                 # --- 代码修改点 ---
                 # 移除了 opener 的判断，直接使用 open 函数
@@ -3629,11 +3438,11 @@ def search_logs_with_context():
     
     try:
         # 获取所有 app.log* 文件，无需预先排序
-        all_files = os.listdir(LOG_DIRECTORY)
+        all_files = os.listdir(config_manager.LOG_DIRECTORY)
         log_files = [f for f in all_files if f.startswith('app.log')]
 
         for filename in log_files:
-            full_path = os.path.join(LOG_DIRECTORY, filename)
+            full_path = os.path.join(config_manager.LOG_DIRECTORY, filename)
             
             in_block = False
             current_block = []
@@ -3704,7 +3513,7 @@ def api_get_collections_status():
     刷新操作已统一到 /api/tasks/trigger/refresh-collections。
     """
     try:
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM collections_info ORDER BY name")
@@ -3731,7 +3540,7 @@ def api_subscribe_all_missing():
     total_failed_count = 0
     
     try:
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT emby_collection_id, name, missing_movies_json FROM collections_info WHERE has_missing = 1")
             collections_to_process = cursor.fetchall()
@@ -3751,7 +3560,7 @@ def api_subscribe_all_missing():
                     for movie in movies:
                         if movie.get('status') == 'missing':
                             # 尝试订阅
-                            success = moviepilot_handler.subscribe_movie_to_moviepilot(movie, APP_CONFIG)
+                            success = moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG)
                             if success:
                                 # 订阅成功，更新状态为 'subscribed'
                                 movie['status'] = 'subscribed'
@@ -3806,7 +3615,7 @@ def api_subscribe_moviepilot():
 
     # 2. 直接调用业务逻辑函数，并将全局配置传递进去
     #    所有复杂的登录、请求、错误处理都已封装在函数内部
-    success = moviepilot_handler.subscribe_movie_to_moviepilot(movie_info, APP_CONFIG)
+    success = moviepilot_handler.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
 
     # 3. 根据返回的布尔值，生成对应的API响应
     if success:
@@ -3830,10 +3639,10 @@ def api_update_movie_status():
     if new_status not in ['subscribed', 'missing']:
         return jsonify({"error": "无效的状态，只允许 'subscribed' 或 'missing'"}), 400
 
-    logger.info(f"API: 收到请求，将合集 {collection_id} 中的电影 {movie_tmdb_id} 状态更新为 '{new_status}'。")
+    logger.trace(f"API: 收到请求，将合集 {collection_id} 中的电影 {movie_tmdb_id} 状态更新为 '{new_status}'。")
 
     try:
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             conn.execute("BEGIN TRANSACTION;")
             cursor = conn.cursor()
             
@@ -3882,7 +3691,7 @@ def api_search_actors():
     if not query:
         return jsonify({"error": "必须提供搜索关键词 'name'"}), 400
 
-    tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+    tmdb_api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
     if not tmdb_api_key:
         return jsonify({"error": "服务器未配置TMDb API Key"}), 503
 
@@ -3922,7 +3731,7 @@ def handle_actor_subscriptions():
     # --- 处理 GET 请求：获取列表 ---
     if request.method == 'GET':
         try:
-            with get_central_db_connection(DB_PATH) as conn:
+            with get_central_db_connection(config_manager.DB_PATH) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute("SELECT id, tmdb_person_id, actor_name, profile_path, status, last_checked_at FROM actor_subscriptions ORDER BY added_at DESC")
@@ -3951,7 +3760,7 @@ def handle_actor_subscriptions():
             return jsonify({"error": "缺少必要的参数 (tmdb_person_id, actor_name)"}), 400
 
         try:
-            with get_central_db_connection(DB_PATH) as conn:
+            with get_central_db_connection(config_manager.DB_PATH) as conn:
                 cursor = conn.cursor()
                 # vvv 2. 修改 INSERT 语句以包含新字段 vvv
                 cursor.execute(
@@ -3986,7 +3795,7 @@ def refresh_single_actor_subscription(sub_id):
     # 为了让任务名更友好，可以先从数据库查一下演员名字
     actor_name = f"订阅ID {sub_id}"
     try:
-        with get_central_db_connection(DB_PATH) as conn:
+        with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
             name = cursor.execute("SELECT actor_name FROM actor_subscriptions WHERE id = ?", (sub_id,)).fetchone()
             if name:
@@ -4010,7 +3819,7 @@ def handle_single_actor_subscription(sub_id):
     # --- 处理 GET 请求：获取详情 (这部分不变) ---
     if request.method == 'GET':
         try:
-            with get_central_db_connection(DB_PATH) as conn:
+            with get_central_db_connection(config_manager.DB_PATH) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute("SELECT * FROM actor_subscriptions WHERE id = ?", (sub_id,))
@@ -4039,7 +3848,7 @@ def handle_single_actor_subscription(sub_id):
             if status is None and config is None:
                 return jsonify({"error": "请求体中缺少需要更新的数据 (status 或 config)"}), 400
 
-            with get_central_db_connection(DB_PATH) as conn:
+            with get_central_db_connection(config_manager.DB_PATH) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
@@ -4089,7 +3898,7 @@ def handle_single_actor_subscription(sub_id):
     # --- 处理 DELETE 请求 (这部分不变) ---
     if request.method == 'DELETE':
         try:
-            with get_central_db_connection(DB_PATH) as conn:
+            with get_central_db_connection(config_manager.DB_PATH) as conn:
                 cursor = conn.cursor()
                 cursor.execute("DELETE FROM actor_subscriptions WHERE id = ?", (sub_id,))
                 conn.commit()
@@ -4115,15 +3924,15 @@ def serve(path):
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}")
     
-    # 1. ★★★ 首先，加载配置，让 APP_CONFIG 获得真实的值 ★★★
-    load_config()
+    # 1. ★★★ 首先，加载配置，让 config_manager.APP_CONFIG 获得真实的值 ★★★
+    config_manager.load_config()
     
     # 2. ★★★ 然后，再执行依赖于配置的日志设置 ★★★
     # --- 日志文件处理器配置 ---
-    LOG_DIRECTORY = os.path.join(PERSISTENT_DATA_PATH, 'logs')
+    config_manager.LOG_DIRECTORY = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'logs')
 
-    # 从现在已经有值的 APP_CONFIG 中获取配置
-    raw_size = APP_CONFIG.get(
+    # 从现在已经有值的 config_manager.APP_CONFIG 中获取配置
+    raw_size = config_manager.APP_CONFIG.get(
         constants.CONFIG_OPTION_LOG_ROTATION_SIZE_MB, 
         constants.DEFAULT_LOG_ROTATION_SIZE_MB
     )
@@ -4132,7 +3941,7 @@ if __name__ == '__main__':
     except (ValueError, TypeError):
         log_size = constants.DEFAULT_LOG_ROTATION_SIZE_MB
 
-    raw_backups = APP_CONFIG.get(
+    raw_backups = config_manager.APP_CONFIG.get(
         constants.CONFIG_OPTION_LOG_ROTATION_BACKUPS, 
         constants.DEFAULT_LOG_ROTATION_BACKUPS
     )
@@ -4143,7 +3952,7 @@ if __name__ == '__main__':
 
     # 将正确的配置注入日志系统
     add_file_handler(
-        log_directory=LOG_DIRECTORY,
+        log_directory=config_manager.LOG_DIRECTORY,
         log_size_mb=log_size,
         log_backups=log_backups
     )
