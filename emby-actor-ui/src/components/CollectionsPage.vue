@@ -39,12 +39,19 @@
                 <div class="card-header"><n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.name }}</n-ellipsis></div>
                 <div class="card-status-area">
                   <n-space align="center">
-                    <n-tag :type="getStatusTagType(item)" round>{{ getStatusText(item) }}</n-tag>
+                    <!-- ✨ [核心修改] 使用 Tooltip 包裹 Tag -->
+                    <n-tooltip :disabled="!isTooltipNeeded(item)">
+                      <template #trigger>
+                        <n-tag :type="getStatusTagType(item)" round>
+                          {{ getShortStatusText(item) }}
+                        </n-tag>
+                      </template>
+                      {{ getFullStatusText(item) }}
+                    </n-tooltip>
                     <n-text :depth="3" class="last-checked-text">上次检查: {{ formatTimestamp(item.last_checked_at) }}</n-text>
                   </n-space>
                 </div>
                 <div class="card-actions">
-                  <!-- ✨ [核心修复] 直接传递完整的 item 对象 -->
                   <n-button type="primary" size="small" @click="() => openMissingMoviesModal(item)"><template #icon><n-icon :component="EyeIcon" /></template>查看详情</n-button>
                   <n-tooltip><template #trigger><n-button text @click="openInEmby(item.emby_collection_id)"><template #icon><n-icon :component="EmbyIcon" size="18" /></template></n-button></template>在 Emby 中打开</n-tooltip>
                   <n-tooltip><template #trigger><n-button text tag="a" :href="`https://www.themoviedb.org/collection/${item.tmdb_collection_id}`" target="_blank" :disabled="!item.tmdb_collection_id"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>在 TMDb 中打开</n-tooltip>
@@ -342,17 +349,86 @@ const getCollectionPosterUrl = (posterPath) => posterPath ? `/image_proxy${poste
 const getTmdbImageUrl = (posterPath) => posterPath ? `https://image.tmdb.org/t/p/w300${posterPath}` : '/img/poster-placeholder.png';
 
 const getStatusTagType = (collection) => {
-  const count = getMissingCount(collection);
-  if (count > 0) return 'warning';
   if (collection.status === 'unlinked' || collection.status === 'tmdb_error') return 'error';
+  const missingCount = getMissingCount(collection);
+  if (missingCount > 0) return 'warning';
   return 'success';
 };
-
-const getStatusText = (collection) => {
+const getFullStatusText = (collection) => {
   if (collection.status === 'unlinked') return '未关联TMDb';
   if (collection.status === 'tmdb_error') return 'TMDb错误';
-  const count = getMissingCount(collection);
-  return `缺失 ${count} 部`;
+
+  const missingCount = getMissingCount(collection);
+  if (missingCount > 0) {
+    return `缺失 ${missingCount} 部`;
+  }
+
+  const parts = [];
+  const inLibraryCount = collection.in_library_count || 0;
+  if (inLibraryCount > 0) {
+    parts.push(`完整 ${inLibraryCount} 部`);
+  }
+
+  if (Array.isArray(collection.missing_movies)) {
+      const unreleasedCount = collection.missing_movies.filter(m => m.status === 'unreleased').length;
+      const ignoredCount = collection.missing_movies.filter(m => m.status === 'ignored').length;
+      if (unreleasedCount > 0) {
+        parts.push(`未上映 ${unreleasedCount} 部`);
+      }
+      if (ignoredCount > 0) {
+        parts.push(`已忽略 ${ignoredCount} 部`);
+      }
+  }
+  
+  return parts.join(' | ') || '完整';
+};
+
+const getShortStatusText = (collection) => {
+  if (collection.status === 'unlinked') return '未关联TMDb';
+  if (collection.status === 'tmdb_error') return 'TMDb错误';
+
+  const missingCount = getMissingCount(collection);
+  if (missingCount > 0) {
+    return `缺失 ${missingCount} 部`;
+  }
+  
+  const inLibraryCount = collection.in_library_count || 0;
+  return `完整 ${inLibraryCount} 部`;
+};
+
+const isTooltipNeeded = (collection) => {
+  // 只有当完整文本和简洁文本不同时，才需要显示 Tooltip
+  return getFullStatusText(collection) !== getShortStatusText(collection);
+};
+const getSmartStatusText = (collection) => {
+  if (collection.status === 'unlinked') return '未关联TMDb';
+  if (collection.status === 'tmdb_error') return 'TMDb错误';
+
+  const missingCount = getMissingCount(collection);
+  if (missingCount > 0) {
+    return `缺失 ${missingCount} 部`;
+  }
+
+  // 当缺失为0时，显示详细信息
+  const parts = [];
+  const inLibraryCount = collection.in_library_count || 0;
+  if (inLibraryCount > 0) {
+    parts.push(`完整 ${inLibraryCount} 部`);
+  }
+
+  if (Array.isArray(collection.missing_movies)) {
+      const unreleasedCount = collection.missing_movies.filter(m => m.status === 'unreleased').length;
+      const ignoredCount = collection.missing_movies.filter(m => m.status === 'ignored').length;
+      if (unreleasedCount > 0) {
+        parts.push(`未上映 ${unreleasedCount} 部`);
+      }
+      if (ignoredCount > 0) {
+        parts.push(`已忽略 ${ignoredCount} 部`);
+      }
+  }
+  
+  // 如果没有任何信息（例如一个空的合集），则显示“完整”
+  return parts.join(' | ') || '完整';
 };
 
 const extractYear = (dateStr) => {

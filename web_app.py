@@ -273,9 +273,21 @@ def init_db():
                     has_missing BOOLEAN, 
                     missing_movies_json TEXT,
                     last_checked_at TIMESTAMP,
-                    poster_path TEXT
+                    poster_path TEXT,
+                    in_library_count INTEGER DEFAULT 0 
                 )
             """)
+
+            # ✨ 为老用户平滑升级数据库结构的逻辑
+            try:
+                cursor.execute("PRAGMA table_info(collections_info)")
+                columns = [row[1] for row in cursor.fetchall()]
+                if 'in_library_count' not in columns:
+                    logger.info("    -> 检测到旧版 'collections_info' 表，正在添加 'in_library_count' 字段...")
+                    cursor.execute("ALTER TABLE collections_info ADD COLUMN in_library_count INTEGER DEFAULT 0;")
+                    logger.info("    -> 'in_library_count' 字段添加成功。")
+            except Exception as e_alter:
+                logger.error(f"  -> 为 'collections_info' 表添加新字段时出错: {e_alter}")
 
             # 剧集追踪 (追剧列表) 
             logger.trace("  -> 正在创建/更新 'watchlist' 表...")
@@ -1779,6 +1791,10 @@ def task_refresh_collections(processor: MediaProcessor):
                 status, has_missing = "ok", False
                 all_missing_movies = []
 
+                # ✨ [新增] 计算已入库电影的数量
+                emby_movie_ids = set(collection.get("ExistingMovieTmdbIds", []))
+                in_library_count = len(emby_movie_ids)
+
                 collection_id = collection['Id']
                 provider_ids = collection.get("ProviderIds", {})
                 tmdb_id = provider_ids.get("TmdbCollection") or provider_ids.get("TmdbCollectionId") or provider_ids.get("Tmdb")
@@ -1825,12 +1841,13 @@ def task_refresh_collections(processor: MediaProcessor):
                 
                 cursor.execute("""
                     INSERT OR REPLACE INTO collections_info 
-                    (emby_collection_id, name, tmdb_collection_id, status, has_missing, missing_movies_json, last_checked_at, poster_path)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (emby_collection_id, name, tmdb_collection_id, status, has_missing, missing_movies_json, last_checked_at, poster_path, in_library_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     collection_id, collection.get('Name'), tmdb_id, status, 
                     has_missing, 
-                    json.dumps(all_missing_movies), time.time(), poster_path
+                    json.dumps(all_missing_movies), time.time(), poster_path,
+                    in_library_count # ✨ 传入新计算的值
                 ))
             
             conn.commit()
