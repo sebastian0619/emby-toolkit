@@ -1,4 +1,4 @@
-<!-- src/components/WatchlistPage.vue (最终健壮版 - 无限滚动) -->
+<!-- src/components/WatchlistPage.vue (最终健壮版 - 弹窗终极修复) -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="watchlist-page">
@@ -33,7 +33,6 @@
       <div v-if="isLoading" class="center-container"><n-spin size="large" /></div>
       <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error" style="max-width: 500px;">{{ error }}</n-alert></div>
       <div v-else-if="filteredWatchlist.length > 0">
-        <!-- ✨ [核心修改] 遍历 renderedWatchlist -->
         <n-grid cols="1 s:1 m:2 l:3 xl:4" :x-gap="20" :y-gap="20" responsive="screen">
           <n-gi v-for="item in renderedWatchlist" :key="item.item_id">
             <n-card class="glass-section" :bordered="false" content-style="display: flex; padding: 0; gap: 16px;">
@@ -67,6 +66,7 @@
                   </n-space>
                 </div>
                 <div class="card-actions">
+                  <!-- ✨ [核心修复] 直接传递完整的 item 对象 -->
                   <n-button type="primary" size="small" @click="() => openMissingInfoModal(item)" :disabled="!hasMissing(item)">
                     <template #icon><n-icon :component="EyeIcon" /></template>
                     查看缺失
@@ -97,7 +97,6 @@
           </n-gi>
         </n-grid>
 
-        <!-- ✨ [核心修改] 添加加载触发器 -->
         <div ref="loaderRef" class="loader-trigger">
           <n-spin v-if="hasMore" size="small" />
         </div>
@@ -106,15 +105,33 @@
       <div v-else class="center-container"><n-empty :description="emptyStateDescription" size="huge" /></div>
     </div>
 
-    <!-- Modal 部分保持不变 -->
     <n-modal v-model:show="showModal" preset="card" style="width: 90%; max-width: 900px;" :title="selectedSeries ? `缺失详情 - ${selectedSeries.item_name}` : ''" :bordered="false" size="huge">
-      <!-- ... Modal 内容省略 ... -->
+      <div v-if="selectedSeries && missingData">
+        <n-tabs type="line" animated>
+          <n-tab-pane name="seasons" :tab="`缺失的季 (${missingData.missing_seasons.length})`" :disabled="missingData.missing_seasons.length === 0">
+            <n-list bordered>
+              <n-list-item v-for="season in missingData.missing_seasons" :key="season.season_number">
+                <template #prefix><n-tag type="warning">S{{ season.season_number }}</n-tag></template>
+                <n-ellipsis>{{ season.name }} ({{ season.episode_count }}集, {{ formatAirDate(season.air_date) }})</n-ellipsis>
+                <template #suffix><n-button size="small" type="primary" @click="subscribeSeason(season.season_number)" :loading="subscribing['s'+season.season_number]">订阅本季</n-button></template>
+              </n-list-item>
+            </n-list>
+          </n-tab-pane>
+          <n-tab-pane name="episodes" :tab="`缺失的集 (${missingData.missing_episodes.length})`" :disabled="missingData.missing_episodes.length === 0">
+            <n-list bordered>
+              <n-list-item v-for="ep in missingData.missing_episodes" :key="`${ep.season_number}-${ep.episode_number}`">
+                <template #prefix><n-tag>S{{ ep.season_number.toString().padStart(2, '0') }}E{{ ep.episode_number.toString().padStart(2, '0') }}</n-tag></template>
+                <n-ellipsis>{{ ep.title }} ({{ formatAirDate(ep.air_date) }})</n-ellipsis>
+              </n-list-item>
+            </n-list>
+          </n-tab-pane>
+        </n-tabs>
+      </div>
     </n-modal>
   </n-layout>
 </template>
 
 <script setup>
-// ✨ [核心修改] 引入 onBeforeUnmount
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NPopconfirm, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem } from 'naive-ui';
@@ -134,11 +151,11 @@ const isLoading = ref(true);
 const isBatchUpdating = ref(false);
 const error = ref(null);
 const showModal = ref(false);
+// ✨ [核心修复] 直接存储被点击的对象
 const selectedSeries = ref(null);
 const subscribing = ref({});
 const refreshingItems = ref({});
 
-// ✨ [核心修改] 无限滚动相关状态
 const displayCount = ref(30);
 const INCREMENT = 30;
 const loaderRef = ref(null);
@@ -189,7 +206,6 @@ const filteredWatchlist = computed(() => {
   return [];
 });
 
-// ✨ [核心修改] 新的计算属性，用于渲染
 const renderedWatchlist = computed(() => {
   return filteredWatchlist.value.slice(0, displayCount.value);
 });
@@ -204,11 +220,9 @@ const loadMore = () => {
   }
 };
 
-// ✨ [核心修改] 切换视图时，重置显示计数
 watch(currentView, () => {
   displayCount.value = 30;
 });
-
 
 const emptyStateDescription = computed(() => {
   if (currentView.value === 'inProgress') {
@@ -308,7 +322,7 @@ const fetchWatchlist = async () => {
   try {
     const response = await axios.get('/api/watchlist');
     rawWatchlist.value = response.data;
-    displayCount.value = 30; // 重置
+    displayCount.value = 30;
   } catch (err) {
     error.value = err.response?.data?.error || '获取追剧列表失败。';
   } finally {
@@ -361,12 +375,12 @@ const triggerSingleUpdate = async (itemId) => {
   }
 };
 
+// ✨ [核心修复] 函数现在接收完整的 item 对象
 const openMissingInfoModal = (item) => {
   selectedSeries.value = item;
   showModal.value = true;
 };
 
-// ✨ [核心修改] 设置和清理 Observer
 onMounted(() => {
   fetchWatchlist();
   observer = new IntersectionObserver(
@@ -409,7 +423,6 @@ watch(loaderRef, (newEl) => {
 .last-checked-text { display: block; font-size: 0.8em; margin-top: 6px; }
 .next-episode-text { display: flex; align-items: center; gap: 4px; font-size: 0.8em; }
 .card-actions { border-top: 1px solid var(--n-border-color); padding-top: 8px; margin-top: 8px; display: flex; justify-content: space-around; align-items: center; flex-shrink: 0; }
-/* ✨ [核心修改] 加载触发器样式 */
 .loader-trigger {
   height: 50px;
   display: flex;

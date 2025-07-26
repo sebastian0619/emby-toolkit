@@ -1,4 +1,4 @@
-<!-- src/components/CollectionsPage.vue (最终毕业版 - 自动无限滚动) -->
+<!-- src/components/CollectionsPage.vue (最终毕业版 - 弹窗终极修复) -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="collections-page">
@@ -44,6 +44,7 @@
                   </n-space>
                 </div>
                 <div class="card-actions">
+                  <!-- ✨ [核心修复] 直接传递完整的 item 对象 -->
                   <n-button type="primary" size="small" @click="() => openMissingMoviesModal(item)"><template #icon><n-icon :component="EyeIcon" /></template>查看详情</n-button>
                   <n-tooltip><template #trigger><n-button text @click="openInEmby(item.emby_collection_id)"><template #icon><n-icon :component="EmbyIcon" size="18" /></template></n-button></template>在 Emby 中打开</n-tooltip>
                   <n-tooltip><template #trigger><n-button text tag="a" :href="`https://www.themoviedb.org/collection/${item.tmdb_collection_id}`" target="_blank" :disabled="!item.tmdb_collection_id"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>在 TMDb 中打开</n-tooltip>
@@ -53,7 +54,6 @@
           </n-gi>
         </n-grid>
 
-        <!-- ✨ [核心优化] 这是一个看不见的触发器，当它进入屏幕时，自动加载更多 -->
         <div ref="loaderRef" class="loader-trigger">
           <n-spin v-if="hasMore" size="small" />
         </div>
@@ -62,15 +62,69 @@
       <div v-else class="center-container"><n-empty description="没有找到任何电影合集。" size="huge" /></div>
     </div>
 
-    <!-- Modal 部分保持不变 -->
     <n-modal v-model:show="showModal" preset="card" style="width: 90%; max-width: 1200px;" :title="selectedCollection ? `详情 - ${selectedCollection.name}` : ''" :bordered="false" size="huge">
-      <!-- ... Modal 的内容和之前完全一样，此处省略 ... -->
+      <div v-if="selectedCollection">
+        <n-tabs type="line" animated>
+          <!-- 缺失影片 -->
+          <n-tab-pane name="missing" :tab="`缺失影片 (${missingMoviesInModal.length})`" :disabled="missingMoviesInModal.length === 0">
+            <n-empty v-if="missingMoviesInModal.length === 0" description="所有已上映的缺失影片都已被订阅或忽略。" style="margin-top: 40px;"></n-empty>
+            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
+              <n-gi v-for="movie in missingMoviesInModal" :key="movie.tmdb_id">
+                <n-card class="movie-card" content-style="padding: 0;">
+                  <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster" /></template>
+                  <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
+                  <template #action>
+                    <n-button-group size="small" style="width: 100%;">
+                      <n-button @click="subscribeToMovie(movie.tmdb_id, movie.title)" type="primary" :loading="subscribing[movie.tmdb_id]" style="width: 50%;">订阅</n-button>
+                      <n-tooltip>
+                        <template #trigger>
+                          <n-button @click="ignoreMovie(selectedCollection.emby_collection_id, movie.tmdb_id)" style="width: 50%;"><template #icon><n-icon :component="IgnoreIcon" /></template>忽略</n-button>
+                        </template>
+                        不再自动订阅此电影
+                      </n-tooltip>
+                    </n-button-group>
+                  </template>
+                </n-card>
+              </n-gi>
+            </n-grid>
+          </n-tab-pane>
+          <!-- 未上映 -->
+          <n-tab-pane name="unreleased" :tab="`未上映 (${unreleasedMoviesInModal.length})`" :disabled="unreleasedMoviesInModal.length === 0">
+            <n-empty v-if="unreleasedMoviesInModal.length === 0" description="该合集没有已知的未上映影片。" style="margin-top: 40px;"></n-empty>
+            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
+              <n-gi v-for="movie in unreleasedMoviesInModal" :key="movie.tmdb_id">
+                <n-card class="movie-card" content-style="padding: 0;">
+                  <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster"></template>
+                  <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
+                </n-card>
+              </n-gi>
+            </n-grid>
+          </n-tab-pane>
+          <!-- 已忽略 -->
+          <n-tab-pane name="ignored" :tab="`已忽略 (${ignoredMoviesInModal.length})`" :disabled="ignoredMoviesInModal.length === 0">
+            <n-empty v-if="ignoredMoviesInModal.length === 0" description="您没有忽略此合集中的任何影片。" style="margin-top: 40px;"></n-empty>
+            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
+              <n-gi v-for="movie in ignoredMoviesInModal" :key="movie.tmdb_id">
+                <n-card class="movie-card" content-style="padding: 0;">
+                  <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster" /></template>
+                  <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
+                  <template #action>
+                    <n-button @click="unignoreMovie(selectedCollection.emby_collection_id, movie.tmdb_id)" type="info" size="small" block ghost>
+                      <template #icon><n-icon :component="UnignoreIcon" /></template>
+                      取消忽略
+                    </n-button>
+                  </template>
+                </n-card>
+              </n-gi>
+            </n-grid>
+          </n-tab-pane>
+        </n-tabs>
+      </div>
     </n-modal>
   </n-layout>
 </template>
 
 <script setup>
-// ✨ [核心优化] 引入 onBeforeUnmount 用于清理工作
 import { ref, onMounted, onBeforeUnmount, computed, watch, h } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NModal, NTabs, NTabPane, NButtonGroup } from 'naive-ui';
@@ -91,12 +145,12 @@ const isRefreshing = ref(false);
 const error = ref(null);
 const subscribing = ref({});
 const showModal = ref(false);
+
+// ✨ [核心修复] 回归到最简单的 ref，直接存储被点击的对象
 const selectedCollection = ref(null);
 
 const displayCount = ref(50);
 const INCREMENT = 50;
-
-// ✨ [核心优化] 用于监视底部加载触发器的 ref
 const loaderRef = ref(null);
 let observer = null;
 
@@ -175,7 +229,6 @@ const triggerFullRefresh = async () => {
   }
 };
 
-// ✨ [核心优化] 设置 Intersection Observer
 onMounted(() => {
   loadCachedData();
   observer = new IntersectionObserver(
@@ -192,20 +245,17 @@ onMounted(() => {
   }
 });
 
-// ✨ [核心优化] 在组件卸载前，断开观察，防止内存泄漏
 onBeforeUnmount(() => {
   if (observer) {
     observer.disconnect();
   }
 });
 
-// ✨ [核心优化] 当 loaderRef 元素出现时，开始观察它
 watch(loaderRef, (newEl) => {
   if (observer && newEl) {
     observer.observe(newEl);
   }
 });
-
 
 watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {
   if (wasRunning && !isRunning && props.taskStatus.current_action.includes('合集')) {
@@ -214,6 +264,7 @@ watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {
   }
 });
 
+// ✨ [核心修复] 函数现在接收完整的 collection 对象
 const openMissingMoviesModal = (collection) => {
   selectedCollection.value = collection;
   showModal.value = true;
@@ -228,11 +279,6 @@ const subscribeToMovie = async (tmdb_id, title) => {
       const movieIndex = selectedCollection.value.missing_movies.findIndex(m => String(m.tmdb_id) === String(tmdb_id));
       if (movieIndex > -1) {
         selectedCollection.value.missing_movies.splice(movieIndex, 1);
-      }
-      
-      const mainCollection = collections.value.find(c => c.emby_collection_id === selectedCollection.value.emby_collection_id);
-      if(mainCollection) {
-        mainCollection.missing_movies = selectedCollection.value.missing_movies;
       }
     }
   } catch (err) {
@@ -338,7 +384,6 @@ const extractYear = (dateStr) => {
   white-space: normal;
   line-height: 1.3;
 }
-/* ✨ [核心优化] 加载触发器的样式 */
 .loader-trigger {
   height: 50px;
   display: flex;
