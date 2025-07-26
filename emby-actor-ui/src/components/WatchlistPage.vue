@@ -56,7 +56,9 @@
                         <template #icon><n-icon :component="statusInfo(item.status).icon" /></template>
                         {{ statusInfo(item.status).text }}
                       </n-button>
-                      <n-tag v-if="item.tmdb_status" size="small" :bordered="false">{{ translateTmdbStatus(item.tmdb_status) }}</n-tag>
+                      <n-tag v-if="item.tmdb_status" size="small" :bordered="false" :type="getSmartTMDbStatusType(item)">
+                        {{ getSmartTMDbStatusText(item) }}
+                      </n-tag>
                       <n-tag v-if="hasMissing(item)" type="warning" size="small" round>{{ getMissingCountText(item) }}</n-tag>
                     </n-space>
                     <n-text v-if="nextEpisode(item)?.name" :depth="3" class="next-episode-text">
@@ -315,6 +317,29 @@ const translateTmdbStatus = (status) => {
     "Pilot": "试播"
   };
   return statusMap[status] || status;
+};
+const getSmartTMDbStatusText = (item) => {
+  const internalStatus = item.status;
+  const tmdbStatus = item.tmdb_status;
+
+  // 只有当内部状态是“已完结”时，才进行特殊判断
+  if (internalStatus === 'Completed') {
+    // 如果TMDb状态也是完结或取消，则显示“待回归”
+    if (tmdbStatus === 'Ended' || tmdbStatus === 'Canceled') {
+      return '待回归';
+    }
+  }
+  // 其他所有情况，都正常翻译TMDb状态
+  return translateTmdbStatus(tmdbStatus);
+};
+
+const getSmartTMDbStatusType = (item) => {
+  // 让“待回归”标签显示为蓝色 (info)，以示区别
+  if (getSmartTMDbStatusText(item) === '待回归') {
+    return 'info';
+  }
+  // 其他情况使用默认样式
+  return 'default';
 };
 const fetchWatchlist = async () => {
   isLoading.value = true;
