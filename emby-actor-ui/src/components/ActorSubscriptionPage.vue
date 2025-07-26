@@ -1,3 +1,4 @@
+<!-- src/components/ActorSubscriptions.vue (最终健壮版 - 无限滚动) -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div>
@@ -6,9 +7,7 @@
           演员订阅
         </template>
         <template #extra>
-          <!-- ✨ [修改] 使用 n-space 包裹按钮以获得良好间距 -->
           <n-space>
-            <!-- ✨ [新增] 刷新订阅状态按钮 -->
             <n-button @click="handleRefreshSubscriptions">
               <template #icon>
                 <n-icon><sync-icon /></n-icon>
@@ -42,21 +41,29 @@
         </n-empty>
       </div>
 
-      <n-grid :x-gap="12" :y-gap="12" cols="3 s:5 m:6 l:7 xl:8 xxl:9" responsive="screen" style="margin-top: 20px;">
-        <n-gi v-for="sub in subscriptions" :key="sub.id">
-          <n-card class="glass-section actor-card" @click="handleCardClick(sub)">
-            <template #cover>
-              <img :src="getImageUrl(sub.profile_path)" class="actor-avatar">
-            </template>
-            <div class="actor-name">{{ sub.actor_name }}</div>
-            <div class="actor-status">
-              <n-tag :type="sub.status === 'active' ? 'success' : 'warning'" size="small" round>
-                {{ sub.status === 'active' ? '订阅中' : '已暂停' }}
-              </n-tag>
-            </div>
-          </n-card>
-        </n-gi>
-      </n-grid>
+      <!-- ✨ [核心修改] 应用无限滚动 -->
+      <div v-else>
+        <n-grid :x-gap="12" :y-gap="12" cols="3 s:5 m:6 l:7 xl:8 xxl:9" responsive="screen" style="margin-top: 20px;">
+          <n-gi v-for="sub in renderedSubscriptions" :key="sub.id">
+            <n-card class="glass-section actor-card" @click="handleCardClick(sub)">
+              <template #cover>
+                <img :src="getImageUrl(sub.profile_path)" class="actor-avatar">
+              </template>
+              <div class="actor-name">{{ sub.actor_name }}</div>
+              <div class="actor-status">
+                <n-tag :type="sub.status === 'active' ? 'success' : 'warning'" size="small" round>
+                  {{ sub.status === 'active' ? '订阅中' : '已暂停' }}
+                </n-tag>
+              </div>
+            </n-card>
+          </n-gi>
+        </n-grid>
+        
+        <!-- ✨ [核心修改] 添加加载触发器 -->
+        <div ref="loaderRef" class="loader-trigger">
+          <n-spin v-if="hasMore" size="small" />
+        </div>
+      </div>
 
       <add-subscription-modal
         :show="showAddModal"
@@ -68,7 +75,7 @@
         :show="showDetailsModal"
         :subscription-id="selectedSubId"
         @update:show="showDetailsModal = $event"
-        @subscription-updated="onSubscriptionChange"
+        @subscription-updated="onSubscriptionChange" 
         @subscription-deleted="onSubscriptionChange"
       />
     </div>
@@ -76,10 +83,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
-// ✨ [修改] 从 naive-ui 导入 NSpace
+// ✨ [核心修改] 引入 onBeforeUnmount 和 watch
+import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue';
 import { NPageHeader, NButton, NIcon, NText, NGrid, NGi, NCard, NSpin, NEmpty, NTag, useMessage, NSpace } from 'naive-ui';
-// ✨ [修改] 从 vicons 导入 SyncOutline 图标
 import { Add as AddIcon, SyncOutline as SyncIcon } from '@vicons/ionicons5';
 import axios from 'axios';
 import AddSubscriptionModal from './modals/AddSubscriptionModal.vue';
@@ -89,14 +95,21 @@ const loading = ref(true);
 const subscriptions = ref([]);
 const showAddModal = ref(false);
 const message = useMessage();
-const showDetailsModal = ref(false);
-const selectedSubId = ref(null);
+const showDetailsModal = ref(false); 
+const selectedSubId = ref(null); 
+
+// ✨ [核心修改] 无限滚动相关状态
+const displayCount = ref(40); // 演员卡片小，可以多显示一些
+const INCREMENT = 40;
+const loaderRef = ref(null);
+let observer = null;
 
 const fetchSubscriptions = async () => {
   loading.value = true;
   try {
     const response = await axios.get('/api/actor-subscriptions');
     subscriptions.value = response.data;
+    displayCount.value = 40; // 重置
   } catch (error) {
     console.error("获取演员订阅列表失败:", error);
     message.error('获取订阅列表失败，请稍后重试。');
@@ -105,20 +118,31 @@ const fetchSubscriptions = async () => {
   }
 };
 
-// ✨ [新增] 触发后台刷新任务的函数
+// ✨ [核心修改] 新的计算属性
+const renderedSubscriptions = computed(() => {
+  return subscriptions.value.slice(0, displayCount.value);
+});
+
+const hasMore = computed(() => {
+  return displayCount.value < subscriptions.value.length;
+});
+
+const loadMore = () => {
+  if (hasMore.value) {
+    displayCount.value += INCREMENT;
+  }
+};
+
 const handleRefreshSubscriptions = async () => {
   try {
-    // 调用通用的任务触发端点，并传入演员订阅任务的标识符
     const response = await axios.post('/api/tasks/trigger/actor-tracking');
     message.success(response.data.message || '演员订阅刷新任务已成功提交到后台！');
   } catch (error) {
     console.error("触发演员订阅刷新失败:", error);
-    // 优先显示后端返回的、更具体的错误信息
     const errorMsg = error.response?.data?.message || error.response?.data?.error || '启动刷新任务失败，请检查后台或稍后再试。';
     message.error(errorMsg);
   }
 };
-
 
 const getImageUrl = (path) => {
   if (!path) {
@@ -137,13 +161,35 @@ const handleCardClick = (subscription) => {
 };
 
 const onSubscriptionChange = () => {
-  // 这里不需要立即刷新，因为后台任务可能需要时间
-  // 仅在增删改后刷新列表
-  fetchSubscriptions();
+  fetchSubscriptions(); 
 };
 
+// ✨ [核心修改] 设置和清理 Observer
 onMounted(() => {
   fetchSubscriptions();
+  observer = new IntersectionObserver(
+    (entries) => {
+      if (entries[0].isIntersecting) {
+        loadMore();
+      }
+    },
+    { threshold: 1.0 }
+  );
+  if (loaderRef.value) {
+    observer.observe(loaderRef.value);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (observer) {
+    observer.disconnect();
+  }
+});
+
+watch(loaderRef, (newEl) => {
+  if (observer && newEl) {
+    observer.observe(newEl);
+  }
 });
 </script>
 
@@ -173,5 +219,12 @@ onMounted(() => {
 .actor-status {
   margin-top: 4px;
   font-size: 12px;
+}
+/* ✨ [核心修改] 加载触发器样式 */
+.loader-trigger {
+  height: 50px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
 </style>
