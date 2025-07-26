@@ -429,6 +429,18 @@ const getShortStatusText = (collection) => {
   return `完整 ${inLibraryCount} 部`;
 };
 
+watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {
+  // 我们关心的是任务从“正在运行”变为“已结束”的那个瞬间
+  if (wasRunning && !isRunning) {
+    // 同时，我们只关心与“合集”相关的任务结束事件
+    if (props.taskStatus.current_action.includes('合集')) {
+      message.info('后台合集任务已结束，正在刷新数据...');
+      // 调用我们现有的数据加载函数，来获取最新的数据
+      loadCachedData();
+    }
+  }
+});
+
 const isTooltipNeeded = (collection) => {
   return getFullStatusText(collection) !== getShortStatusText(collection);
 };
