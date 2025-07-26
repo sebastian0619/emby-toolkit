@@ -171,7 +171,7 @@ class WatchlistProcessor:
         finally:
             self.progress_callback = None
 
-    # ★★★ 新增：专门用于“复活检查”的任务方法 ★★★
+    # ★★★ 专门用于“复活检查”的任务方法 ★★★
     def run_revival_check_task(self, progress_callback: callable):
         """【低频任务】检查所有已完结剧集是否“复活”。"""
         self.progress_callback = progress_callback
@@ -252,7 +252,6 @@ class WatchlistProcessor:
             logger.warning("未配置TMDb API Key，跳过。")
             return
         
-        # 步骤 1: 刷新元数据
         override_dir = os.path.join(self.local_data_path, "override", "tmdb-tv", tmdb_id)
         os.makedirs(override_dir, exist_ok=True)
         cache_dir = os.path.join(self.local_data_path, "cache", "tmdb-tv", tmdb_id)
@@ -273,7 +272,6 @@ class WatchlistProcessor:
             logger.error(f"读取最新的 series.json 文件失败: {e}，无法继续处理。")
             return
 
-        # 步骤 2: 获取本地状态
         emby_children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
         emby_seasons = {}
         if emby_children:
@@ -282,27 +280,20 @@ class WatchlistProcessor:
                 if s_num is not None and e_num is not None:
                     emby_seasons.setdefault(s_num, set()).add(e_num)
 
-        # 步骤 3: 智能决策
         new_tmdb_status = latest_series_data.get("status")
         is_ended_on_tmdb = new_tmdb_status in ["Ended", "Canceled"]
         
-        real_next_episode_to_air = self._calculate_real_next_episode(all_tmdb_episodes, emby_seasons, latest_series_data)
+        real_next_episode_to_air = self._calculate_real_next_episode(all_tmdb_episodes, emby_seasons)
         missing_info = self._calculate_missing_info(latest_series_data.get('seasons', []), all_tmdb_episodes, emby_seasons)
         has_missing_media = bool(missing_info["missing_seasons"] or missing_info["missing_episodes"])
 
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        # ★★★              这就是注入了完整逻辑的“大脑中枢”              ★★★
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        final_status = STATUS_WATCHING # 先假设是追剧中
+        final_status = STATUS_WATCHING
         paused_until_date = None
 
-        if is_ended_on_tmdb and self._check_all_episodes_have_overview(all_tmdb_episodes) and not has_missing_media:
-            # 决策1: 完结
+        if is_ended_on_tmdb and not has_missing_media:
             final_status = STATUS_COMPLETED
-            # ★★★ 修改：日志输出使用翻译后的状态 ★★★
             logger.info(f"  -> 剧集已完结且本地完整，状态变更为: {translate_internal_status(final_status)}")
         elif real_next_episode_to_air and real_next_episode_to_air.get('air_date'):
-            # 决策2: 有明确的下一集播出日期
             air_date_str = real_next_episode_to_air['air_date']
             air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
             days_until_air = (air_date - datetime.now().date()).days
@@ -310,24 +301,17 @@ class WatchlistProcessor:
             logger.debug(f"  -> 下一集播出日期: {air_date_str}, 距离今天: {days_until_air} 天。")
 
             if days_until_air > 3:
-                # 下一集在3天后，进入暂停状态
                 final_status = STATUS_PAUSED
-                paused_until_date = air_date - timedelta(days=1) # 提前一天唤醒
-                # ★★★ 修改：日志输出使用翻译后的状态 ★★★
+                paused_until_date = air_date - timedelta(days=1)
                 logger.info(f"  -> 下一集在3天后播出，状态变更为: {translate_internal_status(final_status)}，暂停至 {paused_until_date}。")
             else:
-                # 即将播出或已播出，保持追剧中
                 final_status = STATUS_WATCHING
-                # ★★★ 修改：日志输出使用翻译后的状态 ★★★
-                logger.info(f"  -> 下一集即将在3天内播出，状态保持为: {translate_internal_status(final_status)}。")
+                logger.info(f"  -> 下一集即将在3天内播出或已播出，状态保持为: {translate_internal_status(final_status)}。")
         else:
-            # 决策3: 暂时没有下一集信息（季歇期）
             final_status = STATUS_PAUSED
-            paused_until_date = datetime.now().date() + timedelta(days=7) # 7天后再来检查
-            # ★★★ 修改：日志输出使用翻译后的状态 ★★★
+            paused_until_date = datetime.now().date() + timedelta(days=7)
             logger.info(f"  -> 暂无待播信息 (季歇期)，状态变更为: {translate_internal_status(final_status)}，暂停7天。")
 
-        # 步骤 4 & 5: 更新数据库并触发刷新
         updates_to_db = {
             "status": final_status,
             "paused_until": paused_until_date.isoformat() if paused_until_date else None,
@@ -383,58 +367,52 @@ class WatchlistProcessor:
         logger.info("--- 追剧列表更新任务结束 ---")
 
     # --- 通过对比计算真正的下一待看集 ---
-    def _calculate_real_next_episode(self, all_tmdb_episodes: List[Dict], emby_seasons: Dict, series_details: Dict) -> Optional[Dict]:
-        """通过对比计算真正的下一待看集。"""
-        # ★★★ 修改：硬编码忽略所有第0季（特别篇）★★★
-        episodes_with_air_date = sorted([
+    def _calculate_real_next_episode(self, all_tmdb_episodes: List[Dict], emby_seasons: Dict) -> Optional[Dict]:
+        """
+        【逻辑重生】通过对比本地和TMDb全量数据，计算用户真正缺失的第一集。
+        """
+        # 1. 获取TMDb上所有非特别季的剧集，并严格按季号、集号排序
+        all_episodes_sorted = sorted([
             ep for ep in all_tmdb_episodes 
-            if ep.get('air_date') and ep.get('season_number') != 0
-        ], key=lambda x: x['air_date'])
-        today_str = datetime.now().date().isoformat()
+            if ep.get('season_number') is not None and ep.get('season_number') != 0
+        ], key=lambda x: (x.get('season_number', 0), x.get('episode_number', 0)))
         
-        for episode in episodes_with_air_date:
-            if episode.get('air_date') > today_str: continue
-            s_num, e_num = episode.get('season_number'), episode.get('episode_number')
-            if s_num is not None and e_num is not None:
-                if s_num not in emby_seasons or e_num not in emby_seasons.get(s_num, set()):
-                    logger.info(f"  找到本地缺失的集: S{s_num}E{e_num}，将其设为待播集。")
-                    return episode
-        
-        api_next_episode = series_details.get('next_episode_to_air')
-        # ★★★ 新增：硬编码忽略官方待播集中的第0季 ★★★
-        if api_next_episode and api_next_episode.get('season_number') == 0:
-            logger.info("  TMDb官方的下一待播集是第0季（特别篇），已忽略。")
-            api_next_episode = None # 将其视为空，以便后续逻辑能正确处理
-
-        if api_next_episode and api_next_episode.get('air_date', '') >= today_str:
-            logger.info("  本地媒体库已追平，采用TMDb官方的未来待播集信息。")
-            return api_next_episode
+        # 2. 遍历这个完整列表，找到第一个本地没有的剧集
+        for episode in all_episodes_sorted:
+            s_num = episode.get('season_number')
+            e_num = episode.get('episode_number')
             
-        logger.info("  本地媒体库已追平，且无未来待播集信息。")
+            if s_num not in emby_seasons or e_num not in emby_seasons.get(s_num, set()):
+                # 找到了！这无论是否播出，都是用户最关心的下一集
+                logger.info(f"  找到本地缺失的第一集: S{s_num}E{e_num} ('{episode.get('name')}'), 将其设为待播集。")
+                return episode
+        
+        # 3. 如果循环完成，说明本地拥有TMDb上所有的剧集
+        logger.info("  本地媒体库已拥有TMDb上所有剧集，无待播信息。")
         return None
     # --- 计算缺失的季和集 ---
     def _calculate_missing_info(self, tmdb_seasons: List[Dict], all_tmdb_episodes: List[Dict], emby_seasons: Dict) -> Dict:
-        """计算缺失的季和集。"""
+        """
+        【逻辑重生】计算所有缺失的季和集，不再关心播出日期。
+        """
         missing_info = {"missing_seasons": [], "missing_episodes": []}
         
-        # 建立一个从季到其所有集的映射
         tmdb_episodes_by_season = {}
         for ep in all_tmdb_episodes:
             s_num = ep.get('season_number')
-            # ★★★ 新增：硬编码忽略所有第0季（特别篇）★★★
             if s_num is not None and s_num != 0:
                 tmdb_episodes_by_season.setdefault(s_num, []).append(ep)
 
         for season_summary in tmdb_seasons:
             s_num = season_summary.get('season_number')
-            # ★★★ 新增：硬编码忽略所有第0季（特别篇）★★★
             if s_num is None or s_num == 0: 
                 continue
 
+            # 如果本地没有这个季，则整个季都算缺失
             if s_num not in emby_seasons:
                 missing_info["missing_seasons"].append(season_summary)
             else:
-                # 季存在，检查缺失的集
+                # 如果季存在，则逐集检查缺失
                 if s_num in tmdb_episodes_by_season:
                     for episode in tmdb_episodes_by_season[s_num]:
                         e_num = episode.get('episode_number')
