@@ -1750,107 +1750,161 @@ def image_update_task(processor: MediaProcessor, item_id: str, update_descriptio
         return
 
     logger.debug(f"图片更新任务完成: {item_id}")
+# ✨ 辅助函数，并发刷新合集使用
+def _process_single_collection_concurrently(collection_data: dict, db_path: str, tmdb_api_key: str) -> dict:
+    """
+    在单个线程中处理单个合集的所有逻辑。
+    它会自己连接数据库以保证线程安全，并返回一个包含所有结果的字典。
+    """
+    collection_id = collection_data['Id']
+    collection_name = collection_data.get('Name', '')
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    
+    # 每个线程创建自己的数据库连接，以确保线程安全
+    with get_central_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        
+        # 1. 读取历史“忽略”状态
+        cursor.execute("SELECT missing_movies_json FROM collections_info WHERE emby_collection_id = ?", (collection_id,))
+        row = cursor.fetchone()
+        ignored_tmdb_ids = set()
+        if row and row[0]:
+            try:
+                previous_missing_movies = json.loads(row[0])
+                ignored_tmdb_ids = {str(m['tmdb_id']) for m in previous_missing_movies if m.get('status') == 'ignored'}
+            except (json.JSONDecodeError, TypeError):
+                pass # 忽略解析错误
+
+    # 2. 执行核心的 API 请求和计算逻辑
+    status, has_missing = "ok", False
+    all_missing_movies = []
+    emby_movie_ids = set(collection_data.get("ExistingMovieTmdbIds", []))
+    in_library_count = len(emby_movie_ids)
+
+    provider_ids = collection_data.get("ProviderIds", {})
+    tmdb_id = provider_ids.get("TmdbCollection") or provider_ids.get("TmdbCollectionId") or provider_ids.get("Tmdb")
+
+    if not tmdb_id:
+        status = "unlinked"
+    else:
+        details = tmdb_handler.get_collection_details_tmdb(int(tmdb_id), tmdb_api_key)
+        if not details or "parts" not in details:
+            status = "tmdb_error"
+        else:
+            for movie in details.get("parts", []):
+                release_date = movie.get("release_date")
+                if not release_date: continue
+                
+                movie_tmdb_id = str(movie.get("id"))
+                title = movie.get("title", "")
+                if not re.search(r'[\u4e00-\u9fa5]', title): continue
+
+                if movie_tmdb_id not in emby_movie_ids:
+                    movie_status = "unknown"
+                    if movie_tmdb_id in ignored_tmdb_ids:
+                        movie_status = "ignored"
+                    else:
+                        if release_date and release_date > today_str:
+                            movie_status = "unreleased"
+                        else:
+                            movie_status = "missing"
+                    
+                    all_missing_movies.append({
+                        "tmdb_id": movie_tmdb_id, "title": title, "release_date": release_date, 
+                        "poster_path": movie.get("poster_path"), "status": movie_status
+                    })
+            
+            if any(m['status'] == 'missing' for m in all_missing_movies):
+                has_missing = True
+                status = "has_missing"
+    
+    image_tag = collection_data.get("ImageTags", {}).get("Primary")
+    poster_path = f"/Items/{collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
+
+    # 3. 将所有结果打包成一个字典返回
+    return {
+        "emby_collection_id": collection_id, "name": collection_name, "tmdb_collection_id": tmdb_id, 
+        "status": status, "has_missing": has_missing, "missing_movies_json": json.dumps(all_missing_movies), 
+        "last_checked_at": time.time(), "poster_path": poster_path, "in_library_count": in_library_count
+    }
+
+
 # ★★★ 刷新合集的后台任务函数 ★★★
 def task_refresh_collections(processor: MediaProcessor):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     update_status_from_thread(0, "正在获取 Emby 合集列表...")
     try:
+        emby_collections = emby_handler.get_all_collections_with_items(
+            base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id
+        )
+        if emby_collections is None: raise RuntimeError("从 Emby 获取合集列表失败")
+
+        total = len(emby_collections)
+        update_status_from_thread(5, f"共找到 {total} 个合集，准备开始并发处理...")
+
+        # 清理数据库中已不存在的合集
         with get_central_db_connection(DB_PATH) as conn:
             cursor = conn.cursor()
-            
-            emby_collections = emby_handler.get_all_collections_with_items(
-                base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id
-            )
-            if emby_collections is None: raise RuntimeError("从 Emby 获取合集列表失败")
-
-            total = len(emby_collections)
-            update_status_from_thread(5, f"共找到 {total} 个合集，开始同步...")
-
             emby_current_ids = {c['Id'] for c in emby_collections}
             cursor.execute("SELECT emby_collection_id FROM collections_info")
             db_known_ids = {row[0] for row in cursor.fetchall()}
-            
             deleted_ids = db_known_ids - emby_current_ids
             if deleted_ids:
                 cursor.executemany("DELETE FROM collections_info WHERE emby_collection_id = ?", [(id,) for id in deleted_ids])
-
-            tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-            if not tmdb_api_key: raise RuntimeError("未配置 TMDb API Key")
-
-            today_str = datetime.now().strftime('%Y-%m-%d')
-
-            for i, collection in enumerate(emby_collections):
-                if processor.is_stop_requested(): break
-                
-                progress = 10 + int((i / total) * 90)
-                update_status_from_thread(progress, f"正在同步: {collection.get('Name', '')[:20]}... ({i+1}/{total})")
-
-                collection_id = collection['Id']
-                provider_ids = collection.get("ProviderIds", {})
-                tmdb_id = provider_ids.get("TmdbCollection") or provider_ids.get("TmdbCollectionId") or provider_ids.get("Tmdb")
-                
-                status, has_missing = "ok", False
-                all_missing_movies = []
-
-                # ✨ [新增] 计算已入库电影的数量
-                emby_movie_ids = set(collection.get("ExistingMovieTmdbIds", []))
-                in_library_count = len(emby_movie_ids)
-
-                collection_id = collection['Id']
-                provider_ids = collection.get("ProviderIds", {})
-                tmdb_id = provider_ids.get("TmdbCollection") or provider_ids.get("TmdbCollectionId") or provider_ids.get("Tmdb")
-
-                if not tmdb_id:
-                    status = "unlinked"
-                else:
-                    details = tmdb_handler.get_collection_details_tmdb(int(tmdb_id), tmdb_api_key)
-                    if not details or "parts" not in details:
-                        status = "tmdb_error"
-                    else:
-                        emby_movie_ids = set(collection.get("ExistingMovieTmdbIds", []))
-                        for movie in details.get("parts", []):
-                            release_date = movie.get("release_date")
-                            # 过滤掉没有发布日期的影片
-                            if not release_date:
-                                logger.info(f"合集《{collection.get('Name')}》中的影片 '{title}' 因无上映日期而被跳过。")
-                                continue  # 跳过没有日期的影片
-                            movie_tmdb_id = str(movie.get("id"))
-                            title = movie.get("title", "")
-                            if not re.search(r'[\u4e00-\u9fa5]', title):
-                                logger.info(f"合集《{collection.get('Name')}》中的影片 '{title}' 因无中文片名而被跳过。")
-                                continue # 跳过没有中文标题的电影
-                            if movie_tmdb_id not in emby_movie_ids:
-                                release_date = movie.get("release_date")
-                                movie_status = "missing"
-                                if release_date and release_date > today_str:
-                                    movie_status = "unreleased"
-                                
-                                all_missing_movies.append({
-                                    "tmdb_id": movie_tmdb_id,
-                                    "title": title, # 使用已经验证过的标题
-                                    "release_date": release_date, 
-                                    "poster_path": movie.get("poster_path"),
-                                    "status": movie_status
-                                })
-                        
-                        if all_missing_movies:
-                            has_missing = True
-                            status = "has_missing"
-                
-                image_tag = collection.get("ImageTags", {}).get("Primary")
-                poster_path = f"/Items/{collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
-                
-                cursor.execute("""
-                    INSERT OR REPLACE INTO collections_info 
-                    (emby_collection_id, name, tmdb_collection_id, status, has_missing, missing_movies_json, last_checked_at, poster_path, in_library_count)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    collection_id, collection.get('Name'), tmdb_id, status, 
-                    has_missing, 
-                    json.dumps(all_missing_movies), time.time(), poster_path,
-                    in_library_count # ✨ 传入新计算的值
-                ))
-            
             conn.commit()
+
+        tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+        if not tmdb_api_key: raise RuntimeError("未配置 TMDb API Key")
+
+        processed_count = 0
+        all_results = []
+        
+        # ✨ 核心修改：使用线程池进行并发处理
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            # 提交所有任务
+            futures = {executor.submit(_process_single_collection_concurrently, collection, DB_PATH, tmdb_api_key): collection for collection in emby_collections}
+            
+            # 实时获取已完成的结果并更新进度条
+            for future in as_completed(futures):
+                if processor.is_stop_requested():
+                    # 如果用户请求停止，我们可以尝试取消未开始的任务
+                    for f in futures: f.cancel()
+                    break
+                
+                collection_name = futures[future].get('Name', '未知合集')
+                try:
+                    result = future.result()
+                    all_results.append(result)
+                except Exception as e:
+                    logger.error(f"处理合集 '{collection_name}' 时线程内发生错误: {e}", exc_info=True)
+                
+                processed_count += 1
+                progress = 10 + int((processed_count / total) * 90)
+                update_status_from_thread(progress, f"处理中: {collection_name[:20]}... ({processed_count}/{total})")
+
+        if processor.is_stop_requested():
+            logger.warning("任务被用户中断，部分数据可能未被处理。")
+            # 即使被中断，我们依然保存已成功处理的结果
+        
+        # ✨ 所有并发任务完成后，在主线程中安全地、一次性地写入数据库
+        if all_results:
+            logger.info(f"并发处理完成，准备将 {len(all_results)} 条结果写入数据库...")
+            with get_central_db_connection(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute("BEGIN TRANSACTION;")
+                try:
+                    cursor.executemany("""
+                        INSERT OR REPLACE INTO collections_info 
+                        (emby_collection_id, name, tmdb_collection_id, status, has_missing, missing_movies_json, last_checked_at, poster_path, in_library_count)
+                        VALUES (:emby_collection_id, :name, :tmdb_collection_id, :status, :has_missing, :missing_movies_json, :last_checked_at, :poster_path, :in_library_count)
+                    """, all_results)
+                    conn.commit()
+                    logger.info("数据库写入成功！")
+                except Exception as e_db:
+                    logger.error(f"数据库批量写入时发生错误: {e_db}", exc_info=True)
+                    conn.rollback()
+        
     except Exception as e:
         logger.error(f"刷新合集任务失败: {e}", exc_info=True)
         update_status_from_thread(-1, f"错误: {e}")

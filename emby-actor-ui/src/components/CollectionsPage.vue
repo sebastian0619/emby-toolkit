@@ -249,7 +249,14 @@ const loadCachedData = async () => {
   if (collections.value.length === 0) isInitialLoading.value = true;
   error.value = null;
   try {
-    const response = await axios.get('/api/collections/status');
+    // ✨ [核心修复] 添加 headers 配置，强制浏览器不缓存此 API 请求
+    const response = await axios.get('/api/collections/status', {
+      headers: {
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+      },
+    });
     collections.value = response.data;
     displayCount.value = 50;
   } catch (err) {
