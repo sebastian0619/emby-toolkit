@@ -1827,8 +1827,6 @@ def _process_single_collection_concurrently(collection_data: dict, db_path: str,
         "status": status, "has_missing": has_missing, "missing_movies_json": json.dumps(all_missing_movies), 
         "last_checked_at": time.time(), "poster_path": poster_path, "in_library_count": in_library_count
     }
-
-
 # ★★★ 刷新合集的后台任务函数 ★★★
 def task_refresh_collections(processor: MediaProcessor):
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -3705,6 +3703,63 @@ def api_get_collections_status():
     except Exception as e:
         logger.error(f"读取合集状态时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "读取合集时发生服务器内部错误"}), 500
+# ✨ 一键忽略所有缺失电影的 API 端点
+@app.route('/api/collections/ignore_all_missing', methods=['POST'])
+@login_required
+@task_lock_required
+def api_ignore_all_missing():
+    """
+    遍历所有有缺失的合集，将其中所有状态为 'missing' 的电影批量更新为 'ignored'。
+    """
+    logger.info("API: 收到一键忽略所有缺失电影的请求。")
+    total_ignored_count = 0
+    try:
+        with get_central_db_connection(DB_PATH) as conn:
+            cursor = conn.cursor()
+            # 优化：只选择那些确实有缺失的合集进行处理
+            cursor.execute("SELECT emby_collection_id, missing_movies_json FROM collections_info WHERE has_missing = 1")
+            collections_to_process = cursor.fetchall()
+
+            if not collections_to_process:
+                return jsonify({"message": "没有发现任何缺失的电影需要忽略。", "count": 0}), 200
+
+            # 开启事务，确保数据一致性
+            cursor.execute("BEGIN TRANSACTION;")
+            try:
+                for collection_id, missing_json in collections_to_process:
+                    if not missing_json: continue
+                    
+                    movies = json.loads(missing_json)
+                    needs_update = False
+                    
+                    for movie in movies:
+                        if movie.get('status') == 'missing':
+                            movie['status'] = 'ignored'
+                            total_ignored_count += 1
+                            needs_update = True
+                    
+                    if needs_update:
+                        # 检查更新后是否还有 'missing' 状态的电影
+                        still_has_missing = any(m.get('status') == 'missing' for m in movies)
+                        
+                        new_missing_json = json.dumps(movies)
+                        cursor.execute(
+                            "UPDATE collections_info SET missing_movies_json = ?, has_missing = ? WHERE emby_collection_id = ?",
+                            (new_missing_json, still_has_missing, collection_id)
+                        )
+                
+                conn.commit()
+                logger.info(f"一键忽略操作成功，共忽略了 {total_ignored_count} 部电影。")
+                return jsonify({"message": f"操作成功！共忽略了 {total_ignored_count} 部电影。", "count": total_ignored_count}), 200
+
+            except Exception as e_inner:
+                conn.rollback()
+                logger.error(f"在一键忽略的事务处理中发生错误: {e_inner}", exc_info=True)
+                raise # 重新抛出，让外层捕获
+
+    except Exception as e:
+        logger.error(f"执行一键忽略时发生严重错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在处理一键忽略时发生内部错误"}), 500
 # ★★★ 将电影提交到 MoviePilot 订阅  ★★★
 @app.route('/api/subscribe/moviepilot', methods=['POST'])
 @login_required

@@ -27,22 +27,37 @@
           </n-space>
         </template>
         <template #extra>
-          <n-tooltip>
-            <template #trigger>
-              <n-button @click="triggerFullRefresh" :loading="isRefreshing" circle>
-                <template #icon><n-icon :component="SyncOutline" /></template>
-              </n-button>
-            </template>
-            刷新所有合集信息
-          </n-tooltip>
+          <n-space>
+            <n-popconfirm @positive-click="ignoreAllMissingMovies" :disabled="globalStats.totalMissingMovies === 0">
+              <template #trigger>
+                <n-tooltip>
+                  <template #trigger>
+                    <n-button circle :loading="isIgnoringAll" :disabled="globalStats.totalMissingMovies === 0">
+                      <template #icon><n-icon :component="IgnoreIcon" /></template>
+                    </n-button>
+                  </template>
+                  一键忽略所有缺失
+                </n-tooltip>
+              </template>
+              确定要忽略所有 {{ globalStats.totalMissingMovies }} 部缺失的电影吗？此操作会影响 {{ globalStats.collectionsWithMissing }} 个合集。
+            </n-popconfirm>
+
+            <n-tooltip>
+              <template #trigger>
+                <n-button @click="triggerFullRefresh" :loading="isRefreshing" circle>
+                  <template #icon><n-icon :component="SyncOutline" /></template>
+                </n-button>
+              </template>
+              刷新所有合集信息
+            </n-tooltip>
+          </n-space>
         </template>
       </n-page-header>
-      <n-divider />
 
       <div v-if="isInitialLoading" class="center-container"><n-spin size="large" /></div>
       <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error" style="max-width: 500px;">{{ error }}</n-alert></div>
       
-      <div v-else-if="collections.length > 0">
+      <div v-else-if="collections.length > 0" style="margin-top: 24px;">
         <n-grid cols="1 s:2 m:3 l:4 xl:5" :x-gap="20" :y-gap="20" responsive="screen">
           <n-gi v-for="item in renderedCollections" :key="item.emby_collection_id">
             <n-card class="glass-section" :bordered="false" content-style="display: flex; padding: 0; gap: 16px;">
@@ -167,7 +182,7 @@ const showModal = ref(false);
 
 // ✨ [核心修复] 回归到最简单的 ref，直接存储被点击的对象
 const selectedCollection = ref(null);
-
+const isIgnoringAll = ref(false);
 const displayCount = ref(50);
 const INCREMENT = 50;
 const loaderRef = ref(null);
@@ -263,6 +278,20 @@ const loadCachedData = async () => {
     error.value = err.response?.data?.error || '无法加载合集数据。';
   } finally {
     isInitialLoading.value = false;
+  }
+};
+
+const ignoreAllMissingMovies = async () => {
+  isIgnoringAll.value = true;
+  try {
+    const response = await axios.post('/api/collections/ignore_all_missing');
+    message.success(response.data.message || '操作成功！');
+    // 操作成功后，立即刷新数据以更新UI
+    await loadCachedData();
+  } catch (err) {
+    message.error(err.response?.data?.error || '一键忽略操作失败。');
+  } finally {
+    isIgnoringAll.value = false;
   }
 };
 
