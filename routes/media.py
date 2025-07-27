@@ -12,6 +12,7 @@ import task_manager
 import extensions
 from extensions import login_required, processor_ready_required
 
+
 # --- 蓝图 1：用于所有 /api/... 的路由 ---
 media_api_bp = Blueprint('media_api', __name__, url_prefix='/api')
 
@@ -19,6 +20,15 @@ media_api_bp = Blueprint('media_api', __name__, url_prefix='/api')
 media_proxy_bp = Blueprint('media_proxy', __name__)
 
 logger = logging.getLogger(__name__)
+
+# ✨✨✨ 导入网页解析器 ✨✨✨
+try:
+    from web_parser import parse_cast_from_url, ParserError
+    WEB_PARSER_AVAILABLE = True
+except ImportError:
+    logger.error("web_parser.py 未找到或无法导入，从URL提取功能将不可用。")
+    WEB_PARSER_AVAILABLE = False
+
 
 @media_api_bp.route('/search_emby_library', methods=['GET'])
 @processor_ready_required

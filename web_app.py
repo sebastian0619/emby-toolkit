@@ -22,8 +22,9 @@ from watchlist_processor import WatchlistProcessor
 from datetime import datetime
 import requests
 import tmdb_handler
+import task_manager
 from douban import DoubanApi
-from tasks import get_task_registry
+from tasks import get_task_registry 
 from typing import Optional, Dict, Any, List, Tuple, Union # 确保 List 被导入
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -61,13 +62,7 @@ logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 app = Flask(__name__, static_folder='static')
 app.secret_key = os.urandom(24)
-# ✨✨✨ 导入网页解析器 ✨✨✨
-try:
-    from web_parser import parse_cast_from_url, ParserError
-    WEB_PARSER_AVAILABLE = True
-except ImportError:
-    logger.error("web_parser.py 未找到或无法导入，从URL提取功能将不可用。")
-    WEB_PARSER_AVAILABLE = False
+
 #过滤底层日志
 logging.getLogger("requests").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
@@ -82,7 +77,6 @@ JOB_ID_FULL_SCAN = "scheduled_full_scan"
 JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
 JOB_ID_PROCESS_WATCHLIST = "scheduled_process_watchlist"
 JOB_ID_REVIVAL_CHECK = "scheduled_revival_check"
-# --- 全局变量结束 ---
 
 # --- 数据库辅助函数 ---
 def task_process_single_item(processor: MediaProcessor, item_id: str, force_reprocess: bool, process_episodes: bool):
@@ -361,16 +355,6 @@ def initialize_processors():
         watchlist_proc=extensions.watchlist_processor_instance,
         actor_sub_proc=extensions.actor_subscription_processor_instance
     )
-# --- 后台任务回调 ---
-def update_status_from_thread(progress: int, message: str):
-    """
-    这个回调函数由处理器调用，用于更新任务状态。
-    它通过 task_manager 模块来修改状态字典。
-    """
-    # 确保我们访问的是 task_manager 模块中的状态字典
-    if task_manager.background_task_status:
-        task_manager.background_task_status["progress"] = progress
-        task_manager.background_task_status["message"] = message
 # --- 将 CRON 表达式转换为人类可读的、干净的执行计划字符串 ---
 def _get_next_run_time_str(cron_expression: str) -> str:
     """
@@ -494,7 +478,7 @@ def setup_scheduled_tasks():
             # ★★★ 核心修改：让定时任务调用新的、职责更明确的函数 ★★★
             def scheduled_watchlist_task():
                 task_manager.submit_task_to_queue(
-                    lambda p: p.run_regular_processing_task(update_status_from_thread),
+                    lambda p: p.run_regular_processing_task(task_manager.update_status_from_thread),
                     "定时智能追剧更新"
                 )
             scheduler.add_job(func=scheduled_watchlist_task, trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_PROCESS_WATCHLIST, name="定时常规追剧更新", replace_existing=True)
@@ -512,7 +496,7 @@ def setup_scheduled_tasks():
         revival_cron = "0 5 * * 0" 
         def scheduled_revival_check_task():
             task_manager.submit_task_to_queue(
-                lambda p: p.run_revival_check_task(update_status_from_thread),
+                lambda p: p.run_revival_check_task(task_manager.update_status_from_thread),
                 "每周已完结剧集复活检查"
             )
         scheduler.add_job(func=scheduled_revival_check_task, trigger=CronTrigger.from_crontab(revival_cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_REVIVAL_CHECK, name="每周已完结剧集复活检查", replace_existing=True)
