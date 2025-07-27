@@ -12,10 +12,15 @@ import task_manager
 import extensions
 from extensions import login_required, processor_ready_required
 
-media_bp = Blueprint('media', __name__, url_prefix='/api')
+# --- 蓝图 1：用于所有 /api/... 的路由 ---
+media_api_bp = Blueprint('media_api', __name__, url_prefix='/api')
+
+# --- 蓝图 2：用于不需要 /api 前缀的路由 ---
+media_proxy_bp = Blueprint('media_proxy', __name__)
+
 logger = logging.getLogger(__name__)
 
-@media_bp.route('/search_emby_library', methods=['GET'])
+@media_api_bp.route('/search_emby_library', methods=['GET'])
 @processor_ready_required
 def api_search_emby_library():
     query = request.args.get('query', '')
@@ -58,7 +63,7 @@ def api_search_emby_library():
         logger.error(f"API /api/search_emby_library Error: {e}", exc_info=True)
         return jsonify({"error": "搜索时发生未知服务器错误"}), 500
 
-@media_bp.route('/media_for_editing_sa/<item_id>', methods=['GET'])
+@media_api_bp.route('/media_for_editing_sa/<item_id>', methods=['GET'])
 @login_required
 @processor_ready_required
 def api_get_media_for_editing_sa(item_id):
@@ -70,7 +75,7 @@ def api_get_media_for_editing_sa(item_id):
     else:
         return jsonify({"error": f"无法获取项目 {item_id} 的编辑数据，请检查日志。"}), 404
 
-@media_bp.route('/update_media_cast_sa/<item_id>', methods=['POST'])
+@media_api_bp.route('/update_media_cast_sa/<item_id>', methods=['POST'])
 @login_required
 @processor_ready_required
 def api_update_edited_cast_sa(item_id):
@@ -94,7 +99,7 @@ def api_update_edited_cast_sa(item_id):
     return jsonify({"message": "手动更新任务已在后台启动。"}), 202
 
 # 图片代理路由
-@media_bp.route('/image_proxy/<path:image_path>')
+@media_proxy_bp.route('/image_proxy/<path:image_path>')
 @processor_ready_required
 def proxy_emby_image(image_path):
     """
@@ -137,7 +142,7 @@ def proxy_emby_image(image_path):
         )
     
 # ✨✨✨   生成外部搜索链接 ✨✨✨
-@media_bp.route('/parse_cast_from_url', methods=['POST'])
+@media_api_bp.route('/parse_cast_from_url', methods=['POST'])
 def api_parse_cast_from_url():
     # 检查 web_parser 是否可用
     try:
@@ -165,7 +170,7 @@ def api_parse_cast_from_url():
         return jsonify({"error": "解析时发生未知的服务器错误"}), 500
     
 # ✨✨✨ 一键翻译 ✨✨✨
-@media_bp.route('/actions/translate_cast_sa', methods=['POST']) # 注意路径不同
+@media_api_bp.route('/actions/translate_cast_sa', methods=['POST']) # 注意路径不同
 @login_required
 @processor_ready_required
 def api_translate_cast_sa():
@@ -191,7 +196,7 @@ def api_translate_cast_sa():
         return jsonify({"error": "服务器在翻译时发生内部错误。"}), 500
     
 # ✨✨✨ 预览处理后的演员表 ✨✨✨
-@media_bp.route('/preview_processed_cast/<item_id>', methods=['POST'])
+@media_api_bp.route('/preview_processed_cast/<item_id>', methods=['POST'])
 @processor_ready_required
 def api_preview_processed_cast(item_id):
     """

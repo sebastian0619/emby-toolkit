@@ -46,8 +46,10 @@ from routes.watchlist import watchlist_bp
 from routes.collections import collections_bp
 from routes.actor_subscriptions import actor_subscriptions_bp
 from routes.logs import logs_bp
-from routes.media import media_bp
+from routes.database_admin import db_admin_bp
 from routes.system import system_bp
+from routes.media import media_api_bp, media_proxy_bp
+from routes.auth import auth_bp, init_auth as init_auth_from_blueprint
 # --- 核心模块导入 ---
 import constants # 你的常量定义\
 import logging
@@ -279,63 +281,6 @@ def init_db():
             try: conn.rollback()
             except Exception as e_rb: logger.error(f"未知错误后回滚失败: {e_rb}")
         raise # 重新抛出异常，让程序停止
-# --- 初始化认证系统 ---
-def init_auth():
-    """
-    【V2 - 使用全局配置版】初始化认证系统。
-    """
-    # ✨✨✨ 核心修复：不再自己调用 load_config，而是依赖已加载的 config_manager.APP_CONFIG ✨✨✨
-    # load_config() 应该在主程序入口处被调用一次
-    
-    auth_enabled = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_ENABLED, False)
-    env_username = os.environ.get("AUTH_USERNAME")
-    
-    if env_username:
-        username = env_username.strip()
-        logger.debug(f"检测到 AUTH_USERNAME 环境变量，将使用用户名: '{username}'")
-    else:
-        username = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_USERNAME, constants.DEFAULT_USERNAME).strip()
-        logger.debug(f"未检测到 AUTH_USERNAME 环境变量，将使用配置文件中的用户名: '{username}'")
-
-    if not auth_enabled:
-        logger.info("用户认证功能未启用。")
-        return
-
-    # ... 函数的其余部分保持不变 ...
-    conn = None
-    try:
-        conn = get_central_db_connection(config_manager.DB_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
-        user = cursor.fetchone()
-        
-        if user is None:
-            logger.warning(f"[AUTH DIAGNOSTIC] User '{username}' not found in DB. Proceeding to create password.")
-            # ... (生成密码的逻辑不变) ...
-            random_password = secrets.token_urlsafe(12)
-            password_hash = generate_password_hash(random_password)
-            cursor.execute(
-                "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-                (username, password_hash)
-            )
-            conn.commit()
-            logger.critical("=" * 60)
-            logger.critical(" " * 20 + "!!! 重要提示 !!!")
-            logger.critical(f"首次运行，已为用户 '{username}' 自动生成初始密码。")
-            logger.critical(f"用户名: {username}")
-            logger.critical(f"初始密码: {random_password}")
-            logger.critical("请立即使用此密码登录，并在设置页面修改为你自己的密码。")
-            logger.critical("=" * 60)
-        else:
-            logger.trace(f"[AUTH DIAGNOSTIC] User '{username}' found in DB. No action needed.")
-
-    except Exception as e:
-        logger.error(f"初始化认证系统时发生错误: {e}", exc_info=True)
-    finally:
-        if conn:
-            conn.close()
-        logger.info("="*21 + " [基础配置加载完毕] " + "="*21)
 # --- 保存配置并重新加载的函数 ---
 def save_config_and_reload(new_config: Dict[str, Any]):
     """
@@ -348,7 +293,7 @@ def save_config_and_reload(new_config: Dict[str, Any]):
         # 步骤 2: 执行所有依赖于新配置的重新初始化逻辑
         # 这是从旧的 save_config 函数中移动过来的，现在的位置更合理
         initialize_processors()
-        init_auth()
+        init_auth_from_blueprint()
         setup_scheduled_tasks()
         logger.info("所有组件已根据新配置重新初始化完毕。")
         
@@ -841,7 +786,6 @@ def task_enrich_aliases(processor: MediaProcessor):
     except Exception as e:
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
         update_status_from_thread(-1, f"错误：任务失败 ({str(e)[:50]}...)")
-
 # --- 使用手动编辑的结果处理媒体项 ---
 def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list: list, item_name: str):
     """任务：使用手动编辑的结果处理媒体项"""
@@ -850,7 +794,6 @@ def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list
         manual_cast_list=manual_cast_list,
         item_name=item_name
     )
-
 # --- 扫描单个演员订阅的所有作品 ---
 def task_scan_actor_media(processor: ActorSubscriptionProcessor, subscription_id: int):
     """【新】后台任务：扫描单个演员订阅的所有作品。"""
@@ -1882,104 +1825,6 @@ def application_exit_handler():
     logger.info("atexit 清理操作执行完毕。")
 atexit.register(application_exit_handler)
 # --- 应用退出处理结束 ---
-# --- 认证 API 端点 ---
-@app.route('/api/auth/status', methods=['GET'])
-def auth_status():
-    """检查当前认证状态"""
-    config = config_manager.APP_CONFIG
-    auth_enabled = config.get(constants.CONFIG_OPTION_AUTH_ENABLED, False)
-    
-    response = {
-        "auth_enabled": auth_enabled,
-        "logged_in": 'user_id' in session,
-        "username": session.get('username')
-    }
-    return jsonify(response)
-@app.route('/api/auth/login', methods=['POST'])
-def login():
-    data = request.json
-    username_from_req = data.get('username')
-    password_from_req = data.get('password')
-
-    if not username_from_req or not password_from_req:
-        return jsonify({"error": "缺少用户名或密码"}), 400
-
-    user = None # 先在 with 外部定义 user 变量
-    
-    # ✨✨✨ 核心修改在这里 ✨✨✨
-    try:
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE username = ?", (username_from_req,))
-            user = cursor.fetchone()
-        # with 代码块结束时，conn 会被自动、安全地关闭
-    except Exception as e:
-        logger.error(f"登录时数据库查询失败: {e}", exc_info=True)
-        return jsonify({"error": "服务器内部错误"}), 500
-    # ✨✨✨ 修改结束 ✨✨✨
-
-    if user and check_password_hash(user['password_hash'], password_from_req):
-        session['user_id'] = user['id']
-        session['username'] = user['username']
-        logger.info(f"用户 '{user['username']}' 登录成功。")
-        return jsonify({"message": "登录成功", "username": user['username']})
-    
-    logger.warning(f"用户 '{username_from_req}' 登录失败：用户名或密码错误。")
-    return jsonify({"error": "用户名或密码错误"}), 401
-@app.route('/api/auth/logout', methods=['POST'])
-def logout():
-    username = session.get('username', '未知用户')
-    session.clear()
-    logger.info(f"用户 '{username}' 已注销。")
-    return jsonify({"message": "注销成功"})
-# --- 认证 API 端点结束 ---
-@app.route('/api/auth/change_password', methods=['POST'])
-@login_required
-def change_password():
-    data = request.json
-    current_password = data.get('current_password')
-    new_password = data.get('new_password')
-
-    if not current_password or not new_password:
-        return jsonify({"error": "缺少当前密码或新密码"}), 400
-    
-    if len(new_password) < 6:
-        return jsonify({"error": "新密码长度不能少于6位"}), 400
-
-    user_id = session.get('user_id')
-    # ✨✨✨ 核心修改在这里 ✨✨✨
-    try:
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            cursor = conn.cursor()
-            
-            # 1. 查询用户
-            cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
-            user = cursor.fetchone()
-
-            # 2. 验证当前密码
-            if not user or not check_password_hash(user['password_hash'], current_password):
-                # 注意：这里不需要手动 close() 了，with 语句会在函数返回时处理
-                logger.warning(f"用户 '{session.get('username')}' 修改密码失败：当前密码不正确。")
-                return jsonify({"error": "当前密码不正确"}), 403
-
-            # 3. 更新密码
-            new_password_hash = generate_password_hash(new_password)
-            cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_password_hash, user_id))
-            
-            # 4. 提交事务
-            conn.commit()
-            
-            # with 代码块正常结束，连接会自动关闭
-            
-    except Exception as e:
-        # 如果 try 块中的任何地方（包括数据库操作）发生错误
-        # with 语句会确保连接被关闭
-        logger.error(f"修改密码时发生数据库错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器内部错误"}), 500
-    # ✨✨✨ 修改结束 ✨✨✨
-
-    logger.info(f"用户 '{user['username']}' 成功修改密码。")
-    return jsonify({"message": "密码修改成功"})
 # --- API 端点：获取当前配置 ---
 @app.route('/api/config', methods=['GET'])
 def api_get_config():
@@ -2067,52 +1912,7 @@ def api_get_review_items():
     except Exception as e:
         logger.error(f"API /api/review_items 获取数据失败: {e}", exc_info=True)
         return jsonify({"error": "获取待复核列表时发生服务器内部错误"}), 500
-@app.route('/api/actions/mark_item_processed/<item_id>', methods=['POST'])
-@task_lock_required
-def api_mark_item_processed(item_id):
-    if task_manager.is_task_running():
-        return jsonify({"error": "后台有长时间任务正在运行，请稍后再试。"}), 409
-    
-    try:
-        # +++ 核心修改：调用 db_handler 的高级函数 +++
-        success = db_handler.mark_review_item_as_processed(
-            db_path=config_manager.DB_PATH,
-            item_id=item_id
-        )
-        
-        if success:
-            return jsonify({"message": f"项目 {item_id} 已成功标记为已处理。"}), 200
-        else:
-            return jsonify({"error": f"未在待复核列表中找到项目 {item_id}。"}), 404
 
-    except Exception as e:
-        logger.error(f"标记项目 {item_id} 为已处理时失败: {e}", exc_info=True)
-        return jsonify({"error": "服务器内部错误"}), 500
-# ✨✨✨ 清空待复核列表（并全部标记为已处理）的 API ✨✨✨
-@app.route('/api/actions/clear_review_items', methods=['POST'])
-@task_lock_required
-def api_clear_review_items_revised():
-    logger.info("API: 收到清空所有待复核项目并标记为已处理的请求。")
-    
-    try:
-        # +++ 核心修改：调用 db_handler 的高级函数 +++
-        processed_count = db_handler.clear_all_review_items(config_manager.DB_PATH)
-        
-        if processed_count > 0:
-            message = f"操作成功！已将 {processed_count} 个项目从待复核列表移至已处理列表。"
-        else:
-            message = "操作完成，待复核列表本就是空的。"
-            
-        logger.info(message)
-        return jsonify({"message": message}), 200
-
-    except RuntimeError as e:
-        # 捕获我们自己定义的、用于数据不一致的特定错误
-        logger.error(f"清空待复核列表时发生数据一致性错误: {e}")
-        return jsonify({"error": "服务器在处理数据时检测到不一致性，操作已自动取消以防止数据丢失。"}), 500
-    except Exception as e:
-        logger.error(f"清空并标记待复核列表时发生未知异常: {e}", exc_info=True)
-        return jsonify({"error": "服务器在处理数据库时发生内部错误"}), 500
 # --- 前端全量扫描接口 ---   
 @app.route('/api/trigger_full_scan', methods=['POST'])
 @processor_ready_required # <-- 检查处理器是否就绪
@@ -2238,25 +2038,6 @@ def api_update_edited_cast_api(item_id):
     except Exception as outer_e:
         logger.error(f"API /api/update_media_cast 顶层错误 for {item_id}: {outer_e}", exc_info=True)
         return jsonify({"error": "保存演员信息时发生服务器内部错误"}), 500
-# ★★★ 获取数据库中所有用户表的列表 ★★★
-@app.route('/api/database/tables', methods=['GET'])
-@login_required
-def api_get_db_tables():
-    """
-    获取数据库中所有用户表的名称列表。
-    排除 sqlite_ 开头的系统表。
-    """
-    try:
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            cursor = conn.cursor()
-            # 查询 sqlite_master 表来获取所有表名
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-            tables = [row[0] for row in cursor.fetchall()]
-            logger.info(f"API: 成功获取到数据库表列表: {tables}")
-            return jsonify(tables)
-    except Exception as e:
-        logger.error(f"获取数据库表列表时出错: {e}", exc_info=True)
-        return jsonify({"error": "无法获取数据库表列表"}), 500
 # 数据库表结构。
 TABLE_PRIMARY_KEYS = {
     "person_identity_map": "tmdb_person_id",
@@ -2270,184 +2051,6 @@ TABLE_PRIMARY_KEYS = {
     "failed_log": "item_id",
     "users": "username",
 }
-# ★★★ 通用数据库表导出  ★★★
-@app.route('/api/database/export', methods=['POST'])
-@login_required
-def api_export_database():
-    """
-    【通用版】根据请求中指定的表名列表，导出一个包含这些表数据的JSON文件。
-    """
-    try:
-        tables_to_export = request.json.get('tables')
-        if not tables_to_export or not isinstance(tables_to_export, list):
-            return jsonify({"error": "请求体中必须包含一个 'tables' 数组"}), 400
-
-        logger.info(f"API: 收到数据库导出请求，目标表: {tables_to_export}")
-
-        backup_data = {
-            "metadata": {
-                "export_date": datetime.utcnow().isoformat() + "Z",
-                "app_version": constants.APP_VERSION,
-                "source_emby_server_id": extensions.EMBY_SERVER_ID,
-                "tables": tables_to_export
-            },
-            "data": {}
-        }
-
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            for table_name in tables_to_export:
-                # 安全性检查：确保表名是合法的
-                if not re.match(r'^[a-zA-Z0-9_]+$', table_name):
-                     logger.warning(f"跳过无效的表名: {table_name}")
-                     continue
-                
-                logger.debug(f"正在导出表: {table_name}...")
-                cursor.execute(f"SELECT * FROM {table_name}")
-                rows = cursor.fetchall()
-                backup_data["data"][table_name] = [dict(row) for row in rows]
-                logger.debug(f"表 {table_name} 导出完成，共 {len(rows)} 行。")
-
-        timestamp = time.strftime("%Y%m%d-%H%M%S")
-        filename = f"database_backup_{timestamp}.json"
-        
-        json_output = json.dumps(backup_data, indent=2, ensure_ascii=False)
-
-        response = Response(json_output, mimetype='application/json; charset=utf-8')
-        response.headers.set("Content-Disposition", "attachment", filename=filename)
-        return response
-
-    except Exception as e:
-        logger.error(f"导出数据库时发生错误: {e}", exc_info=True)
-        return jsonify({"error": f"导出时发生服务器错误: {e}"}), 500
-# ★★★ 通用数据库表导入 ★★★
-@app.route('/api/database/import', methods=['POST'])
-@login_required
-@task_lock_required
-def api_import_database():
-    """
-    【通用队列版】接收备份文件、要导入的表名列表以及导入模式，
-    并提交一个后台任务来处理恢复。
-    """
-    if 'file' not in request.files:
-        return jsonify({"error": "请求中未找到文件部分"}), 400
-    
-    file = request.files['file']
-    if not file.filename or not file.filename.endswith('.json'):
-        return jsonify({"error": "未选择文件或文件类型必须是 .json"}), 400
-
-    tables_to_import_str = request.form.get('tables')
-    if not tables_to_import_str:
-        return jsonify({"error": "必须通过 'tables' 字段指定要导入的表"}), 400
-    tables_to_import = [table.strip() for table in tables_to_import_str.split(',')]
-
-    # ★ 关键：从表单获取导入模式，默认为 'merge'，更安全 ★
-    import_mode = request.form.get('mode', 'merge').lower()
-    if import_mode not in ['overwrite', 'merge']:
-        return jsonify({"error": "无效的导入模式。只支持 'overwrite' 或 'merge'"}), 400
-    
-    mode_translations = {
-        'overwrite': '本地恢复模式',
-        'merge': '共享合并模式',
-    }
-    # 使用 .get() 以防万一，如果找不到就用回英文原名
-    import_mode_cn = mode_translations.get(import_mode, import_mode)
-
-    try:
-        file_content = file.stream.read().decode("utf-8-sig")
-        # ▼▼▼ 新增的安全校验逻辑 ▼▼▼
-        backup_json = json.loads(file_content)
-        backup_metadata = backup_json.get("metadata", {})
-        backup_server_id = backup_metadata.get("source_emby_server_id")
-
-        # 只对最危险的“本地恢复”模式进行强制校验
-        if import_mode == 'overwrite':
-            # 检查1：备份文件必须有ID指纹
-            if not backup_server_id:
-                error_msg = "此备份文件缺少来源服务器ID，为安全起见，禁止使用“本地恢复”模式导入，这通常意味着它是一个旧版备份，请使用“共享合并”模式。"
-                logger.warning(f"禁止导入: {error_msg}")
-                return jsonify({"error": error_msg}), 403 # 403 Forbidden
-
-            # 检查2：当前服务器必须能获取到ID
-            current_server_id = extensions.EMBY_SERVER_ID
-            if not current_server_id:
-                error_msg = "无法获取当前Emby服务器的ID，可能连接已断开。为安全起见，暂时禁止使用“本地恢复”模式。"
-                logger.warning(f"禁止导入: {error_msg}")
-                return jsonify({"error": error_msg}), 503 # 503 Service Unavailable
-
-            # 检查3：两个ID必须完全匹配
-            if backup_server_id != current_server_id:
-                error_msg = (f"服务器ID不匹配！此备份来自另一个Emby服务器，"
-                           "直接使用“本地恢复”会造成数据严重混乱。操作已禁止。\n\n"
-                           f"备份来源ID: ...{backup_server_id[-12:]}\n"
-                           f"当前服务器ID: ...{current_server_id[-12:]}\n\n"
-                           "如果你确实想合并数据，请改用“共享合并”模式。")
-                logger.warning(f"禁止导入: {error_msg}")
-                return jsonify({"error": error_msg}), 403 # 403 Forbidden
-        # ▲▲▲ 安全校验逻辑结束 ▲▲▲
-        logger.trace(f"已接收上传的备份文件 '{file.filename}'，将以 '{import_mode_cn}' 模式导入表: {tables_to_import}")
-
-        success = task_manager.submit_task(
-            task_import_database,  # ★ 调用新的后台任务函数
-            f"以 {import_mode_cn} 模式恢复数据库表",
-            # 传递任务所需的所有参数
-            file_content=file_content,
-            tables_to_import=tables_to_import,
-            import_mode=import_mode
-        )
-        
-        return jsonify({"message": f"文件上传成功，已提交后台任务以 '{import_mode_cn}' 模式恢复 {len(tables_to_import)} 个表。"}), 202
-
-    except Exception as e:
-        logger.error(f"处理数据库导入请求时发生错误: {e}", exc_info=True)
-        return jsonify({"error": "处理上传文件时发生服务器错误"}), 500
-
-
- 
-# ★★★ START: Emby 图片代理路由 ★★★
-@app.route('/image_proxy/<path:image_path>')
-@processor_ready_required
-def proxy_emby_image(image_path):
-    """
-    一个安全的、动态的 Emby 图片代理。
-    【V2 - 完整修复版】确保 api_key 作为 URL 参数传递，适用于所有图片类型。
-    """
-    try:
-        emby_url = extensions.media_processor_instance.emby_url.rstrip('/')
-        emby_api_key = extensions.media_processor_instance.emby_api_key
-
-        # 1. 构造基础 URL，包含路径和原始查询参数
-        query_string = request.query_string.decode('utf-8')
-        target_url = f"{emby_url}/{image_path}"
-        if query_string:
-            target_url += f"?{query_string}"
-        
-        # 2. ★★★ 核心修复：将 api_key 作为 URL 参数追加 ★★★
-        # 判断是使用 '?' 还是 '&' 来追加 api_key
-        separator = '&' if '?' in target_url else '?'
-        target_url_with_key = f"{target_url}{separator}api_key={emby_api_key}"
-        
-        logger.trace(f"代理图片请求 (最终URL): {target_url_with_key}")
-
-        # 3. 发送请求
-        emby_response = requests.get(target_url_with_key, stream=True, timeout=20)
-        emby_response.raise_for_status()
-
-        # 4. 将 Emby 的响应流式传输回浏览器
-        return Response(
-            stream_with_context(emby_response.iter_content(chunk_size=8192)),
-            content_type=emby_response.headers.get('Content-Type'),
-            status=emby_response.status_code
-        )
-    except Exception as e:
-        logger.error(f"代理 Emby 图片时发生严重错误: {e}", exc_info=True)
-        # 返回一个1x1的透明像素点作为占位符，避免显示大的裂图图标
-        return Response(
-            b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82',
-            mimetype='image/png'
-        )
 # ★★★ 重新处理单个项目 ★★★
 @app.route('/api/actions/reprocess_item/<item_id>', methods=['POST'])
 @login_required
@@ -2537,25 +2140,7 @@ def trigger_rebuild_actors_task():
     except Exception as e:
         logger.error(f"提交重构任务时发生错误: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "提交任务失败，请查看后端日志。"}), 500
-# ✨✨✨ 一键删除TMDb缓存 ✨✨✨
-@app.route('/api/actions/clear_tmdb_caches', methods=['POST'])
-@login_required
-@processor_ready_required
-def api_clear_tmdb_caches():
-    """
-    API端点，用于触发清除TMDb相关缓存的功能。
-    """
-    try:
-        result = media_processor_instance.clear_tmdb_caches()
-        if result.get("success"):
-            return jsonify(result), 200
-        else:
-            # 如果部分失败，返回一个服务器错误码，让前端知道事情不妙
-            return jsonify(result), 500
-    except Exception as e:
-        logger.error(f"调用清除TMDb缓存功能时发生意外错误: {e}", exc_info=True)
-        return jsonify({"success": False, "message": "服务器在执行清除操作时发生未知错误。"}), 500
-# ✨✨✨ “立即执行”API接口 ✨✨✨
+
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
@@ -2573,8 +2158,11 @@ app.register_blueprint(watchlist_bp)
 app.register_blueprint(collections_bp)
 app.register_blueprint(actor_subscriptions_bp)
 app.register_blueprint(logs_bp)
-app.register_blueprint(media_bp)
+app.register_blueprint(db_admin_bp)
 app.register_blueprint(system_bp)
+app.register_blueprint(media_api_bp) 
+app.register_blueprint(media_proxy_bp)
+app.register_blueprint(auth_bp)
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}")
     
@@ -2615,7 +2203,7 @@ if __name__ == '__main__':
     init_db()
     
     # 4. 初始化认证系统 (它会依赖全局配置)
-    init_auth()
+    init_auth_from_blueprint()
 
     # 5. 创建唯一的 MediaProcessor 实例
     initialize_processors()
