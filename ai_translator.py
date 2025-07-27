@@ -366,7 +366,6 @@ class AITranslator:
         )
         try:
             # 注意：新版SDK中，system_instruction在GenerativeModel初始化时设置更佳
-            # 但为了兼容您当前结构，我们将其作为内容的一部分发送
             response = self.client.generate_content(
                 full_prompt,
                 generation_config=generation_config,

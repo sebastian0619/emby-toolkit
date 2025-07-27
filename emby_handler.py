@@ -873,7 +873,7 @@ def prepare_actor_translation_data(
     logger.info("【演员数据准备】正在从Emby获取所有演员列表...")
     all_persons = []
     try:
-        # 使用您现有的、高效的 get_all_persons_from_emby 生成器
+        # 使用现有的、高效的 get_all_persons_from_emby 生成器
         person_generator = get_all_persons_from_emby(
             base_url=emby_url,
             api_key=emby_api_key,
@@ -901,7 +901,7 @@ def prepare_actor_translation_data(
     for person in all_persons:
         name = person.get("Name")
         person_id = person.get("Id")
-        # 使用您自己的 utils.contains_chinese
+        # 使用 utils.contains_chinese
         if name and person_id and not utils.contains_chinese(name):
             names_to_translate.add(name)
             if name not in name_to_persons_map:
@@ -918,7 +918,7 @@ def prepare_actor_translation_data(
     logger.info(f"【演员数据准备】正在调用AI批量翻译 {len(names_to_translate)} 个名字...")
     translation_map: Dict[str, str] = {}
     try:
-        # 调用您的AI翻译模块
+        # 调用AI翻译模块
         translation_map = ai_translator.batch_translate(
             texts=list(names_to_translate),
             mode="fast"

@@ -65,7 +65,7 @@ class MediaProcessor:
             try:
                 # --- ✨✨✨ 核心修改区域 START ✨✨✨ ---
 
-                # 1. 从配置中获取冷却时间 (这部分逻辑您可能已经有了)
+                # 1. 从配置中获取冷却时间 
                 douban_cooldown = self.config.get(constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN, 2.0)
                 
                 # 2. 从配置中获取 Cookie，使用我们刚刚在 constants.py 中定义的常量
@@ -896,7 +896,7 @@ class MediaProcessor:
                 if not base_json_data_original:
                     raise ValueError(f"无法读取或解析JSON文件: {json_file_path}")
 
-                # 2. 处理演员表 (您现有的逻辑，无需改动)
+                # 2. 处理演员表
                 full_tmdb_cast_as_base = []
                 if item_type == "Movie":
                     full_tmdb_cast_as_base = base_json_data_original.get("casts", {}).get("cast", [])
@@ -913,8 +913,8 @@ class MediaProcessor:
                     item_details_from_emby, 
                     cursor,
                     self.tmdb_api_key,
-                    self.get_stop_event()  # 假设您有一个方法来获取停止事件
-                ) # 您的演员处理函数
+                    self.get_stop_event()  
+                ) 
                 final_cast_perfect = actor_utils.format_and_complete_cast_list(
                     intermediate_cast, 
                     is_animation, 
@@ -1396,7 +1396,6 @@ class MediaProcessor:
                             # 只有在清洗后的新角色名有效，且与清洗后的旧角色名确实不同时，才进行操作
                             if cleaned_new_role and cleaned_new_role != cleaned_original_role:
                                 try:
-                                    # ★★★ 核心修改：调用您现有的函数并开启反查模式 ★★★
                                     # 使用“修改前的中文名”（例如 "杰克萨利"）进行反向查找
                                     cache_entry = self.actor_db_manager.get_translation_from_db(
                                         text=cleaned_original_role,

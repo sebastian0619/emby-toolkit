@@ -198,7 +198,7 @@
                   type="password" 
                   show-password-on="mousedown" 
                   v-model:value="configModel.ai_api_key" 
-                  placeholder="输入您的 API Key" 
+                  placeholder="输入你的 API Key" 
                   :disabled="!configModel.ai_translation_enabled"
                 />
               </n-form-item>

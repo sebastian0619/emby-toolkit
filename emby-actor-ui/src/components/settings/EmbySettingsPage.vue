@@ -22,7 +22,7 @@
             </div>
             <!-- 默认情况下，显示灰色提示 -->
             <div v-else style="font-size: 12px; color: #888; margin-top: 4px;">
-              提示：这不是用户名。请前往 Emby 后台 -> 用户管理 -> 点击您的账户 -> 然后从浏览器地址栏中复制userId=后面那串由32个字母和数字组成的长ID。
+              提示：这不是用户名。请前往 Emby 后台 -> 用户管理 -> 点击你的账户 -> 然后从浏览器地址栏中复制userId=后面那串由32个字母和数字组成的长ID。
             </div>
           </template>
         </n-form-item-grid-item>

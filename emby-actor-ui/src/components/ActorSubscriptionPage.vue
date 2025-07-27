@@ -23,7 +23,7 @@
           </n-space>
         </template>
         <template #footer>
-          <n-text depth="3">在这里管理您订阅的演员。系统将自动追踪他们的最新作品并提交订阅。</n-text>
+          <n-text depth="3">在这里管理订阅的演员。系统将自动追踪他们的最新作品并提交订阅。</n-text>
         </template>
       </n-page-header>
 
@@ -32,7 +32,7 @@
       </div>
 
       <div v-else-if="subscriptions.length === 0" style="margin-top: 20px;">
-        <n-empty description="您还没有订阅任何演员">
+        <n-empty description="还没有订阅任何演员">
           <template #extra>
             <n-button size="small" @click="handleAddSubscription">
               去添加一个

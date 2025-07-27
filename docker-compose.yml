@@ -8,8 +8,8 @@ services:
     environment:
       - TZ=Asia/Shanghai         # 设置时区
       - AUTH_USERNAME=admin      # 用户名可任意设置，密码在程序首次运行会生成随机密码打印在日志中
-      - PUID=0                   # 设置为您的用户ID，默认为0，建议根据实际情况修改
-      - PGID=0                   # 设置为您的组ID，默认为0，建议根据实际情况修改
+      - PUID=0                   # 设置为你的用户ID，默认为0，建议根据实际情况修改
+      - PGID=0                   # 设置为你的组ID，默认为0，建议根据实际情况修改
       - UMASK=000                # 设置权限掩码，默认为000，建议根据实际情况修改
     volumes:
       - ./config:/config         # 配置文件目录

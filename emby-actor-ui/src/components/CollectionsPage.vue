@@ -151,7 +151,7 @@
 
           <!-- ★★★ [核心修改] "已忽略" 改为 "已订阅" ★★★ -->
           <n-tab-pane name="subscribed" :tab="`已订阅 (${subscribedMoviesInModal.length})`">
-            <n-empty v-if="subscribedMoviesInModal.length === 0" description="您没有订阅此合集中的任何影片。" style="margin-top: 40px;"></n-empty>
+            <n-empty v-if="subscribedMoviesInModal.length === 0" description="你没有订阅此合集中的任何影片。" style="margin-top: 40px;"></n-empty>
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
               <n-gi v-for="movie in subscribedMoviesInModal" :key="movie.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">

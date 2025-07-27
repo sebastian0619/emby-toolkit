@@ -26,7 +26,7 @@
                 </n-checkbox>
                 <p class="description-text">
                   <b>强制重处理：</b>会忽略已处理记录，对媒体库所有项目重新执行核心逻辑。<br>
-                  <b>清除缓存：</b>用于解决数据循环污染问题，建议在勾选“强制重处理”后、启动扫描前执行。
+                  <b>清除TMDb缓存：</b>用于解决数据循环污染问题，非必要不要操作此选项。
                 </p>
                 <n-divider style="margin: 0;" />
                 <n-space align="center" justify="space-between" style="width: 100%;">
@@ -55,7 +55,7 @@
                         清除TMDb缓存
                       </n-button>
                     </template>
-                    您确定要删除所有TMDb相关的缓存和覆盖文件吗？<br>
+                    你确定要删除所有TMDb相关的缓存和覆盖文件吗？<br>
                     这将强制下次处理时从网络重新获取所有数据。<br>
                     <strong>此操作不可恢复！</strong>
                   </n-popconfirm>
@@ -360,7 +360,7 @@ const triggerFullImageSync = async () => {
 const triggerRebuildActors = () => {
   dialog.warning({
     title: '高危操作确认',
-    content: '此操作将彻底清空并重建Emby中的所有演员数据，用于解决数据污染、索引损坏等疑难杂症。过程可能需要较长时间，期间请勿关闭浏览器。您确定要继续吗？',
+    content: '此操作将彻底清空并重建Emby中的所有演员数据，用于解决数据污染、索引损坏等疑难杂症。过程可能需要较长时间，期间请勿关闭浏览器。你确定要继续吗？',
     positiveText: '我意已决，开始重构',
     negativeText: '我再想想',
     onPositiveClick: async () => {

@@ -75,7 +75,7 @@
               <n-grid :cols="1">
                 <n-form-item-grid-item label="CRON表达式" path="schedule_actor_cleanup_cron">
                   <n-input v-model:value="configModel.schedule_actor_cleanup_cron" :disabled="!configModel.schedule_actor_cleanup_enabled" placeholder="例如: 0 4 * * * (每天凌晨4点)" />
-                  <template #feedback>自动翻译Emby中所有非中文的演员名，用于修正处理流程中的“漏网之鱼”。</template>
+                  <template #feedback>自动翻译Emby中所有非中文的演员名。</template>
                 </n-form-item-grid-item>
               </n-grid>
             </n-form>
@@ -210,7 +210,7 @@
 </template>
 
 <script setup>
-// 脚本部分与您提供的版本完全相同，无需改动
+// 脚本部分与你提供的版本完全相同，无需改动
 import { watch, ref } from 'vue';
 import {
   NForm, NFormItemGridItem, NInput, NCheckbox, NGrid, NGi,

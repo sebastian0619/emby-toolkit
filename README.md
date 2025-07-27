@@ -56,8 +56,8 @@
         environment:
           - TZ=Asia/Shanghai         # 设置容器时区
           - AUTH_USERNAME=admin      # 用户名可任意设置，密码在程序首次运行会生成随机密码打印在日志中
-          - PUID=0                   # 设置为您的用户ID，建议与宿主机用户ID保持一致
-          - PGID=0                   # 设置为您的组ID，建议与宿主机组ID保持一致
+          - PUID=0                   # 设置为你的用户ID，建议与宿主机用户ID保持一致
+          - PGID=0                   # 设置为你的组ID，建议与宿主机组ID保持一致
           - UMASK=000                # 设置文件权限掩码，建议022
         restart: unless-stopped
     ```

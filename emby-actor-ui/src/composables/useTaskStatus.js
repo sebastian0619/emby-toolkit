@@ -38,7 +38,7 @@ export function useTaskStatus() {
   onUnmounted(() => {
     // 实际上，对于全局状态，我们通常不希望它停止
     // 但为了代码的完整性，保留这个逻辑
-    // 如果您希望状态轮询在离开页面后停止，就保留它
+    // 如果你希望状态轮询在离开页面后停止，就保留它
     // 如果希望它一直运行，可以注释掉下面的 clearInterval
     // clearInterval(statusInterval);
     // statusInterval = null;

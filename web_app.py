@@ -346,7 +346,7 @@ def init_auth():
             logger.critical(f"首次运行，已为用户 '{username}' 自动生成初始密码。")
             logger.critical(f"用户名: {username}")
             logger.critical(f"初始密码: {random_password}")
-            logger.critical("请立即使用此密码登录，并在设置页面修改为您自己的密码。")
+            logger.critical("请立即使用此密码登录，并在设置页面修改为你自己的密码。")
             logger.critical("=" * 60)
         else:
             logger.trace(f"[AUTH DIAGNOSTIC] User '{username}' found in DB. No action needed.")
@@ -960,7 +960,7 @@ def task_process_watchlist(processor: WatchlistProcessor, item_id: Optional[str]
     """
     # 定义一个可以传递给处理器的回调函数
     def progress_updater(progress, message):
-        # 这里的 update_status_from_thread 是您项目中用于更新UI的函数
+        # 这里的 update_status_from_thread 是你项目中用于更新UI的函数
         update_status_from_thread(progress, message)
 
     try:
@@ -1806,12 +1806,12 @@ def emby_webhook():
 
     # --- 分支 A: 处理元数据新增/更新事件 ---
     if event_type in ["item.add", "library.new"]:
-        # 这部分是您原有的核心修复逻辑，保持不变
+        # 这部分是你原有的核心修复逻辑，保持不变
         id_to_process = original_item_id
         type_to_process = original_item_type
 
         if original_item_type == "Episode":
-            # ... (您原有的向上查找剧集ID的逻辑) ...
+            # ... (你原有的向上查找剧集ID的逻辑) ...
             logger.info(f"Webhook 收到分集 '{original_item_name}' (ID: {original_item_id})，正在向上查找其所属剧集...")
             series_id = emby_handler.get_series_id_from_child_id(
                 original_item_id,
@@ -2211,7 +2211,7 @@ def api_handle_trigger_full_scan():
     force_reprocess = request.form.get('force_reprocess_all') == 'on'
     
 
-    # ★★★ 您的完美逻辑在这里实现 ★★★
+    # ★★★ 你的完美逻辑在这里实现 ★★★
     if force_reprocess:
         logger.info("API: 检测到“强制重处理”选项，将在任务开始前清空已处理日志。")
         try:
@@ -2517,7 +2517,7 @@ def api_import_database():
                            "直接使用“本地恢复”会造成数据严重混乱。操作已禁止。\n\n"
                            f"备份来源ID: ...{backup_server_id[-12:]}\n"
                            f"当前服务器ID: ...{current_server_id[-12:]}\n\n"
-                           "如果您确实想合并数据，请改用“共享合并”模式。")
+                           "如果你确实想合并数据，请改用“共享合并”模式。")
                 logger.warning(f"禁止导入: {error_msg}")
                 return jsonify({"error": error_msg}), 403 # 403 Forbidden
         # ▲▲▲ 安全校验逻辑结束 ▲▲▲
@@ -2937,7 +2937,7 @@ def api_trigger_task_now(task_identifier: str):
     task_function, task_name = task_info
     
     # 3. 提交任务到队列
-    #    使用您现有的 submit_task_to_queue 函数
+    #    使用你现有的 submit_task_to_queue 函数
     #    对于需要额外参数的任务（如全量扫描），我们需要特殊处理
     kwargs = {}
     if task_identifier == 'full-scan':
