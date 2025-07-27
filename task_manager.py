@@ -38,21 +38,29 @@ task_queue = Queue()
 task_worker_thread: Optional[threading.Thread] = None
 task_worker_lock = threading.Lock()
 
+# +++ 回调函数移到这里 +++
+def update_status_from_thread(progress: int, message: str):
+    """
+    【新家】这个回调函数由处理器或任务函数调用，用于更新任务状态。
+    它直接修改本模块内的状态字典。
+    """
+    if progress >= 0:
+        background_task_status["progress"] = progress
+    background_task_status["message"] = message
+
 def initialize_task_manager(
     media_proc: MediaProcessor,
     watchlist_proc: WatchlistProcessor,
-    actor_sub_proc: ActorSubscriptionProcessor,
-    status_callback: Callable
+    actor_sub_proc: ActorSubscriptionProcessor
 ):
     """
     【公共接口】由主应用调用，注入所有必要的处理器实例和回调函数。
     """
-    global media_processor_instance, watchlist_processor_instance, actor_subscription_processor_instance, update_status_from_thread
+    global media_processor_instance, watchlist_processor_instance, actor_subscription_processor_instance
     
     media_processor_instance = media_proc
     watchlist_processor_instance = watchlist_proc
     actor_subscription_processor_instance = actor_sub_proc
-    update_status_from_thread = status_callback
     
     logger.info("任务管理器 (TaskManager) 已成功接收并初始化所有处理器实例。")
 

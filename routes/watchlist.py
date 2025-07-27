@@ -108,7 +108,7 @@ def api_remove_from_watchlist(item_id):
 @task_lock_required
 def api_trigger_single_watchlist_refresh(item_id):
     # ... (函数逻辑和原来完全一样) ...
-    from web_app import task_refresh_single_watchlist_item # 延迟导入任务函数
+    from tasks import task_refresh_single_watchlist_item # 延迟导入任务函数
     logger.trace(f"API (Blueprint): 收到对单个追剧项目 {item_id} 的刷新请求。")
     if not extensions.watchlist_processor_instance:
         return jsonify({"error": "追剧处理模块未就绪"}), 503

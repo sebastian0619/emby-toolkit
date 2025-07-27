@@ -84,7 +84,7 @@ def api_import_database():
     【通用队列版】接收备份文件、要导入的表名列表以及导入模式，
     并提交一个后台任务来处理恢复。
     """
-    from web_app import task_import_database
+    from tasks import task_import_database
     if 'file' not in request.files:
         return jsonify({"error": "请求中未找到文件部分"}), 400
     

@@ -64,6 +64,7 @@ COPY requirements.txt \
      task_manager.py \
      db_handler.py \
      extensions.py \
+     tasks.py \
      ./
 
 COPY routes/ ./routes/

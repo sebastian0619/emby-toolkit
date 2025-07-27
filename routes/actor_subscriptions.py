@@ -106,7 +106,7 @@ def handle_single_actor_subscription(sub_id):
 @task_lock_required
 def refresh_single_actor_subscription(sub_id):
     # ... (函数逻辑和原来完全一样) ...
-    from web_app import task_scan_actor_media # 延迟导入
+    from tasks import task_scan_actor_media # 延迟导入
     actor_name = f"订阅ID {sub_id}" # 简化获取名字的逻辑
     task_manager.submit_task(task_scan_actor_media, f"手动刷新演员: {actor_name}", sub_id)
     return jsonify({"message": f"刷新演员 {actor_name} 作品的任务已提交！"}), 202

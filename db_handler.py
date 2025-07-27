@@ -11,6 +11,20 @@ logger = logging.getLogger(__name__)
 # 模块 1: 数据库管理器 (The Unified Data Access Layer)
 # ======================================================================
 
+# 数据库表结构。
+TABLE_PRIMARY_KEYS = {
+    "person_identity_map": "tmdb_person_id",
+    "ActorMetadata": "tmdb_id",
+    "translation_cache": "original_text",
+    "collections_info": "emby_collection_id",
+    "watchlist": "item_id",
+    "actor_subscriptions": "tmdb_person_id",
+    "tracked_actor_media": ("subscription_id", "tmdb_media_id"),
+    "processed_log": "item_id",
+    "failed_log": "item_id",
+    "users": "username",
+}
+
 def get_db_connection(db_path: str) -> sqlite3.Connection:
     """
     【中央函数】获取一个配置好 WAL 模式和 row_factory 的数据库连接。

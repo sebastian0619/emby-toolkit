@@ -79,7 +79,7 @@ def api_get_media_for_editing_sa(item_id):
 @login_required
 @processor_ready_required
 def api_update_edited_cast_sa(item_id):
-    from web_app import task_manual_update
+    from tasks import task_manual_update
     data = request.json
     if not data or "cast" not in data or not isinstance(data["cast"], list):
         return jsonify({"error": "请求体中缺少有效的 'cast' 列表"}), 400
@@ -251,3 +251,25 @@ def api_preview_processed_cast(item_id):
     except Exception as e:
         logger.error(f"API /preview_processed_cast: 调用 _process_cast_list 时发生错误 for ID {item_id}: {e}", exc_info=True)
         return jsonify({"error": "在服务器端处理演员列表时发生内部错误"}), 500   
+    
+# --- 获取emby媒体库 ---
+@media_api_bp.route('/emby_libraries')
+def api_get_emby_libraries():
+    # 确保 media_processor_instance 已初始化并且 Emby 配置有效
+    if not extensions.media_processor_instance or \
+       not extensions.media_processor_instance.emby_url or \
+       not extensions.media_processor_instance.emby_api_key:
+        logger.warning("/api/emby_libraries: Emby配置不完整或服务未就绪。")
+        return jsonify({"error": "Emby配置不完整或服务未就绪"}), 500
+
+    libraries = emby_handler.get_emby_libraries(
+        extensions.media_processor_instance.emby_url,
+        extensions.media_processor_instance.emby_api_key,
+        extensions.media_processor_instance.emby_user_id # 传递 user_id
+    )
+
+    if libraries is not None: # get_emby_libraries 成功返回列表 (可能为空列表)
+        return jsonify(libraries)
+    else: # get_emby_libraries 返回了 None，表示获取失败
+        logger.error("/api/emby_libraries: 无法获取Emby媒体库列表 (emby_handler返回None)。")
+        return jsonify({"error": "无法获取Emby媒体库列表，请检查Emby连接和日志"}), 500
