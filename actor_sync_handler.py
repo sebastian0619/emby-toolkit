@@ -8,8 +8,8 @@ import threading
 # 导入必要的模块
 import emby_handler
 import logging
-from actor_utils import get_db_connection as get_central_db_connection
-from actor_utils import ActorDBManager
+from db_handler import get_db_connection as get_central_db_connection
+from db_handler import ActorDBManager
 logger = logging.getLogger(__name__)
 
 class UnifiedSyncHandler:

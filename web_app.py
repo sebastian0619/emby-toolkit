@@ -2,19 +2,16 @@
 import os
 import re
 import json
-import inspect
 import sqlite3
-import shutil
-from datetime import date, timedelta, datetime
+from datetime import date, datetime
 from actor_sync_handler import UnifiedSyncHandler
+from db_handler import ActorDBManager
 import emby_handler
 import moviepilot_handler
 import utils
 from utils import LogDBManager
-import configparser
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory,Response, abort
 from werkzeug.utils import safe_join, secure_filename
-from queue import Queue
 from functools import wraps
 from utils import get_override_path_for_item
 from watchlist_processor import WatchlistProcessor
@@ -31,12 +28,11 @@ import pytz # 用于处理时区
 import atexit # 用于应用退出处理
 from core_processor import MediaProcessor
 from actor_subscription_processor import ActorSubscriptionProcessor
-import csv
-from io import StringIO
 from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
-from actor_utils import ActorDBManager, enrich_all_actor_aliases_task
-from actor_utils import get_db_connection as get_central_db_connection
+from actor_utils import enrich_all_actor_aliases_task
+import db_handler
+from db_handler import get_db_connection as get_central_db_connection
 from flask import session
 from croniter import croniter
 import logging
@@ -916,7 +912,6 @@ def task_scan_actor_media(processor: ActorSubscriptionProcessor, subscription_id
         logger.error(f"手动刷新任务：在获取Emby媒体库信息时失败: {e}", exc_info=True)
         # 获取失败时，可以传递一个空集合，让扫描逻辑继续（但可能不准确），或者直接返回
         # 这里选择继续，让用户至少能更新TMDb信息
-        pass
 
     # 现在，带着准备好的 emby_tmdb_ids 调用函数
     processor.run_full_scan_for_actor(subscription_id, emby_tmdb_ids)
@@ -2135,111 +2130,76 @@ def api_get_review_items():
     if per_page < 1: per_page = 10
     if per_page > 100: per_page = 100
 
-    offset = (page - 1) * per_page
-    
-    items_to_review = []
-    total_matching_items = 0
-    
-    # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row # 确保可以按列名访问，这很重要
-            cursor = conn.cursor()
-            
-            where_clause = ""
-            sql_params = []
-
-            if query_filter:
-                where_clause = "WHERE item_name LIKE ?"
-                sql_params.append(f"%{query_filter}%")
-
-            # 1. 查询总数
-            count_sql = f"SELECT COUNT(*) FROM failed_log {where_clause}"
-            cursor.execute(count_sql, tuple(sql_params))
-            count_row = cursor.fetchone()
-            if count_row:
-                total_matching_items = count_row[0]
-
-            # 2. 查询当前页的数据
-            items_sql = f"""
-                SELECT item_id, item_name, failed_at, reason, item_type, score 
-                FROM failed_log 
-                {where_clause}
-                ORDER BY failed_at DESC 
-                LIMIT ? OFFSET ?
-            """
-            params_for_page_query = sql_params + [per_page, offset]
-            cursor.execute(items_sql, tuple(params_for_page_query))
-            fetched_rows = cursor.fetchall()
-            
-            for row in fetched_rows:
-                items_to_review.append(dict(row))
+        # +++ 核心修改：调用 db_handler 的高级函数 +++
+        items_to_review, total_matching_items = db_handler.get_review_items_paginated(
+            db_path=config_manager.DB_PATH,
+            page=page,
+            per_page=per_page,
+            query_filter=query_filter
+        )
         
-        # with 代码块结束，数据库连接已安全关闭
+        total_pages = (total_matching_items + per_page - 1) // per_page if total_matching_items > 0 else 0
+        
+        logger.debug(f"API /api/review_items: 返回 {len(items_to_review)} 条待复核项目 (总计: {total_matching_items}, 第 {page}/{total_pages} 页)")
+        return jsonify({
+            "items": items_to_review,
+            "total_items": total_matching_items,
+            "total_pages": total_pages,
+            "current_page": page,
+            "per_page": per_page,
+            "query": query_filter
+        })
 
     except Exception as e:
         logger.error(f"API /api/review_items 获取数据失败: {e}", exc_info=True)
         return jsonify({"error": "获取待复核列表时发生服务器内部错误"}), 500
-    # ✨✨✨ 修改结束 ✨✨✨
-            
-    # 这部分代码不需要数据库连接，所以放在 try...except 块外面是完全正确的
-    total_pages = (total_matching_items + per_page - 1) // per_page if total_matching_items > 0 else 0
-    
-    logger.debug(f"API /api/review_items: 返回 {len(items_to_review)} 条待复核项目 (总计: {total_matching_items}, 第 {page}/{total_pages} 页)")
-    return jsonify({
-        "items": items_to_review,
-        "total_items": total_matching_items,
-        "total_pages": total_pages,
-        "current_page": page,
-        "per_page": per_page,
-        "query": query_filter
-    })
 @app.route('/api/actions/mark_item_processed/<item_id>', methods=['POST'])
 @task_lock_required
 def api_mark_item_processed(item_id):
+    if task_manager.is_task_running():
+        return jsonify({"error": "后台有长时间任务正在运行，请稍后再试。"}), 409
     
-    deleted_count = 0 # 在 try 块外部定义，以便 finally 之后能访问
-
-    # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row # 确保可以按列名访问
-            cursor = conn.cursor()
-            
-            # 1. 从 failed_log 获取信息
-            cursor.execute("SELECT item_name, item_type, score FROM failed_log WHERE item_id = ?", (item_id,))
-            failed_item_info = cursor.fetchone()
-            
-            # 2. 从 failed_log 删除
-            cursor.execute("DELETE FROM failed_log WHERE item_id = ?", (item_id,))
-            deleted_count = cursor.rowcount
-            
-            # 3. 如果删除成功，则添加到 processed_log
-            if deleted_count > 0 and failed_item_info:
-                score_to_save = failed_item_info["score"] if failed_item_info["score"] is not None else 10.0
-                item_name = failed_item_info["item_name"]
-                
-                cursor.execute(
-                    "REPLACE INTO processed_log (item_id, item_name, processed_at, score) VALUES (?, ?, CURRENT_TIMESTAMP, ?)",
-                    (item_id, item_name, score_to_save)
-                )
-                logger.info(f"项目 {item_id} ('{item_name}') 已标记为已处理，并移至已处理日志 (评分: {score_to_save})。")
-
-            # 4. 所有操作成功，提交事务
-            conn.commit()
-            # with 代码块结束，连接自动关闭
+        # +++ 核心修改：调用 db_handler 的高级函数 +++
+        success = db_handler.mark_review_item_as_processed(
+            db_path=config_manager.DB_PATH,
+            item_id=item_id
+        )
+        
+        if success:
+            return jsonify({"message": f"项目 {item_id} 已成功标记为已处理。"}), 200
+        else:
+            return jsonify({"error": f"未在待复核列表中找到项目 {item_id}。"}), 404
 
     except Exception as e:
-        # 如果 with 块内任何地方出错，未提交的更改会自动回滚
         logger.error(f"标记项目 {item_id} 为已处理时失败: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
-    # ✨✨✨ 修改结束 ✨✨✨
+# ✨✨✨ 清空待复核列表（并全部标记为已处理）的 API ✨✨✨
+@app.route('/api/actions/clear_review_items', methods=['POST'])
+@task_lock_required
+def api_clear_review_items_revised():
+    logger.info("API: 收到清空所有待复核项目并标记为已处理的请求。")
     
-    # 根据事务执行的结果返回响应
-    if deleted_count > 0:
-        return jsonify({"message": f"项目 {item_id} 已成功标记为已处理。"}), 200
-    else:
-        return jsonify({"error": f"未在待复核列表中找到项目 {item_id}。"}), 404
+    try:
+        # +++ 核心修改：调用 db_handler 的高级函数 +++
+        processed_count = db_handler.clear_all_review_items(config_manager.DB_PATH)
+        
+        if processed_count > 0:
+            message = f"操作成功！已将 {processed_count} 个项目从待复核列表移至已处理列表。"
+        else:
+            message = "操作完成，待复核列表本就是空的。"
+            
+        logger.info(message)
+        return jsonify({"message": message}), 200
+
+    except RuntimeError as e:
+        # 捕获我们自己定义的、用于数据不一致的特定错误
+        logger.error(f"清空待复核列表时发生数据一致性错误: {e}")
+        return jsonify({"error": "服务器在处理数据时检测到不一致性，操作已自动取消以防止数据丢失。"}), 500
+    except Exception as e:
+        logger.error(f"清空并标记待复核列表时发生未知异常: {e}", exc_info=True)
+        return jsonify({"error": "服务器在处理数据库时发生内部错误"}), 500
 # --- 前端全量扫描接口 ---   
 @app.route('/api/trigger_full_scan', methods=['POST'])
 @processor_ready_required # <-- 检查处理器是否就绪
@@ -2439,7 +2399,6 @@ TABLE_PRIMARY_KEYS = {
     "collections_info": "emby_collection_id",
     "watchlist": "item_id",
     "actor_subscriptions": "tmdb_person_id",
-    # ★★★ 核心修改：使用元组表示复合主键 ★★★
     "tracked_actor_media": ("subscription_id", "tmdb_media_id"),
     "processed_log": "item_id",
     "failed_log": "item_id",
@@ -2740,103 +2699,20 @@ def proxy_emby_image(image_path):
             b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82',
             mimetype='image/png'
         )
-# ✨✨✨ 清空待复核列表（并全部标记为已处理）的 API ✨✨✨
-@app.route('/api/actions/clear_review_items', methods=['POST'])
-@task_lock_required
-def api_clear_review_items_revised():
-    logger.info("API: 收到清空所有待复核项目并标记为已处理的请求。")
-    
-    # 首先，在事务外部获取初始计数，用于最终验证
-    try:
-        with get_central_db_connection(config_manager.DB_PATH) as pre_check_conn:
-            initial_count = pre_check_conn.execute("SELECT COUNT(*) FROM failed_log").fetchone()[0]
-            logger.info(f"防御性检查：在事务开始前，'failed_log' 表中有 {initial_count} 条记录。")
-            if initial_count == 0:
-                message = "操作完成，待复核列表本就是空的。"
-                logger.info(message)
-                return jsonify({"message": message}), 200
-    except Exception as e_check:
-        logger.error(f"数据库预检查失败: {e_check}")
-        return jsonify({"error": "服务器在预检查数据库时发生内部错误"}), 500
-
-    copied_count = 0
-    deleted_count = 0
-
-    try:
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            cursor = conn.cursor()
-            
-            # 1. 将所有 failed_log 中的项目信息复制到 processed_log
-            copy_sql = """
-                REPLACE INTO processed_log (item_id, item_name, processed_at, score)
-                SELECT
-                    item_id,
-                    item_name,
-                    CURRENT_TIMESTAMP,
-                    COALESCE(score, 10.0)
-                FROM
-                    failed_log;
-            """
-            cursor.execute(copy_sql)
-            # ▲▲▲ 关键改动(1)：获取 REPLACE 操作影响的行数
-            copied_count = cursor.rowcount 
-            logger.info(f"事务内：尝试从 '待复核' 复制 {copied_count} 条记录到 '已处理'。")
-
-            # 2. 清空 failed_log 表
-            cursor.execute("DELETE FROM failed_log")
-            deleted_count = cursor.rowcount # 获取 DELETE 操作影响的行数
-            logger.info(f"事务内：尝试从 '待复核' 删除 {deleted_count} 条记录。")
-            
-            # ▲▲▲ 关键改动(2)：添加验证逻辑
-            # 只有当复制的记录数和删除的记录数相等，且与初始数量一致时，才提交事务。
-            # 这可以防止源数据被删除但目标数据未成功写入的情况。
-            if copied_count == deleted_count and initial_count == deleted_count:
-                conn.commit() # 验证通过，提交事务
-                logger.info(f"数据一致性验证成功 ({copied_count} == {deleted_count})，事务已提交。")
-            else:
-                conn.rollback() # 验证失败，回滚事务
-                logger.error(
-                    f"数据不一致，事务已回滚！"
-                    f"初始数量: {initial_count}, "
-                    f"尝试复制: {copied_count}, "
-                    f"尝试删除: {deleted_count}."
-                )
-                return jsonify({"error": "服务器在处理数据时检测到不一致性，操作已自动取消以防止数据丢失。"}), 500
-
-    except Exception as e:
-        # 如果 with 块内任何地方出错，未提交的更改会自动回滚
-        logger.error(f"清空并标记待复核列表时发生未知异常: {e}", exc_info=True)
-        return jsonify({"error": "服务器在处理数据库时发生内部错误"}), 500
-    
-    # 根据事务执行的结果返回响应
-    # 如果代码执行到这里，意味着事务是成功提交的
-    message = f"操作成功！已将 {deleted_count} 个项目从待复核列表移至已处理列表。"
-    logger.info(message)
-    return jsonify({"message": message}), 200
 # # ★★★ 获取追剧列表的API ★★★
 @app.route('/api/watchlist', methods=['GET']) 
 @login_required
 def api_get_watchlist():
-    # 模式检查
-
     logger.debug("API: 收到获取追剧列表的请求。")
-    
-    # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row # 确保可以按列名访问
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM watchlist ORDER BY added_at DESC")
-            items = [dict(row) for row in cursor.fetchall()]
-        # with 代码块结束，连接自动关闭
-        
+        # +++ 核心修改 +++
+        items = db_handler.get_all_watchlist_items(config_manager.DB_PATH)
         return jsonify(items)
-        
     except Exception as e:
         logger.error(f"获取追剧列表时发生错误: {e}", exc_info=True)
         return jsonify({"error": "获取追剧列表时发生服务器内部错误"}), 500
     # ✨✨✨ 修改结束 ✨✨✨
-# ★★★ 新增：手动添加到追剧列表的API ★★★
+# ★★★ 手动添加到追剧列表的API ★★★
 @app.route('/api/watchlist/add', methods=['POST'])
 @login_required
 def api_add_to_watchlist():
@@ -2854,32 +2730,24 @@ def api_add_to_watchlist():
 
     logger.info(f"API: 收到手动添加 '{item_name}' 到追剧列表的请求。")
     
-    # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                INSERT OR REPLACE INTO watchlist (item_id, tmdb_id, item_name, item_type, status, last_checked_at)
-                VALUES (?, ?, ?, ?, 'Watching', NULL)
-            """, (item_id, tmdb_id, item_name, item_type))
-            
-            conn.commit()
-        # with 代码块结束，连接自动关闭
-        
+        # +++ 核心修改 +++
+        db_handler.add_item_to_watchlist(
+            db_path=config_manager.DB_PATH,
+            item_id=item_id,
+            tmdb_id=tmdb_id,
+            item_name=item_name,
+            item_type=item_type
+        )
         return jsonify({"message": f"《{item_name}》已成功添加到追剧列表！"}), 200
-        
     except Exception as e:
-        # 如果 with 块内任何地方出错，未提交的更改会自动回滚
         logger.error(f"手动添加项目到追剧列表时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在添加时发生内部错误"}), 500
-    # ✨✨✨ 修改结束 ✨✨✨
-# ★★★ 新增：手动更新追剧状态的API ★★★
+# ★★★ 手动更新追剧状态的API ★★★
 @app.route('/api/watchlist/update_status', methods=['POST'])
 @login_required
 @task_lock_required
 def api_update_watchlist_status():
-    # 1. 检查任务锁，防止并发写入
     data = request.json
     item_id = data.get('item_id')
     new_status = data.get('new_status')
@@ -2889,91 +2757,56 @@ def api_update_watchlist_status():
 
     logger.info(f"API: 收到请求，将项目 {item_id} 的追剧状态更新为 '{new_status}'。")
     try:
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE watchlist SET status = ? WHERE item_id = ?",
-                (new_status, item_id)
-            )
-            conn.commit()
-            if cursor.rowcount == 0:
-                logger.warning(f"尝试更新追剧状态，但未在列表中找到项目 {item_id}。")
-                return jsonify({"error": "未在追剧列表中找到该项目"}), 404
-        
-        return jsonify({"message": "状态更新成功"}), 200
-        
+        # +++ 核心修改 +++
+        success = db_handler.update_watchlist_item_status(
+            db_path=config_manager.DB_PATH,
+            item_id=item_id,
+            new_status=new_status
+        )
+        if success:
+            return jsonify({"message": "状态更新成功"}), 200
+        else:
+            return jsonify({"error": "未在追剧列表中找到该项目"}), 404
     except Exception as e:
         logger.error(f"更新追剧状态时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在更新状态时发生内部错误"}), 500
-# ★★★ 新增：手动从追剧列表移除的API ★★★
+# ★★★ 手动从追剧列表移除的API ★★★
 @app.route('/api/watchlist/remove/<item_id>', methods=['POST'])
 @login_required
 @task_lock_required
 def api_remove_from_watchlist(item_id):
     logger.info(f"API: 收到请求，将项目 {item_id} 从追剧列表移除。")
-    
-    # ✨✨✨ 核心修改在这里 ✨✨✨
     try:
-        # 1. 将 with 语句放在 try 块内部
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            cursor = conn.cursor()
-            
-            logger.debug(f"准备执行 DELETE FROM watchlist WHERE item_id = {item_id}")
-            cursor.execute("DELETE FROM watchlist WHERE item_id = ?", (item_id,))
-            
-            # 2. 检查操作是否成功
-            if cursor.rowcount > 0:
-                logger.info(f"成功执行 DELETE 语句，影响行数: {cursor.rowcount}。准备提交...")
-                conn.commit()
-                logger.info("数据库事务已提交。")
-                return jsonify({"message": "已从追剧列表移除"}), 200
-            else:
-                logger.warning(f"尝试删除项目 {item_id}，但在数据库中未找到匹配项。")
-                return jsonify({"error": "未在追剧列表中找到该项目"}), 404
-            
-    # 3. 保留你精心设计的、精细化的异常处理块
-    except sqlite3.OperationalError as e:
-        if "database is locked" in str(e).lower():
-            logger.error(f"从追剧列表移除项目时发生数据库锁定错误: {e}", exc_info=True)
-            return jsonify({"error": "数据库当前正忙，请稍后再试。"}), 503
+        # +++ 核心修改 +++
+        success = db_handler.remove_item_from_watchlist(
+            db_path=config_manager.DB_PATH,
+            item_id=item_id
+        )
+        if success:
+            return jsonify({"message": "已从追剧列表移除"}), 200
         else:
-            logger.error(f"从追剧列表移除项目时发生数据库操作错误: {e}", exc_info=True)
-            return jsonify({"error": "移除项目时发生数据库操作错误"}), 500
-            
+            return jsonify({"error": "未在追剧列表中找到该项目"}), 404
     except Exception as e:
         logger.error(f"从追剧列表移除项目时发生未知错误: {e}", exc_info=True)
         return jsonify({"error": "移除项目时发生未知的服务器内部错误"}), 500
-    # 4. 不再需要 finally 块，因为 with 语句已经处理了连接关闭
-    # ✨✨✨ 修改结束 ✨✨✨
 # ★★★ 手动触发单项追剧更新的API ★★★
 @app.route('/api/watchlist/refresh/<item_id>', methods=['POST'])
 @login_required
 @task_lock_required
 def api_trigger_single_watchlist_refresh(item_id):
-    """
-    【V11 - 新增】API端点，用于手动触发对单个追剧项目的即时刷新。
-    """
     logger.trace(f"API: 收到对单个追剧项目 {item_id} 的刷新请求。")
     if not watchlist_processor_instance:
         return jsonify({"error": "追剧处理模块未就绪"}), 503
 
+    # +++ 核心修改 +++
     # 从数据库获取项目名称，让任务名更友好
-    item_name = "未知剧集"
-    try:
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT item_name FROM watchlist WHERE item_id = ?", (item_id,))
-            row = cursor.fetchone()
-            if row:
-                item_name = row[0]
-    except Exception as e:
-        logger.warning(f"获取项目 {item_id} 名称时出错: {e}")
+    item_name = db_handler.get_watchlist_item_name(config_manager.DB_PATH, item_id) or "未知剧集"
 
     # 提交我们刚刚创建的、职责单一的新任务
-    success = task_manager.submit_task(
+    task_manager.submit_task(
         task_refresh_single_watchlist_item,
         f"手动刷新: {item_name}",
-        item_id # 把 item_id 作为参数传给任务
+        item_id
     )
     
     return jsonify({"message": f"《{item_name}》的刷新任务已在后台启动！"}), 202
@@ -3328,23 +3161,10 @@ def search_logs_with_context():
 @login_required
 @processor_ready_required
 def api_get_collections_status():
-    """
-    【V6 - 职责单一版】
-    获取所有 Emby 合集状态，仅从数据库读取。
-    刷新操作已统一到 /api/tasks/trigger/refresh-collections。
-    """
     try:
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM collections_info ORDER BY name")
-            final_results = []
-            for row in cursor.fetchall():
-                row_dict = dict(row)
-                row_dict['missing_movies'] = json.loads(row_dict.get('missing_movies_json', '[]'))
-                del row_dict['missing_movies_json']
-                final_results.append(row_dict)
-            return jsonify(final_results)
+        # +++ 核心修改 +++
+        final_results = db_handler.get_all_collections(config_manager.DB_PATH)
+        return jsonify(final_results)
     except Exception as e:
         logger.error(f"读取合集状态时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "读取合集时发生服务器内部错误"}), 500
@@ -3353,66 +3173,49 @@ def api_get_collections_status():
 @login_required
 @task_lock_required
 def api_subscribe_all_missing():
-    """
-    遍历所有有缺失的合集，将其中所有状态为 'missing' 的电影批量提交到 MoviePilot 订阅。
-    """
     logger.info("API: 收到一键订阅所有缺失电影的请求。")
     total_subscribed_count = 0
     total_failed_count = 0
     
     try:
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT emby_collection_id, name, missing_movies_json FROM collections_info WHERE has_missing = 1")
-            collections_to_process = cursor.fetchall()
+        # +++ 核心修改：从 db_handler 获取数据 +++
+        collections_to_process = db_handler.get_collections_with_missing_movies(config_manager.DB_PATH)
 
-            if not collections_to_process:
-                return jsonify({"message": "没有发现任何缺失的电影需要订阅。", "count": 0}), 200
+        if not collections_to_process:
+            return jsonify({"message": "没有发现任何缺失的电影需要订阅。", "count": 0}), 200
 
-            # 开启事务
-            cursor.execute("BEGIN TRANSACTION;")
+        for collection in collections_to_process:
+            collection_id = collection['emby_collection_id']
+            collection_name = collection['name']
+            
             try:
-                for collection_id, collection_name, missing_json in collections_to_process:
-                    if not missing_json: continue
-                    
-                    movies = json.loads(missing_json)
-                    needs_db_update = False
-                    
-                    for movie in movies:
-                        if movie.get('status') == 'missing':
-                            # 尝试订阅
-                            success = moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG)
-                            if success:
-                                # 订阅成功，更新状态为 'subscribed'
-                                movie['status'] = 'subscribed'
-                                total_subscribed_count += 1
-                                needs_db_update = True
-                                logger.info(f"合集《{collection_name}》中的《{movie['title']}》已成功提交订阅。")
-                            else:
-                                total_failed_count += 1
-                                logger.warning(f"合集《{collection_name}》中的《{movie['title']}》提交订阅失败。")
-                    
-                    if needs_db_update:
-                        # 检查更新后是否还有 'missing' 状态的电影
-                        still_has_missing = any(m.get('status') == 'missing' for m in movies)
-                        new_missing_json = json.dumps(movies)
-                        cursor.execute(
-                            "UPDATE collections_info SET missing_movies_json = ?, has_missing = ? WHERE emby_collection_id = ?",
-                            (new_missing_json, still_has_missing, collection_id)
-                        )
-                
-                conn.commit()
-                message = f"操作完成！成功提交 {total_subscribed_count} 部电影订阅。"
-                if total_failed_count > 0:
-                    message += f" 有 {total_failed_count} 部电影订阅失败，请检查日志。"
-                
-                logger.info(message)
-                return jsonify({"message": message, "count": total_subscribed_count}), 200
+                movies = json.loads(collection.get('missing_movies_json', '[]'))
+            except (json.JSONDecodeError, TypeError):
+                continue
 
-            except Exception as e_inner:
-                conn.rollback()
-                logger.error(f"在一键订阅的事务处理中发生错误: {e_inner}", exc_info=True)
-                raise
+            needs_db_update = False
+            for movie in movies:
+                if movie.get('status') == 'missing':
+                    success = moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG)
+                    if success:
+                        movie['status'] = 'subscribed'
+                        total_subscribed_count += 1
+                        needs_db_update = True
+                        logger.info(f"合集《{collection_name}》中的《{movie['title']}》已成功提交订阅。")
+                    else:
+                        total_failed_count += 1
+                        logger.warning(f"合集《{collection_name}》中的《{movie['title']}》提交订阅失败。")
+            
+            if needs_db_update:
+                # +++ 核心修改：调用 db_handler 更新数据库 +++
+                db_handler.update_collection_movies(config_manager.DB_PATH, collection_id, movies)
+        
+        message = f"操作完成！成功提交 {total_subscribed_count} 部电影订阅。"
+        if total_failed_count > 0:
+            message += f" 有 {total_failed_count} 部电影订阅失败，请检查日志。"
+        
+        logger.info(message)
+        return jsonify({"message": message, "count": total_subscribed_count}), 200
 
     except Exception as e:
         logger.error(f"执行一键订阅时发生严重错误: {e}", exc_info=True)
@@ -3452,50 +3255,29 @@ def api_update_movie_status():
     data = request.json
     collection_id = data.get('collection_id')
     movie_tmdb_id = data.get('movie_tmdb_id')
-    new_status = data.get('new_status') # 'subscribed' 或 'missing'
+    new_status = data.get('new_status')
 
     if not all([collection_id, movie_tmdb_id, new_status]):
         return jsonify({"error": "缺少 collection_id, movie_tmdb_id 或 new_status"}), 400
     
-    if new_status not in ['subscribed', 'missing']:
-        return jsonify({"error": "无效的状态，只允许 'subscribed' 或 'missing'"}), 400
+    if new_status not in ['subscribed', 'missing', 'ignored']: # 允许 'ignored' 状态
+        return jsonify({"error": "无效的状态，只允许 'subscribed', 'missing' 或 'ignored'"}), 400
 
     logger.trace(f"API: 收到请求，将合集 {collection_id} 中的电影 {movie_tmdb_id} 状态更新为 '{new_status}'。")
 
     try:
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            conn.execute("BEGIN TRANSACTION;")
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT missing_movies_json FROM collections_info WHERE emby_collection_id = ?", (collection_id,))
-            row = cursor.fetchone()
-            if not row:
-                conn.rollback()
-                return jsonify({"error": "未找到指定的合集"}), 404
-            
-            movies = json.loads(row[0])
-            movie_found = False
-            for movie in movies:
-                if str(movie.get('tmdb_id')) == str(movie_tmdb_id):
-                    movie['status'] = new_status
-                    movie_found = True
-                    break
-            
-            if not movie_found:
-                conn.rollback()
-                return jsonify({"error": "未在该合集的电影列表中找到指定的电影"}), 404
-
-            # 状态更新后，重新计算合集的 has_missing 标志
-            still_has_missing = any(m.get('status') == 'missing' for m in movies)
-            new_missing_json = json.dumps(movies)
-            cursor.execute(
-                "UPDATE collections_info SET missing_movies_json = ?, has_missing = ? WHERE emby_collection_id = ?", 
-                (new_missing_json, still_has_missing, collection_id)
-            )
-            
-            conn.commit()
-            
-        return jsonify({"message": "电影状态已成功更新！"}), 200
+        # +++ 核心修改 +++
+        success = db_handler.update_single_movie_status_in_collection(
+            db_path=config_manager.DB_PATH,
+            collection_id=collection_id,
+            movie_tmdb_id=movie_tmdb_id,
+            new_status=new_status
+        )
+        
+        if success:
+            return jsonify({"message": "电影状态已成功更新！"}), 200
+        else:
+            return jsonify({"error": "未在该合集的电影列表中找到指定的电影或合集"}), 404
 
     except Exception as e:
         logger.error(f"更新电影状态时发生数据库错误: {e}", exc_info=True)
@@ -3546,17 +3328,12 @@ def api_search_actors():
 @app.route('/api/actor-subscriptions', methods=['GET', 'POST'])
 @login_required
 def handle_actor_subscriptions():
-    """
-    API: 获取所有演员订阅列表，或新增一个演员订阅。
-    """
+    """API: 获取所有演员订阅列表，或新增一个演员订阅。"""
     # --- 处理 GET 请求：获取列表 ---
     if request.method == 'GET':
         try:
-            with get_central_db_connection(config_manager.DB_PATH) as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-                cursor.execute("SELECT id, tmdb_person_id, actor_name, profile_path, status, last_checked_at FROM actor_subscriptions ORDER BY added_at DESC")
-                subscriptions = [dict(row) for row in cursor.fetchall()]
+            # +++ 核心修改 +++
+            subscriptions = db_handler.get_all_actor_subscriptions(config_manager.DB_PATH)
             return jsonify(subscriptions)
         except Exception as e:
             logger.error(f"API 获取演员订阅列表失败: {e}", exc_info=True)
@@ -3568,38 +3345,22 @@ def handle_actor_subscriptions():
         tmdb_person_id = data.get('tmdb_person_id')
         actor_name = data.get('actor_name')
         profile_path = data.get('profile_path')
-        config = data.get('config', {}) # <<< 1. 获取配置字典
-
-        # 从配置字典中提取具体值，并提供默认值
-        start_year = config.get('start_year', 1900)
-        media_types = config.get('media_types', 'Movie,TV')
-        genres_include = config.get('genres_include_json', '[]')
-        genres_exclude = config.get('genres_exclude_json', '[]')
-        min_rating = config.get('min_rating', 6.0)
+        config = data.get('config', {})
 
         if not all([tmdb_person_id, actor_name]):
             return jsonify({"error": "缺少必要的参数 (tmdb_person_id, actor_name)"}), 400
 
         try:
-            with get_central_db_connection(config_manager.DB_PATH) as conn:
-                cursor = conn.cursor()
-                # vvv 2. 修改 INSERT 语句以包含新字段 vvv
-                cursor.execute(
-                """
-                INSERT INTO actor_subscriptions 
-                (tmdb_person_id, actor_name, profile_path, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json, config_min_rating)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                # 确保这里的值有 8 个，与上面的 '?' 一一对应
-                (tmdb_person_id, actor_name, profile_path, start_year, media_types, genres_include, genres_exclude, min_rating)
+            # +++ 核心修改 +++
+            new_sub_id = db_handler.add_actor_subscription(
+                db_path=config_manager.DB_PATH,
+                tmdb_person_id=tmdb_person_id,
+                actor_name=actor_name,
+                profile_path=profile_path,
+                config=config
             )
-            conn.commit()
-            new_sub_id = cursor.lastrowid
-            
-
             logger.info(f"成功添加新的演员订阅: {actor_name} (TMDb ID: {tmdb_person_id})")
             return jsonify({"message": f"演员 {actor_name} 已成功订阅！", "id": new_sub_id}), 201
-
         except sqlite3.IntegrityError:
             return jsonify({"error": "该演员已经被订阅过了"}), 409
         except Exception as e:
@@ -3634,95 +3395,44 @@ def refresh_single_actor_subscription(sub_id):
 @app.route('/api/actor-subscriptions/<int:sub_id>', methods=['GET', 'PUT', 'DELETE'])
 @login_required
 def handle_single_actor_subscription(sub_id):
-    """
-    API: 获取、更新或删除单个演员的订阅详情。
-    """
-    # --- 处理 GET 请求：获取详情 (这部分不变) ---
+    """API: 获取、更新或删除单个演员的订阅详情。"""
+    # --- 处理 GET 请求：获取详情 ---
     if request.method == 'GET':
         try:
-            with get_central_db_connection(config_manager.DB_PATH) as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-                cursor.execute("SELECT * FROM actor_subscriptions WHERE id = ?", (sub_id,))
-                subscription = cursor.fetchone()
-                if not subscription:
-                    return jsonify({"error": "未找到指定的订阅"}), 404
-                cursor.execute("SELECT * FROM tracked_actor_media WHERE subscription_id = ? ORDER BY release_date DESC", (sub_id,))
-                tracked_media = [dict(row) for row in cursor.fetchall()]
-            response_data = dict(subscription)
-            response_data['tracked_media'] = tracked_media
-            return jsonify(response_data)
+            # +++ 核心修改 +++
+            response_data = db_handler.get_single_subscription_details(config_manager.DB_PATH, sub_id)
+            if response_data:
+                return jsonify(response_data)
+            else:
+                return jsonify({"error": "未找到指定的订阅"}), 404
         except Exception as e:
             logger.error(f"API 获取订阅详情 {sub_id} 失败: {e}", exc_info=True)
             return jsonify({"error": "获取订阅详情时发生服务器内部错误"}), 500
     
-    # --- [修正后] 处理 PUT 请求：更新状态和/或配置 ---
+    # --- 处理 PUT 请求：更新 ---
     if request.method == 'PUT':
         try:
             data = request.json
             if not data:
                 return jsonify({"error": "请求体为空"}), 400
 
-            status = data.get('status')
-            config = data.get('config')
-
-            if status is None and config is None:
-                return jsonify({"error": "请求体中缺少需要更新的数据 (status 或 config)"}), 400
-
-            with get_central_db_connection(config_manager.DB_PATH) as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-
-                # 为了避免覆盖，先获取当前值 (包含了 config_min_rating)
-                cursor.execute("SELECT * FROM actor_subscriptions WHERE id = ?", (sub_id,))
-                current_sub = cursor.fetchone()
-                if not current_sub:
-                    return jsonify({"error": "未找到指定的订阅"}), 404
-
-                # 使用新值，如果新值不存在，则使用当前数据库中的旧值
-                # 这样，只传 status 就不会把 config 清空，反之亦然
-                new_status = status if status is not None else current_sub['status']
-                
-                if config is not None:
-                    new_start_year = config.get('start_year', current_sub['config_start_year'])
-                    new_media_types = config.get('media_types', current_sub['config_media_types'])
-                    new_genres_include = config.get('genres_include_json', current_sub['config_genres_include_json'])
-                    new_genres_exclude = config.get('genres_exclude_json', current_sub['config_genres_exclude_json'])
-                    new_min_rating = config.get('min_rating', current_sub['config_min_rating'])
-                else: # 如果请求中没有 config，则使用所有旧的 config 值
-                    new_start_year = current_sub['config_start_year']
-                    new_media_types = current_sub['config_media_types']
-                    new_genres_include = current_sub['config_genres_include_json']
-                    new_genres_exclude = current_sub['config_genres_exclude_json']
-                    new_min_rating = current_sub['config_min_rating'] # ★★★ 确保在 else 分支中也为 new_min_rating 赋值 ★★★
-
-                # 执行包含 status 和 min_rating 的完整更新
-                cursor.execute("""
-                    UPDATE actor_subscriptions SET
-                    status = ?, 
-                    config_start_year = ?, 
-                    config_media_types = ?, 
-                    config_genres_include_json = ?, 
-                    config_genres_exclude_json = ?,
-                    config_min_rating = ?
-                    WHERE id = ?
-                """, (new_status, new_start_year, new_media_types, new_genres_include, new_genres_exclude, new_min_rating, sub_id))
-                conn.commit()
-
-            logger.info(f"成功更新订阅ID {sub_id}。")
-            return jsonify({"message": "订阅已成功更新！"}), 200
+            # +++ 核心修改 +++
+            success = db_handler.update_actor_subscription(config_manager.DB_PATH, sub_id, data)
             
+            if success:
+                logger.info(f"成功更新订阅ID {sub_id}。")
+                return jsonify({"message": "订阅已成功更新！"}), 200
+            else:
+                return jsonify({"error": "未找到指定的订阅"}), 404
         except Exception as e:
             logger.error(f"API 更新订阅 {sub_id} 失败: {e}", exc_info=True)
             return jsonify({"error": "更新订阅时发生服务器内部错误"}), 500
 
-    # --- 处理 DELETE 请求 (这部分不变) ---
+    # --- 处理 DELETE 请求 ---
     if request.method == 'DELETE':
         try:
-            with get_central_db_connection(config_manager.DB_PATH) as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM actor_subscriptions WHERE id = ?", (sub_id,))
-                conn.commit()
+            # +++ 核心修改 +++
+            db_handler.delete_actor_subscription(config_manager.DB_PATH, sub_id)
             logger.info(f"成功删除订阅ID {sub_id}。")
             return jsonify({"message": "订阅已成功删除。"}), 200
         except Exception as e:

@@ -8,7 +8,7 @@ import copy
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timedelta
 import threading
-from actor_utils import get_db_connection as get_central_db_connection
+from db_handler import get_db_connection as get_central_db_connection
 # 导入我们需要的辅助模块
 import tmdb_handler
 import emby_handler

@@ -10,6 +10,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple, Set
 # 导入底层工具箱和日志
 import logging
+import db_handler
+from db_handler import ActorDBManager
 import utils
 import tmdb_handler
 from douban import DoubanApi
@@ -18,196 +20,8 @@ from ai_translator import AITranslator
 logger = logging.getLogger(__name__)
 
 # ======================================================================
-# 模块 1: 数据库管理器 (The Unified Data Access Layer)
-# ======================================================================
-
-class ActorDBManager:
-    """
-    一个专门负责与演员身份相关的数据库表进行交互的类。
-    这是所有数据库操作的唯一入口，确保逻辑统一。
-    """
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        logger.trace(f"ActorDBManager 初始化，使用数据库: {self.db_path}")
-    
-    def get_translation_from_db(self, cursor: sqlite3.Cursor, text: str, by_translated_text: bool = False) -> Optional[Dict[str, Any]]:
-        """
-        【已迁移】从数据库获取翻译缓存。
-        :param cursor: 必须提供外部数据库游标。
-        :param text: 要查询的文本 (可以是原文或译文)。
-        :param by_translated_text: 如果为 True，则通过译文反查原文。
-        :return: 包含原文、译文和引擎的字典，或 None。
-        """
-        try:
-            # 根据查询模式选择不同的SQL语句
-            if by_translated_text:
-                sql = "SELECT original_text, translated_text, engine_used FROM translation_cache WHERE translated_text = ?"
-            else:
-                sql = "SELECT original_text, translated_text, engine_used FROM translation_cache WHERE original_text = ?"
-            
-            cursor.execute(sql, (text,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-        except Exception as e:
-            logger.error(f"DB读取翻译缓存失败 for '{text}' (by_translated: {by_translated_text}): {e}", exc_info=True)
-            return None
-
-    def save_translation_to_db(self, cursor: sqlite3.Cursor, original_text: str, translated_text: Optional[str], engine_used: Optional[str]):
-        """
-        【已迁移】将翻译结果保存到数据库。
-        :param cursor: 必须提供外部数据库游标。
-        """
-        try:
-            cursor.execute(
-                "REPLACE INTO translation_cache (original_text, translated_text, engine_used, last_updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
-                (original_text, translated_text, engine_used)
-            )
-            logger.trace(f"翻译缓存存DB: '{original_text}' -> '{translated_text}' (引擎: {engine_used})")
-        except Exception as e:
-            logger.error(f"DB保存翻译缓存失败 for '{original_text}': {e}", exc_info=True)
-
-    def find_person_by_any_id(self, cursor: sqlite3.Cursor, **kwargs) -> Optional[sqlite3.Row]:
-        search_criteria = [
-            ("tmdb_person_id", kwargs.get("tmdb_id")),
-            ("emby_person_id", kwargs.get("emby_id")),
-            ("imdb_id", kwargs.get("imdb_id")),
-            ("douban_celebrity_id", kwargs.get("douban_celebrity_id")),
-        ]
-        for column, value in search_criteria:
-            if not value: continue
-            try:
-                cursor.execute(f"SELECT * FROM person_identity_map WHERE {column} = ?", (value,))
-                result = cursor.fetchone()
-                if result:
-                    logger.debug(f"通过 {column}='{value}' 找到了演员记录 (map_id: {result['map_id']})。")
-                    return result
-            except sqlite3.Error as e:
-                logger.error(f"查询 person_identity_map 时出错 ({column}={value}): {e}")
-        return None
-    
-    def upsert_person(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any], **kwargs):
-        """
-        【V5 - Create New ID 最终版】
-        根据业务流程定制：person_identity_map 是一个独立的ID转换器，map_id不被外部引用。
-        因此，采用“融合-删除-创建”策略，逻辑最简单且能从根本上避免所有合并冲突。
-        """
-        # 1. 标准化和清理输入数据 (不变)
-        data_to_process = {
-            "primary_name": str(person_data.get("name") or '').strip(),
-            "emby_person_id": str(person_data.get("emby_id") or '').strip() or None,
-            "tmdb_person_id": str(person_data.get("tmdb_id") or '').strip() or None,
-            "imdb_id": str(person_data.get("imdb_id") or '').strip() or None,
-            "douban_celebrity_id": str(person_data.get("douban_id") or '').strip() or None,
-        }
-        id_fields = ["emby_person_id", "tmdb_person_id", "imdb_id", "douban_celebrity_id"]
-        provided_ids = {k: v for k, v in data_to_process.items() if k in id_fields and v}
-
-        if not data_to_process["primary_name"] and not provided_ids:
-            return -1
-
-        # 2. 收集所有潜在关联记录
-        query_parts = []
-        query_values = []
-
-        if provided_ids:
-            # ✨ 如果有任何ID，则只用ID进行查找 ✨
-            for key, value in provided_ids.items():
-                query_parts.append(f"{key} = ?")
-                query_values.append(value)
-        elif data_to_process["primary_name"]:
-            # ✨ 只有在完全没有ID时，才退而求其次使用名字查找 ✨
-            logger.debug(f"数据无ID，将使用名字 '{data_to_process['primary_name']}' 进行查找。")
-            query_parts.append("primary_name = ?")
-            query_values.append(data_to_process["primary_name"])
-        else:
-            # 既没ID也没名字，无法处理
-            return -1
-
-        sql_find_candidates = f"SELECT * FROM person_identity_map WHERE {' OR '.join(query_parts)}"
-        cursor.execute(sql_find_candidates, tuple(query_values))
-        candidate_records = [dict(row) for row in cursor.fetchall()]
-
-        # --- 核心逻辑：融合、删除、创建 ---
-        try:
-            all_sources = candidate_records + [data_to_process]
-            
-            # 3. 融合所有信息，并在比较前进行类型标准化
-            final_merged_data = {}
-            for key in id_fields:
-                # ▼▼▼ 核心修复：在放入集合前，将所有值转换为字符串！ ▼▼▼
-                all_values_for_key = {
-                    str(source.get(key)) 
-                    for source in all_sources 
-                    if source.get(key) is not None and str(source.get(key)).strip()
-                }
-                # ▲▲▲ 这样可以确保 17401 和 '17401' 都变成 '17401'，从而被集合正确去重 ▲▲▲
-                
-                if len(all_values_for_key) > 1:
-                    logger.trace(
-                        f"数据合并冲突！演员 '{data_to_process.get('name')}' 的 '{key}' 存在多个不同的值: {list(all_values_for_key)}。已中止操作。"
-                    )
-                    return -1
-                elif len(all_values_for_key) == 1:
-                    final_merged_data[key] = all_values_for_key.pop()
-
-            # 确定最终的名字
-            # 优先使用本次传入的、非空的名字，否则从豆瓣记录里找一个
-            all_names = {source.get('primary_name') for source in all_sources if source.get('primary_name')}
-            final_merged_data['primary_name'] = data_to_process.get("primary_name") or (list(all_names)[0] if all_names else "未知演员")
-
-            # 4. 执行数据库操作：先删除，后创建
-            # 4.1 删除所有找到的旧记录
-            if candidate_records:
-                ids_to_delete = [r['map_id'] for r in candidate_records]
-                placeholders = ','.join('?' * len(ids_to_delete))
-                sql_delete = f"DELETE FROM person_identity_map WHERE map_id IN ({placeholders})"
-                cursor.execute(sql_delete, tuple(ids_to_delete))
-
-            # 4.2 插入一条全新的、完美融合的记录
-            cols_to_insert = list(final_merged_data.keys())
-            vals_to_insert = list(final_merged_data.values())
-            
-            # 确保 primary_name 总是存在
-            if 'primary_name' not in cols_to_insert:
-                cols_to_insert.append('primary_name')
-                vals_to_insert.append("未知演员")
-
-            cols_to_insert.extend(["last_synced_at", "last_updated_at"])
-            placeholders = ["?" for _ in vals_to_insert] + ["CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP"]
-            
-            sql_insert = f"INSERT INTO person_identity_map ({', '.join(cols_to_insert)}) VALUES ({', '.join(placeholders)})"
-            cursor.execute(sql_insert, tuple(vals_to_insert))
-            
-            new_map_id = cursor.lastrowid
-            
-            return new_map_id
-
-        except sqlite3.IntegrityError as e:
-            # 这个异常现在只可能在极端的并发情况下发生，作为最后的保险
-            logger.error(f"为演员 '{data_to_process.get('name')}' 创建新记录时发生意外的数据库唯一性冲突: {e}。")
-            return -1
-# ======================================================================
 # 模块 2: 通用的业务逻辑函数 (Business Logic Helpers)
 # ======================================================================
-# ✨✨✨获取数据库连接的辅助方法✨✨✨
-def get_db_connection(db_path: str) -> sqlite3.Connection:
-    """
-    【中央函数】获取一个配置好 WAL 模式和 row_factory 的数据库连接。
-    接收数据库路径作为参数。
-    """
-    if not db_path:
-        logger.error("尝试获取数据库连接，但未提供 db_path。")
-        raise ValueError("数据库路径 (db_path) 不能为空。")
-        
-    try:
-        # ★★★ 不再使用 self.db_path，而是使用传入的参数 db_path ★★★
-        conn = sqlite3.connect(db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        return conn
-    except sqlite3.Error as e:
-        logger.error(f"获取数据库连接失败: {e}", exc_info=True)
-        raise
 # --- 演员选择 ---
 def select_best_role(current_role: str, candidate_role: str) -> str:
     """
@@ -616,7 +430,7 @@ def enrich_all_actor_aliases_task(
     logger.info(f"同步冷却时间设置为 {SYNC_INTERVAL_DAYS} 天。")
 
     try:
-        with get_db_connection(db_path) as conn:
+        with db_handler.get_db_connection(db_path) as conn:
             # --- 阶段一：从 TMDb 补充元数据 (并发执行) ---
             logger.info("--- 阶段一：从 TMDb 补充演员元数据 (IMDb ID, 头像等) ---")
             cursor = conn.cursor()

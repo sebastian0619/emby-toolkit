@@ -62,6 +62,7 @@ COPY requirements.txt \
      moviepilot_handler.py \
      config_manager.py \
      task_manager.py \
+     db_handler.py \
      ./
 
 COPY templates/ ./templates/

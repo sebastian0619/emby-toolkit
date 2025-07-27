@@ -12,7 +12,7 @@ from enum import Enum
 
 import tmdb_handler
 import emby_handler
-from actor_utils import get_db_connection
+from db_handler import get_db_connection
 import moviepilot_handler
 
 logger = logging.getLogger(__name__)
