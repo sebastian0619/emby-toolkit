@@ -47,6 +47,7 @@ from routes.collections import collections_bp
 from routes.actor_subscriptions import actor_subscriptions_bp
 from routes.logs import logs_bp
 from routes.media import media_bp
+from routes.system import system_bp
 # --- 核心模块导入 ---
 import constants # 你的常量定义\
 import logging
@@ -1839,14 +1840,6 @@ def emby_webhook():
         return jsonify({"status": "precise_image_task_queued", "item_id": original_item_id}), 202
     
     return jsonify({"status": "event_unhandled"}), 500
-#--- 日志 ---
-@app.route('/api/status', methods=['GET'])
-def api_get_task_status():
-    global background_task_status, frontend_log_queue
-    
-    status_data = task_manager.get_task_status()
-    status_data['logs'] = list(frontend_log_queue)
-    return jsonify(status_data)
 @app.route('/api/emby_libraries')
 def api_get_emby_libraries():
     # 确保 media_processor_instance 已初始化并且 Emby 配置有效
@@ -2175,31 +2168,6 @@ def api_handle_trigger_sync_map():
     except Exception as e:
         logger.error(f"API /api/trigger_sync_person_map error: {e}", exc_info=True)
         return jsonify({"error": "启动同步映射表时发生服务器内部错误"}), 500
-@app.route('/api/trigger_stop_task', methods=['POST'])
-def api_handle_trigger_stop_task():
-    logger.debug("API Endpoint: Received request to stop current task.")
-    
-    stopped_any = False
-    # --- ★★★ 核心修复：尝试停止所有可能的处理器 ★★★ ---
-    if extensions.media_processor_instance:
-        extensions.media_processor_instance.signal_stop()
-        stopped_any = True
-        
-    if extensions.watchlist_processor_instance:
-        extensions.watchlist_processor_instance.signal_stop()
-        stopped_any = True
-
-    if extensions.actor_subscription_processor_instance:
-        extensions.actor_subscription_processor_instance.signal_stop()
-        stopped_any = True
-    # --- 修复结束 ---
-
-    if stopped_any:
-        logger.info("已发送停止信号给当前正在运行的任务。")
-        return jsonify({"message": "已发送停止任务请求。"}), 200
-    else:
-        logger.warning("API: 没有任何处理器实例被初始化，无法发送停止信号。")
-        return jsonify({"error": "核心处理器未就绪"}), 503
 @app.route('/api/update_media_cast_api/<item_id>', methods=['POST'])
 @login_required
 @processor_ready_required
@@ -2588,46 +2556,6 @@ def api_clear_tmdb_caches():
         logger.error(f"调用清除TMDb缓存功能时发生意外错误: {e}", exc_info=True)
         return jsonify({"success": False, "message": "服务器在执行清除操作时发生未知错误。"}), 500
 # ✨✨✨ “立即执行”API接口 ✨✨✨
-@app.route('/api/tasks/trigger/<task_identifier>', methods=['POST'])
-@task_lock_required
-def api_trigger_task_now(task_identifier: str):
-    """
-    一个通用的API端点，用于立即触发指定的后台任务。
-    它会响应前端发送的 /api/tasks/trigger/full-scan, /api/tasks/trigger/sync-person-map 等请求。
-    """
-
-    # 2. 从任务注册表中查找任务
-    task_info = TASK_REGISTRY.get(task_identifier)
-    if not task_info:
-        return jsonify({
-            "status": "error",
-            "message": f"未知的任务标识符: {task_identifier}"
-        }), 404 # Not Found
-
-    task_function, task_name = task_info
-    
-    # 3. 提交任务到队列
-    #    使用你现有的 submit_task_to_queue 函数
-    #    对于需要额外参数的任务（如全量扫描），我们需要特殊处理
-    kwargs = {}
-    if task_identifier == 'full-scan':
-        # 我们可以从请求体中获取参数，或者使用默认值
-        # 这允许前端未来可以传递 '强制重处理' 等选项
-        data = request.get_json(silent=True) or {}
-        kwargs['process_episodes'] = data.get('process_episodes', True)
-        # 假设 task_process_full_library 接受 process_episodes 参数
-    
-    success = task_manager.submit_task(
-        task_function,
-        task_name,
-        **kwargs # 使用字典解包来传递命名参数
-    )
-
-    return jsonify({
-        "status": "success",
-        "message": "任务已成功提交到后台队列。",
-        "task_name": task_name
-    }), 202 # 202 Accepted 表示请求已被接受，将在后台处理
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
@@ -2646,6 +2574,7 @@ app.register_blueprint(collections_bp)
 app.register_blueprint(actor_subscriptions_bp)
 app.register_blueprint(logs_bp)
 app.register_blueprint(media_bp)
+app.register_blueprint(system_bp)
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}")
     
