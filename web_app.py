@@ -18,7 +18,6 @@ from extensions import (
 from utils import LogDBManager
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory,Response, abort, session
 from werkzeug.utils import safe_join, secure_filename
-from functools import wraps
 from utils import get_override_path_for_item
 from watchlist_processor import WatchlistProcessor
 import threading
