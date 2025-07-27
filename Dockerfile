@@ -66,7 +66,7 @@ COPY requirements.txt \
      extensions.py \
      ./
 
-COPY templates/ ./templates/
+COPY routes/ ./routes/
 COPY templates/ ./templates/
 COPY docker/entrypoint.sh /entrypoint.sh
 
