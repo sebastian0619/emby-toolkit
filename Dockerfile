@@ -63,8 +63,10 @@ COPY requirements.txt \
      config_manager.py \
      task_manager.py \
      db_handler.py \
+     extensions.py \
      ./
 
+COPY templates/ ./templates/
 COPY templates/ ./templates/
 COPY docker/entrypoint.sh /entrypoint.sh
 
