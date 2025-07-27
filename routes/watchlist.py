@@ -7,8 +7,8 @@ import logging
 import db_handler
 import config_manager
 import task_manager
-from extensions import login_required, task_lock_required, watchlist_processor_instance
-
+import extensions
+from extensions import login_required, task_lock_required
 # 1. 创建追剧列表蓝图
 watchlist_bp = Blueprint('watchlist', __name__, url_prefix='/api/watchlist')
 
@@ -110,7 +110,7 @@ def api_trigger_single_watchlist_refresh(item_id):
     # ... (函数逻辑和原来完全一样) ...
     from web_app import task_refresh_single_watchlist_item # 延迟导入任务函数
     logger.trace(f"API (Blueprint): 收到对单个追剧项目 {item_id} 的刷新请求。")
-    if not watchlist_processor_instance:
+    if not extensions.watchlist_processor_instance:
         return jsonify({"error": "追剧处理模块未就绪"}), 503
 
     item_name = db_handler.get_watchlist_item_name(config_manager.DB_PATH, item_id) or "未知剧集"

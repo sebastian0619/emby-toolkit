@@ -46,6 +46,7 @@ from routes.watchlist import watchlist_bp
 from routes.collections import collections_bp
 from routes.actor_subscriptions import actor_subscriptions_bp
 from routes.logs import logs_bp
+from routes.media import media_bp
 # --- 核心模块导入 ---
 import constants # 你的常量定义\
 import logging
@@ -74,11 +75,6 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
 # --- 全局变量 ---
-EMBY_SERVER_ID: Optional[str] = None # ★★★ 新增：用于存储 Emby Server ID
-media_processor_instance: Optional[MediaProcessor] = None
-actor_subscription_processor_instance: Optional[ActorSubscriptionProcessor] = None
-media_processor_instance: Optional[MediaProcessor] = None
-watchlist_processor_instance: Optional[WatchlistProcessor] = None
 
 scheduler = BackgroundScheduler(timezone=str(pytz.timezone(constants.TIMEZONE)))
 JOB_ID_FULL_SCAN = "scheduled_full_scan"
@@ -362,8 +358,6 @@ def save_config_and_reload(new_config: Dict[str, Any]):
 # --- 始化所有需要的处理器实例 ---
 def initialize_processors():
     """初始化所有处理器，并将实例赋值给 extensions 模块中的全局变量。"""
-    # 这个函数不再需要 global 声明，因为它只修改其他模块的变量
-    global media_processor_instance, watchlist_processor_instance, actor_subscription_processor_instance, EMBY_SERVER_ID
     if not config_manager.APP_CONFIG:
         logger.error("无法初始化处理器：全局配置 APP_CONFIG 为空。")
         return
@@ -410,21 +404,16 @@ def initialize_processors():
         actor_subscription_processor_instance_local = None
 
 
-    # 首先，赋值给 web_app.py 自己的全局变量
-    media_processor_instance = media_processor_instance_local
-    watchlist_processor_instance = watchlist_processor_instance_local
-    actor_subscription_processor_instance = actor_subscription_processor_instance_local
-    EMBY_SERVER_ID = server_id_local
+    # --- ✨✨✨ 简化为“单一赋值” ✨✨✨ ---
+    # 直接赋值给 extensions 模块的全局变量
+    extensions.media_processor_instance = media_processor_instance_local
+    extensions.watchlist_processor_instance = watchlist_processor_instance_local
+    extensions.actor_subscription_processor_instance = actor_subscription_processor_instance_local
+    extensions.EMBY_SERVER_ID = server_id_local
     
-    # 然后，将同样的值赋给 extensions 模块的全局变量，供蓝图使用
-    extensions.media_processor_instance = media_processor_instance
-    extensions.watchlist_processor_instance = watchlist_processor_instance
-    extensions.actor_subscription_processor_instance = actor_subscription_processor_instance
-    extensions.EMBY_SERVER_ID = EMBY_SERVER_ID
-    
-    # --- 3. 将 extensions 中的变量注入到任务管理器 ---
+    # --- 注入到任务管理器 ---
     task_manager.initialize_task_manager(
-        media_proc=extensions.media_processor_instance,
+        media_proc=extensions.media_processor_instance, # 从 extensions 读取
         watchlist_proc=extensions.watchlist_processor_instance,
         actor_sub_proc=extensions.actor_subscription_processor_instance,
         status_callback=update_status_from_thread
@@ -851,6 +840,7 @@ def task_enrich_aliases(processor: MediaProcessor):
     except Exception as e:
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
         update_status_from_thread(-1, f"错误：任务失败 ({str(e)[:50]}...)")
+
 # --- 使用手动编辑的结果处理媒体项 ---
 def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list: list, item_name: str):
     """任务：使用手动编辑的结果处理媒体项"""
@@ -859,6 +849,7 @@ def task_manual_update(processor: MediaProcessor, item_id: str, manual_cast_list
         manual_cast_list=manual_cast_list,
         item_name=item_name
     )
+
 # --- 扫描单个演员订阅的所有作品 ---
 def task_scan_actor_media(processor: ActorSubscriptionProcessor, subscription_id: int):
     """【新】后台任务：扫描单个演员订阅的所有作品。"""
@@ -1898,49 +1889,6 @@ def application_exit_handler():
     logger.info("atexit 清理操作执行完毕。")
 atexit.register(application_exit_handler)
 # --- 应用退出处理结束 ---
-# --- API 端点 搜索媒体库 ---
-@app.route('/api/search_emby_library', methods=['GET'])
-@processor_ready_required
-def api_search_emby_library():
-    query = request.args.get('query', '')
-    if not query.strip():
-        return jsonify({"error": "搜索词不能为空"}), 400
-
-    try:
-        # ✨✨✨ 调用改造后的函数，并传入 search_term ✨✨✨
-        search_results = emby_handler.get_emby_library_items(
-            base_url=media_processor_instance.emby_url,
-            api_key=media_processor_instance.emby_api_key,
-            user_id=media_processor_instance.emby_user_id,
-            media_type_filter="Movie,Series", # 搜索时指定类型
-            search_term=query # <--- 传递搜索词
-        )
-        
-        if search_results is None:
-            return jsonify({"error": "搜索时发生服务器错误"}), 500
-
-        # 将搜索结果转换为前端表格期望的格式 (这部分逻辑不变)
-        formatted_results = []
-        for item in search_results:
-            formatted_results.append({
-                "item_id": item.get("Id"),
-                "item_name": item.get("Name"),
-                "item_type": item.get("Type"),
-                "failed_at": None,
-                "error_message": f"来自 Emby 库的搜索结果 (年份: {item.get('ProductionYear', 'N/A')})",
-                "score": None,
-                # ★★★ 核心修复：把 ProviderIds 也传递给前端 ★★★
-                "provider_ids": item.get("ProviderIds") 
-            })
-        
-        return jsonify({
-            "items": formatted_results,
-            "total_items": len(formatted_results)
-        })
-
-    except Exception as e:
-        logger.error(f"API /api/search_emby_library Error: {e}", exc_info=True)
-        return jsonify({"error": "搜索时发生未知服务器错误"}), 500
 # --- 认证 API 端点 ---
 @app.route('/api/auth/status', methods=['GET'])
 def auth_status():
@@ -2047,7 +1995,7 @@ def api_get_config():
         current_config = config_manager.APP_CONFIG 
         
         if current_config:
-            current_config['emby_server_id'] = EMBY_SERVER_ID
+            current_config['emby_server_id'] = extensions.EMBY_SERVER_ID
             logger.trace(f"API /api/config (GET): 成功加载并返回配置。")
             return jsonify(current_config)
         else:
@@ -2233,16 +2181,16 @@ def api_handle_trigger_stop_task():
     
     stopped_any = False
     # --- ★★★ 核心修复：尝试停止所有可能的处理器 ★★★ ---
-    if media_processor_instance:
-        media_processor_instance.signal_stop()
+    if extensions.media_processor_instance:
+        extensions.media_processor_instance.signal_stop()
         stopped_any = True
         
-    if watchlist_processor_instance:
-        watchlist_processor_instance.signal_stop()
+    if extensions.watchlist_processor_instance:
+        extensions.watchlist_processor_instance.signal_stop()
         stopped_any = True
 
-    if actor_subscription_processor_instance:
-        actor_subscription_processor_instance.signal_stop()
+    if extensions.actor_subscription_processor_instance:
+        extensions.actor_subscription_processor_instance.signal_stop()
         stopped_any = True
     # --- 修复结束 ---
 
@@ -2252,28 +2200,6 @@ def api_handle_trigger_stop_task():
     else:
         logger.warning("API: 没有任何处理器实例被初始化，无法发送停止信号。")
         return jsonify({"error": "核心处理器未就绪"}), 503
-# ✨✨✨ 保存手动编辑结果的 API ✨✨✨
-@app.route('/api/update_media_cast_sa/<item_id>', methods=['POST'])
-@login_required
-@processor_ready_required
-def api_update_edited_cast_sa(item_id):
-    data = request.json
-    if not data or "cast" not in data or not isinstance(data["cast"], list):
-        return jsonify({"error": "请求体中缺少有效的 'cast' 列表"}), 400
-    
-    edited_cast = data["cast"]
-    item_name = data.get("item_name", f"未知项目(ID:{item_id})")
-
-    success = task_manager.submit_task(
-        task_manual_update, # 传递包装函数
-        f"手动更新: {item_name}",
-        # --- 后面是传递给 task_manual_update 的参数 ---
-        item_id,
-        edited_cast,
-        item_name
-    )
-    
-    return jsonify({"message": "手动更新任务已在后台启动。"}), 202
 @app.route('/api/update_media_cast_api/<item_id>', methods=['POST'])
 @login_required
 @processor_ready_required
@@ -2394,7 +2320,7 @@ def api_export_database():
             "metadata": {
                 "export_date": datetime.utcnow().isoformat() + "Z",
                 "app_version": constants.APP_VERSION,
-                "source_emby_server_id": EMBY_SERVER_ID,
+                "source_emby_server_id": extensions.EMBY_SERVER_ID,
                 "tables": tables_to_export
             },
             "data": {}
@@ -2477,7 +2403,7 @@ def api_import_database():
                 return jsonify({"error": error_msg}), 403 # 403 Forbidden
 
             # 检查2：当前服务器必须能获取到ID
-            current_server_id = EMBY_SERVER_ID
+            current_server_id = extensions.EMBY_SERVER_ID
             if not current_server_id:
                 error_msg = "无法获取当前Emby服务器的ID，可能连接已断开。为安全起见，暂时禁止使用“本地恢复”模式。"
                 logger.warning(f"禁止导入: {error_msg}")
@@ -2509,126 +2435,9 @@ def api_import_database():
     except Exception as e:
         logger.error(f"处理数据库导入请求时发生错误: {e}", exc_info=True)
         return jsonify({"error": "处理上传文件时发生服务器错误"}), 500
-# ✨✨✨ 编辑页面的API接口 ✨✨✨
-@app.route('/api/media_for_editing_sa/<item_id>', methods=['GET'])
-@login_required
-@processor_ready_required
-def api_get_media_for_editing_sa(item_id):
-    # 直接调用 core_processor 的新方法
-    data_for_editing = media_processor_instance.get_cast_for_editing(item_id)
-    
-    if data_for_editing:
-        return jsonify(data_for_editing)
-    else:
-        return jsonify({"error": f"无法获取项目 {item_id} 的编辑数据，请检查日志。"}), 404
-# ✨✨✨   生成外部搜索链接 ✨✨✨
-@app.route('/api/parse_cast_from_url', methods=['POST'])
-def api_parse_cast_from_url():
-    # 检查 web_parser 是否可用
-    try:
-        from web_parser import parse_cast_from_url, ParserError
-    except ImportError:
-        return jsonify({"error": "网页解析功能在服务器端不可用。"}), 501
 
-    data = request.json
-    url_to_parse = data.get('url')
-    if not url_to_parse:
-        return jsonify({"error": "请求中未提供 'url' 参数"}), 400
 
-    try:
-        current_config = config_manager.APP_CONFIG
-        headers = {'User-Agent': current_config.get('user_agent', '')}
-        parsed_cast = parse_cast_from_url(url_to_parse, custom_headers=headers)
-        
-        frontend_cast = [{"name": item['actor'], "role": item['character']} for item in parsed_cast]
-        return jsonify(frontend_cast)
-
-    except ParserError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        logger.error(f"解析 URL '{url_to_parse}' 时发生未知错误: {e}", exc_info=True)
-        return jsonify({"error": "解析时发生未知的服务器错误"}), 500
-# ✨✨✨ 一键翻译 ✨✨✨
-@app.route('/api/actions/translate_cast_sa', methods=['POST']) # 注意路径不同
-@login_required
-@processor_ready_required
-def api_translate_cast_sa():
-    data = request.json
-    current_cast = data.get('cast')
-    if not isinstance(current_cast, list):
-        return jsonify({"error": "请求体必须包含 'cast' 列表。"}), 400
-
-    # 【★★★ 从请求中获取所有需要的上下文信息 ★★★】
-    title = data.get('title')
-    year = data.get('year')
-
-    try:
-        # 【★★★ 调用新的、需要完整上下文的函数 ★★★】
-        translated_list = media_processor_instance.translate_cast_list_for_editing(
-            cast_list=current_cast,
-            title=title,
-            year=year,
-        )
-        return jsonify(translated_list)
-    except Exception as e:
-        logger.error(f"一键翻译演员列表时发生错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器在翻译时发生内部错误。"}), 500
-# ✨✨✨ 预览处理后的演员表 ✨✨✨
-@app.route('/api/preview_processed_cast/<item_id>', methods=['POST'])
-@processor_ready_required
-def api_preview_processed_cast(item_id):
-    """
-    一个轻量级的API，用于预览单个媒体项经过核心处理器处理后的演员列表。
-    它只返回处理结果，不执行任何数据库更新或Emby更新。
-    """
-    logger.info(f"API: 收到为 ItemID {item_id} 预览处理后演员的请求。")
-
-    # 步骤 1: 获取当前媒体的 Emby 详情
-    try:
-        item_details = emby_handler.get_emby_item_details(
-            item_id,
-            media_processor_instance.emby_url,
-            media_processor_instance.emby_api_key,
-            media_processor_instance.emby_user_id
-        )
-        if not item_details:
-            return jsonify({"error": "无法获取当前媒体的Emby详情"}), 404
-    except Exception as e:
-        logger.error(f"API /preview_processed_cast: 获取Emby详情失败 for ID {item_id}: {e}", exc_info=True)
-        return jsonify({"error": f"获取Emby详情时发生错误: {e}"}), 500
-
-    # 步骤 2: 调用核心处理方法
-    try:
-        current_emby_cast_raw = item_details.get("People", [])
-        
-        # 直接调用 MediaProcessor 的核心方法
-        processed_cast_result = media_processor_instance._process_cast_list(
-            current_emby_cast_people=current_emby_cast_raw,
-            media_info=item_details
-        )
-        
-        # 步骤 3: 将处理结果转换为前端友好的格式
-        # processed_cast_result 的格式是内部格式，我们需要转换为前端期望的格式
-        # (embyPersonId, name, role, imdbId, doubanId, tmdbId)
-        
-        cast_for_frontend = []
-        for actor_data in processed_cast_result:
-            cast_for_frontend.append({
-                "embyPersonId": actor_data.get("EmbyPersonId"),
-                "name": actor_data.get("Name"),
-                "role": actor_data.get("Role"),
-                "imdbId": actor_data.get("ImdbId"),
-                "doubanId": actor_data.get("DoubanCelebrityId"),
-                "tmdbId": actor_data.get("TmdbPersonId"),
-                "matchStatus": "已刷新" # 可以根据 actor_data['_source_comment'] 提供更详细的状态
-            })
-
-        logger.info(f"API: 成功为 ItemID {item_id} 预览了处理后的演员列表，返回 {len(cast_for_frontend)} 位演员。")
-        return jsonify(cast_for_frontend)
-
-    except Exception as e:
-        logger.error(f"API /preview_processed_cast: 调用 _process_cast_list 时发生错误 for ID {item_id}: {e}", exc_info=True)
-        return jsonify({"error": "在服务器端处理演员列表时发生内部错误"}), 500    
+ 
 # ★★★ START: Emby 图片代理路由 ★★★
 @app.route('/image_proxy/<path:image_path>')
 @processor_ready_required
@@ -2638,8 +2447,8 @@ def proxy_emby_image(image_path):
     【V2 - 完整修复版】确保 api_key 作为 URL 参数传递，适用于所有图片类型。
     """
     try:
-        emby_url = media_processor_instance.emby_url.rstrip('/')
-        emby_api_key = media_processor_instance.emby_api_key
+        emby_url = extensions.media_processor_instance.emby_url.rstrip('/')
+        emby_api_key = extensions.media_processor_instance.emby_api_key
 
         # 1. 构造基础 URL，包含路径和原始查询参数
         query_string = request.query_string.decode('utf-8')
@@ -2836,6 +2645,7 @@ app.register_blueprint(watchlist_bp)
 app.register_blueprint(collections_bp)
 app.register_blueprint(actor_subscriptions_bp)
 app.register_blueprint(logs_bp)
+app.register_blueprint(media_bp)
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}")
     
@@ -2890,6 +2700,6 @@ if __name__ == '__main__':
     setup_scheduled_tasks()
     
     # 8. 运行 Flask 应用
-    app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=True, use_reloader=False)
+    app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=False)
 
 # # --- 主程序入口结束 ---

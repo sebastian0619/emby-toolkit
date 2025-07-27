@@ -9,7 +9,7 @@ import db_handler
 import config_manager
 import tmdb_handler
 import task_manager
-from extensions import login_required, task_lock_required, processor_ready_required
+from extensions import login_required, processor_ready_required, task_lock_required
 
 # 1. 创建演员订阅蓝图
 actor_subscriptions_bp = Blueprint('actor_subscriptions', __name__, url_prefix='/api/actor-subscriptions')
