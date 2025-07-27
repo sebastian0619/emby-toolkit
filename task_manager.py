@@ -1,13 +1,16 @@
 # task_manager.py
 import threading
+import json
+import sqlite3
 import logging
 from queue import Queue
 from typing import Optional, Callable, Any, Union
 
+from db_handler import get_db_connection
 from core_processor import MediaProcessor
 from watchlist_processor import WatchlistProcessor
 from actor_subscription_processor import ActorSubscriptionProcessor
-
+import config_manager
 # --- 核心修改：改为定义全局变量，等待被注入 ---
 media_processor_instance: Optional['MediaProcessor'] = None
 watchlist_processor_instance: Optional['WatchlistProcessor'] = None
