@@ -89,7 +89,7 @@ def api_get_config():
 # --- API 端点：保存配置 ---
 @system_bp.route('/config', methods=['POST'])
 def api_save_config():
-    from tasks import save_config_and_reload
+    from web_app import save_config_and_reload
     try:
         new_config_data = request.json
         if not new_config_data:
