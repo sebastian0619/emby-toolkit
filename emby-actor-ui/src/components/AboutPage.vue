@@ -37,7 +37,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, h } from 'vue';
+import { ref, onMounted, computed, h } from 'vue';
 import axios from 'axios';
 import { marked } from 'marked';
 import { formatDistanceToNow, parseISO } from 'date-fns';
@@ -52,7 +52,6 @@ const isLoading = ref(true);
 const error = ref(null);
 const currentVersion = ref('');
 const releases = ref([]);
-const githubRepo = ref(''); // 将在 onMounted 中设置
 
 const fetchData = async () => {
   isLoading.value = true;
