@@ -13,9 +13,9 @@
             </template>
             用爱发电不易，您的支持是项目前进的最大动力！
           </n-tooltip>
-        <n-button tag="a" :href="`https://github.com/${githubRepo}`" target="_blank" secondary>
+        <n-button tag="a" :href="`https://github.com/${githubRepo}/issues`" target="_blank" secondary>
           <template #icon><n-icon :component="LogoGithub" /></template>
-          在 GitHub 上查看
+          反馈问题
         </n-button>
       </template>
     </n-page-header>
@@ -73,7 +73,10 @@ import { marked } from 'marked';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { NLayout, NPageHeader, NDivider, NSpin, NAlert, NList, NListItem, NThing, NTag, NSpace, NButton, NIcon, NText } from 'naive-ui';
-import { LogoGithub } from '@vicons/ionicons5';
+import { 
+  LogoGithub, 
+  CafeOutline as CafeIcon 
+} from '@vicons/ionicons5';
 import { useAppStore } from '../stores/app'; // 导入 appStore
 
 const appStore = useAppStore(); // 使用 appStore
