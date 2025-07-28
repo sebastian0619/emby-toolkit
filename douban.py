@@ -217,31 +217,41 @@ class DoubanApi:
         return details # 直接返回 __invoke 的结果 (成功或错误字典)
 
     def match_info(self, name: str, imdbid: Optional[str] = None, mtype: Optional[str] = None,
-                   year: Optional[str] = None, season: Optional[int] = None) -> Dict[str, Any]:
+               year: Optional[str] = None, season: Optional[int] = None) -> Dict[str, Any]:
         if imdbid and imdbid.strip().startswith("tt"):
             actual_imdbid = imdbid.strip()
-            logger.info(f"尝试通过IMDBID {actual_imdbid} 查询豆瓣信息...")
+            logger.info(f"尝试通过IMDBID {actual_imdbid} (使用统一接口) 查询豆瓣信息...")
+            
+            # 1. 调用唯一的、简单的 imdbid 函数
             result_from_imdb = self.imdbid(actual_imdbid)
+            
             if result_from_imdb.get("error"):
                 logger.warning(f"IMDBID {actual_imdbid} 查询失败: {result_from_imdb.get('message')}")
-                # 继续尝试名称搜索
-            elif result_from_imdb.get("id"): # 豆瓣的 "id" 字段是类似 "/movie/12345/" 的URL
+            elif result_from_imdb.get("id"):
                 douban_id_url = str(result_from_imdb.get("id"))
                 match = re.search(r'/(movie|tv)/(\d+)/?$', douban_id_url)
                 if match:
-                    api_type, actual_douban_id = match.groups()
-                    logger.info(f"IMDBID '{actual_imdbid}' -> 豆瓣ID: {actual_douban_id}, 类型: {api_type}")
+                    # 2. 从API结果中提取ID，但忽略它返回的类型
+                    _, actual_douban_id = match.groups()
+                    
+                    # 3. ✨✨✨ 核心修正：直接使用从 Emby 传入的 mtype 作为最终类型 ✨✨✨
+                    final_mtype = 'tv' if mtype and mtype.lower() in ['series', 'tv'] else 'movie'
+                    
+                    logger.info(f"IMDBID '{actual_imdbid}' -> 豆瓣ID: {actual_douban_id}。将使用传入的类型: '{final_mtype}'")
+                    
                     title = result_from_imdb.get("title", result_from_imdb.get("alt_title", name))
                     original_title = result_from_imdb.get("original_title")
                     year_from_api = str(result_from_imdb.get("year", "")).strip()
-                    # ... (更完善的年份提取) ...
+                    
                     return {"id": actual_douban_id, "title": title, "original_title": original_title,
-                            "year": year_from_api or year, "type": mtype or api_type, "source": "imdb_lookup"}
+                            "year": year_from_api or year, "type": final_mtype, "source": "imdb_lookup"}
                 else:
                     logger.warning(f"IMDBID {actual_imdbid} 查询到的豆瓣ID URL '{douban_id_url}' 无法解析。")
             else:
                 logger.warning(f"IMDBID {actual_imdbid} 查询结果无效或无ID。")
+
         # 如果IMDb查询失败或无IMDbID，则进行名称搜索
+        logger.info(f"IMDb查询失败或未提供ID，回退到名称搜索: '{name}'")
         return self._search_by_name_for_match_info(name, mtype, year, season)
 
     def _search_by_name_for_match_info(self, name: str, mtype: Optional[str],

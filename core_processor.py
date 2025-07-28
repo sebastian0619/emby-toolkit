@@ -247,8 +247,8 @@ class MediaProcessor:
         
         # 3. 如果本地未找到，回退到功能完整的在线API路径
         logger.info("未找到本地豆瓣缓存，将通过在线API获取演员和评分信息。")
-        
-        # 3.1 匹配豆瓣ID
+
+        # 3.1 匹配豆瓣ID和类型。现在 match_info 返回的结果是完全可信的。
         match_info_result = self.douban_api.match_info(
             name=item_name, imdbid=imdb_id, mtype=item_type, year=item_year
         )
@@ -258,13 +258,22 @@ class MediaProcessor:
             return [], None
 
         douban_id = match_info_result["id"]
-        douban_type = match_info_result["type"]
+        # ✨✨✨ 直接信任从 douban.py 返回的类型 ✨✨✨
+        douban_type = match_info_result.get("type")
 
-        # 3.2 获取演职员 (使用已匹配到的ID，避免重复搜索)
-        cast_data = self.douban_api.get_acting(name=item_name, douban_id_override=douban_id)
+        if not douban_type:
+            logger.error(f"从豆瓣匹配结果中未能获取到媒体类型 for ID {douban_id}。处理中止。")
+            return [], None
+
+        # 3.2 获取演职员 (使用完全可信的类型)
+        cast_data = self.douban_api.get_acting(
+            name=item_name, 
+            douban_id_override=douban_id, 
+            mtype=douban_type
+        )
         douban_cast_raw = cast_data.get("cast", [])
 
-        # 3.3 获取详情（为了评分）
+        # 3.3 获取详情（为了评分），同样使用可信的类型
         details_data = self.douban_api._get_subject_details(douban_id, douban_type)
         douban_rating = None
         if details_data and not details_data.get("error"):
@@ -275,7 +284,7 @@ class MediaProcessor:
                     logger.info(f"在线获取到豆瓣评分 for '{item_name}': {douban_rating}")
                 except (ValueError, TypeError):
                     pass
-        
+
         return douban_cast_raw, douban_rating
     # --- 通过豆瓣ID查找映射表 ---
     def _find_person_in_map_by_douban_id(self, douban_id: str, cursor: sqlite3.Cursor) -> Optional[sqlite3.Row]:
