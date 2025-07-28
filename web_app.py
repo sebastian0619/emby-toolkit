@@ -578,32 +578,6 @@ def setup_scheduled_tasks():
             logger.info("APScheduler 已根据任务需求启动。")
         except Exception as e_scheduler_start:
             logger.error(f"APScheduler 启动失败: {e_scheduler_start}", exc_info=True)
-# --- 定时任务结束 ---
-def enrich_and_match_douban_cast_to_emby(
-    douban_actors_api_data: List[Dict[str, Any]],
-    current_emby_cast_list: List[Dict[str, Any]],
-    tmdb_api_key: Optional[str],
-    db_cursor: sqlite3.Cursor # 注意：这里接收的是游标，不是连接
-) -> List[Dict[str, Any]]:
-    logger.info(f"enrich_and_match_douban_cast_to_emby: 开始处理 {len(douban_actors_api_data)} 位豆瓣演员，与 {len(current_emby_cast_list)} 位Emby演员进行匹配增强。")
-    results = []
-    processed_emby_pids_in_this_run = set()
-
-    for d_actor_data in douban_actors_api_data:
-        # ... (这里是详细的匹配、TMDb增强、状态标记逻辑) ...
-        # ... (确保这个函数内部调用的 match_douban_actor_to_emby_person 也已定义或导入) ...
-        # ... (并且 tmdb_handler 也是可用的) ...
-
-        # 示例：
-        d_name = d_actor_data.get("name")
-        logger.debug(f"  正在处理豆瓣演员: {d_name}")
-        # (此处应有完整的匹配和信息组合逻辑)
-        # (如果匹配成功，将结果添加到 results 列表)
-        # results.append({ "embyPersonId": ..., "name": ..., ... "matchStatus": ... })
-
-    logger.info(f"enrich_and_match_douban_cast_to_emby: 处理完成，返回 {len(results)} 个匹配/增强的演员信息。")
-    return results
-
 # --- 应用退出处理 ---
 def application_exit_handler():
     global media_processor_instance, scheduler, task_worker_thread
@@ -625,13 +599,6 @@ def application_exit_handler():
     
     logger.info("atexit 清理操作执行完毕。")
 atexit.register(application_exit_handler)
-# --- 应用退出处理结束 ---
-
-
-
-
-
-
 
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
