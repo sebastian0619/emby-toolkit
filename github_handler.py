@@ -20,7 +20,7 @@ def get_github_releases(owner: str, repo: str) -> Optional[List[Dict[str, Any]]]
         "X-GitHub-Api-Version": "2022-11-28"
     }
     
-    logger.info(f"正在从 GitHub API 获取 releases: {api_url}")
+    logger.trace(f"正在从 GitHub API 获取 releases: {api_url}")
     try:
         response = requests.get(api_url, headers=headers, timeout=20)
         response.raise_for_status()
@@ -36,7 +36,7 @@ def get_github_releases(owner: str, repo: str) -> Optional[List[Dict[str, Any]]]
                 "url": release.get("html_url")
             })
         
-        logger.info(f"成功从 GitHub 获取到 {len(parsed_releases)} 个 release。")
+        logger.trace(f"成功从 GitHub 获取到 {len(parsed_releases)} 个 release。")
         return parsed_releases
 
     except requests.exceptions.RequestException as e:
