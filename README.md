@@ -56,6 +56,7 @@
           - /path/config:/config     # 将宿主机的数据目录挂载到容器的 /config 目录
           - /path/tmdb:/tmdb         # 映射神医本地TMDB目录，必须配置
         environment:
+          - APP_DATA_DIR=/config     # 持久化目录
           - TZ=Asia/Shanghai         # 设置容器时区
           - AUTH_USERNAME=admin      # 用户名可任意设置，密码在程序首次运行会生成随机密码打印在日志中
           - PUID=0                   # 设置为你的用户ID，建议与宿主机用户ID保持一致
@@ -76,6 +77,7 @@
       -p 5257:5257 \
       -v /path/config:/config \
       -v /path/tmdb:/tmdb \
+      -e APP_DATA_DIR=/config \
       -e TZ="Asia/Shanghai" \
       -e AUTH_USERNAME="admin" \
       -e PUID=0 \
