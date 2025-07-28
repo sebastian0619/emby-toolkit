@@ -213,36 +213,70 @@ class MediaProcessor:
         return None
 
     # ✨ 封装了“优先本地缓存，失败则在线获取”的逻辑
-    def _get_douban_cast_with_local_cache(self, media_info: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _get_douban_data_with_local_cache(self, media_info: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[float]]:
         """
-        获取豆瓣演员列表。优先从本地 douban-movies/tv 缓存中查找，如果找不到，再通过在线API获取。
+        【V3 - 最终版】获取豆瓣数据（演员+评分）。优先本地缓存，失败则回退到功能完整的在线API路径。
+        返回: (演员列表, 豆瓣评分) 的元组。
         """
         # 1. 准备查找所需的信息
         provider_ids = media_info.get("ProviderIds", {})
+        item_name = media_info.get("Name", "")
         imdb_id = provider_ids.get("Imdb")
-        douban_id = provider_ids.get("Douban")
+        douban_id_from_provider = provider_ids.get("Douban")
         item_type = media_info.get("Type")
-        
-        douban_cache_dir_name = "douban-movies" if item_type == "Movie" else "douban-tv"
-        douban_cache_path = os.path.join(self.local_data_path, "cache", douban_cache_dir_name)
+        item_year = str(media_info.get("ProductionYear", ""))
 
         # 2. 尝试从本地缓存查找
-        local_json_path = self._find_local_douban_json(imdb_id, douban_id, douban_cache_path)
+        douban_cache_dir_name = "douban-movies" if item_type == "Movie" else "douban-tv"
+        douban_cache_path = os.path.join(self.local_data_path, "cache", douban_cache_dir_name)
+        local_json_path = self._find_local_douban_json(imdb_id, douban_id_from_provider, douban_cache_path)
 
         if local_json_path:
             logger.debug(f"发现本地豆瓣缓存文件，将直接使用: {local_json_path}")
             douban_data = _read_local_json(local_json_path)
-            # 注意：豆瓣刮削器缓存的键是 'actors'
-            if douban_data and 'actors' in douban_data:
-                # 为了与API返回的格式兼容，这里做个转换
-                # API返回: {'cast': [...]}  本地缓存: {'actors': [...]}
-                return douban_data.get('actors', [])
+            if douban_data:
+                cast = douban_data.get('actors', [])
+                rating_str = douban_data.get("rating", {}).get("value")
+                rating_float = None
+                if rating_str:
+                    try: rating_float = float(rating_str)
+                    except (ValueError, TypeError): pass
+                return cast, rating_float
             else:
-                logger.warning(f"本地豆瓣缓存文件 '{local_json_path}' 无效或不含 'actors' 键，将回退到在线API。")
+                logger.warning(f"本地豆瓣缓存文件 '{local_json_path}' 无效，将回退到在线API。")
         
-        # 3. 如果本地未找到，回退到在线API
-        logger.info("未找到本地豆瓣缓存，将通过在线API获取演员信息。")
-        return actor_utils.find_douban_cast(self.douban_api, media_info)
+        # 3. 如果本地未找到，回退到功能完整的在线API路径
+        logger.info("未找到本地豆瓣缓存，将通过在线API获取演员和评分信息。")
+        
+        # 3.1 匹配豆瓣ID
+        match_info_result = self.douban_api.match_info(
+            name=item_name, imdbid=imdb_id, mtype=item_type, year=item_year
+        )
+
+        if match_info_result.get("error") or not match_info_result.get("id"):
+            logger.warning(f"在线匹配豆瓣ID失败 for '{item_name}': {match_info_result.get('message', '未找到ID')}")
+            return [], None
+
+        douban_id = match_info_result["id"]
+        douban_type = match_info_result["type"]
+
+        # 3.2 获取演职员 (使用已匹配到的ID，避免重复搜索)
+        cast_data = self.douban_api.get_acting(name=item_name, douban_id_override=douban_id)
+        douban_cast_raw = cast_data.get("cast", [])
+
+        # 3.3 获取详情（为了评分）
+        details_data = self.douban_api._get_subject_details(douban_id, douban_type)
+        douban_rating = None
+        if details_data and not details_data.get("error"):
+            rating_str = details_data.get("rating", {}).get("value")
+            if rating_str:
+                try:
+                    douban_rating = float(rating_str)
+                    logger.info(f"在线获取到豆瓣评分 for '{item_name}': {douban_rating}")
+                except (ValueError, TypeError):
+                    pass
+        
+        return douban_cast_raw, douban_rating
     # --- 通过豆瓣ID查找映射表 ---
     def _find_person_in_map_by_douban_id(self, douban_id: str, cursor: sqlite3.Cursor) -> Optional[sqlite3.Row]:
         """
@@ -287,12 +321,8 @@ class MediaProcessor:
             return dict(metadata_row)  # 将其转换为字典，方便使用
         return None
     # --- 核心处理流程 ---
-    def _process_cast_list_from_local(self, local_cast_list: List[Dict[str, Any]], item_details_from_emby: Dict[str, Any], cursor: sqlite3.Cursor, tmdb_api_key: Optional[str], stop_event: Optional[threading.Event]) -> List[Dict[str, Any]]:
-        """
-        【V10 - 批量翻译优化版】使用本地缓存或在线API获取豆瓣演员，再进行匹配和处理。
-        """
-        douban_candidates_raw = self._get_douban_cast_with_local_cache(item_details_from_emby)
-        douban_candidates = actor_utils.format_douban_cast(douban_candidates_raw)
+    def _process_cast_list_from_local(self, local_cast_list: List[Dict[str, Any]], douban_cast_list: List[Dict[str, Any]], item_details_from_emby: Dict[str, Any], cursor: sqlite3.Cursor, tmdb_api_key: Optional[str], stop_event: Optional[threading.Event]) -> List[Dict[str, Any]]:
+        douban_candidates = actor_utils.format_douban_cast(douban_cast_list)
         
         # --- 步骤 1: 执行一对一匹配 ---
         logger.debug("--- 匹配阶段 1: 执行一对一匹配 ---")
@@ -892,30 +922,47 @@ class MediaProcessor:
                 json_file_path = os.path.join(base_cache_dir, base_json_filename)
                 logger.info(f"读取神医插件生成的缓存文件: {json_file_path}")
                 base_json_data_original = _read_local_json(json_file_path)
-                
-                # 如果文件存在但无法读取或解析（例如，内容为空或格式错误），则抛出异常由外层捕获
+
                 if not base_json_data_original:
                     raise ValueError(f"无法读取或解析JSON文件: {json_file_path}")
+
+                # ✨✨✨ 新增：获取豆瓣数据（包括评分）并执行替换 ✨✨✨
+                douban_cast_raw, douban_rating = self._get_douban_data_with_local_cache(item_details_from_emby)
+
+                # 直接在原始数据上操作，后续会写入覆盖文件
+                base_json_data_for_override = base_json_data_original
+
+                if douban_rating is not None:
+                    logger.info(f"✅ 发现豆瓣评分: {douban_rating}，将替换TMDb评分 ({base_json_data_for_override.get('vote_average')})。")
+                    base_json_data_for_override['vote_average'] = douban_rating
+                else:
+                    logger.info("未找到有效的豆瓣评分，将保留原始TMDb评分。")
+                # ✨✨✨ 评分替换结束 ✨✨✨
 
                 # 2. 处理演员表
                 full_tmdb_cast_as_base = []
                 if item_type == "Movie":
                     full_tmdb_cast_as_base = base_json_data_original.get("casts", {}).get("cast", [])
-                
                 elif item_type == "Series":
-                    # ✨✨✨ 直接调用新的聚合函数 ✨✨✨
                     full_tmdb_cast_as_base = self._aggregate_series_cast_from_cache(
                         base_cache_dir=base_cache_dir,
                         item_name_for_log=item_name_for_log
                     )
-                
+
                 intermediate_cast = self._process_cast_list_from_local(
-                    full_tmdb_cast_as_base,
-                    item_details_from_emby, 
-                    cursor,
-                    self.tmdb_api_key,
-                    self.get_stop_event()  
+                    local_cast_list=full_tmdb_cast_as_base,
+                    douban_cast_list=douban_cast_raw,  # <--- 传入获取到的豆瓣演员
+                    item_details_from_emby=item_details_from_emby, 
+                    cursor=cursor,
+                    tmdb_api_key=self.tmdb_api_key,
+                    stop_event=self.get_stop_event()  
                 ) 
+                final_cast_perfect = actor_utils.format_and_complete_cast_list(
+                    intermediate_cast, 
+                    is_animation, 
+                    self.config, 
+                    mode='auto'
+                )
                 final_cast_perfect = actor_utils.format_and_complete_cast_list(
                     intermediate_cast, 
                     is_animation, 
