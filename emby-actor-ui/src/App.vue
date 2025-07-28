@@ -29,7 +29,18 @@
                     </div>
                   </n-dropdown>
 
-                  <span style="font-size: 12px; color: #999;">v{{ appVersion }}</span>
+                  <!-- +++ 核心修改：版本号区域 +++ -->
+                    <router-link to="/about" custom v-slot="{ navigate }">
+                      <div @click="navigate" style="cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                        <!-- 1. 显示当前版本号 -->
+                        <span style="font-size: 12px; color: #999;">v{{ appStore.currentVersion || appVersion }}</span>
+                        
+                        <!-- 2. 如果有更新，则显示一个醒目的文字标签 -->
+                        <n-tag v-if="appStore.isUpdateAvailable" type="success" size="tiny" round>
+                          有更新
+                        </n-tag>
+                      </div>
+                    </router-link>
                   <n-switch v-model:value="isDarkTheme" size="small">
                     <template #checked>暗色</template>
                     <template #unchecked>亮色</template>
@@ -136,6 +147,11 @@ import {
 } from '@vicons/ionicons5';
 import { Password24Regular as PasswordIcon } from '@vicons/fluent'
 import { watchEffect } from 'vue'
+import { useAppStore } from './stores/app';
+import { NBadge } from 'naive-ui';
+
+const appStore = useAppStore();
+const appVersion = ref(__APP_VERSION__);
 const router = useRouter(); 
 const route = useRoute(); 
 const authStore = useAuthStore();
@@ -149,7 +165,6 @@ const collapsed = ref(false);
 const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲', message: '等待任务', progress: 0, last_action: null });
 const showStatusArea = ref(true);
 const activeMenuKey = computed(() => route.name);
-const appVersion = ref(__APP_VERSION__);
 
 watch(isDarkTheme, (newValue) => {
   localStorage.setItem('theme', newValue ? 'dark' : 'light');
@@ -257,6 +272,9 @@ const themeOverridesComputed = computed(() => {
 let statusIntervalId = null;
 
 onMounted(() => {
+  // +++ 核心修改：应用启动时就去获取版本信息 +++
+  appStore.fetchVersionInfo();
+
   if (authStore.isLoggedIn) {
     fetchStatus();
     statusIntervalId = setInterval(fetchStatus, 1000);
