@@ -596,7 +596,7 @@ atexit.register(application_exit_handler)
 
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
-@processor_ready_required
+@extensions.processor_ready_required
 def emby_webhook():
     data = request.json
     event_type = data.get("Event") if data else "未知事件"
@@ -632,9 +632,9 @@ def emby_webhook():
             logger.info(f"Webhook 收到分集 '{original_item_name}' (ID: {original_item_id})，正在向上查找其所属剧集...")
             series_id = emby_handler.get_series_id_from_child_id(
                 original_item_id,
-                media_processor_instance.emby_url,
-                media_processor_instance.emby_api_key,
-                media_processor_instance.emby_user_id
+                extensions.media_processor_instance.emby_url,
+                extensions.media_processor_instance.emby_api_key,
+                extensions.media_processor_instance.emby_user_id
             )
             if series_id:
                 id_to_process = series_id
@@ -646,9 +646,9 @@ def emby_webhook():
 
         full_item_details = emby_handler.get_emby_item_details(
             item_id=id_to_process,
-            emby_server_url=media_processor_instance.emby_url,
-            emby_api_key=media_processor_instance.emby_api_key,
-            user_id=media_processor_instance.emby_user_id
+            emby_server_url=extensions.media_processor_instance.emby_url,
+            emby_api_key=extensions.media_processor_instance.emby_api_key,
+            user_id=extensions.media_processor_instance.emby_user_id
         )
 
         if not full_item_details:
@@ -681,13 +681,12 @@ def emby_webhook():
         update_description = data.get("Description", "")
         logger.info(f"Webhook 图片更新事件触发，项目 '{original_item_name}' (ID: {original_item_id})。描述: '{update_description}'")
         
-        # ★★★ 核心修改点 2: 将 description 传递给任务队列 ★★★
-        success = task_manager.submit_task(
+        from tasks import image_update_task # 确保从 tasks 导入
+        task_manager.submit_task(
             image_update_task,
             f"精准图片同步: {original_item_name}",
-            # --- 传递给 image_update_task 的参数 ---
             item_id=original_item_id,
-            update_description=update_description # <--- 新增参数
+            update_description=update_description
         )
         
         return jsonify({"status": "precise_image_task_queued", "item_id": original_item_id}), 202
