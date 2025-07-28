@@ -5,7 +5,7 @@ WORKDIR /app/emby-actor-ui
 # 复制前端源码并构建（合并多个操作到单个RUN层）
 COPY emby-actor-ui/ ./
 RUN npm cache clean --force && \
-    npm install --no-fund --verbose && \
+    npm install --no-fund --verbose --legacy-peer-deps && \
     npm run build
 
 # --- 阶段 2: 构建最终的生产镜像 ---
