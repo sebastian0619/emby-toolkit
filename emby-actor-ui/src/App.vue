@@ -132,6 +132,7 @@ import {
   HeartOutline as WatchlistIcon,
   AlbumsOutline as CollectionsIcon,
   PeopleOutline as ActorSubIcon,
+  InformationCircleOutline as AboutIcon,
 } from '@vicons/ionicons5';
 import { Password24Regular as PasswordIcon } from '@vicons/fluent'
 import { watchEffect } from 'vue'
@@ -196,6 +197,7 @@ const menuOptions = computed(() => [
   { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) },
   { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
   { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
+  { label: '关于软件', key: 'About', icon: renderIcon(AboutIcon) },
 ]);
 
 

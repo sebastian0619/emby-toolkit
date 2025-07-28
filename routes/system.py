@@ -12,6 +12,8 @@ import config_manager
 import extensions
 from extensions import login_required, processor_ready_required
 import tasks
+import constants
+import github_handler
 # 1. 创建蓝图
 system_bp = Blueprint('system', __name__, url_prefix='/api')
 logger = logging.getLogger(__name__)
@@ -122,4 +124,31 @@ def api_save_config():
     except Exception as e:
         logger.error(f"API /api/config (POST) 保存配置时发生错误: {e}", exc_info=True)
         return jsonify({"error": f"保存配置时发生服务器内部错误: {str(e)}"}), 500
+    
+# +++ 关于页面的信息接口 +++
+@system_bp.route('/system/about_info', methods=['GET'])
+def get_about_info():
+    """
+    获取关于页面的所有信息，包括当前版本和 GitHub releases。
+    """
+    try:
+        # 从 GitHub 获取 releases
+        releases = github_handler.get_github_releases(
+            owner=constants.GITHUB_REPO_OWNER,
+            repo=constants.GITHUB_REPO_NAME
+        )
+
+        if releases is None:
+            # 即使获取失败，也返回一个正常的结构，只是 releases 列表为空
+            releases = []
+
+        response_data = {
+            "current_version": constants.APP_VERSION,
+            "releases": releases
+        }
+        return jsonify(response_data)
+
+    except Exception as e:
+        logger.error(f"API /system/about_info 发生错误: {e}", exc_info=True)
+        return jsonify({"error": "获取版本信息时发生服务器内部错误"}), 500
 
