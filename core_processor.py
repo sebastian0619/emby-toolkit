@@ -800,7 +800,8 @@ class MediaProcessor:
                 emby_server_url=self.emby_url,
                 emby_api_key=self.emby_api_key,
                 replace_all_metadata_param=True,
-                item_name_for_log=item_name_for_log
+                item_name_for_log=item_name_for_log,
+                user_id_for_unlock=self.emby_user_id
             )
 
             if not refresh_success:
@@ -961,7 +962,7 @@ class MediaProcessor:
                     if os.path.exists(base_cache_dir):
                         for filename in os.listdir(base_cache_dir):
                             # 精准匹配分集文件名格式，例如 "season-1-episode-1.json"
-                            if filename.startswith("season-") and "-episode-" in filename and filename.endswith(".json"):
+                            if filename.startswith("season-") and filename.lower().endswith('.json'):
                                 episode_files_to_process.append(filename)
                     
                     if not episode_files_to_process:
@@ -1038,7 +1039,8 @@ class MediaProcessor:
                     emby_server_url=self.emby_url,
                     emby_api_key=self.emby_api_key,
                     replace_all_metadata_param=True,
-                    item_name_for_log=item_name_for_log
+                    item_name_for_log=item_name_for_log,
+                    user_id_for_unlock=self.emby_user_id
                 )
                 
                 if not refresh_success:
@@ -1496,7 +1498,7 @@ class MediaProcessor:
                             if self.is_stop_requested():
                                 logger.warning(f"手动保存的分集处理循环被用户中止。")
                                 raise InterruptedError("任务中止")
-                            if filename.startswith("season-") and "-episode-" in filename and filename.endswith(".json"):
+                            if filename.startswith("season-") and filename.lower().endswith('.json'):
                                 child_json_original = _read_local_json(os.path.join(base_cache_dir, filename))
                                 if child_json_original:
                                     child_json_for_override = child_json_original # 直接引用
@@ -1527,7 +1529,8 @@ class MediaProcessor:
                         emby_server_url=self.emby_url,
                         emby_api_key=self.emby_api_key,
                         replace_all_metadata_param=True,
-                        item_name_for_log=item_name
+                        item_name_for_log=item_name,
+                        user_id_for_unlock=self.emby_user_id
                     )
                     if not refresh_success:
                         logger.warning(f"手动处理：文件已生成，但触发 Emby 刷新失败。你可能需要稍后在 Emby 中手动刷新。")

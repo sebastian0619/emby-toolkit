@@ -460,16 +460,51 @@ def refresh_emby_item_metadata(item_emby_id: str,
                                image_refresh_mode: str = "Default",
                                replace_all_metadata_param: bool = True,
                                replace_all_images_param: bool = False,
-                               item_name_for_log: Optional[str] = None
+                               item_name_for_log: Optional[str] = None,
+                               user_id_for_unlock: Optional[str] = None
                                ) -> bool:
     if not all([item_emby_id, emby_server_url, emby_api_key]):
         logger.error("刷新Emby元数据参数不足：缺少ItemID、服务器URL或API Key。")
         return False
     
-    # 1. 定义一个清晰的日志标识符，优先用片名
     log_identifier = f"'{item_name_for_log}'" if item_name_for_log else f"ItemID: {item_emby_id}"
     
-    # 2. 打印一条总的开始日志
+    # --- ✨✨✨ 新增：刷新前自动解锁元数据 ✨✨✨ ---
+    if replace_all_metadata_param and user_id_for_unlock:
+        logger.debug(f"检测到 ReplaceAllMetadata=True，尝试在刷新前解锁项目 {log_identifier} 的元数据...")
+        try:
+            item_data = get_emby_item_details(item_emby_id, emby_server_url, emby_api_key, user_id_for_unlock)
+            
+            item_needs_update = False
+            if item_data:
+                # 1. 检查并解锁全局锁 (LockData)
+                if item_data.get("LockData") is True:
+                    logger.info(f"  - 项目 {log_identifier} 当前被全局锁定,将尝试解锁...")
+                    item_data["LockData"] = False
+                    item_needs_update = True
+
+                # 2. 检查并解锁字段锁 (LockedFields)
+                if item_data.get("LockedFields"):
+                    original_locks = item_data["LockedFields"]
+                    logger.info(f"  - 项目 {log_identifier} 当前锁定的字段: {original_locks},将尝试解锁...")
+                    item_data["LockedFields"] = []
+                    item_needs_update = True
+                
+                # 3. 如果有任何一种锁被修改，则发送更新请求
+                if item_needs_update:
+                    update_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}"
+                    update_params = {"api_key": emby_api_key}
+                    headers = {'Content-Type': 'application/json'}
+                    update_response = requests.post(update_url, json=item_data, headers=headers, params=update_params, timeout=15)
+                    update_response.raise_for_status()
+                    logger.info(f"  - 成功为 {log_identifier} 发送解锁请求。")
+                else:
+                    logger.debug(f"  - 项目 {log_identifier} 没有任何锁定，无需解锁。")
+
+        except Exception as e:
+            logger.warning(f"  - 尝试为 {log_identifier} 解锁元数据时失败: {e}。刷新将继续，但可能受影响。")
+    # --- ✨✨✨ 解锁逻辑结束 ✨✨✨ ---
+
     logger.debug(f"开始为 {log_identifier} 通知Emby刷新...")
 
     refresh_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}/Refresh"
@@ -482,15 +517,12 @@ def refresh_emby_item_metadata(item_emby_id: str,
         "ReplaceAllImages": str(replace_all_images_param).lower()
     }
     
-
     try:
         response = requests.post(refresh_url, params=params, timeout=30)
         if response.status_code == 204:
-            # 4. 打印成功的消息，也用缩进
             logger.info(f"  - 刷新请求已成功发送，Emby将在后台处理。")
             return True
         else:
-            # 5. 打印失败的消息，用 ERROR 级别并缩进
             logger.error(f"  - 刷新请求失败: HTTP状态码 {response.status_code}")
             try:
                 logger.error(f"    - 响应内容: {response.text[:500]}")
