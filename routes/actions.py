@@ -114,3 +114,21 @@ def trigger_rebuild_actors_task():
         return jsonify({"status": "success", "message": "重构演员数据库任务已成功提交到后台队列。"}), 202
     else:
         return jsonify({"status": "error", "message": "提交任务失败，已有任务在运行。"}), 409
+    
+# +++ 一键添加所有剧集到追剧列表的 API +++
+@actions_bp.route('/actions/add_all_series_to_watchlist', methods=['POST'])
+@login_required
+@task_lock_required
+@processor_ready_required
+def api_add_all_series_to_watchlist():
+    from tasks import task_add_all_series_to_watchlist # 延迟导入
+    
+    success = task_manager.submit_task(
+        task_add_all_series_to_watchlist, 
+        "一键扫描全库剧集"
+    )
+    
+    if success:
+        return jsonify({"message": "一键扫描全库剧集的任务已提交。"}), 202
+    else:
+        return jsonify({"error": "提交任务失败，已有任务在运行。"}), 409

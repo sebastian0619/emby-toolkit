@@ -17,6 +17,21 @@
               <n-radio-button value="inProgress">追剧中</n-radio-button>
               <n-radio-button value="completed">已完结</n-radio-button>
             </n-radio-group>
+            <!-- +++ 新增：一键扫描按钮 +++ -->
+            <n-popconfirm @positive-click="addAllSeriesToWatchlist">
+              <template #trigger>
+                <n-tooltip>
+                  <template #trigger>
+                    <n-button circle :loading="isAddingAll">
+                      <template #icon><n-icon :component="ScanIcon" /></template>
+                    </n-button>
+                  </template>
+                  扫描媒体库并将所有剧集添加到追剧列表
+                </n-tooltip>
+              </template>
+              确定要扫描 Emby 媒体库中的所有剧集吗？<br/>
+              此操作会忽略已在列表中的剧集，只添加新的。
+            </n-popconfirm>
             <n-tooltip>
               <template #trigger>
                 <n-button @click="triggerAllWatchlistUpdate" :loading="isBatchUpdating" circle>
@@ -137,7 +152,7 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NPopconfirm, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem } from 'naive-ui';
-import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, CheckmarkCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkDoneCircleOutline as CompletedIcon } from '@vicons/ionicons5';
+import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, CheckmarkCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkDoneCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon } from '@vicons/ionicons5';
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
@@ -146,22 +161,36 @@ const TMDbIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: 
 
 const { configModel } = useConfig();
 const message = useMessage();
-
+const props = defineProps({ taskStatus: { type: Object, required: true } });
 const rawWatchlist = ref([]);
 const currentView = ref('inProgress');
 const isLoading = ref(true);
 const isBatchUpdating = ref(false);
 const error = ref(null);
 const showModal = ref(false);
+const isAddingAll = ref(false);
 // ✨ [核心修复] 直接存储被点击的对象
 const selectedSeries = ref(null);
 const subscribing = ref({});
 const refreshingItems = ref({});
-
+const isTaskRunning = computed(() => props.taskStatus.is_running);
 const displayCount = ref(30);
 const INCREMENT = 30;
 const loaderRef = ref(null);
 let observer = null;
+
+// +++ 一键添加所有剧集到智能追剧列表 的函数 +++
+const addAllSeriesToWatchlist = async () => {
+  isAddingAll.value = true;
+  try {
+    const response = await axios.post('/api/actions/add_all_series_to_watchlist');
+    message.success(response.data.message || '任务已成功提交！');
+  } catch (err) {
+    message.error(err.response?.data?.error || '启动扫描任务失败。');
+  } finally {
+    isAddingAll.value = false;
+  }
+};
 
 const triggerSingleRefresh = async (itemId, itemName) => {
   refreshingItems.value[itemId] = true;
@@ -208,6 +237,12 @@ const filteredWatchlist = computed(() => {
   return [];
 });
 
+
+// +++ 新增：切换视图时重置显示数量 +++
+watch(currentView, () => {
+  displayCount.value = 30;
+});
+
 const renderedWatchlist = computed(() => {
   return filteredWatchlist.value.slice(0, displayCount.value);
 });
@@ -221,10 +256,6 @@ const loadMore = () => {
     displayCount.value += INCREMENT;
   }
 };
-
-watch(currentView, () => {
-  displayCount.value = 30;
-});
 
 const emptyStateDescription = computed(() => {
   if (currentView.value === 'inProgress') {
@@ -406,6 +437,26 @@ const openMissingInfoModal = (item) => {
   showModal.value = true;
 };
 
+watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {
+  // 我们关心的是任务从“正在运行”变为“已结束”的那个瞬间
+  if (wasRunning && !isRunning) {
+    // 同时，我们只在“特定任务”结束后才刷新，避免不相关的任务也触发刷新
+    const relevantActions = [
+        '追剧', // 匹配 “定时智能追剧更新”
+        '扫描全库剧集', // 匹配 “一键扫描全库剧集”
+        '手动刷新' // 匹配 “手动刷新: xxx”
+    ];
+
+    // 检查结束的任务名是否包含我们关心的关键字
+    if (relevantActions.some(action => props.taskStatus.current_action.includes(action))) {
+      message.info('相关后台任务已结束，正在刷新追剧列表...');
+      // 调用我们现有的数据加载函数
+      fetchWatchlist();
+    }
+  }
+});
+
+// +++ 新增：从 CollectionsPage 移植过来的生命周期钩子 +++
 onMounted(() => {
   fetchWatchlist();
   observer = new IntersectionObserver(
@@ -433,6 +484,55 @@ watch(loaderRef, (newEl) => {
   }
 });
 
+onMounted(() => {
+  fetchWatchlist();
+  observer = new IntersectionObserver(
+    (entries) => {
+      if (entries[0].isIntersecting) {
+        loadMore();
+      }
+    },
+    { threshold: 1.0 }
+  );
+  if (loaderRef.value) {
+    observer.observe(loaderRef.value);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (observer) {
+    observer.disconnect();
+  }
+});
+
+watch(loaderRef, (newEl) => {
+  if (observer && newEl) {
+    observer.observe(newEl);
+  }
+});
+
+watch(isTaskRunning, (isRunning, wasRunning) => {
+  // ...
+  if (wasRunning && !isRunning) {
+    console.log("[WatchlistPage Watcher] 检测到任务结束！");
+    
+    const relevantActions = ['追剧', '扫描全库剧集', '手动刷新'];
+    
+    // +++ 核心修改：检查 props.taskStatus.last_action +++
+    const lastAction = props.taskStatus.last_action;
+    console.log(`[WatchlistPage Watcher] 刚刚结束的任务是: '${lastAction}'`);
+    
+    const isRelevant = lastAction && relevantActions.some(action => lastAction.includes(action));
+
+    console.log(`[WatchlistPage Watcher] 任务是否相关: ${isRelevant}`);
+
+    if (isRelevant) {
+      console.log("[WatchlistPage Watcher] 任务相关，准备调用 fetchWatchlist()...");
+      message.info('相关后台任务已结束，正在刷新追剧列表...');
+      fetchWatchlist();
+    }
+  }
+});
 </script>
 
 <style scoped>

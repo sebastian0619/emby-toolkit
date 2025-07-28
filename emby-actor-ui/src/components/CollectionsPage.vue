@@ -184,7 +184,7 @@ import { useConfig } from '../composables/useConfig.js';
 const props = defineProps({ taskStatus: { type: Object, required: true } });
 const { configModel } = useConfig();
 const message = useMessage();
-
+const isTaskRunning = computed(() => props.taskStatus.is_running);
 const EmbyIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 48 48", width: "18", height: "18" }, [ h('path', { d: "M24,4.2c-11,0-19.8,8.9-19.8,19.8S13,43.8,24,43.8s19.8-8.9,19.8-19.8S35,4.2,24,4.2z M24,39.8c-8.7,0-15.8-7.1-15.8-15.8S15.3,8.2,24,8.2s15.8,7.1,15.8,15.8S32.7,39.8,24,39.8z", fill: "currentColor" }), h('polygon', { points: "22.2,16.4 22.2,22.2 16.4,22.2 16.4,25.8 22.2,25.8 22.2,31.6 25.8,31.6 25.8,25.8 31.6,31.6 31.6,22.2 25.8,22.2 25.8,16.4 ", fill: "currentColor" }) ]);
 const TMDbIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 512 512", width: "18", height: "18" }, [ h('path', { d: "M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM133.2 176.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zM133.2 262.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8z", fill: "#01b4e4" }) ]);
 
@@ -325,10 +325,31 @@ onMounted(() => {
 
 onBeforeUnmount(() => { if (observer) { observer.disconnect(); } });
 watch(loaderRef, (newEl) => { if (observer && newEl) { observer.observe(newEl); } });
-watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {
-  if (wasRunning && !isRunning && props.taskStatus.current_action.includes('合集')) {
-    message.info('后台合集任务已结束，正在刷新数据...');
-    loadCachedData();
+watch(isTaskRunning, (isRunning, wasRunning) => {
+  // 添加诊断日志，方便调试
+  console.log(
+    `[CollectionsPage Watcher] isTaskRunning 状态变化: 从 ${wasRunning} 变为 ${isRunning}. ` +
+    `刚刚结束的任务: '${props.taskStatus.last_action}'`
+  );
+
+  if (wasRunning && !isRunning) {
+    console.log("[CollectionsPage Watcher] 检测到任务结束！");
+    
+    // 定义与本页面相关的任务关键字
+    const relevantActions = ['合集']; // 匹配 “刷新所有合集信息”
+    
+    // 核心修改：检查 last_action
+    const lastAction = props.taskStatus.last_action;
+    const isRelevant = lastAction && relevantActions.some(action => lastAction.includes(action));
+
+    console.log(`[CollectionsPage Watcher] 任务是否相关: ${isRelevant}`);
+
+    if (isRelevant) {
+      console.log("[CollectionsPage Watcher] 任务相关，准备调用 loadCachedData()...");
+      message.info('后台合集任务已结束，正在刷新数据...');
+      // 调用现有的数据加载函数
+      loadCachedData();
+    }
   }
 });
 
@@ -428,18 +449,6 @@ const getShortStatusText = (collection) => {
   const inLibraryCount = collection.in_library_count || 0;
   return `已入库 ${inLibraryCount} 部`;
 };
-
-watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {
-  // 我们关心的是任务从“正在运行”变为“已结束”的那个瞬间
-  if (wasRunning && !isRunning) {
-    // 同时，我们只关心与“合集”相关的任务结束事件
-    if (props.taskStatus.current_action.includes('合集')) {
-      message.info('后台合集任务已结束，正在刷新数据...');
-      // 调用我们现有的数据加载函数，来获取最新的数据
-      loadCachedData();
-    }
-  }
-});
 
 const isTooltipNeeded = (collection) => {
   return getFullStatusText(collection) !== getShortStatusText(collection);

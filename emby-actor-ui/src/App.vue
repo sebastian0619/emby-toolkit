@@ -145,7 +145,7 @@ const { configModel } = useConfig();
 const showPasswordModal = ref(false);
 const isDarkTheme = ref(localStorage.getItem('theme') !== 'light');
 const collapsed = ref(false);
-const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲', message: '等待任务', progress: 0 });
+const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲', message: '等待任务', progress: 0, last_action: null });
 const showStatusArea = ref(true);
 const activeMenuKey = computed(() => route.name);
 const appVersion = ref(__APP_VERSION__);
@@ -209,6 +209,7 @@ const statusTypeComputed = computed(() => 'info');
 const fetchStatus = async () => {
   try {
     const response = await axios.get('/api/status');
+    
     backgroundTaskStatus.value = response.data;
   } catch (error) {
     if (error.response?.status !== 401) {

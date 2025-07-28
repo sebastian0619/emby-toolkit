@@ -349,12 +349,6 @@ def initialize_processors():
     extensions.actor_subscription_processor_instance = actor_subscription_processor_instance_local
     extensions.EMBY_SERVER_ID = server_id_local
     
-    # --- 注入到任务管理器 ---
-    task_manager.initialize_task_manager(
-        media_proc=extensions.media_processor_instance, # 从 extensions 读取
-        watchlist_proc=extensions.watchlist_processor_instance,
-        actor_sub_proc=extensions.actor_subscription_processor_instance
-    )
 # --- 将 CRON 表达式转换为人类可读的、干净的执行计划字符串 ---
 def _get_next_run_time_str(cron_expression: str) -> str:
     """

@@ -1087,7 +1087,148 @@ def task_auto_subscribe(processor: MediaProcessor):
     except Exception as e:
         logger.error(f"智能订阅任务失败: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"错误: {e}")
+# ✨✨✨ 一键添加所有剧集到追剧列表的任务 ✨✨✨
+def task_add_all_series_to_watchlist(processor: MediaProcessor):
+    """
+    后台任务：获取 Emby 中所有剧集，并批量添加到追剧列表。
+    """
+    task_name = "一键扫描全库剧集"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    
+    try:
+        # 1. 从 processor 获取必要的配置
+        emby_url = processor.emby_url
+        emby_api_key = processor.emby_api_key
+        emby_user_id = processor.emby_user_id
+        db_path = processor.db_path
+        
+        # +++ 核心修改：智能获取要扫描的媒体库ID +++
+        library_ids_to_process = config_manager.APP_CONFIG.get('emby_libraries_to_process', [])
+        
+        # 如果用户没有在 config.ini 中指定，我们就自动获取所有媒体库
+        if not library_ids_to_process:
+            logger.info("未在配置中指定媒体库，将自动扫描所有媒体库...")
+            all_libraries = emby_handler.get_emby_libraries(emby_url, emby_api_key, emby_user_id)
+            if all_libraries:
+                # 只选择电影和剧集类型的库
+                library_ids_to_process = [
+                    lib['Id'] for lib in all_libraries 
+                    if lib.get('CollectionType') in ['tvshows', 'mixed']
+                ]
+                logger.info(f"将扫描以下剧集库: {[lib['Name'] for lib in all_libraries if lib.get('CollectionType') in ['tvshows', 'mixed']]}")
+            else:
+                logger.warning("未能从 Emby 获取到任何媒体库。")
+        
+        if not library_ids_to_process:
+            task_manager.update_status_from_thread(100, "任务完成：没有找到可供扫描的剧集媒体库。")
+            return
 
+        # 2. 调用 emby_handler 获取所有剧集
+        task_manager.update_status_from_thread(10, "正在从 Emby 获取所有剧集...")
+        # 注意：这里我们不再使用 get_all_series_from_emby，而是直接使用更通用的 get_emby_library_items
+        all_series = emby_handler.get_emby_library_items(
+            base_url=emby_url,
+            api_key=emby_api_key,
+            user_id=emby_user_id,
+            library_ids=library_ids_to_process,
+            media_type_filter="Series"
+        )
+
+        if all_series is None:
+            raise RuntimeError("从 Emby 获取剧集列表失败，请检查网络和配置。")
+
+        total = len(all_series)
+        if total == 0:
+            task_manager.update_status_from_thread(100, "任务完成：在指定的媒体库中未找到任何剧集。")
+            return
+
+        # ... (后续的筛选和数据库写入逻辑保持不变) ...
+        task_manager.update_status_from_thread(30, f"共找到 {total} 部剧集，正在筛选...")
+        series_to_insert = []
+        for series in all_series:
+            tmdb_id = series.get("ProviderIds", {}).get("Tmdb")
+            item_name = series.get("Name")
+            item_id = series.get("Id")
+            if tmdb_id and item_name and item_id:
+                series_to_insert.append({
+                    "item_id": item_id, "tmdb_id": tmdb_id,
+                    "item_name": item_name, "item_type": "Series"
+                })
+
+        if not series_to_insert:
+            task_manager.update_status_from_thread(100, "任务完成：找到的剧集均缺少TMDb ID，无法添加。")
+            return
+
+        added_count = 0
+        total_to_add = len(series_to_insert)
+        task_manager.update_status_from_thread(60, f"筛选出 {total_to_add} 部有效剧集，准备写入数据库...")
+        
+        with db_handler.get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN TRANSACTION;")
+            try:
+                for series in series_to_insert:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO watchlist (item_id, tmdb_id, item_name, item_type, status)
+                        VALUES (?, ?, ?, ?, 'Watching')
+                    """, (series["item_id"], series["tmdb_id"], series["item_name"], series["item_type"]))
+                    added_count += cursor.rowcount
+                conn.commit()
+            except Exception as e_db:
+                conn.rollback()
+                raise RuntimeError(f"数据库批量写入时发生错误: {e_db}")
+
+        # 1. 先报告第一阶段任务的完成情况
+        scan_complete_message = f"扫描完成！共发现 {total} 部剧集，新增 {added_count} 部。"
+        logger.info(scan_complete_message)
+        
+        # 2. 如果确实有新增剧集，或者即使用户没新增也想刷新一下，就触发后续任务
+        if added_count > 0:
+            logger.info("--- 任务链：即将自动触发【检查所有在追剧集】任务 ---")
+            
+            # 更新UI状态，告诉用户即将进入下一阶段
+            task_manager.update_status_from_thread(99, "扫描完成，正在启动追剧检查...")
+            time.sleep(2) # 短暂暂停，让用户能看到状态变化
+
+            # 提交新的任务
+            # 注意：这里我们不能直接调用 task_process_watchlist，因为它需要一个新的后台线程
+            # 我们需要通过 task_manager 来提交
+            # 并且，我们不能在这里等待它完成，因为我们自己就在一个任务线程里
+            
+            # 最简单的实现是让前端在收到特定消息后触发
+            # 但更健壮的后端实现如下：
+            
+            # 我们直接调用下一个任务的核心逻辑。
+            # 注意：这会在同一个线程中执行，UI进度条会从99%直接跳到下一个任务的进度
+            # 这是一个简单有效的实现。
+            try:
+                # 我们需要 WatchlistProcessor，但当前函数只有 MediaProcessor
+                # 所以我们从 extensions 获取
+                watchlist_proc = extensions.watchlist_processor_instance
+                if watchlist_proc:
+                    # 直接调用 watchlist_processor 的核心方法
+                    watchlist_proc.run_regular_processing_task(
+                        progress_callback=task_manager.update_status_from_thread,
+                        item_id=None # None 表示处理所有
+                    )
+                    final_message = "自动化流程完成：扫描与追剧检查均已结束。"
+                    task_manager.update_status_from_thread(100, final_message)
+                else:
+                    raise RuntimeError("WatchlistProcessor 未初始化，无法执行链式任务。")
+
+            except Exception as e_chain:
+                 logger.error(f"执行链式任务【检查所有在追剧集】时失败: {e_chain}", exc_info=True)
+                 task_manager.update_status_from_thread(-1, f"链式任务失败: {e_chain}")
+
+        else:
+            # 如果没有新增剧集，就正常结束
+            final_message = f"任务完成！共扫描到 {total} 部剧集，没有发现可新增的剧集。"
+            logger.info(final_message)
+            task_manager.update_status_from_thread(100, final_message)
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 # --- 立即执行 ---
 def get_task_registry():
     """返回一个包含所有可执行任务的字典。"""

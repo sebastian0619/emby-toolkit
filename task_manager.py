@@ -11,11 +11,12 @@ from core_processor import MediaProcessor
 from watchlist_processor import WatchlistProcessor
 from actor_subscription_processor import ActorSubscriptionProcessor
 import config_manager
-# --- 核心修改：改为定义全局变量，等待被注入 ---
-media_processor_instance: Optional['MediaProcessor'] = None
-watchlist_processor_instance: Optional['WatchlistProcessor'] = None
-actor_subscription_processor_instance: Optional['ActorSubscriptionProcessor'] = None
-update_status_from_thread: Optional[Callable] = None
+import extensions
+# # --- 核心修改：改为定义全局变量，等待被注入 ---
+# media_processor_instance: Optional['MediaProcessor'] = None
+# watchlist_processor_instance: Optional['WatchlistProcessor'] = None
+# actor_subscription_processor_instance: Optional['ActorSubscriptionProcessor'] = None
+# update_status_from_thread: Optional[Callable] = None
 
 # 导入类型提示，注意使用字符串避免循环导入
 from core_processor import MediaProcessor
@@ -29,7 +30,8 @@ background_task_status = {
     "is_running": False,
     "current_action": "无",
     "progress": 0,
-    "message": "等待任务"
+    "message": "等待任务",
+    "last_action": None
 }
 task_lock = threading.Lock()  # 用于确保后台任务串行执行
 
@@ -48,21 +50,21 @@ def update_status_from_thread(progress: int, message: str):
         background_task_status["progress"] = progress
     background_task_status["message"] = message
 
-def initialize_task_manager(
-    media_proc: MediaProcessor,
-    watchlist_proc: WatchlistProcessor,
-    actor_sub_proc: ActorSubscriptionProcessor
-):
-    """
-    【公共接口】由主应用调用，注入所有必要的处理器实例和回调函数。
-    """
-    global media_processor_instance, watchlist_processor_instance, actor_subscription_processor_instance
+# def initialize_task_manager(
+#     media_proc: MediaProcessor,
+#     watchlist_proc: WatchlistProcessor,
+#     actor_sub_proc: ActorSubscriptionProcessor
+# ):
+#     """
+#     【公共接口】由主应用调用，注入所有必要的处理器实例和回调函数。
+#     """
+#     global media_processor_instance, watchlist_processor_instance, actor_subscription_processor_instance
     
-    media_processor_instance = media_proc
-    watchlist_processor_instance = watchlist_proc
-    actor_subscription_processor_instance = actor_sub_proc
+#     media_processor_instance = media_proc
+#     watchlist_processor_instance = watchlist_proc
+#     actor_subscription_processor_instance = actor_sub_proc
     
-    logger.info("任务管理器 (TaskManager) 已成功接收并初始化所有处理器实例。")
+#     logger.info("任务管理器 (TaskManager) 已成功接收并初始化所有处理器实例。")
 
 def get_task_status() -> dict:
     """获取当前后台任务的状态。"""
@@ -90,6 +92,7 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
 
         background_task_status["is_running"] = True
         background_task_status["current_action"] = task_name
+        background_task_status["last_action"] = task_name
         background_task_status["progress"] = 0
         background_task_status["message"] = f"{task_name} 初始化..."
         logger.info(f"后台任务 '{task_name}' 开始执行。")
@@ -148,14 +151,22 @@ def task_worker_function():
             
             processor_to_use = None
             
-            if "追剧" in task_name or "watchlist" in task_function.__name__:
-                processor_to_use = watchlist_processor_instance
+            # +++ 核心修改：添加最高优先级的“特赦令” +++
+            if task_function.__name__ == 'task_add_all_series_to_watchlist':
+                processor_to_use = extensions.media_processor_instance
+                logger.debug(f"任务 '{task_name}' [特例] 将使用 MediaProcessor。")
+            
+            # --- 老顽固的旧逻辑，现在是第二优先级 ---
+            elif "追剧" in task_name or "watchlist" in task_function.__name__:
+                processor_to_use = extensions.watchlist_processor_instance
                 logger.debug(f"任务 '{task_name}' 将使用 WatchlistProcessor。")
+            
             elif task_function.__name__ in ['task_process_actor_subscriptions', 'task_scan_actor_media']:
-                processor_to_use = actor_subscription_processor_instance
+                processor_to_use = extensions.actor_subscription_processor_instance
                 logger.debug(f"任务 '{task_name}' 将使用 ActorSubscriptionProcessor。")
+            
             else:
-                processor_to_use = media_processor_instance
+                processor_to_use = extensions.media_processor_instance
                 logger.debug(f"任务 '{task_name}' 将使用 MediaProcessor。")
 
             if not processor_to_use:
