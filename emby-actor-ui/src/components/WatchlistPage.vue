@@ -77,7 +77,7 @@
                       <n-tag v-if="hasMissing(item)" type="warning" size="small" round>{{ getMissingCountText(item) }}</n-tag>
                     </n-space>
                     <n-text v-if="nextEpisode(item)?.name" :depth="3" class="next-episode-text">
-                      <n-icon :component="CalendarIcon" /> 待播: {{ nextEpisode(item).name }} ({{ formatAirDate(nextEpisode(item).air_date) }})
+                      <n-icon :component="CalendarIcon" /> 播出时间: {{ nextEpisode(item).name }} ({{ formatAirDate(nextEpisode(item).air_date) }})
                     </n-text>
                     <n-text :depth="3" class="last-checked-text">上次检查: {{ formatTimestamp(item.last_checked_at) }}</n-text>
                   </n-space>
@@ -149,7 +149,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
+import { ref, onMounted, onBeforeUnmount, h, computed, watch, nextTick } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NPopconfirm, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem } from 'naive-ui';
 import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, CheckmarkCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkDoneCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon } from '@vicons/ionicons5';

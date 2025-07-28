@@ -85,8 +85,8 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
         response = requests.get(url, params=params, timeout=15)
 
         if response.status_code != 200:
-            logger.debug(f"响应头部: {response.headers}")
-            logger.debug(f"响应内容 (前500字符): {response.text[:500]}")
+            logger.trace(f"响应头部: {response.headers}")
+            logger.trace(f"响应内容 (前500字符): {response.text[:500]}")
 
         response.raise_for_status()
         item_data = response.json()

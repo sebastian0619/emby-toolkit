@@ -425,7 +425,7 @@ def remove_item_from_watchlist(db_path: str, item_id: str) -> bool:
             cursor.execute("DELETE FROM watchlist WHERE item_id = ?", (item_id,))
             conn.commit()
             if cursor.rowcount > 0:
-                logger.info(f"DB: 项目 {item_id} 已从追剧列表移除。")
+                logger.trace(f"DB: 项目 {item_id} 已从追剧列表移除。")
                 return True
             else:
                 logger.warning(f"DB: 尝试删除项目 {item_id}，但在追剧列表中未找到。")

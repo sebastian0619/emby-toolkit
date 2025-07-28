@@ -8,6 +8,7 @@ import copy
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timedelta
 import threading
+import db_handler
 from db_handler import get_db_connection as get_central_db_connection
 # 导入我们需要的辅助模块
 import tmdb_handler
@@ -248,6 +249,30 @@ class WatchlistProcessor:
         item_name = series_data['item_name']
         
         logger.info(f"正在处理剧集: '{item_name}' (TMDb ID: {tmdb_id})")
+        # +++ 新增：存活检查 (Liveness Check) +++
+        # 在做任何昂贵操作前，先确认 Emby 中该项目是否存在
+        item_details_for_check = emby_handler.get_emby_item_details(
+            item_id=item_id,
+            emby_server_url=self.emby_url,
+            emby_api_key=self.emby_api_key,
+            user_id=self.emby_user_id,
+            fields="Id" # 请求最轻量的字段来确认存在性
+        )
+
+        if item_details_for_check is None:
+            logger.warning(f"  -> 剧集 '{item_name}' (ID: {item_id}) 在 Emby 中已不存在或无法访问。将从追剧列表中移除。")
+            try:
+                # 调用 db_handler 函数来安全地移除
+                db_handler.remove_item_from_watchlist(
+                    db_path=self.db_path,
+                    item_id=item_id
+                )
+            except Exception as e_db:
+                logger.error(f"  -> 从追剧列表移除已删除的剧集 '{item_name}' 时发生数据库错误: {e_db}")
+            
+            # 既然项目已不存在，直接结束本轮处理
+            return 
+        # +++ 存活检查结束 +++
         if not self.tmdb_api_key:
             logger.warning("未配置TMDb API Key，跳过。")
             return
