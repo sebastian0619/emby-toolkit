@@ -410,14 +410,14 @@ const getFullStatusText = (collection) => {
   if (missingCount > 0) { return `缺失 ${missingCount} 部`; }
   const parts = [];
   const inLibraryCount = collection.in_library_count || 0;
-  if (inLibraryCount > 0) { parts.push(`完整 ${inLibraryCount} 部`); }
+  if (inLibraryCount > 0) { parts.push(`已入库 ${inLibraryCount} 部`); }
   if (Array.isArray(collection.missing_movies)) {
       const unreleasedCount = collection.missing_movies.filter(m => m.status === 'unreleased').length;
       const subscribedCount = collection.missing_movies.filter(m => m.status === 'subscribed').length;
       if (unreleasedCount > 0) { parts.push(`未上映 ${unreleasedCount} 部`); }
       if (subscribedCount > 0) { parts.push(`已订阅 ${subscribedCount} 部`); }
   }
-  return parts.join(' | ') || '完整';
+  return parts.join(' | ') || '已入库';
 };
 
 const getShortStatusText = (collection) => {
@@ -426,7 +426,7 @@ const getShortStatusText = (collection) => {
   const missingCount = getMissingCount(collection);
   if (missingCount > 0) { return `缺失 ${missingCount} 部`; }
   const inLibraryCount = collection.in_library_count || 0;
-  return `完整 ${inLibraryCount} 部`;
+  return `已入库 ${inLibraryCount} 部`;
 };
 
 watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {
