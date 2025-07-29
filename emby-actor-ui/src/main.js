@@ -2,7 +2,7 @@
 
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
-import Provider from './Provider.vue'
+import App from './App.vue'
 import router from './router';
 import naive from 'naive-ui';
 import { useAuthStore } from './stores/auth'; // ★★★ 1. 导入你的 auth store ★★★
@@ -12,7 +12,7 @@ import './assets/global.css';
 
 // --- 创建核心实例 ---
 const pinia = createPinia();
-const app = createApp(Provider);
+const app = createApp(App);
 
 // --- 严格按照顺序注册插件 ---
 app.use(pinia);
