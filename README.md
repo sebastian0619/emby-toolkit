@@ -60,19 +60,12 @@
           - TZ=Asia/Shanghai                         # 设置容器时区
           - AUTH_USERNAME=admin                      # 用户名可任意设置，密码在程序首次运行会生成随机密码打印在日志中
           - PUID=0                                   # 设置为你的用户ID，建议与宿主机用户ID保持一致
-          - PGID=0                                   # 设置为DOCKER组ID (一键更新用)
+          - PGID=0                                   # 设置为DOCKER组ID (一键更新用，‘grep docker /etc/group’可以查询)
           - UMASK=000                                # 设置文件权限掩码，建议022
-          - CONTAINER_NAME=emby-toolkit              # 设置成container_name一样 （一键更新用）
+          - CONTAINER_NAME=emby-toolkit              # 以下两项都是一键更新用，不需要可以不配置
+          - DOCKER_IMAGE_NAME=hbq0405/emby-toolkit:latest
         restart: unless-stopped
         
-      watchtower:                                    # 以下配置为一键更新，不需要可以删除
-        container_name: watchtower_eap_updater 
-        restart: "no"
-        volumes:
-          - /var/run/docker.sock:/var/run/docker.sock
-        labels:
-          - "com.centurylinklabs.watchtower.enable=false"
-        command: --cleanup --run-once emby-toolkit
 
     ```
     然后在 `docker-compose.yml` 文件所在的目录下运行：

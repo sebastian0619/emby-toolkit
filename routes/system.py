@@ -236,7 +236,7 @@ def stream_update_progress():
                  return
 
             # --- 2. ★★★ 核心：召唤并启动“更新器容器” ★★★ ---
-            yield from send_event({"status": "准备启动临时更新器来应用更新...", "progress": 70})
+            yield from send_event({"status": "准备应用更新...", "progress": 70})
 
             try:
                 # 获取旧容器的完整配置，以便新容器可以重建它
@@ -254,7 +254,7 @@ def stream_update_progress():
                 ]
 
                 # 启动更新器容器！
-                logger.info(f"正在启动临时 Watchtower 更新器来处理容器 '{container_name}'...")
+                logger.info(f"正在应用更新 '{container_name}'...")
                 client.containers.run(
                     image=updater_image,
                     command=command,
