@@ -51,18 +51,19 @@
         container_name: emby-toolkit
         network_mode: bridge
         ports:
-          - "5257:5257"                              # 将容器的 5257 端口映射到宿主机的 5257 端口 (左边可以改成你希望的宿主机端口)
+          - "5257:5257"                               # 将容器的 5257 端口映射到宿主机的 5257 端口 (左边可以改成你希望的宿主机端口)
         volumes:
-          - /path/config:/config                     # 将宿主机的数据目录挂载到容器的 /config 目录
-          - /path/tmdb:/tmdb                         # 映射神医本地TMDB目录，必须配置
+          - /path/config:/config                      # 将宿主机的数据目录挂载到容器的 /config 目录
+          - /path/tmdb:/tmdb                          # 映射神医本地TMDB目录，必须配置
+          - /var/run/docker.sock:/var/run/docker.sock # 一键更新用，不需要可以不配置
         environment:
-          - APP_DATA_DIR=/config                     # 持久化目录
-          - TZ=Asia/Shanghai                         # 设置容器时区
-          - AUTH_USERNAME=admin                      # 用户名可任意设置，密码在程序首次运行会生成随机密码打印在日志中
-          - PUID=0                                   # 设置为你的用户ID，建议与宿主机用户ID保持一致
-          - PGID=0                                   # 设置为DOCKER组ID (一键更新用，‘grep docker /etc/group’可以查询)
-          - UMASK=000                                # 设置文件权限掩码，建议022
-          - CONTAINER_NAME=emby-toolkit              # 以下两项都是一键更新用，不需要可以不配置
+          - APP_DATA_DIR=/config                      # 持久化目录
+          - TZ=Asia/Shanghai                          # 设置容器时区
+          - AUTH_USERNAME=admin                       # 用户名可任意设置，密码在程序首次运行会生成随机密码打印在日志中
+          - PUID=0                                    # 设置为你的用户ID，建议与宿主机用户ID保持一致
+          - PGID=0                                    # 设置为DOCKER组ID (一键更新用，‘grep docker /etc/group’可以查询)
+          - UMASK=000                                 # 设置文件权限掩码，建议022
+          - CONTAINER_NAME=emby-toolkit               # 以下两项都是一键更新用，不需要可以不配置
           - DOCKER_IMAGE_NAME=hbq0405/emby-toolkit:latest
         restart: unless-stopped
         

@@ -59,17 +59,18 @@
       <!-- ... -->
     </n-modal>
 
-    <n-modal
+    <!-- 更新进度模态框 -->
+  <n-modal
     v-model:show="showUpdateModal"
     :mask-closable="false"
     preset="card"
-    style="width: 90%; max-width: 600px;"
     title="正在更新应用"
+    
+    :style="modalStyle" 
   >
-    <!-- ★★★ 1. 修改模态框内容 ★★★ -->
     <p>{{ updateStatusText }}</p>
     
-    <!-- 全局进度条 (可选，用于显示重启等步骤) -->
+    <!-- 全局进度条 (逻辑不变) -->
     <n-progress
       v-if="updateProgress >= 0 && Object.keys(dockerLayers).length === 0"
       type="line"
@@ -79,7 +80,8 @@
     />
 
     <!-- Docker 分层进度显示区域 -->
-    <div v-if="Object.keys(dockerLayers).length > 0" style="margin-top: 15px; max-height: 300px; overflow-y: auto;">
+    <!-- ★★★ 2. 移除此处的 style 属性，让内容自由伸展 ★★★ -->
+    <div v-if="Object.keys(dockerLayers).length > 0" >
       <n-space vertical>
         <div v-for="(layer, id) in dockerLayers" :key="id">
           <n-text style="font-size: 12px; font-family: monospace;">{{ id }}</n-text>
@@ -135,8 +137,38 @@ const showUpdateModal = ref(false);
 const updateProgress = ref(-1);
 const updateStatusText = ref('');
 const isUpdateFinished = ref(false);
+const MODAL_BASE_HEIGHT = 220; // 模态框的基础高度 (标题、文字、按钮等)
+const HEIGHT_PER_LAYER = 68;   // 每一层进度大约占用的高度 (px)
+const MODAL_MAX_HEIGHT_VH = 85; // 模态框最大高度占屏幕的百分比 (85vh = 85% of viewport height)
 const dockerLayers = ref({});
 let eventSource = null;
+
+// ★★★ 2. 创建核心的计算属性 ★★★
+const modalStyle = computed(() => {
+  const numLayers = Object.keys(dockerLayers.value).length;
+
+  // 默认样式
+  const style = {
+    width: '90%',
+    maxWidth: '600px',
+  };
+
+  // 如果有分层数据，则动态计算最大高度
+  if (numLayers > 0) {
+    // 计算内容所需的高度
+    const contentHeight = MODAL_BASE_HEIGHT + (numLayers * HEIGHT_PER_LAYER);
+    
+    // 计算屏幕85%的高度作为上限
+    const maxHeightBasedOnViewport = window.innerHeight * (MODAL_MAX_HEIGHT_VH / 100);
+    
+    // 取两者中较小的一个作为最终的最大高度
+    const finalMaxHeight = Math.min(contentHeight, maxHeightBasedOnViewport);
+
+    style.maxHeight = `${finalMaxHeight}px`;
+  }
+  
+  return style;
+});
 
 const handleUpdate = () => {
   dialog.warning({
