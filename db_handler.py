@@ -300,18 +300,36 @@ def mark_review_item_as_processed(db_path: str, item_id: str) -> bool:
         raise
 
 
-def clear_all_review_items(db_path: str) -> int:
+def clear_all_review_items_revised(db_path: str) -> int:
     """
     清空所有待复核项目，并将它们全部标记为已处理。
+    通过事务前后的数量对比，确保操作的原子性和数据一致性。
     返回被成功处理的项目数量。
     """
+    initial_count = 0
+    # 1. 在主事务之外，首先获取待处理项目的初始数量
+    try:
+        with get_db_connection(db_path) as conn:
+            # 使用一个独立的、短暂的连接来做预检查
+            initial_count = conn.execute("SELECT COUNT(*) FROM failed_log").fetchone()[0]
+            logger.info(f"DB Pre-check: 待复核列表 'failed_log' 中初始有 {initial_count} 条记录。")
+            if initial_count == 0:
+                logger.info("DB: 待复核列表为空，无需操作。")
+                return 0
+    except Exception as e_check:
+        logger.error(f"DB: 预检查待复核列表时发生错误: {e_check}", exc_info=True)
+        # 预检查失败，直接抛出异常，不继续执行
+        raise RuntimeError(f"数据库预检查失败: {e_check}") from e_check
+
+    # 2. 在一个独立的事务中执行核心的复制和删除操作
     try:
         with get_db_connection(db_path) as conn:
             cursor = conn.cursor()
             
-            cursor.execute("BEGIN TRANSACTION;")
+            # 强烈建议使用 IMMEDIATE 事务来立即获取写锁，减少并发冲突
+            cursor.execute("BEGIN IMMEDIATE TRANSACTION;")
             
-            # 1. 复制
+            # 2.1 复制
             copy_sql = """
                 REPLACE INTO processed_log (item_id, item_name, processed_at, score)
                 SELECT item_id, item_name, CURRENT_TIMESTAMP, COALESCE(score, 10.0)
@@ -320,25 +338,30 @@ def clear_all_review_items(db_path: str) -> int:
             cursor.execute(copy_sql)
             copied_count = cursor.rowcount
             
-            # 2. 删除
+            # 2.2 删除
             cursor.execute("DELETE FROM failed_log")
             deleted_count = cursor.rowcount
             
-            # 3. 验证并提交/回滚
-            if copied_count == deleted_count:
+            # 2.3 验证并提交/回滚
+            # 这是最关键的验证：确保我们处理的记录数与操作开始时的数量完全一致
+            if copied_count == deleted_count and initial_count == deleted_count:
                 conn.commit()
-                logger.info(f"DB: 已成功将 {deleted_count} 个项目从待复核列表移至已处理列表。")
+                logger.info(f"DB: 数据一致性验证成功 (初始: {initial_count}, 复制: {copied_count}, 删除: {deleted_count})。事务已提交。")
                 return deleted_count
             else:
+                # 如果数量不匹配，说明在操作期间有其他进程修改了 failed_log 表
                 conn.rollback()
-                logger.error(f"DB: 清空待复核列表时数据不一致，操作已回滚！(复制: {copied_count}, 删除: {deleted_count})")
-                # 抛出一个特定的错误，让上层知道出了问题
-                raise RuntimeError("清空待复核列表时发生数据不一致错误。")
+                error_message = (
+                    "清空待复核列表时发生数据不一致，操作已回滚！"
+                    f"初始数量: {initial_count}, 复制: {copied_count}, 删除: {deleted_count}"
+                )
+                logger.error(f"DB: {error_message}")
+                raise RuntimeError(error_message)
                 
     except Exception as e:
         logger.error(f"DB: 清空并标记待复核列表时发生未知异常: {e}", exc_info=True)
+        # 确保任何异常都会向上抛出，以便调用者知道操作失败
         raise
-
 # ======================================================================
 # 模块 4: 智能追剧列表数据访问 (Watchlist Data Access)
 # ======================================================================
