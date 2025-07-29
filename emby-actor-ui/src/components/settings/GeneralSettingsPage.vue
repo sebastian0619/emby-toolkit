@@ -73,7 +73,27 @@
             <n-form-item label="TMDB API Key" path="tmdb_api_key">
               <n-input type="password" show-password-on="mousedown" v-model:value="configModel.tmdb_api_key" placeholder="输入你的 TMDB API Key" />
             </n-form-item>
-
+            <!-- ★★★ 新增的 GitHub Token 表单项 ★★★ -->
+            <n-form-item label="GitHub 个人访问令牌" path="github_token">
+              <n-input
+                type="password"
+                show-password-on="mousedown"
+                v-model:value="configModel.github_token"
+                placeholder="可选，用于提高API请求频率限制"
+              />
+              <template #feedback>
+                <n-text depth="3" style="font-size:0.8em;">
+                  <a
+                  href="https://github.com/settings/tokens/new"
+                  target="_blank"
+                  style="font-size: 1.3em; margin-left: 8px; color: var(--n-primary-color); text-decoration: underline;"
+                >
+                  免费申请GithubTOKEN
+                </a>
+                </n-text>
+              </template>
+            </n-form-item>
+            <!-- ★★★ 新增结束 ★★★ -->
             <n-form-item label="豆瓣登录 Cookie" path="douban_cookie">
               <n-input
                 type="password"

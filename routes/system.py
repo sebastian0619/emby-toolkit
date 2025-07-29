@@ -11,6 +11,7 @@ import docker
 import task_manager
 from logger_setup import frontend_log_queue
 import config_manager
+import config_manager
 # 导入共享模块
 import extensions
 from extensions import login_required, processor_ready_required
@@ -132,18 +133,24 @@ def api_save_config():
 @system_bp.route('/system/about_info', methods=['GET'])
 def get_about_info():
     """
-    获取关于页面的所有信息，包括当前版本和 GitHub releases。
+    【V2 - 支持认证版】获取关于页面的所有信息，包括当前版本和 GitHub releases。
+    会从配置中读取 GitHub Token 用于认证，以提高 API 速率限制。
     """
     try:
-        # 从 GitHub 获取 releases
+        # ★★★ 1. 从全局配置中获取 GitHub Token ★★★
+        github_token = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_GITHUB_TOKEN)
+
+        # ★★★ 2. 将 Token 传递给 get_github_releases 函数 ★★★
         releases = github_handler.get_github_releases(
             owner=constants.GITHUB_REPO_OWNER,
-            repo=constants.GITHUB_REPO_NAME
+            repo=constants.GITHUB_REPO_NAME,
+            token=github_token  # <--- 将令牌作为参数传入
         )
 
         if releases is None:
             # 即使获取失败，也返回一个正常的结构，只是 releases 列表为空
             releases = []
+            logger.warning("API /system/about_info: 从 GitHub 获取 releases 失败，将返回空列表。")
 
         response_data = {
             "current_version": constants.APP_VERSION,

@@ -132,22 +132,22 @@ def search_all_logs():
 @login_required
 def search_logs_with_context():
     """
-    【最终修正版】在所有日志文件中定位包含关键词的完整“处理块”，
-    并根据块内的时间戳进行精确排序，同时保留日期信息。
+    【V4 - 终极健壮版】在所有日志文件中定位包含关键词的完整“处理块”。
+    此版本能同时正确处理：
+    1. 因任务失败或中断产生的孤立日志块。
+    2. 在单个成功任务内部出现的重复起始标记。
     """
     query = request.args.get('q', '').strip()
     if not query:
         return jsonify({"error": "搜索关键词不能为空"}), 400
 
-    # 正则表达式保持不变
-    START_MARKER = re.compile(r"成功获取Emby演员 '(.+?)' \(ID: .*?\) 的详情")
+    START_MARKER = re.compile(r"成功获取Emby项目 '(.+?)' \(ID: .*?\) 的详情")
     END_MARKER = re.compile(r"(✨✨✨处理完成|最终状态: 处理完成)")
     TIMESTAMP_REGEX = re.compile(r"^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})")
 
     found_blocks = []
     
     try:
-        # 获取所有 app.log* 文件，无需预先排序
         all_files = os.listdir(config_manager.LOG_DIRECTORY)
         log_files = [f for f in all_files if f.startswith('app.log')]
 
@@ -156,7 +156,7 @@ def search_logs_with_context():
             
             in_block = False
             current_block = []
-            current_item_name = None
+            current_item_name = None # 用于跟踪当前块所属的项目名
 
             try:
                 with open(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
@@ -165,43 +165,46 @@ def search_logs_with_context():
                         if not line: continue
 
                         is_start_marker = START_MARKER.search(line)
+                        is_end_marker = END_MARKER.search(line)
 
                         if is_start_marker:
-                            if in_block: pass
-                            in_block = True
-                            current_block = [line]
-                            current_item_name = is_start_marker.group(1)
+                            new_item_name = is_start_marker.group(1)
+                            # ★★★ 核心智能逻辑 ★★★
+                            # 如果不在块内，或者新块名和旧块名不同（说明旧的被中断了），则开始一个新块
+                            if not in_block or new_item_name != current_item_name:
+                                in_block = True
+                                current_block = [line]
+                                current_item_name = new_item_name
+                            else:
+                                # 如果块名相同，说明是内部重复调用，直接追加即可
+                                current_block.append(line)
                         
                         elif in_block:
                             current_block.append(line)
-                            
-                            is_end_marker = END_MARKER.search(line)
-                            
-                            if is_end_marker and current_item_name and current_item_name in line:
+                            if is_end_marker:
                                 block_content = "\n".join(current_block)
                                 if query.lower() in block_content.lower():
                                     
-                                    # ★★★ 核心修改 1: 提取时间戳，并将其存储在名为 'date' 的键中 ★★★
-                                    block_date = "Unknown Date" # 默认值
+                                    block_date = "Unknown Date"
                                     if current_block:
                                         match = TIMESTAMP_REGEX.search(current_block[0])
                                         if match:
-                                            # match.group(1) 的结果是 "YYYY-MM-DD HH:MM:SS"
                                             block_date = match.group(1)
 
                                     found_blocks.append({
                                         "file": filename,
-                                        "date": block_date, # <--- 使用 'date' 键，前端需要它
+                                        "date": block_date,
                                         "lines": current_block
                                     })
                                 
+                                # 结束当前块，重置所有状态
                                 in_block = False
                                 current_block = []
                                 current_item_name = None
+
             except Exception as e:
                 logging.warning(f"API: 上下文搜索时无法读取文件 '{filename}': {e}")
         
-        # ★★★ 核心修改 2: 根据我们刚刚添加的 'date' 键进行排序 ★★★
         found_blocks.sort(key=lambda x: x['date'])
         
         return jsonify(found_blocks)

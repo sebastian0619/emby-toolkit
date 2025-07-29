@@ -1,21 +1,14 @@
+<!-- src/App.vue -->
 <template>
-  <!-- 
-    最外层的 Provider 组件已被移除，并移至新的 Provider.vue 文件。
-    这个组件现在是 Provider 的子组件，可以安全地使用所有上下文 API。
-  -->
   <div :class="isDarkTheme ? 'dark-mode' : 'light-mode'">
-    <!-- 1. 如果需要登录，则显示全屏的登录页面 -->
     <div v-if="authStore.isAuthEnabled && !authStore.isLoggedIn" class="fullscreen-container">
       <Login />
     </div>
-
-    <!-- 2. 否则，显示后台管理布局 -->
     <n-layout v-else style="height: 100vh;">
       <n-layout-header :bordered="false" class="app-header">
         <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
           <span>Emby 演员/角色中文化</span>
             <div style="display: flex; align-items: center; gap: 16px;">
-              <!-- 用户名下拉菜单 -->
               <n-dropdown 
                 v-if="authStore.isAuthEnabled" 
                 trigger="hover" 
@@ -28,23 +21,13 @@
                 </div>
               </n-dropdown>
 
-              <!-- 版本号与更新按钮区域 -->
+              <!-- ★★★ 更新按钮已从此区域移除 ★★★ -->
               <div style="display: flex; align-items: center; gap: 8px;">
-                <router-link to="/about" custom v-slot="{ navigate }">
+                <router-link to="/releases" custom v-slot="{ navigate }">
                   <span @click="navigate" style="font-size: 12px; color: #999; cursor: pointer;" title="查看版本详情">
-                    v{{ appStore.currentVersion || appVersion }}
+                    v{{ appVersion }}
                   </span>
                 </router-link>
-                <n-button 
-                  v-if="appStore.isUpdateAvailable" 
-                  type="success" 
-                  size="tiny" 
-                  round 
-                  @click="handleUpdate"
-                  :loading="isUpdating"
-                >
-                  立即更新
-                </n-button>
               </div>
 
               <n-switch v-model:value="isDarkTheme" size="small">
@@ -104,28 +87,6 @@
           </router-view>
           </div>
         </n-layout-content>
-        <!-- 更新进度模态框 -->
-        <n-modal
-          v-model:show="showUpdateModal"
-          :mask-closable="false"
-          preset="card"
-          style="width: 90%; max-width: 600px;"
-          title="正在更新应用"
-        >
-          <p>{{ updateStatusText }}</p>
-          <n-progress
-            v-if="updateProgress >= 0"
-            type="line"
-            :percentage="updateProgress"
-            indicator-placement="inside"
-            processing
-          />
-          <div style="text-align: right; margin-top: 20px;">
-            <n-button @click="showUpdateModal = false" :disabled="!isUpdateFinished">
-              关闭
-            </n-button>
-          </div>
-        </n-modal>
       </n-layout>
     </n-layout>
     <n-modal 
@@ -144,15 +105,14 @@
 <script setup>
 import { ref, computed, h, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
+// ★★★ 移除了 NButton 和 NModal 的导入 ★★★
 import {
-  // 移除了所有 Provider 和 useDialog/useMessage
   NLayout, NLayoutHeader, NLayoutSider, NLayoutContent,
   NMenu, NSwitch, NIcon, NCard, NText, NProgress,
-  NModal, NDropdown, NButton
+  NModal, NDropdown
 } from 'naive-ui';
 import axios from 'axios';
 import { useAuthStore } from './stores/auth';
-import { useConfig } from './composables/useConfig';
 import Login from './components/Login.vue';
 import ChangePassword from './components/settings/ChangePassword.vue';
 import {
@@ -169,31 +129,24 @@ import {
   InformationCircleOutline as AboutIcon,
 } from '@vicons/ionicons5';
 import { Password24Regular as PasswordIcon } from '@vicons/fluent'
-import { useAppStore } from './stores/app';
+// ★★★ 不再需要导入 appStore ★★★
+// import { useAppStore } from './stores/app';
 
-const appStore = useAppStore();
 const appVersion = ref(__APP_VERSION__);
 const router = useRouter(); 
 const route = useRoute(); 
 const authStore = useAuthStore();
-const { configModel } = useConfig();
 
-// --- 状态定义 (Refs) ---
 const showPasswordModal = ref(false);
 const isDarkTheme = ref(localStorage.getItem('theme') !== 'light');
 const collapsed = ref(false);
 const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲', message: '等待任务', progress: 0, last_action: null });
 const showStatusArea = ref(true);
 const activeMenuKey = computed(() => route.name);
-const isUpdating = ref(false); // 更新按钮的加载状态
-// ... (在其他 ref 定义之后)
-const showUpdateModal = ref(false);
-const updateProgress = ref(0);
-const updateStatusText = ref('');
-const isUpdateFinished = ref(false);
+
+// ★★★ 所有与更新相关的状态和方法都已移除 ★★★
 let eventSource = null;
 
-// 主题切换时，更新 localStorage，Provider.vue 会监听到变化并应用主题
 watch(isDarkTheme, (newValue) => {
   localStorage.setItem('theme', newValue ? 'dark' : 'light');
 });
@@ -202,18 +155,9 @@ const renderIcon = (iconComponent) => {
   return () => h(NIcon, null, { default: () => h(iconComponent) });
 };
 
-// --- 用户下拉菜单的逻辑 ---
 const userOptions = computed(() => [
-  {
-    label: '修改密码',
-    key: 'change-password',
-    icon: renderIcon(PasswordIcon)
-  },
-  {
-    label: '退出登录',
-    key: 'logout',
-    icon: renderIcon(LogoutIcon)
-  }
+  { label: '修改密码', key: 'change-password', icon: renderIcon(PasswordIcon) },
+  { label: '退出登录', key: 'logout', icon: renderIcon(LogoutIcon) }
 ]);
 
 const handleUserSelect = async (key) => {
@@ -225,7 +169,6 @@ const handleUserSelect = async (key) => {
   }
 };
 
-// --- 侧边栏菜单的定义 ---
 const menuOptions = computed(() => [
   { label: 'Emby 配置', key: 'settings-emby', icon: renderIcon(EmbyIcon) },
   { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
@@ -236,60 +179,12 @@ const menuOptions = computed(() => [
   { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) },
   { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
   { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
-  { label: '关于软件', key: 'About', icon: renderIcon(AboutIcon) },
+  { label: '查看更新', key: 'Releases', icon: renderIcon(AboutIcon) },
 ]);
 
 async function handleMenuUpdate(key) {
   router.push({ name: key });
 }
-
-// --- 更新按钮处理函数 ---
-const handleUpdate = () => {
-  window.$dialog.warning({
-    title: '确认更新',
-    content: '这将拉取最新的镜像并重启应用，期间服务将短暂中断。确定要继续吗？',
-    positiveText: '立即更新',
-    negativeText: '取消',
-    onPositiveClick: () => {
-      // 重置状态并显示模态框
-      showUpdateModal.value = true;
-      isUpdateFinished.value = false;
-      updateProgress.value = 0;
-      updateStatusText.value = '正在连接到更新服务...';
-
-      // 创建 EventSource 连接
-      eventSource = new EventSource('/api/system/update/stream');
-
-      // 监听消息
-      eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-
-        // 更新状态和进度
-        if (data.status) {
-          updateStatusText.value = data.status;
-        }
-        if (typeof data.progress === 'number') {
-          updateProgress.value = data.progress;
-        }
-
-        // 检查是否是结束或错误事件
-        if (data.event === 'DONE' || data.event === 'ERROR') {
-          isUpdateFinished.value = true;
-          eventSource.close();
-        }
-      };
-
-      // 监听错误
-      eventSource.onerror = (err) => {
-        console.error('EventSource failed:', err);
-        updateStatusText.value = '与服务器的连接中断。可能正在重启，请稍后刷新。';
-        updateProgress.value = 100; // 假定完成
-        isUpdateFinished.value = true;
-        eventSource.close();
-      };
-    },
-  });
-};
 
 const statusTypeComputed = computed(() => 'info');
 
@@ -307,7 +202,7 @@ const fetchStatus = async () => {
 let statusIntervalId = null;
 
 onMounted(() => {
-  appStore.fetchVersionInfo();
+  // ★★★ 全局版本检查已移除 ★★★
   if (authStore.isLoggedIn) {
     fetchStatus();
     statusIntervalId = setInterval(fetchStatus, 1000);
@@ -334,6 +229,7 @@ watch(() => authStore.isLoggedIn, (newIsLoggedIn) => {
 </script>
 
 <style>
+/* 样式保持不变 */
 html, body { height: 100vh; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; overflow: hidden; }
 .app-header { padding: 0 24px; height: 60px; display: flex; align-items: center; font-size: 1.25em; font-weight: 600; flex-shrink: 0; }
 .status-display-area .n-card .n-card__content { padding: 8px 12px !important; }

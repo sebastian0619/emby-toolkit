@@ -11,7 +11,7 @@ import GeneralSettingsPage from '../components/settings/GeneralSettingsPage.vue'
 import WatchlistPage from '../components/WatchlistPage.vue';
 import CollectionsPage from '../components/CollectionsPage.vue';
 import ActorSubscriptionPage from '../components/ActorSubscriptionPage.vue';
-import AboutPage from '../components/AboutPage.vue';
+import ReleasesPage from '../components/ReleasesPage.vue';
 import Login from '../components/Login.vue'; 
 
 // --- 2. 定义路由规则 (修改版) ---
@@ -84,9 +84,9 @@ const routes = [
     meta: { requiresAuth: true },
   },
   {
-    path: '/about',
-    name: 'About',
-    component: AboutPage
+    path: '/releases',
+    name: 'Releases',
+    component: ReleasesPage
   },
 ];
 

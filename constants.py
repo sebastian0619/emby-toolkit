@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "2.9.39"  # 更新版本号
+APP_VERSION = "2.9.39.1"  # 更新版本号
 GITHUB_REPO_OWNER = "hbq0405"  # 您的 GitHub 用户名
 GITHUB_REPO_NAME = "emby-actor-processor" # 您的 GitHub 仓库名
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
@@ -43,6 +43,9 @@ DEFAULT_MIN_SCORE_FOR_REVIEW = 6.0                              # 默认的最�
 # --- TMDb ---
 CONFIG_SECTION_TMDB = "TMDB"
 CONFIG_OPTION_TMDB_API_KEY = "tmdb_api_key" # TMDb API密钥
+# --- GitHub (用于版本检查) ---
+CONFIG_SECTION_GITHUB = "GitHub"
+CONFIG_OPTION_GITHUB_TOKEN = "github_token" # 用于提高API速率限制的个人访问令牌
 
 # --- 豆瓣 API ---
 CONFIG_SECTION_API_DOUBAN = "DoubanAPI"

@@ -6,9 +6,10 @@ from typing import Optional, List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-def get_github_releases(owner: str, repo: str) -> Optional[List[Dict[str, Any]]]:
+def get_github_releases(owner: str, repo: str, token: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
     """
-    从 GitHub API 获取指定仓库的所有 Release 信息。
+    【V2 - 支持认证版】从 GitHub API 获取指定仓库的所有 Release 信息。
+    如果提供了 token，则会使用认证来提高速率限制。
     """
     if not owner or not repo:
         logger.error("获取 GitHub releases 失败：缺少 owner 或 repo。")
@@ -20,9 +21,23 @@ def get_github_releases(owner: str, repo: str) -> Optional[List[Dict[str, Any]]]
         "X-GitHub-Api-Version": "2022-11-28"
     }
     
+    # ★★★ 核心修改：如果提供了 token，就添加到请求头中 ★★★
+    if token:
+        logger.debug("检测到 GitHub Token，将使用认证模式请求。")
+        headers["Authorization"] = f"Bearer {token}"
+    else:
+        logger.debug("未提供 GitHub Token，将使用匿名模式请求。")
+    
     logger.trace(f"正在从 GitHub API 获取 releases: {api_url}")
     try:
         response = requests.get(api_url, headers=headers, timeout=20)
+        
+        # 打印速率限制信息，方便调试
+        remaining = response.headers.get('X-RateLimit-Remaining')
+        limit = response.headers.get('X-RateLimit-Limit')
+        if remaining and limit:
+            logger.debug(f"GitHub API 速率限制: {remaining}/{limit} 次剩余。")
+
         response.raise_for_status()
         releases_data = response.json()
 
