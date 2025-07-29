@@ -14,7 +14,7 @@ import config_manager
 import config_manager
 # 导入共享模块
 import extensions
-from extensions import login_required, processor_ready_required
+from extensions import login_required, task_lock_required
 import tasks
 import constants
 import github_handler
@@ -52,8 +52,8 @@ def api_handle_trigger_stop_task():
 
 # ✨✨✨ “立即执行”API接口 ✨✨✨
 @system_bp.route('/tasks/trigger/<task_identifier>', methods=['POST'])
-@extensions.login_required
-@extensions.task_lock_required
+@login_required
+@task_lock_required
 def api_trigger_task_now(task_identifier: str):
     task_registry = tasks.get_task_registry()
     task_info = task_registry.get(task_identifier)
@@ -164,7 +164,7 @@ def get_about_info():
 
 # --- 一键更新 ---
 @system_bp.route('/system/update/stream', methods=['GET'])
-@extensions.login_required
+@login_required
 def stream_update_progress():
     """
     【V7 - 最终流式版】通过 Server-Sent Events (SSE) 实时流式传输更新进度。

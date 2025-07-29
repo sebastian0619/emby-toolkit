@@ -125,8 +125,8 @@ def api_trigger_single_watchlist_refresh(item_id):
 
 # --- 批量强制完结选中的追剧项目 ---
 @watchlist_bp.route('/batch_force_end', methods=['POST'])
-@extensions.login_required
-@extensions.task_lock_required
+@login_required
+@task_lock_required
 def api_batch_force_end_watchlist_items():
     """
     【V2】接收前端请求，批量强制完结选中的追剧项目。
