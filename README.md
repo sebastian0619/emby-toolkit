@@ -62,7 +62,7 @@
           - PUID=0                                   # 设置为你的用户ID，建议与宿主机用户ID保持一致
           - PGID=0                                   # 设置为DOCKER组ID (一键更新用)
           - UMASK=000                                # 设置文件权限掩码，建议022
-          - CONTAINER_NAME=emby-toolkit      # 设置成container_name一样 （一键更新用）
+          - CONTAINER_NAME=emby-toolkit              # 设置成container_name一样 （一键更新用）
         restart: unless-stopped
         
       watchtower:                                    # 以下配置为一键更新，不需要可以删除

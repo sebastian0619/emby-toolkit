@@ -181,7 +181,6 @@ onMounted(fetchData);
 </script>
 
 <style scoped>
-/* 样式保持不变 */
 .center-container {
   display: flex;
   justify-content: center;
@@ -202,6 +201,7 @@ onMounted(fetchData);
   padding-left: 4px;
   color: var(--n-text-color-2);
 }
+/* 深度选择器，用于修改 v-html 渲染出的内容的样式 */
 .changelog-content :deep(ul) {
   padding-left: 20px;
   margin: 0;
@@ -209,6 +209,21 @@ onMounted(fetchData);
 .changelog-content :deep(li) {
   margin-bottom: 4px;
 }
+
+/* ★★★ 新增的核心样式 ★★★ */
+.changelog-content :deep(pre) {
+  background-color: rgba(128, 128, 128, 0.1); /* 给一个淡淡的背景色 */
+  padding: 12px 16px;
+  border-radius: 6px;
+  overflow-x: auto; /* 如果代码太长，允许横向滚动 */
+  margin: 10px 0;
+}
+.changelog-content :deep(code) {
+  font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; /* 使用等宽字体 */
+  font-size: 0.9em;
+}
+/* ★★★ 新增结束 ★★★ */
+
 .sponsor-content {
   text-align: center;
 }
