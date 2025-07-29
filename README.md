@@ -63,6 +63,14 @@
           - PGID=0                   # 设置为你的组ID，建议与宿主机组ID保持一致
           - UMASK=000                # 设置文件权限掩码，建议022
         restart: unless-stopped
+      watchtower:                    # 以下配置为自动更新，不需要可以删除
+        image: containrrr/watchtower
+        container_name: watchtower 
+        restart: always
+        volumes:
+          - /var/run/docker.sock:/var/run/docker.sock
+        command: --cleanup --run-once emby-actor-processor
+
     ```
     然后在 `docker-compose.yml` 文件所在的目录下运行：
     ```bash
