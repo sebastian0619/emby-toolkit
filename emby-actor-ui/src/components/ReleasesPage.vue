@@ -139,7 +139,7 @@ const updateProgress = ref(-1);
 const updateStatusText = ref('');
 const isUpdateFinished = ref(false);
 const MODAL_BASE_HEIGHT = 220; // 模态框的基础高度 (标题、文字、按钮等)
-const HEIGHT_PER_LAYER = 68;   // 每一层进度大约占用的高度 (px)
+const HEIGHT_PER_LAYER = 40;   // 每一层进度大约占用的高度 (px)
 const MODAL_MAX_HEIGHT_VH = 85; // 模态框最大高度占屏幕的百分比 (85vh = 85% of viewport height)
 const dockerLayers = ref({});
 let eventSource = null;
