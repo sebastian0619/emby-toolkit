@@ -441,6 +441,37 @@ def remove_item_from_watchlist(db_path: str, item_id: str) -> bool:
         logger.error(f"DB: 从追剧列表移除项目时发生未知错误: {e}", exc_info=True)
         raise
 
+# 批量强制完结的逻辑
+def batch_force_end_watchlist_items(db_path: str, item_ids: List[str]) -> int:
+    """
+    【V2】批量将追剧项目标记为“强制完结”。
+    这会将项目状态设置为 'Ended'，并将 'force_ended' 标志位设为 True。
+    这样可以防止常规刷新错误地复活剧集，但允许新一季的检查使其复活。
+    返回成功更新的行数。
+    """
+    if not item_ids:
+        return 0
+    
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            placeholders = ','.join('?' for _ in item_ids)
+            # 将状态更新为 Ended，并设置 force_ended 标志
+            sql = f"UPDATE watchlist SET status = 'Completed', force_ended = 1 WHERE item_id IN ({placeholders})"
+            
+            cursor.execute(sql, item_ids)
+            conn.commit()
+            
+            updated_count = cursor.rowcount
+            if updated_count > 0:
+                logger.info(f"DB: 批量强制完结了 {updated_count} 个追剧项目。")
+            else:
+                logger.warning(f"DB: 尝试批量强制完结，但提供的ID在列表中均未找到。")
+            return updated_count
+    except Exception as e:
+        logger.error(f"DB: 批量强制完结追剧项目时发生错误: {e}", exc_info=True)
+        raise
+
 # ======================================================================
 # 模块 5: 电影合集数据访问 (Collections Data Access)
 # ======================================================================

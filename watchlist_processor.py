@@ -42,9 +42,10 @@ def translate_internal_status(status: str) -> str:
     return INTERNAL_STATUS_TRANSLATION.get(status, status)
 class WatchlistProcessor:
     """
-    【V11 - 最终版智能管家】
+    【V12 - 精准强制完结版】
     实现基于待播日期的三态(Watching, Paused, Completed)自动转换，
     并包含一个独立的、用于低频检查已完结剧集“复活”的方法。
+    新增对 `force_ended` 标志的支持。
     """
     def __init__(self, config: Dict[str, Any]):
         if not isinstance(config, dict):
@@ -179,6 +180,7 @@ class WatchlistProcessor:
         task_name = "已完结剧集复活检查"
         self.progress_callback(0, "准备开始复活检查...")
         try:
+            # 【修改】查询条件不变，依然是检查所有已完结的剧集
             completed_series = self._get_series_to_process(f"WHERE status = '{STATUS_COMPLETED}'")
             total = len(completed_series)
             if not completed_series:
@@ -197,16 +199,26 @@ class WatchlistProcessor:
                 tmdb_details = tmdb_handler.get_tv_details_tmdb(series['tmdb_id'], self.tmdb_api_key)
                 if not tmdb_details: continue
 
-                new_status = tmdb_details.get('status')
-                if new_status not in ["Ended", "Canceled"]:
-                    logger.warning(f"检测到剧集 '{series['item_name']}' 已复活！状态从 '{series.get('tmdb_status')}' 变为 '{new_status}'。")
+                new_tmdb_status = tmdb_details.get('status')
+                # 判断复活的条件：TMDb状态不再是“已完结”或“已取消”
+                is_revived = new_tmdb_status not in ["Ended", "Canceled"]
+
+                # ▼▼▼ 核心修改点 ▼▼▼
+                if is_revived:
+                    logger.warning(f"检测到剧集 '{series['item_name']}' 已复活！TMDb状态从 '{series.get('tmdb_status')}' 变为 '{new_tmdb_status}'。")
                     revived_count += 1
-                    self._update_watchlist_entry(series['item_id'], series['item_name'], {
+                    
+                    # 准备更新的数据
+                    updates_to_db = {
                         "status": STATUS_WATCHING,
                         "paused_until": None,
-                        "tmdb_status": new_status
-                    })
-                time.sleep(2)
+                        "tmdb_status": new_tmdb_status,
+                        # 【关键】一旦因新一季而复活，就必须重置 force_ended 标志，让它恢复正常追剧逻辑
+                        "force_ended": 0 
+                    }
+                    self._update_watchlist_entry(series['item_id'], series['item_name'], updates_to_db)
+                
+                time.sleep(2) # 保持API调用间隔
             
             final_message = f"复活检查完成。共发现 {revived_count} 部剧集回归。"
             self.progress_callback(100, final_message)
@@ -242,11 +254,14 @@ class WatchlistProcessor:
         except Exception as e:
             logger.error(f"获取追剧列表时发生数据库错误: {e}")
             return []
+            
     # ★★★ 核心处理逻辑：单个剧集的所有操作在此完成 ★★★
     def _process_one_series(self, series_data: Dict[str, Any]):
         item_id = series_data['item_id']
         tmdb_id = series_data['tmdb_id']
         item_name = series_data['item_name']
+        # 【新增】获取 force_ended 标志
+        is_force_ended = bool(series_data.get('force_ended', 0))
         
         logger.info(f"正在处理剧集: '{item_name}' (TMDb ID: {tmdb_id})")
         # +++ 新增：存活检查 (Liveness Check) +++
@@ -315,10 +330,14 @@ class WatchlistProcessor:
         final_status = STATUS_WATCHING
         paused_until_date = None
 
+        # ▼▼▼ 核心修改点：状态判断逻辑 ▼▼▼
         if is_ended_on_tmdb and not has_missing_media:
+            # 条件1：如果TMDb说剧集完结了，并且本地文件是完整的，那么就标记为“已完结”
             final_status = STATUS_COMPLETED
             logger.info(f"  -> 剧集已完结且本地完整，状态变更为: {translate_internal_status(final_status)}")
+        
         elif real_next_episode_to_air and real_next_episode_to_air.get('air_date'):
+            # 条件2：如果还有下一集待播出
             air_date_str = real_next_episode_to_air['air_date']
             air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
             days_until_air = (air_date - datetime.now().date()).days
@@ -333,9 +352,19 @@ class WatchlistProcessor:
                 final_status = STATUS_WATCHING
                 logger.info(f"  -> 下一集即将在3天内播出或已播出，状态保持为: {translate_internal_status(final_status)}。")
         else:
+            # 条件3：其他情况（如季歇期，没有待播信息）
             final_status = STATUS_PAUSED
             paused_until_date = datetime.now().date() + timedelta(days=7)
             logger.info(f"  -> 暂无待播信息 (季歇期)，状态变更为: {translate_internal_status(final_status)}，暂停7天。")
+
+        # ▼▼▼ 核心修改点：最终裁决 ▼▼▼
+        # 在决定最终状态后，检查 force_ended 标志
+        if is_force_ended and final_status == STATUS_WATCHING:
+            # 如果剧集被“强制完结”，并且根据上面的逻辑它应该被设为“追剧中”（通常是因为发现了缺失集数）
+            # 那么我们推翻这个决定，强制它保持“已完结”状态。
+            final_status = STATUS_COMPLETED
+            paused_until_date = None # 确保清除暂停日期
+            logger.warning(f"  -> [强制完结生效] 剧集 '{item_name}' 被标记为强制完结，即使发现缺失集数，状态也将保持为 '已完结'。")
 
         updates_to_db = {
             "status": final_status,
@@ -343,6 +372,7 @@ class WatchlistProcessor:
             "tmdb_status": new_tmdb_status,
             "next_episode_to_air_json": json.dumps(real_next_episode_to_air) if real_next_episode_to_air else None,
             "missing_info_json": json.dumps(missing_info)
+            # 注意：我们在这里不修改 force_ended 标志，它的重置只在“复活检查”时发生
         }
         self._update_watchlist_entry(item_id, item_name, updates_to_db)
         emby_handler.refresh_emby_item_metadata(item_id, self.emby_url, self.emby_api_key, item_name_for_log=item_name)
@@ -547,5 +577,3 @@ class WatchlistProcessor:
                 conn.execute("UPDATE watchlist SET last_checked_at = ? WHERE item_id = ?", (current_time, item_id))
         except Exception as e:
             logger.error(f"更新 '{item_name}' 的 last_checked_at 时间戳时失败: {e}")
-    
-

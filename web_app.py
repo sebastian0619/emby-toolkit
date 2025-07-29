@@ -156,7 +156,8 @@ def init_db():
                     tmdb_status TEXT,
                     next_episode_to_air_json TEXT,
                     missing_info_json TEXT,
-                    paused_until DATE DEFAULT NULL 
+                    paused_until DATE DEFAULT NULL,
+                    force_ended BOOLEAN DEFAULT 0 NOT NULL 
                 )
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
@@ -170,6 +171,11 @@ def init_db():
                     logger.info("    -> 检测到旧版 'watchlist' 表，正在添加 'paused_until' 字段...")
                     cursor.execute("ALTER TABLE watchlist ADD COLUMN paused_until DATE DEFAULT NULL;")
                     logger.info("    -> 'paused_until' 字段添加成功。")
+                # 【新增】为 force_ended 字段添加升级逻辑
+                if 'force_ended' not in columns:
+                    logger.info("    -> 检测到旧版 'watchlist' 表，正在添加 'force_ended' 字段...")
+                    cursor.execute("ALTER TABLE watchlist ADD COLUMN force_ended BOOLEAN DEFAULT 0 NOT NULL;")
+                    logger.info("    -> 'force_ended' 字段添加成功。")
             except Exception as e_alter:
                 logger.error(f"  -> 为 'watchlist' 表添加新字段时出错: {e_alter}")
 

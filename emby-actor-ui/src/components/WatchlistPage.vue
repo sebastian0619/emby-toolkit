@@ -1,4 +1,5 @@
-<!-- src/components/WatchlistPage.vue (最终健壮版 - 弹窗终极修复) -->
+---  src/components/WatchlistPage.vue ---
+<!-- src/components/WatchlistPage.vue (最终健壮版 - 弹窗终极修复 + 批量操作 + 排序) -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="watchlist-page">
@@ -13,6 +14,19 @@
         </template>
         <template #extra>
           <n-space>
+            <!-- 【新增】批量操作按钮，仅在有项目被选中时显示 -->
+            <n-dropdown 
+              v-if="selectedItems.length > 0"
+              trigger="click" 
+              :options="batchActions"
+              @select="handleBatchAction"
+            >
+              <n-button type="primary">
+                批量操作 ({{ selectedItems.length }})
+                <template #icon><n-icon :component="CaretDownIcon" /></template>
+              </n-button>
+            </n-dropdown>
+
             <n-radio-group v-model:value="currentView" size="small">
               <n-radio-button value="inProgress">追剧中</n-radio-button>
               <n-radio-button value="completed">已完结</n-radio-button>
@@ -50,7 +64,13 @@
       <div v-else-if="filteredWatchlist.length > 0">
         <n-grid cols="1 s:1 m:2 l:3 xl:4" :x-gap="20" :y-gap="20" responsive="screen">
           <n-gi v-for="item in renderedWatchlist" :key="item.item_id">
-            <n-card class="glass-section" :bordered="false" content-style="display: flex; padding: 0; gap: 16px;">
+            <!-- 【修改】卡片上增加一个绝对定位的 Checkbox -->
+            <n-card class="glass-section series-card" :bordered="false" content-style="display: flex; padding: 0; gap: 16px;">
+              <n-checkbox 
+                :checked="selectedItems.includes(item.item_id)"
+                @update:checked="toggleSelection(item.item_id)"
+                class="card-checkbox"
+              />
               <div class="card-poster-container">
                 <n-image lazy :src="getPosterUrl(item.item_id)" class="card-poster" object-fit="cover">
                   <template #placeholder><div class="poster-placeholder"><n-icon :component="TvIcon" size="32" /></div></template>
@@ -151,8 +171,8 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, h, computed, watch, nextTick } from 'vue';
 import axios from 'axios';
-import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NPopconfirm, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem } from 'naive-ui';
-import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, CheckmarkCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkDoneCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon } from '@vicons/ionicons5';
+import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown } from 'naive-ui';
+import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, CheckmarkCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkDoneCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon } from '@vicons/ionicons5';
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
@@ -161,6 +181,7 @@ const TMDbIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: 
 
 const { configModel } = useConfig();
 const message = useMessage();
+const dialog = useDialog(); // 【新增】引入 Dialog
 const props = defineProps({ taskStatus: { type: Object, required: true } });
 const rawWatchlist = ref([]);
 const currentView = ref('inProgress');
@@ -169,7 +190,6 @@ const isBatchUpdating = ref(false);
 const error = ref(null);
 const showModal = ref(false);
 const isAddingAll = ref(false);
-// ✨ [核心修复] 直接存储被点击的对象
 const selectedSeries = ref(null);
 const subscribing = ref({});
 const refreshingItems = ref({});
@@ -178,6 +198,51 @@ const displayCount = ref(30);
 const INCREMENT = 30;
 const loaderRef = ref(null);
 let observer = null;
+
+// 【新增】批量选择相关
+const selectedItems = ref([]);
+const toggleSelection = (itemId) => {
+  const index = selectedItems.value.indexOf(itemId);
+  if (index > -1) {
+    selectedItems.value.splice(index, 1);
+  } else {
+    selectedItems.value.push(itemId);
+  }
+};
+
+// 【新增】批量操作的定义
+const batchActions = [
+  {
+    label: '强制完结',
+    key: 'forceEnd',
+    icon: () => h(NIcon, { component: ForceEndIcon })
+  }
+];
+
+// 【新增】批量操作的处理函数
+const handleBatchAction = (key) => {
+  if (key === 'forceEnd') {
+    dialog.warning({
+      title: '确认操作',
+      content: `确定要将选中的 ${selectedItems.value.length} 部剧集标记为“强制完结”吗？这会防止它们因集数更新而被错误地复活，但如果将来有新一季发布，它们仍会自动恢复追剧。`,
+      positiveText: '确定',
+      negativeText: '取消',
+      onPositiveClick: async () => {
+        try {
+          const response = await axios.post('/api/watchlist/batch_force_end', {
+            item_ids: selectedItems.value
+          });
+          message.success(response.data.message || '批量操作成功！');
+          // 操作成功后刷新列表并清空选择
+          await fetchWatchlist();
+          selectedItems.value = [];
+        } catch (err) {
+          message.error(err.response?.data?.error || '批量操作失败。');
+        }
+      }
+    });
+  }
+};
 
 // +++ 一键添加所有剧集到智能追剧列表 的函数 +++
 const addAllSeriesToWatchlist = async () => {
@@ -227,20 +292,46 @@ const subscribeSeason = async (seasonNumber) => {
   }
 };
 
+// 【核心修改】在 filteredWatchlist 中加入排序逻辑
 const filteredWatchlist = computed(() => {
+  let list = [];
   if (currentView.value === 'inProgress') {
-    return rawWatchlist.value.filter(item => item.status === 'Watching' || item.status === 'Paused');
+    list = rawWatchlist.value
+      .filter(item => item.status === 'Watching' || item.status === 'Paused')
+      .sort((a, b) => {
+        // 定义状态的排序优先级
+        const statusOrder = { 'Watching': 0, 'Paused': 1 };
+        const aStatus = statusOrder[a.status] ?? 99;
+        const bStatus = statusOrder[b.status] ?? 99;
+
+        // 1. 按状态优先级排序
+        if (aStatus !== bStatus) {
+          return aStatus - bStatus;
+        }
+
+        // 2. 如果状态相同，按上次检查时间倒序（越近越靠前）
+        const aDate = a.last_checked_at ? new Date(a.last_checked_at).getTime() : 0;
+        const bDate = b.last_checked_at ? new Date(b.last_checked_at).getTime() : 0;
+        return bDate - aDate;
+      });
+  } else if (currentView.value === 'completed') {
+    // 已完结列表可以继续按上次检查时间倒序
+    list = rawWatchlist.value
+      .filter(item => item.status === 'Completed')
+      .sort((a, b) => {
+        const aDate = a.last_checked_at ? new Date(a.last_checked_at).getTime() : 0;
+        const bDate = b.last_checked_at ? new Date(b.last_checked_at).getTime() : 0;
+        return bDate - aDate;
+      });
   }
-  if (currentView.value === 'completed') {
-    return rawWatchlist.value.filter(item => item.status === 'Completed');
-  }
-  return [];
+  return list;
 });
 
 
-// +++ 新增：切换视图时重置显示数量 +++
+// +++ 新增：切换视图时重置显示数量和选择 +++
 watch(currentView, () => {
   displayCount.value = 30;
+  selectedItems.value = []; // 切换视图时清空选择
 });
 
 const renderedWatchlist = computed(() => {
@@ -538,6 +629,25 @@ watch(isTaskRunning, (isRunning, wasRunning) => {
 <style scoped>
 .watchlist-page { padding: 0 10px; }
 .center-container { display: flex; justify-content: center; align-items: center; height: calc(100vh - 200px); }
+
+/* 【新增】卡片样式，为 checkbox 定位做准备 */
+.series-card {
+  position: relative;
+}
+
+/* 【新增】Checkbox 样式，使其悬浮在卡片左上角 */
+.card-checkbox {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 10;
+  background-color: rgba(255, 255, 255, 0.7);
+  border-radius: 50%;
+  padding: 4px;
+  --n-color-checked: var(--n-color-primary-hover);
+  --n-border-radius: 50%;
+}
+
 .card-poster-container { flex-shrink: 0; width: 160px; height: 240px; }
 .card-poster { width: 100%; height: 100%; }
 .poster-placeholder { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; background-color: var(--n-action-color); }
