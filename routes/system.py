@@ -3,7 +3,9 @@
 from flask import Blueprint, jsonify, request
 import logging
 import re
-
+import os
+import threading
+import docker
 # 导入底层模块
 import task_manager
 from logger_setup import frontend_log_queue
@@ -152,3 +154,77 @@ def get_about_info():
         logger.error(f"API /system/about_info 发生错误: {e}", exc_info=True)
         return jsonify({"error": "获取版本信息时发生服务器内部错误"}), 500
 
+@system_bp.route('/system/trigger_update', methods=['POST'])
+@extensions.login_required
+def trigger_self_update():
+    """
+    【V6 - 最终生产版】触发应用自我更新。
+    1. 在后台线程中拉取最新镜像。
+    2. 如果检测到新镜像，则通过 Docker API 重启 Watchtower 容器来应用更新。
+    """
+    # 从环境变量获取当前容器的名称
+    container_name = os.environ.get('CONTAINER_NAME', 'emby-actor-processor')
+    # 定义 Watchtower 容器的固定名称，这必须与 docker-compose.yml 中一致
+    watchtower_container_name = "watchtower_eap_updater" 
+    
+    logger.info(f"API: 接收到自我更新请求，目标容器: '{container_name}'")
+
+    def update_task():
+        """这个函数将在一个独立的后台线程中运行，以避免阻塞 API 响应。"""
+        logger.info("[Update Worker]: 后台更新线程已启动。")
+        try:
+            # 在新线程中需要重新创建 Docker 客户端实例
+            client = docker.from_env()
+            
+            # 1. 获取当前容器和其镜像信息
+            container = client.containers.get(container_name)
+            # 健壮性改进：处理镜像没有标签的边缘情况
+            if not container.image.tags:
+                logger.error("[Update Worker]: 严重错误！当前运行的容器镜像没有标签，无法确定要拉取哪个镜像。")
+                return
+            image_name_tag = container.image.tags[0]
+            
+            # 2. 拉取最新镜像 (这是耗时操作)
+            logger.info(f"[Update Worker]: 正在拉取最新镜像: {image_name_tag}...")
+            new_image = client.images.pull(image_name_tag)
+
+            # 3. 比较新旧镜像的 ID，判断是否有真正的更新
+            if container.image.id == new_image.id:
+                logger.info("[Update Worker]: 当前已是最新版本，无需更新。")
+                return # 任务完成，线程自然退出
+
+            # 4. 如果有新镜像，则通过重启 Watchtower 来应用更新
+            logger.info("[Update Worker]: 新镜像拉取完成，准备触发 Watchtower 执行更新...")
+            try:
+                watchtower_container = client.containers.get(watchtower_container_name)
+                logger.info(f"[Update Worker]: 正在重启 Watchtower 容器 ('{watchtower_container_name}')...")
+                watchtower_container.restart()
+                logger.info("[Update Worker]: Watchtower 重启指令已发送！它将在后台完成应用的重建。")
+            except docker.errors.NotFound:
+                logger.error(f"[Update Worker]: 严重错误！未找到名为 '{watchtower_container_name}' 的 Watchtower 容器。请检查 docker-compose.yml 配置。无法自动应用更新。")
+            except Exception as e_restart:
+                logger.error(f"[Update Worker]: 重启 Watchtower 时发生错误: {e_restart}", exc_info=True)
+
+        except Exception as e:
+            # 捕获所有其他可能的异常，例如 docker.errors.NotFound
+            logger.error(f"[Update Worker]: 后台更新线程发生错误: {e}", exc_info=True)
+
+    # --- 主 API 逻辑 ---
+    try:
+        # 快速检查一下容器是否存在，避免启动一个注定失败的线程
+        docker.from_env().containers.get(container_name)
+        
+        # 创建并启动后台线程，daemon=True 确保主程序退出时线程也会退出
+        update_thread = threading.Thread(target=update_task, daemon=True)
+        update_thread.start()
+        
+        logger.info("API: 后台更新任务已启动，立即返回 202 Accepted 响应。")
+        # 立即返回，不等待线程结束
+        return jsonify({
+            "success": True, 
+            "message": "更新指令已发送！应用将在后台下载并应用新版本，请在约1-2分钟后刷新页面。"
+        }), 202
+
+    except Exception as e:
+        logger.error(f"API: 启动更新线程时发生错误: {e}", exc_info=True)
+        return jsonify({"success": False, "message": f"启动更新失败: {str(e)}"}), 500

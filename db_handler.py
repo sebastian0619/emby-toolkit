@@ -4,7 +4,7 @@ import json
 from datetime import date, timedelta, datetime
 import logging
 from typing import Optional, Dict, Any, List, Tuple
-
+from flask import jsonify
 logger = logging.getLogger(__name__)
 
 # ======================================================================
@@ -304,14 +304,18 @@ def clear_all_review_items(db_path: str) -> int:
     """
     清空所有待复核项目，并将它们全部标记为已处理。
     返回被成功处理的项目数量。
+    出现错误时抛出异常。
     """
     try:
         with get_db_connection(db_path) as conn:
+            initial_count = conn.execute("SELECT COUNT(*) FROM failed_log").fetchone()[0]
+            logger.info(f"防御性检查：'failed_log' 表中共有 {initial_count} 条记录。")
+            if initial_count == 0:
+                logger.info("操作完成，待复核列表本就是空的。")
+                return 0  # 无需操作
+
             cursor = conn.cursor()
             
-            cursor.execute("BEGIN TRANSACTION;")
-            
-            # 1. 复制
             copy_sql = """
                 REPLACE INTO processed_log (item_id, item_name, processed_at, score)
                 SELECT item_id, item_name, CURRENT_TIMESTAMP, COALESCE(score, 10.0)
@@ -319,26 +323,23 @@ def clear_all_review_items(db_path: str) -> int:
             """
             cursor.execute(copy_sql)
             copied_count = cursor.rowcount
-            
-            # 2. 删除
+            logger.info(f"事务内：复制了 {copied_count} 条记录到 '已处理'。")
+
             cursor.execute("DELETE FROM failed_log")
             deleted_count = cursor.rowcount
-            
-            # 3. 验证并提交/回滚
-            if copied_count == deleted_count:
+            logger.info(f"事务内：删除了 {deleted_count} 条记录。")
+
+            if copied_count == deleted_count == initial_count:
                 conn.commit()
-                logger.info(f"DB: 已成功将 {deleted_count} 个项目从待复核列表移至已处理列表。")
+                logger.info("数据一致性验证成功，事务已提交。")
                 return deleted_count
             else:
                 conn.rollback()
-                logger.error(f"DB: 清空待复核列表时数据不一致，操作已回滚！(复制: {copied_count}, 删除: {deleted_count})")
-                # 抛出一个特定的错误，让上层知道出了问题
-                raise RuntimeError("清空待复核列表时发生数据不一致错误。")
-                
+                logger.error(f"数据不一致，事务回滚。初始: {initial_count}, 复制: {copied_count}, 删除: {deleted_count}")
+                raise Exception("数据不一致，操作回滚！")
     except Exception as e:
-        logger.error(f"DB: 清空并标记待复核列表时发生未知异常: {e}", exc_info=True)
-        raise
-
+        logger.error(f"清空并标记待复核列表时异常：{e}", exc_info=True)
+        raise  # 抛出异常给调用者处理
 # ======================================================================
 # 模块 4: 智能追剧列表数据访问 (Watchlist Data Access)
 # ======================================================================

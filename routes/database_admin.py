@@ -193,9 +193,13 @@ def api_mark_item_processed(item_id):
 def api_clear_review_items():
     try:
         count = db_handler.clear_all_review_items(config_manager.DB_PATH)
-        message = f"操作成功！已将 {count} 个项目移至已处理列表。" if count > 0 else "操作完成，待复核列表本就是空的。"
+        if count > 0:
+            message = f"操作成功！已将 {count} 个项目移至已处理列表。"
+        else:
+            message = "操作完成，待复核列表本就是空的。"
         return jsonify({"message": message}), 200
     except Exception as e:
+        logger.error("API调用api_clear_review_items时发生错误", exc_info=True)
         return jsonify({"error": "服务器在处理时发生内部错误"}), 500
 
 # ✨✨✨ 一键删除TMDb缓存 ✨✨✨
