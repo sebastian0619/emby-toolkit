@@ -104,6 +104,28 @@
           </router-view>
           </div>
         </n-layout-content>
+        <!-- 更新进度模态框 -->
+        <n-modal
+          v-model:show="showUpdateModal"
+          :mask-closable="false"
+          preset="card"
+          style="width: 90%; max-width: 600px;"
+          title="正在更新应用"
+        >
+          <p>{{ updateStatusText }}</p>
+          <n-progress
+            v-if="updateProgress >= 0"
+            type="line"
+            :percentage="updateProgress"
+            indicator-placement="inside"
+            processing
+          />
+          <div style="text-align: right; margin-top: 20px;">
+            <n-button @click="showUpdateModal = false" :disabled="!isUpdateFinished">
+              关闭
+            </n-button>
+          </div>
+        </n-modal>
       </n-layout>
     </n-layout>
     <n-modal 
@@ -164,6 +186,12 @@ const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲', 
 const showStatusArea = ref(true);
 const activeMenuKey = computed(() => route.name);
 const isUpdating = ref(false); // 更新按钮的加载状态
+// ... (在其他 ref 定义之后)
+const showUpdateModal = ref(false);
+const updateProgress = ref(0);
+const updateStatusText = ref('');
+const isUpdateFinished = ref(false);
+let eventSource = null;
 
 // 主题切换时，更新 localStorage，Provider.vue 会监听到变化并应用主题
 watch(isDarkTheme, (newValue) => {
@@ -217,26 +245,48 @@ async function handleMenuUpdate(key) {
 
 // --- 更新按钮处理函数 ---
 const handleUpdate = () => {
-  // ✨ 直接使用在 Provider.vue 中挂载到 window 上的全局 API
   window.$dialog.warning({
     title: '确认更新',
     content: '这将拉取最新的镜像并重启应用，期间服务将短暂中断。确定要继续吗？',
     positiveText: '立即更新',
     negativeText: '取消',
-    onPositiveClick: async () => {
-      isUpdating.value = true;
-      window.$message.info('正在发送更新指令，请稍候...');
-      try {
-        await axios.post('/api/system/trigger_update');
-        window.$message.success('更新指令已发送！应用将在约1分钟后重启完毕，请稍后手动刷新页面。');
-        setTimeout(() => {
-          window.location.reload();
-        }, 60000); // 60秒后刷新
-      } catch (error) {
-        const errorMsg = error.response?.data?.message || '更新请求失败，请检查日志。';
-        window.$message.error(`更新失败: ${errorMsg}`);
-        isUpdating.value = false;
-      }
+    onPositiveClick: () => {
+      // 重置状态并显示模态框
+      showUpdateModal.value = true;
+      isUpdateFinished.value = false;
+      updateProgress.value = 0;
+      updateStatusText.value = '正在连接到更新服务...';
+
+      // 创建 EventSource 连接
+      eventSource = new EventSource('/api/system/update/stream');
+
+      // 监听消息
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        // 更新状态和进度
+        if (data.status) {
+          updateStatusText.value = data.status;
+        }
+        if (typeof data.progress === 'number') {
+          updateProgress.value = data.progress;
+        }
+
+        // 检查是否是结束或错误事件
+        if (data.event === 'DONE' || data.event === 'ERROR') {
+          isUpdateFinished.value = true;
+          eventSource.close();
+        }
+      };
+
+      // 监听错误
+      eventSource.onerror = (err) => {
+        console.error('EventSource failed:', err);
+        updateStatusText.value = '与服务器的连接中断。可能正在重启，请稍后刷新。';
+        updateProgress.value = 100; // 假定完成
+        isUpdateFinished.value = true;
+        eventSource.close();
+      };
     },
   });
 };

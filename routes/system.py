@@ -1,7 +1,8 @@
 # routes/system.py
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, Response, stream_with_context
 import logging
+import json
 import re
 import os
 import threading
@@ -154,77 +155,83 @@ def get_about_info():
         logger.error(f"API /system/about_info 发生错误: {e}", exc_info=True)
         return jsonify({"error": "获取版本信息时发生服务器内部错误"}), 500
 
-@system_bp.route('/system/trigger_update', methods=['POST'])
+# --- 一键更新 ---
+@system_bp.route('/system/update/stream', methods=['GET'])
 @extensions.login_required
-def trigger_self_update():
+def stream_update_progress():
     """
-    【V6 - 最终生产版】触发应用自我更新。
-    1. 在后台线程中拉取最新镜像。
-    2. 如果检测到新镜像，则通过 Docker API 重启 Watchtower 容器来应用更新。
+    【V7 - 最终流式版】通过 Server-Sent Events (SSE) 实时流式传输更新进度。
     """
-    # 从环境变量获取当前容器的名称
-    container_name = os.environ.get('CONTAINER_NAME', 'emby-actor-processor')
-    # 定义 Watchtower 容器的固定名称，这必须与 docker-compose.yml 中一致
-    watchtower_container_name = "watchtower_eap_updater" 
-    
-    logger.info(f"API: 接收到更新请求，目标容器: '{container_name}'")
+    def generate_progress():
+        container_name = os.environ.get('CONTAINER_NAME', 'emby-actor-processor')
+        watchtower_container_name = "watchtower_eap_updater"
+        
+        def send_event(data):
+            """辅助函数，用于格式化并发送 SSE 事件。"""
+            yield f"data: {json.dumps(data)}\n\n"
 
-    def update_task():
-        """这个函数将在一个独立的后台线程中运行，以避免阻塞 API 响应。"""
-        logger.info("[Update Worker]: 后台更新线程已启动。")
         try:
-            # 在新线程中需要重新创建 Docker 客户端实例
             client = docker.from_env()
-            
-            # 1. 获取当前容器和其镜像信息
             container = client.containers.get(container_name)
-            # 健壮性改进：处理镜像没有标签的边缘情况
-            if not container.image.tags:
-                logger.error("[一键更新]: 严重错误！当前运行的容器镜像没有标签，无法确定要拉取哪个镜像。")
-                return
-            image_name_tag = container.image.tags[0]
             
-            # 2. 拉取最新镜像 (这是耗时操作)
-            logger.info(f"[一键更新]: 正在拉取最新镜像: {image_name_tag}...")
-            new_image = client.images.pull(image_name_tag)
+            if not container.image.tags:
+                yield from send_event({"status": "错误：无法确定镜像名称。", "progress": -1, "event": "ERROR"})
+                return
+            
+            image_name_tag = container.image.tags[0]
 
-            # 3. 比较新旧镜像的 ID，判断是否有真正的更新
-            if container.image.id == new_image.id:
-                logger.info("[一键更新]: 当前已是最新版本，无需更新。")
-                return # 任务完成，线程自然退出
+            # 检查是否有新版本
+            yield from send_event({"status": f"正在拉取最新镜像: {image_name_tag}...", "progress": 0})
+            
+            # 使用低级 API 以获取流式输出
+            stream = client.api.pull(image_name_tag, stream=True, decode=True)
+            
+            layer_progress = {}
+            image_pulled = False
+            for line in stream:
+                if 'status' in line:
+                    status = line['status']
+                    layer_id = line.get('id')
+                    
+                    if status == 'Downloading' and 'progressDetail' in line and layer_id:
+                        details = line['progressDetail']
+                        if details.get('total'):
+                            layer_progress[layer_id] = details
+                            
+                            total_size = sum(l.get('total', 0) for l in layer_progress.values())
+                            current_size = sum(l.get('current', 0) for l in layer_progress.values())
+                            
+                            if total_size > 0:
+                                progress = int((current_size / total_size) * 100)
+                                yield from send_event({"status": f"正在下载... ({layer_id[:12]})", "progress": progress})
+                    
+                    elif status == 'Download complete' or status == 'Pull complete':
+                        yield from send_event({"status": status, "progress": 100})
+                    
+                    elif 'Status:' in status: # 这是一个摘要状态
+                        image_pulled = True
+            
+            if not image_pulled:
+                 yield from send_event({"status": "当前已是最新版本。", "progress": 100})
+                 yield from send_event({"event": "DONE", "message": "无需更新。"})
+                 return
 
-            # 4. 如果有新镜像，则通过重启 Watchtower 来应用更新
-            logger.info("[一键更新]: 新镜像拉取完成，准备重启执行更新...")
+            # 拉取完成，触发 Watchtower
+            yield from send_event({"status": "新镜像拉取完成，正在触发更新...", "progress": 100})
             try:
                 watchtower_container = client.containers.get(watchtower_container_name)
-                logger.info(f"[一键更新]: 正在重启容器执行更新...")
                 watchtower_container.restart()
-                logger.trace("[一键更新]: 重启指令已发送！它将在后台完成应用的重建。")
-            except docker.errors.NotFound:
-                logger.error(f"[一键更新]: 严重错误！未找到名为 '{watchtower_container_name}' 的 Watchtower 容器。请检查 docker-compose.yml 配置。无法自动应用更新。")
+                yield from send_event({"status": "更新应用成功！请在约1分钟后手动刷新页面。", "progress": 100})
             except Exception as e_restart:
-                logger.error(f"[一键更新]: 重启 Watchtower 时发生错误: {e_restart}", exc_info=True)
+                yield from send_event({"status": f"错误：重启 Watchtower 失败: {e_restart}", "progress": -1, "event": "ERROR"})
+
+            # 发送结束信号
+            yield from send_event({"event": "DONE", "message": "更新流程已触发。"})
 
         except Exception as e:
-            # 捕获所有其他可能的异常，例如 docker.errors.NotFound
-            logger.error(f"[Update Worker]: 后台更新线程发生错误: {e}", exc_info=True)
+            error_message = f"更新过程中发生错误: {str(e)}"
+            logger.error(f"[Update Stream]: {error_message}", exc_info=True)
+            yield from send_event({"status": error_message, "progress": -1, "event": "ERROR"})
 
-    # --- 主 API 逻辑 ---
-    try:
-        # 快速检查一下容器是否存在，避免启动一个注定失败的线程
-        docker.from_env().containers.get(container_name)
-        
-        # 创建并启动后台线程，daemon=True 确保主程序退出时线程也会退出
-        update_thread = threading.Thread(target=update_task, daemon=True)
-        update_thread.start()
-        
-        logger.trace("API: 后台更新任务已启动，立即返回 202 Accepted 响应。")
-        # 立即返回，不等待线程结束
-        return jsonify({
-            "success": True, 
-            "message": "更新指令已发送！应用将在后台下载并重启更新，请稍后刷新页面。"
-        }), 202
-
-    except Exception as e:
-        logger.error(f"API: 启动更新线程时发生错误: {e}", exc_info=True)
-        return jsonify({"success": False, "message": f"启动更新失败: {str(e)}"}), 500
+    # 返回一个流式响应
+    return Response(stream_with_context(generate_progress()), mimetype='text/event-stream')
