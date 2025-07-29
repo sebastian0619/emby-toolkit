@@ -72,11 +72,12 @@
     
     <!-- 全局进度条 (逻辑不变) -->
     <n-progress
-      v-if="updateProgress >= 0 && Object.keys(dockerLayers).length === 0"
+      v-if="updateProgress >= 0"
       type="line"
       :percentage="updateProgress"
       indicator-placement="inside"
       processing
+      style="margin-bottom: 15px;"
     />
 
     <!-- Docker 分层进度显示区域 -->
@@ -194,15 +195,21 @@ const handleUpdate = () => {
           updateStatusText.value = data.status;
         }
 
-        // 如果收到了分层数据，就更新它
-        if (data.layers) {
-          dockerLayers.value = data.layers;
-          updateProgress.value = -1; // 隐藏全局进度条
+        // 如果有总进度，就更新总进度条
+        if (typeof data.overall_progress === 'number') {
+          updateProgress.value = data.overall_progress;
         } 
-        // 否则，使用全局进度
+        // 否则，使用全局的 progress (用于重启等步骤)
         else if (typeof data.progress === 'number') {
           updateProgress.value = data.progress;
-          dockerLayers.value = {}; // 清空分层数据，显示全局进度
+        }
+
+        // 无论如何，都更新分层数据
+        if (data.layers) {
+          dockerLayers.value = data.layers;
+        } else {
+          // 如果没有分层数据了（比如进入重启阶段），就清空它
+          dockerLayers.value = {};
         }
 
         // 检查结束事件

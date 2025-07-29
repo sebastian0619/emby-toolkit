@@ -194,6 +194,12 @@ def stream_update_progress():
                 layer_id = line.get('id')
                 status = line.get('status')
 
+                # ★★★ 1. 专门处理全局状态行 ★★★
+                if not layer_id and status and 'Pulling from' in status:
+                    # 这是一个全局状态，不是一个层，我们可以直接把它作为主状态文本
+                    yield from send_event({"status": status, "layers": layers_status})
+                    continue
+
                 if not layer_id or not status:
                     continue
 
@@ -221,9 +227,22 @@ def stream_update_progress():
                     layers_status[layer_id]['progress'] = 100
                     layers_status[layer_id]['detail'] = "" # 完成后清空详情
 
+                # ★★★ 2. 计算并发送总进度 ★★★
+                total_size = 0
+                current_size = 0
+                num_layers = len(layers_status)
+                if num_layers > 0:
+                    for layer in layers_status.values():
+                        # (假设我们已经把字节大小存起来了)
+                        total_size += layer.get('total_bytes', 0)
+                        current_size += layer.get('current_bytes', 0)
+                
+                overall_progress = int((current_size / total_size) * 100) if total_size > 0 else 0
+                
                 # ★★★ 3. 每次循环都发送完整的、包含所有层的状态对象 ★★★
-                yield from send_event({"status": "正在拉取...", "layers": layers_status})
+                yield from send_event({"status": "正在拉取...", "layers": layers_status, "overall_progress": overall_progress})
 
+                last_status_line = line
                 # 检查是否有新内容被拉取
                 if status == "Pull complete":
                     is_new_image_pulled = True
