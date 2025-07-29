@@ -283,7 +283,7 @@ def stream_update_progress():
                 )
                 
                 yield from send_event({"status": "更新任务已成功交接给临时更新器！本容器将在后台被重启。", "progress": 90})
-                yield from send_event({"status": "请在约1-2分钟后手动刷新页面以访问新版本。", "progress": 100, "event": "DONE"})
+                yield from send_event({"status": "稍后手动刷新页面以访问新版本。", "progress": 100, "event": "DONE"})
 
             except docker.errors.NotFound:
                 yield from send_event({"status": f"错误：找不到名为 '{container_name}' 的容器来更新。", "event": "ERROR"})

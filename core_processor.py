@@ -852,8 +852,8 @@ class MediaProcessor:
             file_found = False
             last_file_count = -1
             stable_checks = 0
-            max_retries = self.config.get("rebuild_max_retries", 12)
-            wait_interval = self.config.get("rebuild_wait_interval", 5)
+            max_retries = self.config.get("rebuild_max_retries", 20)
+            wait_interval = self.config.get("rebuild_wait_interval", 3)
             stability_threshold = self.config.get("rebuild_stability_threshold", 2)
 
             for i in range(max_retries):
