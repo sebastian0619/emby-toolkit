@@ -92,11 +92,12 @@ import { zhCN } from 'date-fns/locale';
 // ★★★ 3. 确保导入了所有需要的 Naive UI 组件 ★★★
 import { 
   NLayout, NPageHeader, NDivider, NSpin, NAlert, NList, NListItem, NThing, 
-  NTag, NSpace, NButton, NIcon, NText, NModal, NProgress, NTooltip 
+  NTag, NSpace, NButton, NIcon, NText, NModal, NProgress, NTooltip, useDialog 
 } from 'naive-ui';
 import { LogoGithub, CafeOutline as CafeIcon } from '@vicons/ionicons5';
 import { useAppStore } from '../stores/app';
 
+const dialog = useDialog();
 const appStore = useAppStore();
 
 const githubRepoOwner = 'hbq0405';
@@ -116,7 +117,7 @@ const isUpdateFinished = ref(false);
 let eventSource = null;
 
 const handleUpdate = () => {
-  window.$dialog.warning({
+  dialog.warning({
     title: '确认更新',
     content: '这将拉取最新的镜像并重启应用，期间服务将短暂中断。确定要继续吗？',
     positiveText: '立即更新',
