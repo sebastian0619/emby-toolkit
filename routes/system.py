@@ -167,7 +167,7 @@ def trigger_self_update():
     # 定义 Watchtower 容器的固定名称，这必须与 docker-compose.yml 中一致
     watchtower_container_name = "watchtower_eap_updater" 
     
-    logger.info(f"API: 接收到自我更新请求，目标容器: '{container_name}'")
+    logger.info(f"API: 接收到更新请求，目标容器: '{container_name}'")
 
     def update_task():
         """这个函数将在一个独立的后台线程中运行，以避免阻塞 API 响应。"""
@@ -180,30 +180,30 @@ def trigger_self_update():
             container = client.containers.get(container_name)
             # 健壮性改进：处理镜像没有标签的边缘情况
             if not container.image.tags:
-                logger.error("[Update Worker]: 严重错误！当前运行的容器镜像没有标签，无法确定要拉取哪个镜像。")
+                logger.error("[一键更新]: 严重错误！当前运行的容器镜像没有标签，无法确定要拉取哪个镜像。")
                 return
             image_name_tag = container.image.tags[0]
             
             # 2. 拉取最新镜像 (这是耗时操作)
-            logger.info(f"[Update Worker]: 正在拉取最新镜像: {image_name_tag}...")
+            logger.info(f"[一键更新]: 正在拉取最新镜像: {image_name_tag}...")
             new_image = client.images.pull(image_name_tag)
 
             # 3. 比较新旧镜像的 ID，判断是否有真正的更新
             if container.image.id == new_image.id:
-                logger.info("[Update Worker]: 当前已是最新版本，无需更新。")
+                logger.info("[一键更新]: 当前已是最新版本，无需更新。")
                 return # 任务完成，线程自然退出
 
             # 4. 如果有新镜像，则通过重启 Watchtower 来应用更新
-            logger.info("[Update Worker]: 新镜像拉取完成，准备触发 Watchtower 执行更新...")
+            logger.info("[一键更新]: 新镜像拉取完成，准备重启执行更新...")
             try:
                 watchtower_container = client.containers.get(watchtower_container_name)
-                logger.info(f"[Update Worker]: 正在重启 Watchtower 容器 ('{watchtower_container_name}')...")
+                logger.info(f"[一键更新]: 正在重启容器执行更新...")
                 watchtower_container.restart()
-                logger.info("[Update Worker]: Watchtower 重启指令已发送！它将在后台完成应用的重建。")
+                logger.trace("[一键更新]: 重启指令已发送！它将在后台完成应用的重建。")
             except docker.errors.NotFound:
-                logger.error(f"[Update Worker]: 严重错误！未找到名为 '{watchtower_container_name}' 的 Watchtower 容器。请检查 docker-compose.yml 配置。无法自动应用更新。")
+                logger.error(f"[一键更新]: 严重错误！未找到名为 '{watchtower_container_name}' 的 Watchtower 容器。请检查 docker-compose.yml 配置。无法自动应用更新。")
             except Exception as e_restart:
-                logger.error(f"[Update Worker]: 重启 Watchtower 时发生错误: {e_restart}", exc_info=True)
+                logger.error(f"[一键更新]: 重启 Watchtower 时发生错误: {e_restart}", exc_info=True)
 
         except Exception as e:
             # 捕获所有其他可能的异常，例如 docker.errors.NotFound
@@ -218,11 +218,11 @@ def trigger_self_update():
         update_thread = threading.Thread(target=update_task, daemon=True)
         update_thread.start()
         
-        logger.info("API: 后台更新任务已启动，立即返回 202 Accepted 响应。")
+        logger.trace("API: 后台更新任务已启动，立即返回 202 Accepted 响应。")
         # 立即返回，不等待线程结束
         return jsonify({
             "success": True, 
-            "message": "更新指令已发送！应用将在后台下载并应用新版本，请在约1-2分钟后刷新页面。"
+            "message": "更新指令已发送！应用将在后台下载并重启更新，请稍后刷新页面。"
         }), 202
 
     except Exception as e:

@@ -43,7 +43,7 @@
                   @click="handleUpdate"
                   :loading="isUpdating"
                 >
-                  更新
+                  立即更新
                 </n-button>
               </div>
 
