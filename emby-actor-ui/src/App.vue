@@ -13,7 +13,7 @@
         <n-layout v-else style="height: 100vh;">
           <n-layout-header :bordered="false" class="app-header">
             <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-              <span>Emby 演员/角色中文化</span>
+              <span>Emby 工具箱</span>
                 <div style="display: flex; align-items: center; gap: 16px;">
                   <!-- 用户名下拉菜单 -->
                   <n-dropdown 
