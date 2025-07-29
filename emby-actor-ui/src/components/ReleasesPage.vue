@@ -178,41 +178,43 @@ const handleUpdate = () => {
     positiveText: '立即更新',
     negativeText: '取消',
     onPositiveClick: () => {
+      // 重置所有状态
       showUpdateModal.value = true;
       isUpdateFinished.value = false;
-      updateProgress.value = 0;
+      updateProgress.value = 0; // 总进度条从0开始
       updateStatusText.value = '正在连接到更新服务...';
       dockerLayers.value = {};
-      isUpdating.value = true; // 按钮进入加载状态
+      isUpdating.value = true;
 
       eventSource = new EventSource('/api/system/update/stream');
 
       eventSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
 
-        // 更新全局状态文本
+        // ★★★ 核心修复：将互斥的 if/else 改为独立的 if 判断 ★★★
+
+        // 1. 独立更新状态文本
         if (data.status) {
           updateStatusText.value = data.status;
         }
 
-        // 如果有总进度，就更新总进度条
+        // 2. 独立更新总进度条
+        //    优先使用 overall_progress，如果没有，再使用 progress
         if (typeof data.overall_progress === 'number') {
           updateProgress.value = data.overall_progress;
-        } 
-        // 否则，使用全局的 progress (用于重启等步骤)
-        else if (typeof data.progress === 'number') {
+        } else if (typeof data.progress === 'number') {
           updateProgress.value = data.progress;
         }
 
-        // 无论如何，都更新分层数据
+        // 3. 独立更新分层数据
         if (data.layers) {
           dockerLayers.value = data.layers;
-        } else {
-          // 如果没有分层数据了（比如进入重启阶段），就清空它
+        } else if (typeof data.progress === 'number') {
+          // 如果进入了没有分层数据的阶段（如重启），则清空分层显示
           dockerLayers.value = {};
         }
 
-        // 检查结束事件
+        // 4. 独立处理结束事件
         if (data.event === 'DONE' || data.event === 'ERROR') {
           isUpdateFinished.value = true;
           isUpdating.value = false;
@@ -225,7 +227,7 @@ const handleUpdate = () => {
         updateStatusText.value = '与服务器的连接中断。可能正在重启，请稍后刷新。';
         updateProgress.value = 100;
         isUpdateFinished.value = true;
-        isUpdating.value = false; // 按钮恢复
+        isUpdating.value = false;
         eventSource.close();
       };
     },
@@ -288,19 +290,19 @@ onMounted(fetchData);
   margin-bottom: 4px;
 }
 
-/* ★★★ 新增的核心样式 ★★★ */
+/* ★★★ 把这些丢失的样式加回来 ★★★ */
 .changelog-content :deep(pre) {
-  background-color: rgba(128, 128, 128, 0.1); /* 给一个淡淡的背景色 */
-  padding: 12px 16px;
-  border-radius: 6px;
-  overflow-x: auto; /* 如果代码太长，允许横向滚动 */
+  background-color: rgba(128, 128, 128, 0.1); /* 背景色 */
+  padding: 12px 16px;                         /* 内边距 */
+  border-radius: 6px;                         /* 圆角 */
+  overflow-x: auto;                           /* 横向滚动条 */
   margin: 10px 0;
 }
 .changelog-content :deep(code) {
-  font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; /* 使用等宽字体 */
+  font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; /* 等宽字体 */
   font-size: 0.9em;
 }
-/* ★★★ 新增结束 ★★★ */
+/* ★★★ 样式结束 ★★★ */
 
 .sponsor-content {
   text-align: center;
