@@ -170,7 +170,7 @@ def stream_update_progress():
     【V7 - 最终流式版】通过 Server-Sent Events (SSE) 实时流式传输更新进度。
     """
     def generate_progress():
-        container_name = os.environ.get('CONTAINER_NAME', 'emby-actor-processor')
+        container_name = os.environ.get('CONTAINER_NAME', 'emby-toolkit')
         watchtower_container_name = "watchtower_eap_updater"
         
         def send_event(data):

@@ -1,7 +1,7 @@
 # Emby Actor Processor (Emby 演员管理工具)
 
-[![GitHub stars](https://img.shields.io/github/stars/hbq0405/emby-actor-processor.svg?style=social&label=Star)](https://github.com/hbq0405/emby-actor-processor)
-[![GitHub license](https://img.shields.io/github/license/hbq0405/emby-actor-processor.svg)](https://github.com/hbq0405/emby-actor-processor/blob/main/LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/hbq0405/emby-toolkit.svg?style=social&label=Star)](https://github.com/hbq0405/emby-toolkit)
+[![GitHub license](https://img.shields.io/github/license/hbq0405/emby-toolkit.svg)](https://github.com/hbq0405/emby-toolkit/blob/main/LICENSE)
 <!-- 你可以添加更多的徽章，例如构建状态、Docker Hub 拉取次数等 -->
 
 一个用于处理和增强 Emby 媒体库中演员信息的工具，包括但不限于演员/角色名称翻译、信息补全（从豆瓣、TMDb等）、合集检查及订阅、智能追剧、演员订阅。
@@ -35,9 +35,9 @@
 1.  **准备持久化数据目录**：
     在你的服务器上（例如 NAS）创建一个目录，用于存放应用的配置文件和数据库。例如：
     ```bash
-    mkdir -p /path/app_data/emby_actor_processor/config
+    mkdir -p /path/app_data/emby-toolkit/config
     ```
-    请将 `/path/app_data/emby_actor_processor/config` 替换为你实际的路径。
+    请将 `/path/app_data/emby-toolkit/config` 替换为你实际的路径。
 
 2.  **使用 `docker-compose.yml` (推荐)**：
     创建一个 `docker-compose.yml` 文件，内容如下：
@@ -46,9 +46,9 @@
     version: '3'
 
     services:
-      emby-actor-processor:
-        image: hbq0405/emby-actor-processor:latest 
-        container_name: emby-actor-processor
+      emby-toolkit:
+        image: hbq0405/emby-toolkit:latest 
+        container_name: emby-toolkit
         network_mode: bridge
         ports:
           - "5257:5257"                              # 将容器的 5257 端口映射到宿主机的 5257 端口 (左边可以改成你希望的宿主机端口)
@@ -62,7 +62,7 @@
           - PUID=0                                   # 设置为你的用户ID，建议与宿主机用户ID保持一致
           - PGID=0                                   # 设置为DOCKER组ID (一键更新用)
           - UMASK=000                                # 设置文件权限掩码，建议022
-          - CONTAINER_NAME=emby-actor-processor      # 设置成container_name一样 （一键更新用）
+          - CONTAINER_NAME=emby-toolkit      # 设置成container_name一样 （一键更新用）
         restart: unless-stopped
         
       watchtower:                                    # 以下配置为一键更新，不需要可以删除
@@ -72,7 +72,7 @@
           - /var/run/docker.sock:/var/run/docker.sock
         labels:
           - "com.centurylinklabs.watchtower.enable=false"
-        command: --cleanup --run-once emby-actor-processor
+        command: --cleanup --run-once emby-toolkit
 
     ```
     然后在 `docker-compose.yml` 文件所在的目录下运行：
@@ -83,7 +83,7 @@
 3.  **或者使用 `docker run` 命令**：
     ```bash
     docker run -d \
-      --name emby-actor-processor \
+      --name emby-toolkit \
       --network bridge \
       -p 5257:5257 \
       -v /path/config:/config \
@@ -95,7 +95,7 @@
       -e PGID=0 \
       -e UMASK=000 \
       --restart unless-stopped \
-      hbq0405/emby-actor-processor:latest
+      hbq0405/emby-toolkit:latest
     ```
     同样，请替换占位符。
 
@@ -103,7 +103,7 @@
     *   通过容器启动日志查找随机生成的密码
     *   容器启动后，通过浏览器访问 `http://<你的服务器IP>:5257`。
     *   进入各个设置页面（Emby配置、通用设置），填写必要的 API Key 和服务器信息。
-    *   **点击保存。** 这会在你挂载的 `/config` 目录下（即宿主机的 `/path/to/your/app_data/emby_actor_processor/config` 目录）创建 `config.ini` 文件和 `emby_actor_processor.sqlite` 数据库文件。
+    *   **点击保存。** 这会在你挂载的 `/config` 目录下（即宿主机的 `/path/to/your/app_data/eemby-toolkit/config` 目录）创建 `config.ini` 文件和 `emby-toolkit.sqlite` 数据库文件。
 
 
 ## ⚙️ 配置项说明

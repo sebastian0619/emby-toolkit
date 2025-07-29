@@ -101,7 +101,7 @@ const dialog = useDialog();
 const appStore = useAppStore();
 
 const githubRepoOwner = 'hbq0405';
-const githubRepoName = 'emby-actor-processor';
+const githubRepoName = 'emby-toolkit';
 const githubRepo = computed(() => `${githubRepoOwner}/${githubRepoName}`);
 
 const isLoading = ref(false);

@@ -1,9 +1,9 @@
 version: '3'
 
 services:
-  emby-actor-processor:
-    image: hbq0405/emby-actor-processor:latest
-    container_name: emby-actor-processor
+  emby-toolkit:
+    image: hbq0405/emby-toolkit:latest
+    container_name: emby-toolkit
     network_mode: bridge
     environment:
       - TZ=Asia/Shanghai         # 设置时区
