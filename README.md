@@ -51,24 +51,27 @@
         container_name: emby-actor-processor
         network_mode: bridge
         ports:
-          - "5257:5257"              # 将容器的 5257 端口映射到宿主机的 5257 端口 (左边可以改成你希望的宿主机端口)
+          - "5257:5257"                              # 将容器的 5257 端口映射到宿主机的 5257 端口 (左边可以改成你希望的宿主机端口)
         volumes:
-          - /path/config:/config     # 将宿主机的数据目录挂载到容器的 /config 目录
-          - /path/tmdb:/tmdb         # 映射神医本地TMDB目录，必须配置
+          - /path/config:/config                     # 将宿主机的数据目录挂载到容器的 /config 目录
+          - /path/tmdb:/tmdb                         # 映射神医本地TMDB目录，必须配置
         environment:
-          - APP_DATA_DIR=/config     # 持久化目录
-          - TZ=Asia/Shanghai         # 设置容器时区
-          - AUTH_USERNAME=admin      # 用户名可任意设置，密码在程序首次运行会生成随机密码打印在日志中
-          - PUID=0                   # 设置为你的用户ID，建议与宿主机用户ID保持一致
-          - PGID=0                   # 设置为你的组ID，建议与宿主机组ID保持一致
-          - UMASK=000                # 设置文件权限掩码，建议022
+          - APP_DATA_DIR=/config                     # 持久化目录
+          - TZ=Asia/Shanghai                         # 设置容器时区
+          - AUTH_USERNAME=admin                      # 用户名可任意设置，密码在程序首次运行会生成随机密码打印在日志中
+          - PUID=0                                   # 设置为你的用户ID，建议与宿主机用户ID保持一致
+          - PGID=0                                   # 设置为DOCKER组ID (一键更新用)
+          - UMASK=000                                # 设置文件权限掩码，建议022
+          - CONTAINER_NAME=emby-actor-processor      # 设置成container_name一样 （一键更新用）
         restart: unless-stopped
-      watchtower:                    # 以下配置为自动更新，不需要可以删除
-        image: containrrr/watchtower
-        container_name: watchtower 
-        restart: always
+        
+      watchtower:                                    # 以下配置为一键更新，不需要可以删除
+        container_name: watchtower_eap_updater 
+        restart: "no"
         volumes:
           - /var/run/docker.sock:/var/run/docker.sock
+        labels:
+          - "com.centurylinklabs.watchtower.enable=false"
         command: --cleanup --run-once emby-actor-processor
 
     ```

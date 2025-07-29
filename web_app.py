@@ -471,7 +471,7 @@ def setup_scheduled_tasks():
             cron = config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON)
             # ★★★ 核心修改：让定时任务调用新的、职责更明确的函数 ★★★
             def scheduled_watchlist_task():
-                task_manager.submit_task_to(
+                task_manager.submit_task(
                     lambda p: p.run_regular_processing_task(task_manager.update_status_from_thread),
                     "定时智能追剧更新"
                 )
