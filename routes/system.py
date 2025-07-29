@@ -167,28 +167,18 @@ def get_about_info():
 @login_required
 def stream_update_progress():
     """
-    【V8 - 最终分层流式版】通过 SSE 实时流式传输 Docker 拉取的多层详细进度。
+    【V10 - 最终可行自更新版】
+    通过启动一个临时的“更新器容器”来执行更新操作，解决了“进程自杀”的悖论。
     """
     def generate_progress():
-        # ★★★ 1. 辅助函数保持不变 ★★★
         def send_event(data):
             yield f"data: {json.dumps(data)}\n\n"
 
+        client = None
         try:
             client = docker.from_env()
-            
-            # 从配置或环境变量获取容器名
             container_name = config_manager.APP_CONFIG.get('container_name', 'emby-toolkit')
-            
-            try:
-                container = client.containers.get(container_name)
-                if not container.image.tags:
-                    raise ValueError("无法确定当前容器的镜像标签。")
-                image_name_tag = container.image.tags[0]
-            except docker.errors.NotFound:
-                # 如果容器不存在，可能是首次部署，尝试从配置中获取镜像名
-                image_name_tag = config_manager.APP_CONFIG.get('docker_image_name', 'hbq0405/emby-toolkit:latest')
-                logger.warning(f"容器 '{container_name}' 未找到，将尝试拉取默认镜像 '{image_name_tag}'。")
+            image_name_tag = config_manager.APP_CONFIG.get('docker_image_name', 'hbq0405/emby-toolkit:latest')
 
 
             yield from send_event({"status": f"正在检查并拉取最新镜像: {image_name_tag}...", "layers": {}})
@@ -245,24 +235,47 @@ def stream_update_progress():
                  yield from send_event({"event": "DONE", "message": "无需更新。"})
                  return
 
-            # 如果有新镜像，则重启容器
-            yield from send_event({"status": "新镜像拉取完成，正在重启容器...", "progress": 80})
-            
+            # --- 2. ★★★ 核心：召唤并启动“更新器容器” ★★★ ---
+            yield from send_event({"status": "准备启动临时更新器来应用更新...", "progress": 70})
+
             try:
-                # 假设您使用 docker-compose 管理，重启服务会更安全
-                # 这里简化为重启单个容器
-                logger.info(f"准备重启容器: {container_name}")
-                container_to_restart = client.containers.get(container_name)
-                container_to_restart.restart()
-                yield from send_event({"status": "更新应用成功！容器已重启，请在约1分钟后手动刷新页面。", "progress": 100, "event": "DONE"})
-            except Exception as e_restart:
-                error_msg = f"错误：重启容器 '{container_name}' 失败: {e_restart}"
+                # 获取旧容器的完整配置，以便新容器可以重建它
+                old_container = client.containers.get(container_name)
+                
+                # Watchtower 使用的官方工具镜像，非常小巧可靠
+                updater_image = "containrrr/watchtower"
+                
+                # 构建传递给更新器容器的命令
+                # --cleanup 会移除旧镜像，--run-once 会让它执行一次就退出
+                command = [
+                    "--cleanup",
+                    "--run-once",
+                    container_name # 明确告诉 watchtower 只更新我们自己
+                ]
+
+                # 启动更新器容器！
+                logger.info(f"正在启动临时 Watchtower 更新器来处理容器 '{container_name}'...")
+                client.containers.run(
+                    image=updater_image,
+                    command=command,
+                    remove=True,  # a.k.a. --rm，任务完成后自动删除自己
+                    detach=True,  # 在后台运行
+                    volumes={'/var/run/docker.sock': {'bind': '/var/run/docker.sock', 'mode': 'rw'}}
+                )
+                
+                yield from send_event({"status": "更新任务已成功交接给临时更新器！本容器将在后台被重启。", "progress": 90})
+                yield from send_event({"status": "请在约1-2分钟后手动刷新页面以访问新版本。", "progress": 100, "event": "DONE"})
+
+            except docker.errors.NotFound:
+                yield from send_event({"status": f"错误：找不到名为 '{container_name}' 的容器来更新。", "event": "ERROR"})
+            except Exception as e_updater:
+                error_msg = f"错误：启动临时更新器时失败: {e_updater}"
                 logger.error(error_msg, exc_info=True)
-                yield from send_event({"status": error_msg, "progress": -1, "event": "ERROR"})
+                yield from send_event({"status": error_msg, "event": "ERROR"})
 
         except Exception as e:
-            error_message = f"更新过程中发生错误: {str(e)}"
+            error_message = f"更新过程中发生未知错误: {str(e)}"
             logger.error(f"[Update Stream]: {error_message}", exc_info=True)
-            yield from send_event({"status": error_message, "progress": -1, "event": "ERROR"})
+            yield from send_event({"status": error_message, "event": "ERROR"})
 
     return Response(stream_with_context(generate_progress()), mimetype='text/event-stream')
