@@ -59,28 +59,49 @@
       <!-- ... -->
     </n-modal>
 
-    <!-- ★★★ 2. 更新进度模态框被移动到这里 ★★★ -->
     <n-modal
-      v-model:show="showUpdateModal"
-      :mask-closable="false"
-      preset="card"
-      style="width: 90%; max-width: 600px;"
-      title="正在更新应用"
-    >
-      <p>{{ updateStatusText }}</p>
-      <n-progress
-        v-if="updateProgress >= 0"
-        type="line"
-        :percentage="updateProgress"
-        indicator-placement="inside"
-        processing
-      />
-      <div style="text-align: right; margin-top: 20px;">
-        <n-button @click="showUpdateModal = false" :disabled="!isUpdateFinished">
-          关闭
-        </n-button>
-      </div>
-    </n-modal>
+    v-model:show="showUpdateModal"
+    :mask-closable="false"
+    preset="card"
+    style="width: 90%; max-width: 600px;"
+    title="正在更新应用"
+  >
+    <!-- ★★★ 1. 修改模态框内容 ★★★ -->
+    <p>{{ updateStatusText }}</p>
+    
+    <!-- 全局进度条 (可选，用于显示重启等步骤) -->
+    <n-progress
+      v-if="updateProgress >= 0 && Object.keys(dockerLayers).length === 0"
+      type="line"
+      :percentage="updateProgress"
+      indicator-placement="inside"
+      processing
+    />
+
+    <!-- Docker 分层进度显示区域 -->
+    <div v-if="Object.keys(dockerLayers).length > 0" style="margin-top: 15px; max-height: 300px; overflow-y: auto;">
+      <n-space vertical>
+        <div v-for="(layer, id) in dockerLayers" :key="id">
+          <n-text style="font-size: 12px; font-family: monospace;">{{ id }}</n-text>
+          <n-space justify="space-between">
+            <n-text :depth="3" style="font-size: 12px;">{{ layer.status }}</n-text>
+            <n-text :depth="3" style="font-size: 12px;">{{ layer.detail }}</n-text>
+          </n-space>
+          <n-progress
+            type="line"
+            :percentage="layer.progress"
+            :status="layer.progress === 100 ? 'success' : 'default'"
+          />
+        </div>
+      </n-space>
+    </div>
+
+    <div style="text-align: right; margin-top: 20px;">
+      <n-button @click="showUpdateModal = false" :disabled="!isUpdateFinished">
+        关闭
+      </n-button>
+    </div>
+  </n-modal>
   </n-layout>
 </template>
 
@@ -111,9 +132,10 @@ const showSponsorModal = ref(false);
 // ★★★ 4. 所有与更新相关的状态和方法被移动到这里 ★★★
 const isUpdating = ref(false); // 用于更新按钮本身的加载状态
 const showUpdateModal = ref(false);
-const updateProgress = ref(0);
+const updateProgress = ref(-1);
 const updateStatusText = ref('');
 const isUpdateFinished = ref(false);
+const dockerLayers = ref({});
 let eventSource = null;
 
 const handleUpdate = () => {
@@ -127,17 +149,34 @@ const handleUpdate = () => {
       isUpdateFinished.value = false;
       updateProgress.value = 0;
       updateStatusText.value = '正在连接到更新服务...';
+      dockerLayers.value = {};
       isUpdating.value = true; // 按钮进入加载状态
 
       eventSource = new EventSource('/api/system/update/stream');
 
       eventSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
-        if (data.status) updateStatusText.value = data.status;
-        if (typeof data.progress === 'number') updateProgress.value = data.progress;
+
+        // 更新全局状态文本
+        if (data.status) {
+          updateStatusText.value = data.status;
+        }
+
+        // 如果收到了分层数据，就更新它
+        if (data.layers) {
+          dockerLayers.value = data.layers;
+          updateProgress.value = -1; // 隐藏全局进度条
+        } 
+        // 否则，使用全局进度
+        else if (typeof data.progress === 'number') {
+          updateProgress.value = data.progress;
+          dockerLayers.value = {}; // 清空分层数据，显示全局进度
+        }
+
+        // 检查结束事件
         if (data.event === 'DONE' || data.event === 'ERROR') {
           isUpdateFinished.value = true;
-          isUpdating.value = false; // 按钮恢复
+          isUpdating.value = false;
           eventSource.close();
         }
       };

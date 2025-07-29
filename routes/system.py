@@ -167,78 +167,102 @@ def get_about_info():
 @login_required
 def stream_update_progress():
     """
-    【V7 - 最终流式版】通过 Server-Sent Events (SSE) 实时流式传输更新进度。
+    【V8 - 最终分层流式版】通过 SSE 实时流式传输 Docker 拉取的多层详细进度。
     """
     def generate_progress():
-        container_name = os.environ.get('CONTAINER_NAME', 'emby-toolkit')
-        watchtower_container_name = "watchtower_eap_updater"
-        
+        # ★★★ 1. 辅助函数保持不变 ★★★
         def send_event(data):
-            """辅助函数，用于格式化并发送 SSE 事件。"""
             yield f"data: {json.dumps(data)}\n\n"
 
         try:
             client = docker.from_env()
-            container = client.containers.get(container_name)
             
-            if not container.image.tags:
-                yield from send_event({"status": "错误：无法确定镜像名称。", "progress": -1, "event": "ERROR"})
-                return
+            # 从配置或环境变量获取容器名
+            container_name = config_manager.APP_CONFIG.get('container_name', 'emby-toolkit')
             
-            image_name_tag = container.image.tags[0]
+            try:
+                container = client.containers.get(container_name)
+                if not container.image.tags:
+                    raise ValueError("无法确定当前容器的镜像标签。")
+                image_name_tag = container.image.tags[0]
+            except docker.errors.NotFound:
+                # 如果容器不存在，可能是首次部署，尝试从配置中获取镜像名
+                image_name_tag = config_manager.APP_CONFIG.get('docker_image_name', 'hbq0405/emby-toolkit:latest')
+                logger.warning(f"容器 '{container_name}' 未找到，将尝试拉取默认镜像 '{image_name_tag}'。")
 
-            # 检查是否有新版本
-            yield from send_event({"status": f"正在拉取最新镜像: {image_name_tag}...", "progress": 0})
+
+            yield from send_event({"status": f"正在检查并拉取最新镜像: {image_name_tag}...", "layers": {}})
             
-            # 使用低级 API 以获取流式输出
+            # 使用低级 API 获取流式输出
             stream = client.api.pull(image_name_tag, stream=True, decode=True)
             
-            layer_progress = {}
-            image_pulled = False
+            # ★★★ 2. 重新设计状态跟踪变量 ★★★
+            layers_status = {}
+            is_new_image_pulled = False
+
             for line in stream:
-                if 'status' in line:
-                    status = line['status']
-                    layer_id = line.get('id')
-                    
-                    if status == 'Downloading' and 'progressDetail' in line and layer_id:
-                        details = line['progressDetail']
-                        if details.get('total'):
-                            layer_progress[layer_id] = details
-                            
-                            total_size = sum(l.get('total', 0) for l in layer_progress.values())
-                            current_size = sum(l.get('current', 0) for l in layer_progress.values())
-                            
-                            if total_size > 0:
-                                progress = int((current_size / total_size) * 100)
-                                yield from send_event({"status": f"正在下载... ({layer_id[:12]})", "progress": progress})
-                    
-                    elif status == 'Download complete' or status == 'Pull complete':
-                        yield from send_event({"status": status, "progress": 100})
-                    
-                    elif 'Status:' in status: # 这是一个摘要状态
-                        image_pulled = True
+                layer_id = line.get('id')
+                status = line.get('status')
+
+                if not layer_id or not status:
+                    continue
+
+                # 初始化或更新层的状态
+                if layer_id not in layers_status:
+                    layers_status[layer_id] = {"status": "", "progress": 0, "detail": ""}
+                
+                layers_status[layer_id]['status'] = status
+
+                # 处理进度详情
+                if 'progressDetail' in line:
+                    details = line['progressDetail']
+                    current = details.get('current', 0)
+                    total = details.get('total', 0)
+                    if total > 0:
+                        progress_percent = int((current / total) * 100)
+                        layers_status[layer_id]['progress'] = progress_percent
+                        # 将字节转换为易读的 MB
+                        current_mb = round(current / (1024 * 1024), 2)
+                        total_mb = round(total / (1024 * 1024), 2)
+                        layers_status[layer_id]['detail'] = f"{current_mb}MB / {total_mb}MB"
+                
+                # 处理非下载状态
+                if any(s in status for s in ["Pull complete", "Already exists", "Download complete"]):
+                    layers_status[layer_id]['progress'] = 100
+                    layers_status[layer_id]['detail'] = "" # 完成后清空详情
+
+                # ★★★ 3. 每次循环都发送完整的、包含所有层的状态对象 ★★★
+                yield from send_event({"status": "正在拉取...", "layers": layers_status})
+
+                # 检查是否有新内容被拉取
+                if status == "Pull complete":
+                    is_new_image_pulled = True
             
-            if not image_pulled:
+            # 检查最终状态
+            final_status_line = line.get('status', '')
+            if 'Status: Image is up to date' in final_status_line:
                  yield from send_event({"status": "当前已是最新版本。", "progress": 100})
                  yield from send_event({"event": "DONE", "message": "无需更新。"})
                  return
 
-            # 拉取完成，触发 Watchtower
-            yield from send_event({"status": "新镜像拉取完成，正在触发更新...", "progress": 100})
+            # 如果有新镜像，则重启容器
+            yield from send_event({"status": "新镜像拉取完成，正在重启容器...", "progress": 80})
+            
             try:
-                watchtower_container = client.containers.get(watchtower_container_name)
-                watchtower_container.restart()
-                yield from send_event({"status": "更新应用成功！请在约1分钟后手动刷新页面。", "progress": 100})
+                # 假设您使用 docker-compose 管理，重启服务会更安全
+                # 这里简化为重启单个容器
+                logger.info(f"准备重启容器: {container_name}")
+                container_to_restart = client.containers.get(container_name)
+                container_to_restart.restart()
+                yield from send_event({"status": "更新应用成功！容器已重启，请在约1分钟后手动刷新页面。", "progress": 100, "event": "DONE"})
             except Exception as e_restart:
-                yield from send_event({"status": f"错误：重启 Watchtower 失败: {e_restart}", "progress": -1, "event": "ERROR"})
-
-            # 发送结束信号
-            yield from send_event({"event": "DONE", "message": "更新流程已触发。"})
+                error_msg = f"错误：重启容器 '{container_name}' 失败: {e_restart}"
+                logger.error(error_msg, exc_info=True)
+                yield from send_event({"status": error_msg, "progress": -1, "event": "ERROR"})
 
         except Exception as e:
             error_message = f"更新过程中发生错误: {str(e)}"
             logger.error(f"[Update Stream]: {error_message}", exc_info=True)
             yield from send_event({"status": error_message, "progress": -1, "event": "ERROR"})
 
-    # 返回一个流式响应
     return Response(stream_with_context(generate_progress()), mimetype='text/event-stream')
