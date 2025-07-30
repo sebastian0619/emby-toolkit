@@ -1,9 +1,7 @@
-<!-- src/components/ReleasesPage.vue -->
 <template>
   <n-layout content-style="padding: 24px;">
     <n-page-header title="查看更新">
       <template #extra>
-        <!-- ... 打赏和反馈按钮保持不变 ... -->
         <n-tooltip>
           <template #trigger>
             <n-button @click="showSponsorModal = true" type="primary" ghost>
@@ -18,7 +16,6 @@
           反馈问题
         </n-button>
         
-        <!-- ★★★ 1. “立即更新”按钮被移动到这里 ★★★ -->
         <n-button 
           v-if="appStore.isUpdateAvailable" 
           type="success" 
@@ -54,60 +51,71 @@
       </n-list>
     </div>
 
-    <!-- ... 打赏弹窗保持不变 ... -->
+    <!-- ★★★ 核心修复：将弹窗内容加回来 ★★★ -->
     <n-modal v-model:show="showSponsorModal" preset="card" style="width: 90%; max-width: 400px;" title="支持开发者" :bordered="false">
-      <!-- ... -->
+      <div class="sponsor-content">
+        <n-p>
+          用ai发电也不易，喝杯奶茶行不行！
+        </n-p>
+        <n-p>
+          您的支持，哪怕是一点点，都是我持续更新的最大动力。感谢您的慷慨！
+        </n-p>
+        <n-divider />
+        
+        <!-- +++ 核心修改：不再使用 grid，直接放一个居中的项目 +++ -->
+        <div class="qr-code-item">
+          <n-image width="200" src="/img/wechat_pay.png" />
+          <n-text strong style="margin-top: 10px;">推荐使用微信支付</n-text>
+        </div>
+
+      </div>
     </n-modal>
+    <!-- ★★★ 修复结束 ★★★ -->
 
     <!-- 更新进度模态框 -->
-  <n-modal
-    v-model:show="showUpdateModal"
-    :mask-closable="false"
-    preset="card"
-    title="正在更新应用"
-    
-    :style="modalStyle" 
-  >
-    <p>{{ updateStatusText }}</p>
-    
-    <!-- 全局进度条 (逻辑不变) -->
-    <n-progress
-      v-if="updateProgress >= 0"
-      type="line"
-      :percentage="updateProgress"
-      indicator-placement="inside"
-      processing
-      style="margin-bottom: 15px;"
-    />
+    <n-modal
+      v-model:show="showUpdateModal"
+      :mask-closable="false"
+      preset="card"
+      title="正在更新应用"
+      :style="modalStyle" 
+    >
+      <p>{{ updateStatusText }}</p>
+      
+      <n-progress
+        v-if="updateProgress >= 0"
+        type="line"
+        :percentage="updateProgress"
+        indicator-placement="inside"
+        processing
+        style="margin-bottom: 15px;"
+      />
 
-    <!-- Docker 分层进度显示区域 -->
-    <!-- ★★★ 2. 移除此处的 style 属性，让内容自由伸展 ★★★ -->
-    <div v-if="Object.keys(dockerLayers).length > 0" >
-      <n-space vertical>
-        <!-- ★ 在 v-for 中增加一个 v-if 来过滤 -->
-        <template v-for="(layer, id) in dockerLayers" :key="id">
-          <div v-if="id !== 'latest'">  <!-- 增加这个 v-if 判断 -->
-            <n-text style="font-size: 12px; font-family: monospace;">{{ id }}</n-text>
-            <n-space justify="space-between">
-              <n-text :depth="3" style="font-size: 12px;">{{ layer.status }}</n-text>
-              <n-text :depth="3" style="font-size: 12px;">{{ layer.detail }}</n-text>
-            </n-space>
-            <n-progress
-              type="line"
-              :percentage="layer.progress"
-              :status="layer.progress === 100 ? 'success' : 'default'"
-            />
-          </div>
-        </template>
-      </n-space>
-    </div>
+      <div v-if="Object.keys(dockerLayers).length > 0" >
+        <n-space vertical>
+          <template v-for="(layer, id) in dockerLayers" :key="id">
+            <div v-if="id !== 'latest'">
+              <n-text style="font-size: 12px; font-family: monospace;">{{ id }}</n-text>
+              <n-space justify="space-between">
+                <n-text :depth="3" style="font-size: 12px;">{{ layer.status }}</n-text>
+                <n-text :depth="3" style="font-size: 12px;">{{ layer.detail }}</n-text>
+              </n-space>
+              <n-progress
+                type="line"
+                :percentage="layer.progress"
+                :status="layer.progress === 100 ? 'success' : 'default'"
+              />
+            </div>
+          </template>
+        </n-space>
+      </div>
 
-    <div style="text-align: right; margin-top: 20px;">
-      <n-button @click="showUpdateModal = false" :disabled="!isUpdateFinished">
-        关闭
-      </n-button>
-    </div>
-  </n-modal>
+      <div style="text-align: right; margin-top: 20px;">
+        <n-button @click="showUpdateModal = false" :disabled="!isUpdateFinished">
+          关闭
+        </n-button>
+      </div>
+    </n-modal>
   </n-layout>
 </template>
 
@@ -116,10 +124,10 @@ import { ref, onMounted, computed } from 'vue';
 import { marked } from 'marked';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
-// ★★★ 3. 确保导入了所有需要的 Naive UI 组件 ★★★
 import { 
   NLayout, NPageHeader, NDivider, NSpin, NAlert, NList, NListItem, NThing, 
-  NTag, NSpace, NButton, NIcon, NText, NModal, NProgress, NTooltip, useDialog 
+  NTag, NSpace, NButton, NIcon, NText, NModal, NProgress, NTooltip, useDialog,
+  NTabs, NTabPane // 确保导入了 NTabs 和 NTabPane
 } from 'naive-ui';
 import { LogoGithub, CafeOutline as CafeIcon } from '@vicons/ionicons5';
 import { useAppStore } from '../stores/app';
@@ -135,42 +143,29 @@ const isLoading = ref(false);
 const error = ref(null);
 const showSponsorModal = ref(false);
 
-// ★★★ 4. 所有与更新相关的状态和方法被移动到这里 ★★★
-const isUpdating = ref(false); // 用于更新按钮本身的加载状态
+const isUpdating = ref(false);
 const showUpdateModal = ref(false);
 const updateProgress = ref(-1);
 const updateStatusText = ref('');
 const isUpdateFinished = ref(false);
-const MODAL_BASE_HEIGHT = 220; // 模态框的基础高度 (标题、文字、按钮等)
-const HEIGHT_PER_LAYER = 40;   // 每一层进度大约占用的高度 (px)
-const MODAL_MAX_HEIGHT_VH = 85; // 模态框最大高度占屏幕的百分比 (85vh = 85% of viewport height)
+const MODAL_BASE_HEIGHT = 220;
+const HEIGHT_PER_LAYER = 40;
+const MODAL_MAX_HEIGHT_VH = 85;
 const dockerLayers = ref({});
 let eventSource = null;
 
-// ★★★ 2. 创建核心的计算属性 ★★★
 const modalStyle = computed(() => {
   const numLayers = Object.keys(dockerLayers.value).length;
-
-  // 默认样式
   const style = {
     width: '90%',
     maxWidth: '600px',
   };
-
-  // 如果有分层数据，则动态计算最大高度
   if (numLayers > 0) {
-    // 计算内容所需的高度
     const contentHeight = MODAL_BASE_HEIGHT + (numLayers * HEIGHT_PER_LAYER);
-    
-    // 计算屏幕85%的高度作为上限
     const maxHeightBasedOnViewport = window.innerHeight * (MODAL_MAX_HEIGHT_VH / 100);
-    
-    // 取两者中较小的一个作为最终的最大高度
     const finalMaxHeight = Math.min(contentHeight, maxHeightBasedOnViewport);
-
     style.maxHeight = `${finalMaxHeight}px`;
   }
-  
   return style;
 });
 
@@ -181,10 +176,9 @@ const handleUpdate = () => {
     positiveText: '立即更新',
     negativeText: '取消',
     onPositiveClick: () => {
-      // 重置所有状态
       showUpdateModal.value = true;
       isUpdateFinished.value = false;
-      updateProgress.value = 0; // 总进度条从0开始
+      updateProgress.value = 0;
       updateStatusText.value = '正在连接到更新服务...';
       dockerLayers.value = {};
       isUpdating.value = true;
@@ -193,31 +187,19 @@ const handleUpdate = () => {
 
       eventSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
-
-        // ★★★ 核心修复：将互斥的 if/else 改为独立的 if 判断 ★★★
-
-        // 1. 独立更新状态文本
         if (data.status) {
           updateStatusText.value = data.status;
         }
-
-        // 2. 独立更新总进度条
-        //    优先使用 overall_progress，如果没有，再使用 progress
         if (typeof data.overall_progress === 'number') {
           updateProgress.value = data.overall_progress;
         } else if (typeof data.progress === 'number') {
           updateProgress.value = data.progress;
         }
-
-        // 3. 独立更新分层数据
         if (data.layers) {
           dockerLayers.value = data.layers;
         } else if (typeof data.progress === 'number') {
-          // 如果进入了没有分层数据的阶段（如重启），则清空分层显示
           dockerLayers.value = {};
         }
-
-        // 4. 独立处理结束事件
         if (data.event === 'DONE' || data.event === 'ERROR') {
           isUpdateFinished.value = true;
           isUpdating.value = false;
@@ -237,7 +219,6 @@ const handleUpdate = () => {
   });
 };
 
-// --- 页面数据获取逻辑保持不变 ---
 const fetchData = async () => {
   isLoading.value = true;
   error.value = null;
@@ -284,7 +265,6 @@ onMounted(fetchData);
   padding-left: 4px;
   color: var(--n-text-color-2);
 }
-/* 深度选择器，用于修改 v-html 渲染出的内容的样式 */
 .changelog-content :deep(ul) {
   padding-left: 20px;
   margin: 0;
@@ -292,21 +272,17 @@ onMounted(fetchData);
 .changelog-content :deep(li) {
   margin-bottom: 4px;
 }
-
-/* ★★★ 把这些丢失的样式加回来 ★★★ */
 .changelog-content :deep(pre) {
-  background-color: rgba(128, 128, 128, 0.1); /* 背景色 */
-  padding: 12px 16px;                         /* 内边距 */
-  border-radius: 6px;                         /* 圆角 */
-  overflow-x: auto;                           /* 横向滚动条 */
+  background-color: rgba(128, 128, 128, 0.1);
+  padding: 12px 16px;
+  border-radius: 6px;
+  overflow-x: auto;
   margin: 10px 0;
 }
 .changelog-content :deep(code) {
-  font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; /* 等宽字体 */
+  font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace;
   font-size: 0.9em;
 }
-/* ★★★ 样式结束 ★★★ */
-
 .sponsor-content {
   text-align: center;
 }
@@ -315,5 +291,6 @@ onMounted(fetchData);
   flex-direction: column;
   align-items: center;
   gap: 10px;
+  padding-top: 10px;
 }
 </style>
