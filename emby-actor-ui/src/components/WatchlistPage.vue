@@ -189,7 +189,8 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch, nextTick } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown } from 'naive-ui';
-import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, CheckmarkCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkDoneCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon } from '@vicons/ionicons5';
+// 【图标优化】引入 PlayCircleOutline，并重新命名图标别名，使其更符合逻辑
+import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon } from '@vicons/ionicons5';
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
@@ -438,6 +439,8 @@ const openInEmby = (itemId) => {
     window.open(url, '_blank');
   }
 };
+
+// 【图标优化】更新 statusInfo，使用更符合逻辑的图标
 const statusInfo = (status) => {
   const map = {
     'Watching': { type: 'success', text: '追剧中', icon: WatchingIcon, next: 'Paused', nextText: '暂停' },
@@ -446,6 +449,7 @@ const statusInfo = (status) => {
   };
   return map[status] || map['Paused'];
 };
+
 const translateTmdbStatus = (status) => {
   const statusMap = {
     "Returning Series": "连载中",
