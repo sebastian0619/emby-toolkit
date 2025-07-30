@@ -91,7 +91,10 @@
         style="margin-bottom: 15px;"
       />
 
-      <div v-if="Object.keys(dockerLayers).length > 0" >
+      <div 
+        v-if="Object.keys(dockerLayers).length > 0" 
+        style="overflow-y: auto; padding-right: 15px; margin-right: -15px;"
+      >
         <n-space vertical>
           <template v-for="(layer, id) in dockerLayers" :key="id">
             <div v-if="id !== 'latest'">
