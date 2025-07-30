@@ -46,11 +46,12 @@ jobs:
             # 规则2: 如果事件是推送一个 Git 标签，就直接使用该标签名作为 Docker 标签。
             type=ref,event=tag
 
-      # 新增步骤：根据分支或标签确定构建平台
+      # 根据分支或标签确定构建平台
       - name: Determine build platforms
         id: set_platforms
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" || startsWith(${{ github.ref }}, 'refs/tags/') ]]; then
+          # 在这里，我们让 GitHub Actions 先执行 startsWith 函数，并将其结果（'true' 或 'false'）插入到脚本中
+          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
             echo "platforms=linux/amd64,linux/arm64" >> $GITHUB_OUTPUT
           else
             echo "platforms=linux/amd64" >> $GITHUB_OUTPUT
