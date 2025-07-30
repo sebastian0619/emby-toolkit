@@ -945,7 +945,7 @@ class MediaProcessor:
                     logger.info(f"✅ 发现豆瓣评分: {douban_rating}，将替换TMDb评分 ({base_json_data_for_override.get('vote_average')})。")
                     base_json_data_for_override['vote_average'] = douban_rating
                 else:
-                    logger.info("未找到有效的豆瓣评分，将保留原始TMDb评分。")
+                    logger.debug("未找到有效的豆瓣评分，将保留原始TMDb评分。")
                 # ✨✨✨ 评分替换结束 ✨✨✨
 
                 # 2. 处理演员表
