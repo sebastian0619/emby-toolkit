@@ -190,19 +190,27 @@ def stream_update_progress():
             # ★★★ 2. 重新设计状态跟踪变量 ★★★
             layers_status = {}
             is_new_image_pulled = False
+            all_layer_ids = set()
 
             for line in stream:
                 layer_id = line.get('id')
                 status = line.get('status')
 
-                # ★★★ 1. 专门处理全局状态行 ★★★
-                if not layer_id and status and 'Pulling from' in status:
-                    # 这是一个全局状态，不是一个层，我们可以直接把它作为主状态文本
+                # ★ 1. 改进对全局状态行的处理，并用它来识别所有层
+                if not layer_id and status:
+                    # 当Docker说 "Pulling fs layer" 时，它正在注册一个新的层
+                    if 'Pulling fs layer' in status:
+                        # 这时事件流里还没有ID，我们暂时无法获取，但可以预见会有新层
+                        pass
                     yield from send_event({"status": status, "layers": layers_status})
                     continue
 
-                if not layer_id or not status:
+                # ★ 2. 过滤掉无效的层ID，比如 'latest'
+                if not layer_id or len(layer_id) < 10: # 真实的层ID通常是一长串字符
                     continue
+                
+                # 记录所有出现过的真实层ID
+                all_layer_ids.add(layer_id)
 
                 # 初始化或更新层的状态
                 if layer_id not in layers_status:
@@ -230,20 +238,21 @@ def stream_update_progress():
                     layers_status[layer_id]['progress'] = 100
                     layers_status[layer_id]['detail'] = "" # 完成后清空详情
 
-                # ★★★ 2. 计算并发送总进度 ★★★
-                total_size = 0
-                current_size = 0
-                num_layers = len(layers_status)
-                if num_layers > 0:
-                    for layer in layers_status.values():
-                        # (假设我们已经把字节大小存起来了)
-                        total_size += layer.get('total_bytes', 0)
-                        current_size += layer.get('current_bytes', 0)
+                completed_layers = 0
+                for lid in all_layer_ids:
+                    # 检查这个层是否已经出现在状态字典中，并且状态是完成状态
+                    if lid in layers_status and layers_status[lid].get('progress') == 100:
+                        completed_layers += 1
                 
-                overall_progress = int((current_size / total_size) * 100) if total_size > 0 else 0
+                total_layers = len(all_layer_ids)
+                overall_progress = int((completed_layers / total_layers) * 100) if total_layers > 0 else 0
                 
-                # ★★★ 3. 每次循环都发送完整的、包含所有层的状态对象 ★★★
-                yield from send_event({"status": "正在拉取...", "layers": layers_status, "overall_progress": overall_progress})
+                # ★ 4. 每次循环都发送完整的状态对象
+                yield from send_event({
+                    "status": "正在拉取...", 
+                    "layers": layers_status, 
+                    "overall_progress": overall_progress
+                })
 
                 last_status_line = line
                 # 检查是否有新内容被拉取

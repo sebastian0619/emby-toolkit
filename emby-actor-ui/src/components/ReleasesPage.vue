@@ -84,18 +84,21 @@
     <!-- ★★★ 2. 移除此处的 style 属性，让内容自由伸展 ★★★ -->
     <div v-if="Object.keys(dockerLayers).length > 0" >
       <n-space vertical>
-        <div v-for="(layer, id) in dockerLayers" :key="id">
-          <n-text style="font-size: 12px; font-family: monospace;">{{ id }}</n-text>
-          <n-space justify="space-between">
-            <n-text :depth="3" style="font-size: 12px;">{{ layer.status }}</n-text>
-            <n-text :depth="3" style="font-size: 12px;">{{ layer.detail }}</n-text>
-          </n-space>
-          <n-progress
-            type="line"
-            :percentage="layer.progress"
-            :status="layer.progress === 100 ? 'success' : 'default'"
-          />
-        </div>
+        <!-- ★ 在 v-for 中增加一个 v-if 来过滤 -->
+        <template v-for="(layer, id) in dockerLayers" :key="id">
+          <div v-if="id !== 'latest'">  <!-- 增加这个 v-if 判断 -->
+            <n-text style="font-size: 12px; font-family: monospace;">{{ id }}</n-text>
+            <n-space justify="space-between">
+              <n-text :depth="3" style="font-size: 12px;">{{ layer.status }}</n-text>
+              <n-text :depth="3" style="font-size: 12px;">{{ layer.detail }}</n-text>
+            </n-space>
+            <n-progress
+              type="line"
+              :percentage="layer.progress"
+              :status="layer.progress === 100 ? 'success' : 'default'"
+            />
+          </div>
+        </template>
       </n-space>
     </div>
 
