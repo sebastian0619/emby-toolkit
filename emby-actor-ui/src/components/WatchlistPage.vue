@@ -199,7 +199,7 @@ const TMDbIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: 
 
 const { configModel } = useConfig();
 const message = useMessage();
-const dialog = useDialog(); // 【新增】引入 Dialog
+const dialog = useDialog();
 const props = defineProps({ taskStatus: { type: Object, required: true } });
 const rawWatchlist = ref([]);
 const currentView = ref('inProgress');
@@ -217,7 +217,6 @@ const INCREMENT = 30;
 const loaderRef = ref(null);
 let observer = null;
 
-// 【新增】批量选择相关
 const selectedItems = ref([]);
 const toggleSelection = (itemId) => {
   const index = selectedItems.value.indexOf(itemId);
@@ -228,16 +227,30 @@ const toggleSelection = (itemId) => {
   }
 };
 
-// 【新增】批量操作的定义
-const batchActions = [
-  {
-    label: '强制完结',
-    key: 'forceEnd',
-    icon: () => h(NIcon, { component: ForceEndIcon })
+// 【核心修改】将 batchActions 转换为 computed 属性
+const batchActions = computed(() => {
+  if (currentView.value === 'inProgress') {
+    return [
+      {
+        label: '强制完结',
+        key: 'forceEnd',
+        icon: () => h(NIcon, { component: ForceEndIcon })
+      }
+    ];
+  } else if (currentView.value === 'completed') {
+    return [
+      {
+        label: '重新追剧',
+        key: 'rewatch',
+        icon: () => h(NIcon, { component: WatchingIcon }) // 使用“追剧中”的图标
+      }
+    ];
   }
-];
+  return []; // 默认返回空数组
+});
 
-// 【新增】批量操作的处理函数
+
+// 【核心修改】更新 handleBatchAction 以处理新的 'rewatch' 键
 const handleBatchAction = (key) => {
   if (key === 'forceEnd') {
     dialog.warning({
@@ -251,9 +264,33 @@ const handleBatchAction = (key) => {
             item_ids: selectedItems.value
           });
           message.success(response.data.message || '批量操作成功！');
-          // 操作成功后刷新列表并清空选择
           await fetchWatchlist();
           selectedItems.value = [];
+        } catch (err) {
+          message.error(err.response?.data?.error || '批量操作失败。');
+        }
+      }
+    });
+  } 
+  // 【新增逻辑】处理“重新追剧”
+  else if (key === 'rewatch') {
+    dialog.info({
+      title: '确认操作',
+      content: `确定要将选中的 ${selectedItems.value.length} 部剧集的状态改回“追剧中”吗？`,
+      positiveText: '确定',
+      negativeText: '取消',
+      onPositiveClick: async () => {
+        try {
+          // 注意：这里我们假设后端有一个可以批量更新状态的接口
+          // 如果没有，你需要先在后端实现它
+          const response = await axios.post('/api/watchlist/batch_update_status', {
+            item_ids: selectedItems.value,
+            new_status: 'Watching'
+          });
+          message.success(response.data.message || '批量操作成功！');
+          // 操作成功后，自动切换到“追剧中”视图查看结果
+          currentView.value = 'inProgress';
+          // selectedItems 会被 currentView 的 watch 自动清空
         } catch (err) {
           message.error(err.response?.data?.error || '批量操作失败。');
         }
@@ -310,30 +347,23 @@ const subscribeSeason = async (seasonNumber) => {
   }
 };
 
-// 【核心修改】在 filteredWatchlist 中加入排序逻辑
 const filteredWatchlist = computed(() => {
   let list = [];
   if (currentView.value === 'inProgress') {
     list = rawWatchlist.value
       .filter(item => item.status === 'Watching' || item.status === 'Paused')
       .sort((a, b) => {
-        // 定义状态的排序优先级
         const statusOrder = { 'Watching': 0, 'Paused': 1 };
         const aStatus = statusOrder[a.status] ?? 99;
         const bStatus = statusOrder[b.status] ?? 99;
-
-        // 1. 按状态优先级排序
         if (aStatus !== bStatus) {
           return aStatus - bStatus;
         }
-
-        // 2. 如果状态相同，按上次检查时间倒序（越近越靠前）
         const aDate = a.last_checked_at ? new Date(a.last_checked_at).getTime() : 0;
         const bDate = b.last_checked_at ? new Date(b.last_checked_at).getTime() : 0;
         return bDate - aDate;
       });
   } else if (currentView.value === 'completed') {
-    // 已完结列表可以继续按上次检查时间倒序
     list = rawWatchlist.value
       .filter(item => item.status === 'Completed')
       .sort((a, b) => {
@@ -345,11 +375,9 @@ const filteredWatchlist = computed(() => {
   return list;
 });
 
-
-// +++ 新增：切换视图时重置显示数量和选择 +++
 watch(currentView, () => {
   displayCount.value = 30;
-  selectedItems.value = []; // 切换视图时清空选择
+  selectedItems.value = [];
 });
 
 const renderedWatchlist = computed(() => {
@@ -440,7 +468,6 @@ const openInEmby = (itemId) => {
   }
 };
 
-// 【图标优化】更新 statusInfo，使用更符合逻辑的图标
 const statusInfo = (status) => {
   const map = {
     'Watching': { type: 'success', text: '追剧中', icon: WatchingIcon, next: 'Paused', nextText: '暂停' },
@@ -465,23 +492,18 @@ const getSmartTMDbStatusText = (item) => {
   const internalStatus = item.status;
   const tmdbStatus = item.tmdb_status;
 
-  // 只有当内部状态是“已完结”时，才进行特殊判断
   if (internalStatus === 'Completed') {
-    // 如果TMDb状态也是完结或取消，则显示“待回归”
     if (tmdbStatus === 'Ended' || tmdbStatus === 'Canceled') {
       return '待回归';
     }
   }
-  // 其他所有情况，都正常翻译TMDb状态
   return translateTmdbStatus(tmdbStatus);
 };
 
 const getSmartTMDbStatusType = (item) => {
-  // 让“待回归”标签显示为蓝色 (info)，以示区别
   if (getSmartTMDbStatusText(item) === '待回归') {
     return 'info';
   }
-  // 其他情况使用默认样式
   return 'default';
 };
 const fetchWatchlist = async () => {
@@ -490,7 +512,7 @@ const fetchWatchlist = async () => {
   try {
     const response = await axios.get('/api/watchlist');
     rawWatchlist.value = response.data;
-    displayCount.value = 30;
+    // displayCount.value = 30; // 切换视图时已经重置，这里可以不重复
   } catch (err) {
     error.value = err.response?.data?.error || '获取追剧列表失败。';
   } finally {
@@ -543,56 +565,22 @@ const triggerSingleUpdate = async (itemId) => {
   }
 };
 
-// ✨ [核心修复] 函数现在接收完整的 item 对象
 const openMissingInfoModal = (item) => {
   selectedSeries.value = item;
   showModal.value = true;
 };
 
 watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {
-  // 我们关心的是任务从“正在运行”变为“已结束”的那个瞬间
   if (wasRunning && !isRunning) {
-    // 同时，我们只在“特定任务”结束后才刷新，避免不相关的任务也触发刷新
     const relevantActions = [
-        '追剧', // 匹配 “定时智能追剧更新”
-        '扫描全库剧集', // 匹配 “一键扫描全库剧集”
-        '手动刷新' // 匹配 “手动刷新: xxx”
+        '追剧',
+        '扫描全库剧集',
+        '手动刷新'
     ];
-
-    // 检查结束的任务名是否包含我们关心的关键字
     if (relevantActions.some(action => props.taskStatus.current_action.includes(action))) {
       message.info('相关后台任务已结束，正在刷新追剧列表...');
-      // 调用我们现有的数据加载函数
       fetchWatchlist();
     }
-  }
-});
-
-// +++ 新增：从 CollectionsPage 移植过来的生命周期钩子 +++
-onMounted(() => {
-  fetchWatchlist();
-  observer = new IntersectionObserver(
-    (entries) => {
-      if (entries[0].isIntersecting) {
-        loadMore();
-      }
-    },
-    { threshold: 1.0 }
-  );
-  if (loaderRef.value) {
-    observer.observe(loaderRef.value);
-  }
-});
-
-onBeforeUnmount(() => {
-  if (observer) {
-    observer.disconnect();
-  }
-});
-
-watch(loaderRef, (newEl) => {
-  if (observer && newEl) {
-    observer.observe(newEl);
   }
 });
 
@@ -624,27 +612,18 @@ watch(loaderRef, (newEl) => {
 });
 
 watch(isTaskRunning, (isRunning, wasRunning) => {
-  // ...
   if (wasRunning && !isRunning) {
-    console.log("[WatchlistPage Watcher] 检测到任务结束！");
-    
-    const relevantActions = ['追剧', '扫描全库剧集', '手动刷新'];
-    
-    // +++ 核心修改：检查 props.taskStatus.last_action +++
     const lastAction = props.taskStatus.last_action;
-    console.log(`[WatchlistPage Watcher] 刚刚结束的任务是: '${lastAction}'`);
-    
+    const relevantActions = ['追剧', '扫描全库剧集', '手动刷新'];
     const isRelevant = lastAction && relevantActions.some(action => lastAction.includes(action));
 
-    console.log(`[WatchlistPage Watcher] 任务是否相关: ${isRelevant}`);
-
     if (isRelevant) {
-      console.log("[WatchlistPage Watcher] 任务相关，准备调用 fetchWatchlist()...");
       message.info('相关后台任务已结束，正在刷新追剧列表...');
       fetchWatchlist();
     }
   }
 });
+
 </script>
 
 <style scoped>

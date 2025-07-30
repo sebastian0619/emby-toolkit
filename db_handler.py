@@ -471,7 +471,62 @@ def batch_force_end_watchlist_items(db_path: str, item_ids: List[str]) -> int:
     except Exception as e:
         logger.error(f"DB: 批量强制完结追剧项目时发生错误: {e}", exc_info=True)
         raise
-
+# ★★★ 批量更新追剧状态的数据库函数 ★★★
+def batch_update_watchlist_status(db_path: str, item_ids: list, new_status: str) -> int:
+    """
+    批量更新指定项目ID列表的追剧状态。
+    
+    当状态更新为 'Watching' (例如“重新追剧”) 时，此函数会自动：
+    1. 清除暂停日期 (`paused_until`)。
+    2. 重置强制完结标志 (`force_ended`)。
+    
+    Args:
+        db_path: 数据库文件路径。
+        item_ids: 需要更新的项目ID列表。
+        new_status: 要设置的新状态 ('Watching', 'Paused', 'Completed')。
+        
+    Returns:
+        成功更新的行数。
+    """
+    if not item_ids:
+        return 0
+        
+    try:
+        with get_db_connection(db_path) as conn: # 假设你有一个 get_db_connection 函数
+            cursor = conn.cursor()
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # 准备要更新的字段和值
+            updates = {
+                "status": new_status,
+                "last_checked_at": current_time
+            }
+            
+            # 核心逻辑：如果是“重新追剧”，则需要重置相关状态，让剧集恢复活力
+            if new_status == 'Watching':
+                updates["paused_until"] = None
+                updates["force_ended"] = 0
+            
+            set_clauses = [f"{key} = ?" for key in updates.keys()]
+            values = list(updates.values())
+            
+            # 使用参数化查询来防止SQL注入，这是处理列表的标准做法
+            placeholders = ', '.join(['?'] * len(item_ids))
+            sql = f"UPDATE watchlist SET {', '.join(set_clauses)} WHERE item_id IN ({placeholders})"
+            
+            # 将 item_ids 添加到值列表的末尾以匹配占位符
+            values.extend(item_ids)
+            
+            cursor.execute(sql, tuple(values))
+            conn.commit()
+            
+            logger.info(f"DB: 成功将 {cursor.rowcount} 个项目的状态批量更新为 '{new_status}'。")
+            return cursor.rowcount
+            
+    except Exception as e:
+        logger.error(f"批量更新项目状态时数据库出错: {e}", exc_info=True)
+        # 重新抛出异常，让上层(API路由)可以捕获并返回500错误
+        raise
 # ======================================================================
 # 模块 5: 电影合集数据访问 (Collections Data Access)
 # ======================================================================
