@@ -64,8 +64,8 @@
       <div v-else-if="filteredWatchlist.length > 0">
         <n-grid cols="1 s:1 m:2 l:3 xl:4" :x-gap="20" :y-gap="20" responsive="screen">
           <n-gi v-for="item in renderedWatchlist" :key="item.item_id">
-            <!-- 【修改】卡片上增加一个绝对定位的 Checkbox -->
-            <n-card class="glass-section series-card" :bordered="false" content-style="display: flex; padding: 0; gap: 16px;">
+            <!-- 【布局优化】减小海报和内容之间的 gap -->
+            <n-card class="glass-section series-card" :bordered="false" content-style="display: flex; padding: 0; gap: 12px;">
               <n-checkbox 
                 :checked="selectedItems.includes(item.item_id)"
                 @update:checked="toggleSelection(item.item_id)"
@@ -86,7 +86,12 @@
                 </div>
                 <div class="card-status-area">
                   <n-space vertical size="small">
-                    <n-space align="center">
+                    <!-- 
+                      【布局修复】
+                      1. 用一个 n-space 包裹状态按钮和 TMDB 状态，确保它们总是在一起。
+                      2. 将“缺失”标签单独放在一行，确保布局稳定。
+                    -->
+                    <n-space align="center" :wrap="false">
                       <n-button round size="tiny" :type="statusInfo(item.status).type" @click="() => updateStatus(item.item_id, statusInfo(item.status).next)" :title="`点击切换到 '${statusInfo(item.status).nextText}'`">
                         <template #icon><n-icon :component="statusInfo(item.status).icon" /></template>
                         {{ statusInfo(item.status).text }}
@@ -94,8 +99,10 @@
                       <n-tag v-if="item.tmdb_status" size="small" :bordered="false" :type="getSmartTMDbStatusType(item)">
                         {{ getSmartTMDbStatusText(item) }}
                       </n-tag>
-                      <n-tag v-if="hasMissing(item)" type="warning" size="small" round>{{ getMissingCountText(item) }}</n-tag>
                     </n-space>
+                    
+                    <n-tag v-if="hasMissing(item)" type="warning" size="small" round>{{ getMissingCountText(item) }}</n-tag>
+
                     <n-text v-if="nextEpisode(item)?.name" :depth="3" class="next-episode-text">
                       <n-icon :component="CalendarIcon" /> 播出时间: {{ nextEpisode(item).name }} ({{ formatAirDate(nextEpisode(item).air_date) }})
                     </n-text>
@@ -103,11 +110,21 @@
                   </n-space>
                 </div>
                 <div class="card-actions">
-                  <!-- ✨ [核心修复] 直接传递完整的 item 对象 -->
-                  <n-button type="primary" size="small" @click="() => openMissingInfoModal(item)" :disabled="!hasMissing(item)">
-                    <template #icon><n-icon :component="EyeIcon" /></template>
-                    查看缺失
-                  </n-button>
+                  <!-- 【最终优化】将“查看缺失”按钮改为带 Tooltip 的图标按钮 -->
+                  <n-tooltip>
+                    <template #trigger>
+                      <n-button 
+                        type="primary" 
+                        size="small" 
+                        circle 
+                        @click="() => openMissingInfoModal(item)" 
+                        :disabled="!hasMissing(item)"
+                      >
+                        <template #icon><n-icon :component="EyeIcon" /></template>
+                      </n-button>
+                    </template>
+                    查看缺失详情
+                  </n-tooltip>
                   <n-tooltip>
                     <template #trigger>
                       <n-button 
@@ -630,12 +647,12 @@ watch(isTaskRunning, (isRunning, wasRunning) => {
 .watchlist-page { padding: 0 10px; }
 .center-container { display: flex; justify-content: center; align-items: center; height: calc(100vh - 200px); }
 
-/* 【新增】卡片样式，为 checkbox 定位做准备 */
+/* 卡片样式，为 checkbox 定位做准备 */
 .series-card {
   position: relative;
 }
 
-/* 【新增】Checkbox 样式，使其悬浮在卡片左上角 */
+/* 【修改】Checkbox 样式，默认隐藏，鼠标悬浮或已选中时显示 */
 .card-checkbox {
   position: absolute;
   top: 8px;
@@ -646,17 +663,37 @@ watch(isTaskRunning, (isRunning, wasRunning) => {
   padding: 4px;
   --n-color-checked: var(--n-color-primary-hover);
   --n-border-radius: 50%;
+  /* 默认隐藏并添加过渡效果 */
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease-in-out, visibility 0.2s ease-in-out;
 }
 
-.card-poster-container { flex-shrink: 0; width: 160px; height: 240px; }
+/* 鼠标悬浮于卡片上时，或当多选框自身被勾选时，显示它 */
+/* 注意: .n-checkbox--checked 是 Naive UI 内部用于标记“已选中”状态的类 */
+.series-card:hover .card-checkbox,
+.card-checkbox.n-checkbox--checked {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* 【终极修复】为海报容器添加 overflow: hidden，裁剪掉溢出的图片部分，防止其挤压右侧内容 */
+.card-poster-container { 
+  flex-shrink: 0; 
+  width: 160px; 
+  height: 240px; 
+  overflow: hidden;
+}
 .card-poster { width: 100%; height: 100%; }
 .poster-placeholder { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; background-color: var(--n-action-color); }
-.card-content-container { flex-grow: 1; display: flex; flex-direction: column; padding: 12px 12px 12px 0; min-width: 0; }
+/* 【布局优化】减小右侧内边距，给内容更多空间 */
+.card-content-container { flex-grow: 1; display: flex; flex-direction: column; padding: 12px 8px 12px 0; min-width: 0; }
 .card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-shrink: 0; }
 .card-title { font-weight: 600; font-size: 1.1em; line-height: 1.3; }
 .card-status-area { flex-grow: 1; padding-top: 8px; }
 .last-checked-text { display: block; font-size: 0.8em; margin-top: 6px; }
 .next-episode-text { display: flex; align-items: center; gap: 4px; font-size: 0.8em; }
+/* 【最终优化】将按钮改为环绕对齐，使其均匀分布 */
 .card-actions { border-top: 1px solid var(--n-border-color); padding-top: 8px; margin-top: 8px; display: flex; justify-content: space-around; align-items: center; flex-shrink: 0; }
 .loader-trigger {
   height: 50px;
