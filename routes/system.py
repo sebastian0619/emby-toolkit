@@ -165,6 +165,7 @@ def get_about_info():
 # --- 一键更新 ---
 @system_bp.route('/system/update/stream', methods=['GET'])
 @login_required
+@task_lock_required
 def stream_update_progress():
     """
     【V10 - 最终可行自更新版】
@@ -214,6 +215,8 @@ def stream_update_progress():
                     details = line['progressDetail']
                     current = details.get('current', 0)
                     total = details.get('total', 0)
+                    layers_status[layer_id]['current_bytes'] = current
+                    layers_status[layer_id]['total_bytes'] = total
                     if total > 0:
                         progress_percent = int((current / total) * 100)
                         layers_status[layer_id]['progress'] = progress_percent
