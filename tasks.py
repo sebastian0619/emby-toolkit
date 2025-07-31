@@ -1309,7 +1309,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
             tmdb_ids = importer.process(definition)
         elif collection_type == 'filter':
             engine = FilterEngine(db_path=config_manager.DB_PATH)
-            tmdb_ids = engine.process(definition)
+            tmdb_ids = engine.execute_filter(definition)
         
         if not tmdb_ids:
             logger.warning(f"处理合集 '{collection_name}' 后，未能生成任何电影ID。任务结束。")
