@@ -1117,17 +1117,17 @@ def create_or_update_collection_with_tmdb_ids(
     collection_name: str, tmdb_ids: list, base_url: str, api_key: str, 
     user_id: str, library_ids: list = None, item_type: str = 'Movie',
     prefetched_emby_items: Optional[list] = None,
-    prefetched_collection_map: Optional[dict] = None # ★★★ 新增参数：预加载的合集字典 ★★★
+    prefetched_collection_map: Optional[dict] = None
 ) -> Optional[Tuple[str, List[str]]]: 
     """
-    【V10 - 终极高效版】在Emby中创建或更新一个合集。
-    支持传入预加载的媒体列表和合集列表，实现零重复API调用。
+    【V11 - 终极类型安全版】在Emby中创建或更新一个合集。
+    修复了在使用预加载数据时，未按 item_type 筛选媒体的致命bug。
     """
     log_item_type = "电影" if item_type == "Movie" else "电视剧"
     logger.info(f"开始在Emby中处理名为 '{collection_name}' 的{log_item_type}合集...")
     
     try:
-        # 1. 获取媒体库中所有对应类型的项目 (这部分逻辑不变)
+        # 1. 确定要处理的媒体项列表
         if prefetched_emby_items is not None:
             all_media_items = prefetched_emby_items
         else:
@@ -1140,26 +1140,20 @@ def create_or_update_collection_with_tmdb_ids(
             logger.error(f"无法从Emby获取{log_item_type}列表，操作中止。")
             return None
             
+        # 2. ★★★ 核心修复：在构建映射表时，严格遵守 item_type 过滤器 ★★★
         tmdb_to_emby_id_map = {
             item['ProviderIds']['Tmdb']: item['Id']
             for item in all_media_items
-            if 'ProviderIds' in item and 'Tmdb' in item['ProviderIds']
+            if item.get('Type') == item_type  # <--- 加上这个关键的类型检查！
+            and 'ProviderIds' in item 
+            and 'Tmdb' in item['ProviderIds']
         }
         
         tmdb_ids_in_library = [str(tid) for tid in tmdb_ids if str(tid) in tmdb_to_emby_id_map]
         emby_item_ids_to_add = [tmdb_to_emby_id_map[tid] for tid in tmdb_ids_in_library]
         
-        # 2. ★★★ 核心修改：检查合集是否已存在 (优先使用预加载数据) ★★★
-        collection = None
-        if prefetched_collection_map is not None:
-            # 从预加载的字典中查找 (key是小写名字)
-            collection = prefetched_collection_map.get(collection_name.lower())
-            if collection:
-                logger.debug(f"通过预加载数据发现已存在的合集 '{collection_name}'。")
-        else:
-            # 降级：如果没有预加载数据，才去联网查询 (保持单次生成功能正常)
-            logger.debug("未提供预加载合集数据，将通过API联网查询。")
-            collection = get_collection_by_name(collection_name, base_url, api_key, user_id)
+        # 3. 检查合集是否存在 (这部分逻辑已优化，保持不变)
+        collection = prefetched_collection_map.get(collection_name.lower()) if prefetched_collection_map is not None else get_collection_by_name(collection_name, base_url, api_key, user_id)
         
         emby_collection_id = None
         success = False
