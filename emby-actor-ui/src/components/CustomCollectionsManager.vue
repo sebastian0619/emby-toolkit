@@ -187,6 +187,32 @@
         </n-space>
       </template>
     </n-modal>
+    <!-- ★★★ 新增：缺失详情查看模态框 ★★★ -->
+    <n-modal v-model:show="showDetailsModal" preset="card" style="width: 90%; max-width: 1200px;" :title="detailsModalTitle" :bordered="false" size="huge">
+      <div v-if="isLoadingDetails" class="center-container"><n-spin size="large" /></div>
+      <div v-else-if="selectedCollectionDetails">
+        <n-tabs type="line" animated>
+          <n-tab-pane name="missing" :tab="`缺失${mediaTypeName} (${missingMediaInModal.length})`">
+            <n-empty v-if="missingMediaInModal.length === 0" :description="`太棒了！没有已上映的缺失${mediaTypeName}。`" style="margin-top: 40px;"></n-empty>
+            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
+              <n-gi v-for="media in missingMediaInModal" :key="media.tmdb_id">
+                <n-card class="movie-card" content-style="padding: 0;">
+                  <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" /></template>
+                  <div class="movie-info"><div class="movie-title">{{ media.title }}<br />({{ extractYear(media.release_date) || '未知年份' }})</div></div>
+                  <template #action>
+                    <n-button @click="subscribeMedia(media)" type="primary" size="small" block :loading="subscribing[media.tmdb_id]">
+                      <template #icon><n-icon :component="CloudDownloadIcon" /></template>
+                      订阅
+                    </n-button>
+                  </template>
+                </n-card>
+              </n-gi>
+            </n-grid>
+          </n-tab-pane>
+          <!-- ... 其他标签页 (已入库, 未上映, 已订阅) ... -->
+        </n-tabs>
+      </div>
+    </n-modal>
   </n-layout>
 </template>
 
@@ -203,6 +229,7 @@ import {
   CreateOutline as EditIcon, 
   TrashOutline as DeleteIcon,
   SyncOutline as SyncIcon,
+  EyeOutline as EyeIcon,
   PlayOutline as GenerateIcon
 } from '@vicons/ionicons5';
 import { format } from 'date-fns';
@@ -222,6 +249,11 @@ const isSyncingAll = ref(false);
 const genreOptions = ref([]);
 const studioOptions = ref([]);
 const isSearchingStudios = ref(false);
+// ★★★ 新增：详情模态框所需的状态 ★★★
+const showDetailsModal = ref(false);
+const isLoadingDetails = ref(false);
+const selectedCollectionDetails = ref(null);
+const subscribing = ref({});
 
 // --- ★★★ 升级版表单数据模型 ★★★ ---
 const getInitialFormModel = () => ({
@@ -414,6 +446,21 @@ const formRules = computed(() => {
   return baseRules;
 });
 
+// ★★★ 新增：用于详情模态框的计算属性 ★★★
+const detailsModalTitle = computed(() => {
+  if (!selectedCollectionDetails.value) return '';
+  const typeLabel = selectedCollectionDetails.value.item_type === 'Series' ? '电视剧合集' : '电影合集';
+  return `${typeLabel}详情 - ${selectedCollectionDetails.value.name}`;
+});
+const mediaTypeName = computed(() => {
+  if (!selectedCollectionDetails.value) return '媒体';
+  return selectedCollectionDetails.value.item_type === 'Series' ? '剧集' : '影片';
+});
+const missingMediaInModal = computed(() => {
+  if (!selectedCollectionDetails.value || !Array.isArray(selectedCollectionDetails.value.missing_movies)) return [];
+  return selectedCollectionDetails.value.missing_movies.filter(media => media.status === 'missing');
+});
+
 // --- API 调用函数 (保持不变) ---
 const fetchCollections = async () => {
   isLoading.value = true;
@@ -424,6 +471,41 @@ const fetchCollections = async () => {
     message.error('加载自定义合集列表失败。');
   } finally {
     isLoading.value = false;
+  }
+};
+
+// ★★★ 新增：打开详情模态框的函数 ★★★
+const openDetailsModal = async (collection) => {
+  showDetailsModal.value = true;
+  isLoadingDetails.value = true;
+  selectedCollectionDetails.value = null;
+  try {
+    // ★★★ 核心修改：调用新的、正确的API地址 ★★★
+    const response = await axios.get(`/api/custom_collections/${collection.emby_collection_id}/status`);
+    selectedCollectionDetails.value = response.data;
+  } catch (error) {
+    message.error('获取合集详情失败。');
+    showDetailsModal.value = false;
+  } finally {
+    isLoadingDetails.value = false;
+  }
+};
+
+// ★★★ 新增：订阅媒体的函数 ★★★
+const subscribeMedia = async (media) => {
+  subscribing.value[media.tmdb_id] = true;
+  try {
+    // 复用常规合集的订阅API
+    await axios.post('/api/collections/subscribe', { tmdb_id: media.tmdb_id, title: media.title });
+    message.success(`《${media.title}》已提交订阅`);
+    // 订阅成功后，在本地更新状态并刷新详情
+    media.status = 'subscribed';
+    // 简单地重新加载详情
+    openDetailsModal({ emby_collection_id: selectedCollectionDetails.value.emby_collection_id });
+  } catch (err) {
+    message.error(err.response?.data?.error || '订阅失败');
+  } finally {
+    subscribing.value[media.tmdb_id] = false;
   }
 };
 
@@ -528,7 +610,7 @@ const handleSave = () => {
   });
 };
 
-// --- 表格列定义 (保持不变) ---
+// ★★★ 核心修改：更新表格列定义 ★★★
 const columns = [
   { title: '名称', key: 'name', width: 250 },
   { 
@@ -538,6 +620,24 @@ const columns = [
       const tagType = row.type === 'list' ? 'info' : 'default';
       const text = row.type === 'list' ? '榜单导入' : '筛选生成';
       return h(NTag, { type: tagType, bordered: false }, { default: () => text });
+    }
+  },
+  // ★★★ 新增“健康检查”列 ★★★
+  {
+    title: '健康检查',
+    key: 'health_check',
+    render(row) {
+      if (row.type !== 'list' || !row.emby_collection_id) {
+        return h(NText, { depth: 3 }, { default: () => 'N/A' });
+      }
+      // 这里我们需要从一个地方获取健康状态，暂时留空，后续API会提供
+      // 暂时先只提供按钮
+      return h(NButton, {
+        size: 'small',
+        type: 'default',
+        ghost: true,
+        onClick: () => openDetailsModal(row)
+      }, { default: () => '查看详情', icon: () => h(NIcon, { component: EyeIcon }) });
     }
   },
   { 

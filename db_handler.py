@@ -554,6 +554,25 @@ def get_all_collections(db_path: str) -> List[Dict[str, Any]]:
         logger.error(f"DB: 读取合集状态时发生严重错误: {e}", exc_info=True)
         raise
 
+def get_all_custom_collection_emby_ids(db_path: str) -> set:
+    """
+    从 custom_collections 表中获取所有非空的 emby_collection_id。
+    返回一个集合(set)以便进行高效的成员资格检查和集合运算。
+    """
+    ids = set()
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            # 只选择非NULL的ID
+            cursor.execute("SELECT emby_collection_id FROM custom_collections WHERE emby_collection_id IS NOT NULL")
+            rows = cursor.fetchall()
+            for row in rows:
+                ids.add(row['emby_collection_id'])
+        logger.debug(f"从数据库中获取到 {len(ids)} 个由本程序管理的自定义合集ID。")
+        return ids
+    except sqlite3.Error as e:
+        logger.error(f"获取所有自定义合集Emby ID时发生数据库错误: {e}", exc_info=True)
+        return ids # 即使出错也返回一个空集合，保证上层逻辑不会崩溃
 
 def get_collections_with_missing_movies(db_path: str) -> List[Dict[str, Any]]:
     """获取所有包含缺失电影的合集信息。"""

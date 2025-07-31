@@ -1,4 +1,4 @@
-<!-- src/components/CollectionsPage.vue (最终毕业版 - 弹窗终极修复) -->
+<!-- src/components/CollectionsPage.vue (纯粹电影合集版) -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="collections-page">
@@ -27,7 +27,6 @@
         </template>
         <template #extra>
           <n-space>
-            <!-- ★★★ [核心修改] "一键忽略" 改为 "一键订阅" ★★★ -->
             <n-popconfirm @positive-click="subscribeAllMissingMovies" :disabled="globalStats.totalMissingMovies === 0">
               <template #trigger>
                 <n-tooltip>
@@ -66,9 +65,6 @@
                 <div class="card-header"><n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.name }}</n-ellipsis></div>
                 <div class="card-status-area">
                   <n-space align="center">
-                    <n-tag v-if="item.item_type" :type="item.item_type === 'Series' ? 'info' : 'default'" size="small" round>
-                      {{ item.item_type === 'Series' ? '电视剧' : '电影' }}
-                    </n-tag>
                     <n-tooltip :disabled="!isTooltipNeeded(item)">
                     <template #trigger>
                       <n-tag :type="getStatusTagType(item)" round>
@@ -101,7 +97,6 @@
     <n-modal v-model:show="showModal" preset="card" style="width: 90%; max-width: 1200px;" :title="selectedCollection ? `详情 - ${selectedCollection.name}` : ''" :bordered="false" size="huge">
       <div v-if="selectedCollection">
         <n-tabs type="line" animated>
-          <!-- 缺失影片 -->
           <n-tab-pane name="missing" :tab="`缺失影片 (${missingMoviesInModal.length})`">
             <n-empty v-if="missingMoviesInModal.length === 0" description="太棒了！没有已上映的缺失影片。" style="margin-top: 40px;"></n-empty>
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
@@ -120,7 +115,6 @@
             </n-grid>
           </n-tab-pane>
           
-          <!-- ★★★ [核心修改] 新增 "已入库" 标签页 ★★★ -->
           <n-tab-pane name="in_library" :tab="`已入库 (${inLibraryMoviesInModal.length})`">
              <n-empty v-if="inLibraryMoviesInModal.length === 0" description="该合集在媒体库中没有任何影片。" style="margin-top: 40px;"></n-empty>
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
@@ -139,7 +133,6 @@
             </n-grid>
           </n-tab-pane>
 
-          <!-- 未上映 -->
           <n-tab-pane name="unreleased" :tab="`未上映 (${unreleasedMoviesInModal.length})`">
             <n-empty v-if="unreleasedMoviesInModal.length === 0" description="该合集没有已知的未上映影片。" style="margin-top: 40px;"></n-empty>
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
@@ -152,7 +145,6 @@
             </n-grid>
           </n-tab-pane>
 
-          <!-- ★★★ [核心修改] "已忽略" 改为 "已订阅" ★★★ -->
           <n-tab-pane name="subscribed" :tab="`已订阅 (${subscribedMoviesInModal.length})`">
             <n-empty v-if="subscribedMoviesInModal.length === 0" description="你没有订阅此合集中的任何影片。" style="margin-top: 40px;"></n-empty>
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
@@ -177,6 +169,7 @@
 </template>
 
 <script setup>
+// ... (script setup部分与您之前的文件几乎完全相同，只是去掉了所有item_type的判断)
 import { ref, onMounted, onBeforeUnmount, computed, watch, h } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NModal, NTabs, NTabPane, NPopconfirm } from 'naive-ui';
@@ -217,7 +210,6 @@ const globalStats = computed(() => {
     totalUnreleased: 0,
     totalSubscribed: 0,
   };
-
   for (const collection of collections.value) {
     if (Array.isArray(collection.missing_movies)) {
       const missingCount = collection.missing_movies.filter(m => m.status === 'missing').length;
@@ -236,28 +228,15 @@ const sortedCollections = computed(() => {
   return [...collections.value].sort((a, b) => {
     const missingCountA = getMissingCount(a);
     const missingCountB = getMissingCount(b);
-    if (missingCountB !== missingCountA) {
-      return missingCountB - missingCountA;
-    }
+    if (missingCountB !== missingCountA) return missingCountB - missingCountA;
     return a.name.localeCompare(b.name);
   });
 });
 
-const renderedCollections = computed(() => {
-  return sortedCollections.value.slice(0, displayCount.value);
-});
+const renderedCollections = computed(() => sortedCollections.value.slice(0, displayCount.value));
+const hasMore = computed(() => displayCount.value < sortedCollections.value.length);
+const loadMore = () => { if (hasMore.value) displayCount.value += INCREMENT; };
 
-const hasMore = computed(() => {
-  return displayCount.value < sortedCollections.value.length;
-});
-
-const loadMore = () => {
-  if (hasMore.value) {
-    displayCount.value += INCREMENT;
-  }
-};
-
-// ★★★ [核心修改] 新的计算属性，用于分离不同状态的电影 ★★★
 const inLibraryMoviesInModal = computed(() => {
   if (!selectedCollection.value || !Array.isArray(selectedCollection.value.missing_movies)) return [];
   return selectedCollection.value.missing_movies.filter(movie => movie.status === 'in_library');
@@ -279,9 +258,7 @@ const loadCachedData = async () => {
   if (collections.value.length === 0) isInitialLoading.value = true;
   error.value = null;
   try {
-    const response = await axios.get('/api/collections/status', {
-      headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache', 'Expires': '0' },
-    });
+    const response = await axios.get('/api/collections/status', { headers: { 'Cache-Control': 'no-cache' } });
     collections.value = response.data;
     displayCount.value = 50;
   } catch (err) {
@@ -291,7 +268,6 @@ const loadCachedData = async () => {
   }
 };
 
-// ★★★ [核心修改] 调用新的 "一键订阅" API ★★★
 const subscribeAllMissingMovies = async () => {
   isSubscribingAll.value = true;
   try {
@@ -319,38 +295,16 @@ const triggerFullRefresh = async () => {
 
 onMounted(() => {
   loadCachedData();
-  observer = new IntersectionObserver(
-    (entries) => { if (entries[0].isIntersecting) { loadMore(); } },
-    { threshold: 1.0 }
-  );
-  if (loaderRef.value) { observer.observe(loaderRef.value); }
+  observer = new IntersectionObserver((entries) => { if (entries[0].isIntersecting) loadMore(); }, { threshold: 1.0 });
+  if (loaderRef.value) observer.observe(loaderRef.value);
 });
-
-onBeforeUnmount(() => { if (observer) { observer.disconnect(); } });
-watch(loaderRef, (newEl) => { if (observer && newEl) { observer.observe(newEl); } });
+onBeforeUnmount(() => { if (observer) observer.disconnect(); });
+watch(loaderRef, (newEl) => { if (observer && newEl) observer.observe(newEl); });
 watch(isTaskRunning, (isRunning, wasRunning) => {
-  // 添加诊断日志，方便调试
-  console.log(
-    `[CollectionsPage Watcher] isTaskRunning 状态变化: 从 ${wasRunning} 变为 ${isRunning}. ` +
-    `刚刚结束的任务: '${props.taskStatus.last_action}'`
-  );
-
   if (wasRunning && !isRunning) {
-    console.log("[CollectionsPage Watcher] 检测到任务结束！");
-    
-    // 定义与本页面相关的任务关键字
-    const relevantActions = ['合集']; // 匹配 “刷新所有合集信息”
-    
-    // 核心修改：检查 last_action
     const lastAction = props.taskStatus.last_action;
-    const isRelevant = lastAction && relevantActions.some(action => lastAction.includes(action));
-
-    console.log(`[CollectionsPage Watcher] 任务是否相关: ${isRelevant}`);
-
-    if (isRelevant) {
-      console.log("[CollectionsPage Watcher] 任务相关，准备调用 loadCachedData()...");
+    if (lastAction && lastAction.includes('合集')) {
       message.info('后台合集任务已结束，正在刷新数据...');
-      // 调用现有的数据加载函数
       loadCachedData();
     }
   }
@@ -361,7 +315,6 @@ const openMissingMoviesModal = (collection) => {
   showModal.value = true;
 };
 
-// ★★★ [核心修改] 统一的状态更新函数 ★★★
 const updateMovieStatus = async (movie, newStatus) => {
   try {
     await axios.post('/api/collections/update_movie_status', {
@@ -369,7 +322,6 @@ const updateMovieStatus = async (movie, newStatus) => {
       movie_tmdb_id: movie.tmdb_id,
       new_status: newStatus
     });
-    // 直接在本地更新状态，实现动态UI变化
     movie.status = newStatus;
     message.success(`操作成功！`);
   } catch (err) {
@@ -377,14 +329,11 @@ const updateMovieStatus = async (movie, newStatus) => {
   }
 };
 
-// ★★★ [核心修改] 单个订阅现在调用通用函数和 MoviePilot API ★★★
 const subscribeMovie = async (movie) => {
   subscribing.value[movie.tmdb_id] = true;
   try {
-    // 先提交到 MoviePilot
     await axios.post('/api/collections/subscribe', { tmdb_id: movie.tmdb_id, title: movie.title });
     message.success(`《${movie.title}》已提交订阅`);
-    // MoviePilot 成功后，再更新我们自己的数据库状态
     await updateMovieStatus(movie, 'subscribed');
   } catch (err) {
     message.error(err.response?.data?.error || '订阅失败');
@@ -393,7 +342,6 @@ const subscribeMovie = async (movie) => {
   }
 };
 
-// ★★★ [核心修改] 新增取消订阅函数 ★★★
 const unsubscribeMovie = (movie) => {
   updateMovieStatus(movie, 'missing');
 };
@@ -407,12 +355,10 @@ const getEmbyUrl = (itemId) => {
   if (serverId) { finalUrl += `&serverId=${serverId}`; }
   return finalUrl;
 };
-
 const openInEmby = (itemId) => {
   const url = getEmbyUrl(itemId);
   if (url !== '#') { window.open(url, '_blank'); }
 };
-
 const formatTimestamp = (timestamp) => {
   if (!timestamp) return '从未';
   try { return format(new Date(timestamp * 1000), 'MM-dd HH:mm'); } 
@@ -453,10 +399,7 @@ const getShortStatusText = (collection) => {
   return `已入库 ${inLibraryCount} 部`;
 };
 
-const isTooltipNeeded = (collection) => {
-  return getFullStatusText(collection) !== getShortStatusText(collection);
-};
-
+const isTooltipNeeded = (collection) => getFullStatusText(collection) !== getShortStatusText(collection);
 const extractYear = (dateStr) => {
   if (!dateStr) return null;
   return dateStr.substring(0, 4);

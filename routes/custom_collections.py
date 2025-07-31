@@ -147,3 +147,34 @@ def api_sync_all_custom_collections():
     )
     
     return jsonify({"message": f"'{task_name}' 任务已提交到后台处理。"}), 202
+
+# ★★★ 获取单个自定义合集健康状态的API (正确的位置) ★★★
+@custom_collections_bp.route('/<emby_collection_id>/status', methods=['GET'])
+@login_required
+def api_get_custom_collection_status(emby_collection_id):
+    """
+    获取单个自定义合集的健康状态详情，用于弹窗显示。
+    它通过查询 collections_info 表来实现。
+    """
+    try:
+        # 这个查询逻辑是正确的，因为它就是去 collections_info 表里找对应的记录
+        with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM collections_info WHERE emby_collection_id = ?", (emby_collection_id,))
+            row = cursor.fetchone()
+            
+            if not row:
+                return jsonify({"error": "未在健康检查表中找到该合集"}), 404
+            
+            row_dict = dict(row)
+            try:
+                row_dict['missing_movies'] = json.loads(row_dict.get('missing_movies_json', '[]'))
+            except (json.JSONDecodeError, TypeError):
+                row_dict['missing_movies'] = []
+            del row_dict['missing_movies_json']
+            
+            return jsonify(row_dict)
+            
+    except Exception as e:
+        logger.error(f"读取单个合集状态 {emby_collection_id} 时出错: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
