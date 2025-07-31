@@ -1112,21 +1112,17 @@ def create_or_update_collection_with_tmdb_ids(
     user_id: str, library_ids: List[str], item_type: str = 'Movie'
 ) -> Optional[Tuple[str, List[str]]]: 
     """
-    【V7 - 修复剧集缺失检查的最终版】在Emby中创建或更新一个合集，支持电影和电视剧。
-    核心修复：现在稳定返回一个元组 (emby_collection_id, tmdb_ids_in_library)，
-    其中第二个元素是本次操作中确认已存在于媒体库的 TMDb ID 列表。
+    【V8 - 修复创建逻辑的终极版】在Emby中创建或更新一个合集，支持电影和电视剧。
+    核心修复：修正了创建新合集时因ID过多导致URL超长(414)的错误。
     """
     log_item_type = "电影" if item_type == "Movie" else "电视剧"
     logger.info(f"开始在Emby中处理名为 '{collection_name}' 的{log_item_type}合集...")
     
     try:
-        # 1. 获取媒体库中所有对应类型的项目，并建立 TMDb ID -> Emby ID 的映射
+        # 1. 获取媒体库中所有对应类型的项目 (这部分逻辑不变)
         all_media_items = get_emby_library_items(
-            base_url=base_url, 
-            api_key=api_key, 
-            user_id=user_id, 
-            media_type_filter=item_type,
-            library_ids=library_ids
+            base_url=base_url, api_key=api_key, user_id=user_id, 
+            media_type_filter=item_type, library_ids=library_ids
         )
         if all_media_items is None:
             logger.error(f"无法从Emby获取{log_item_type}列表，操作中止。")
@@ -1138,7 +1134,6 @@ def create_or_update_collection_with_tmdb_ids(
             if 'ProviderIds' in item and 'Tmdb' in item['ProviderIds']
         }
         
-        # ★★★ 核心逻辑1：计算出哪些TMDb ID是存在于媒体库中的，以及它们对应的Emby ID ★★★
         tmdb_ids_in_library = [str(tid) for tid in tmdb_ids if str(tid) in tmdb_to_emby_id_map]
         emby_item_ids_to_add = [tmdb_to_emby_id_map[tid] for tid in tmdb_ids_in_library]
         
@@ -1149,28 +1144,35 @@ def create_or_update_collection_with_tmdb_ids(
         success = False
 
         if collection:
-            # --- 更新逻辑 ---
+            # --- 更新逻辑 (这条路径是正常的) ---
             emby_collection_id = collection['Id']
             logger.info(f"发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，将更新其内容。")
+            # 调用我们之前修复好的、健壮的函数
             success = add_items_to_collection(emby_collection_id, emby_item_ids_to_add, base_url, api_key)
         else:
-            # --- 创建逻辑 ---
+            # --- 创建逻辑 (这是本次修复的核心) ---
             logger.info(f"未找到合集 '{collection_name}'，将通过通用接口一步创建。")
             
             if not emby_item_ids_to_add:
                 logger.warning(f"无法创建合集 '{collection_name}'，因为媒体库中没有任何匹配的{log_item_type}可供添加。")
-                # 即使无法创建，也认为操作“技术上”成功了，但返回的ID是None
                 return (None, [])
 
             api_url = f"{base_url.rstrip('/')}/Collections"
+            
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # ★★★ 核心修复：将 Name 和 Ids 放入请求体(data)，而不是URL参数(params) ★★★
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             params = {
                 'api_key': api_key,
+            }
+            payload = {
                 'Name': collection_name,
                 'Ids': ",".join(emby_item_ids_to_add)
             }
             
             try:
-                response = requests.post(api_url, params=params, timeout=30)
+                # 使用 data 参数发送数据，避免URL过长
+                response = requests.post(api_url, params=params, data=payload, timeout=30)
                 response.raise_for_status()
                 new_collection_info = response.json()
                 emby_collection_id = new_collection_info.get('Id')
@@ -1183,11 +1185,9 @@ def create_or_update_collection_with_tmdb_ids(
                 response_text = e.response.text[:500] if e.response is not None else ""
                 logger.error(f"通过通用接口创建新合集 '{collection_name}' 时失败: {e}. 响应: {response_text}")
 
-        # ★★★ 核心逻辑2：无论创建还是更新，只要成功，就返回合集ID和已入库的TMDb ID列表 ★★★
         if success and emby_collection_id:
             return (emby_collection_id, tmdb_ids_in_library)
         else:
-            # 如果操作失败，返回None
             return None
 
     except Exception as e:
@@ -1202,7 +1202,7 @@ def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: s
     :param item_emby_id: 要追加的媒体项的Emby ID。
     :return: True 如果成功，否则 False。
     """
-    logger.info(f"准备将项目 {item_emby_id} 追加到合集 {collection_id}...")
+    logger.trace(f"准备将项目 {item_emby_id} 追加到合集 {collection_id}...")
     
     # Emby API的 /Collections/{Id}/Items 端点本身就是追加逻辑
     api_url = f"{base_url.rstrip('/')}/Collections/{collection_id}/Items"
@@ -1219,7 +1219,7 @@ def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: s
         response.raise_for_status()
         
         # Emby成功后通常返回 204 No Content
-        logger.info(f"成功发送追加请求：将项目 {item_emby_id} 添加到合集 {collection_id}。")
+        logger.trace(f"成功发送追加请求：将项目 {item_emby_id} 添加到合集 {collection_id}。")
         return True
         
     except requests.RequestException as e:
