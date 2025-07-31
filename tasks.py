@@ -1292,14 +1292,14 @@ def get_task_registry():
 # ★★★ 一键生成所有合集的后台任务，核心优化在于只获取一次Emby媒体库 ★★★
 def task_process_all_custom_collections(processor: MediaProcessor):
     """
-    【V1 - 高效版】处理所有已启用的自定义合集。
-    它会先获取一次Emby全库媒体，然后在内存中为每个合集进行匹配，大幅提高效率。
+    【V2 - 终极高效版】处理所有已启用的自定义合集。
+    一次性获取所有Emby媒体内容和合集列表，在内存中进行匹配，实现零重复API调用。
     """
     task_name = "一键生成所有自建合集"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
 
     try:
-        # --- 步骤 1: 获取所有启用的自定义合集定义 ---
+        # --- 步骤 1: 获取所有启用的自定义合集定义 (不变) ---
         task_manager.update_status_from_thread(0, "正在获取所有启用的合集定义...")
         active_collections = db_handler.get_all_active_custom_collections(config_manager.DB_PATH)
         if not active_collections:
@@ -1310,24 +1310,28 @@ def task_process_all_custom_collections(processor: MediaProcessor):
         total = len(active_collections)
         logger.info(f"共找到 {total} 个已启用的自定义合集需要处理。")
 
-        # --- 步骤 2: 【核心优化】一次性获取Emby全库媒体数据 ---
-        task_manager.update_status_from_thread(5, "正在从Emby获取全库媒体数据，请稍候...")
+        # --- 步骤 2: 【核心优化】一次性获取所有需要的数据 ---
+        # 2a. 获取媒体库内容
+        task_manager.update_status_from_thread(2, "正在从Emby获取全库媒体数据...")
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
-        if not libs_to_process_ids:
-            raise ValueError("未在配置中指定要处理的媒体库。")
-
-        # 分别获取电影和剧集，然后合并
-        movies = emby_handler.get_emby_library_items(
-            base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
-            media_type_filter="Movie", library_ids=libs_to_process_ids
-        ) or []
-        series = emby_handler.get_emby_library_items(
-            base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
-            media_type_filter="Series", library_ids=libs_to_process_ids
-        ) or []
-        
+        if not libs_to_process_ids: raise ValueError("未在配置中指定要处理的媒体库。")
+        movies = emby_handler.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter="Movie", library_ids=libs_to_process_ids) or []
+        series = emby_handler.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter="Series", library_ids=libs_to_process_ids) or []
         all_emby_items = movies + series
         logger.info(f"已从Emby获取 {len(all_emby_items)} 个媒体项目。")
+
+        # 2b. ★★★ 新增：一次性获取所有合集列表 ★★★
+        task_manager.update_status_from_thread(5, "正在从Emby获取现有合集列表...")
+        all_emby_collections = emby_handler.get_all_collections_with_items(
+            base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id
+        ) or []
+        
+        # 2c. ★★★ 新增：将合集列表转换为方便查找的字典 (key为小写名字) ★★★
+        prefetched_collection_map = {
+            coll.get('Name', '').lower(): coll 
+            for coll in all_emby_collections
+        }
+        logger.info(f"已预加载 {len(prefetched_collection_map)} 个现有合集的信息。")
 
         # --- 步骤 3: 遍历所有合集，在内存中进行处理 ---
         for i, collection in enumerate(active_collections):
@@ -1344,7 +1348,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
             task_manager.update_status_from_thread(progress, f"({i+1}/{total}) 正在处理: {collection_name}")
 
             try:
-                # 3a. 生成目标TMDb ID列表 (这部分逻辑不变)
+                # 3a. 生成目标TMDb ID列表 (不变)
                 tmdb_ids = []
                 if collection_type == 'list':
                     importer = ListImporter(processor.tmdb_api_key)
@@ -1358,31 +1362,28 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                     db_handler.update_custom_collection_sync_status(config_manager.DB_PATH, collection_id, None)
                     continue
 
-                # 3b. 【核心优化】使用预加载的Emby数据进行匹配，而不是再次API请求
-                # 注意：这里我们直接调用一个更底层的函数，传递预先获取的数据
+                # 3b. ★★★ 核心修改：将两份预加载数据都传递下去 ★★★
                 emby_collection_id, _ = emby_handler.create_or_update_collection_with_tmdb_ids(
                     collection_name=collection_name,
                     tmdb_ids=tmdb_ids,
                     base_url=processor.emby_url,
                     api_key=processor.emby_api_key,
                     user_id=processor.emby_user_id,
-                    # 关键参数：传入预加载的媒体项，避免重复获取
                     prefetched_emby_items=all_emby_items, 
+                    prefetched_collection_map=prefetched_collection_map, # <--- 传递合集字典
                     item_type=definition.get('item_type', 'Movie')
                 )
 
-                # 3c. 更新数据库状态
+                # 3c. 更新数据库状态 (不变)
                 db_handler.update_custom_collection_sync_status(config_manager.DB_PATH, collection_id, emby_collection_id)
                 logger.info(f"合集 '{collection_name}' 处理完成。")
 
             except Exception as e_coll:
                 logger.error(f"处理合集 '{collection_name}' (ID: {collection_id}) 时发生错误: {e_coll}", exc_info=True)
-                # 单个合集失败不应中断整个任务，继续处理下一个
                 continue
         
         final_message = "所有启用的自定义合集均已处理完毕！"
-        if processor.is_stop_requested():
-            final_message = "任务已中止。"
+        if processor.is_stop_requested(): final_message = "任务已中止。"
         
         task_manager.update_status_from_thread(100, final_message)
         logger.info(f"--- '{task_name}' 任务成功完成 ---")
