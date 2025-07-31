@@ -948,6 +948,11 @@ class MediaProcessor:
             logger.error("未配置TMDb API Key，无法从在线获取数据。")
             return False
 
+        # ★★★ 1. 提前定义评分逻辑所需的变量 ★★★
+        genres = item_details_from_emby.get("Genres", [])
+        is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
+        original_emby_actor_count = len(item_details_from_emby.get("People", []))
+
         log_prefix = f"[{'在线模式' if force_fetch_from_tmdb else '本地优先'}]"
         logger.info(f"{log_prefix} 开始处理 '{item_name_for_log}' (TMDb ID: {tmdb_id})")
 
@@ -1166,6 +1171,23 @@ class MediaProcessor:
                     self.sync_item_images(item_details_from_emby)
                     
                 # --- 刷新与日志 ---
+                final_actor_count = len(final_cast_perfect)
+                logger.info(f"✨✨✨处理统计 '{item_name_for_log}'✨✨✨")
+                logger.info(f"  - Emby原有演员: {original_emby_actor_count} 位")
+                newly_added_count = final_actor_count - original_emby_actor_count
+                if newly_added_count > 0:
+                    logger.info(f"  - 新增演员: {newly_added_count} 位") 
+                logger.info(f"  - 最终演员: {final_actor_count} 位")
+
+                if self.is_stop_requested(): raise InterruptedError("任务被中止")
+
+                processing_score = actor_utils.evaluate_cast_processing_quality(
+                    final_cast=final_cast_perfect,
+                    original_cast_count=original_emby_actor_count,
+                    expected_final_count=final_actor_count,
+                    is_animation=is_animation
+                )
+                min_score_for_review = float(self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW))
                 refresh_success = emby_handler.refresh_emby_item_metadata(
                     item_emby_id=item_id,
                     emby_server_url=self.emby_url,

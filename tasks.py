@@ -109,7 +109,7 @@ def run_full_rebuild_task(self, update_status_callback: Optional[callable] = Non
             update_status_callback(-1, f"任务失败: {e}")
         raise
 
-# --- 执行全量媒体库扫描 ---
+# --- 常规全量媒体库扫描 ---
 def task_process_full_library(processor: MediaProcessor, process_episodes: bool):
     """
     【标准版】执行常规的全量媒体库扫描。
@@ -123,7 +123,7 @@ def task_process_full_library(processor: MediaProcessor, process_episodes: bool)
         force_fetch_from_tmdb=False # 标准扫描使用本地缓存优先
     )
 
-# ★★★ 一个专门用于强制重处理所有项目的任务 ★★★
+# --- 强制全量媒体库扫描 ---
 def task_force_reprocess_full_library(processor: MediaProcessor, process_episodes: bool):
     """
     【强制版】执行强制全量扫描。
