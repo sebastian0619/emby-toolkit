@@ -111,10 +111,32 @@ def run_full_rebuild_task(self, update_status_callback: Optional[callable] = Non
 
 # --- 执行全量媒体库扫描 ---
 def task_process_full_library(processor: MediaProcessor, process_episodes: bool):
+    """
+    【标准版】执行常规的全量媒体库扫描。
+    这个任务会智能跳过已经成功处理过的项目。
+    """
+    logger.info("即将执行【标准】全量扫描，将跳过已处理项...")
     processor.process_full_library(
         update_status_callback=task_manager.update_status_from_thread,
-        process_episodes=process_episodes
+        process_episodes=process_episodes,
+        force_reprocess_all=False,  # ★★★ 核心：明确传递 False，确保跳过逻辑生效 ★★★
+        force_fetch_from_tmdb=False # 标准扫描使用本地缓存优先
     )
+
+# ★★★ 一个专门用于强制重处理所有项目的任务 ★★★
+def task_force_reprocess_full_library(processor: MediaProcessor, process_episodes: bool):
+    """
+    【强制版】执行强制全量扫描。
+    这个任务会清空处理记录，并从零开始处理媒体库中的每一个项目。
+    """
+    logger.warning("即将执行【强制】全量扫描，将处理所有媒体项...")
+    processor.process_full_library(
+        update_status_callback=task_manager.update_status_from_thread,
+        process_episodes=process_episodes,
+        force_reprocess_all=True,   # ★★★ 核心：明确传递 True，触发清空日志和全量处理 ★★★
+        force_fetch_from_tmdb=True  # 强制扫描通常也意味着强制从在线获取最新数据
+    )
+
 # --- 同步演员映射表 ---
 def task_sync_person_map(processor):
     """

@@ -19,20 +19,29 @@ logger = logging.getLogger(__name__)
 @processor_ready_required
 @task_lock_required
 def api_handle_trigger_full_scan():
-    from tasks import task_process_full_library # 延迟导入
+    # ★★★ 延迟导入两个任务 ★★★
+    from tasks import task_process_full_library, task_force_reprocess_full_library 
     from config_manager import APP_CONFIG
     
+    # 1. 检查前端是否勾选了“强制重处理”
     force_reprocess = request.form.get('force_reprocess_all') == 'on'
+    
+    # 2. 根据 `force_reprocess` 的值，决定调用哪个任务和显示什么消息
     if force_reprocess:
-        try:
-            extensions.media_processor_instance.clear_processed_log()
-        except Exception as e:
-            return jsonify({"error": f"清空日志失败: {e}"}), 500
+        task_to_run = task_force_reprocess_full_library
+        action_message = "全量媒体库扫描 (强制重处理)"
+        logger.info("API层：接收到强制全量扫描请求，将提交强制任务。")
+    else:
+        task_to_run = task_process_full_library
+        action_message = "全量媒体库扫描 (标准模式)"
+        logger.info("API层：接收到标准全量扫描请求，将提交标准任务。")
 
-    action_message = "全量媒体库扫描" + (" (强制重处理)" if force_reprocess else "")
+    # 3. 获取通用参数
     process_episodes = APP_CONFIG.get('process_episodes', True)
     
-    success = task_manager.submit_task(task_process_full_library, action_message, process_episodes)
+    # 4. 提交选择好的任务
+    success = task_manager.submit_task(task_to_run, action_message, process_episodes)
+    
     if success:
         return jsonify({"message": f"{action_message} 任务已提交启动。"}), 202
     else:
