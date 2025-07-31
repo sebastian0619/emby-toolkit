@@ -132,3 +132,18 @@ def api_sync_custom_collection(collection_id):
     )
     
     return jsonify({"message": f"'{task_name}' 任务已提交到后台处理。"}), 202
+
+# ★★★ 一键生成所有合集的 API 路由 ★★★
+@custom_collections_bp.route('/sync_all', methods=['POST'])
+@login_required
+def api_sync_all_custom_collections():
+    """触发对所有已启用的自定义合集进行后台同步的任务"""
+    from tasks import task_process_all_custom_collections
+
+    task_name = "一键生成所有自建合集"
+    task_manager.submit_task(
+        task_process_all_custom_collections,
+        task_name
+    )
+    
+    return jsonify({"message": f"'{task_name}' 任务已提交到后台处理。"}), 202

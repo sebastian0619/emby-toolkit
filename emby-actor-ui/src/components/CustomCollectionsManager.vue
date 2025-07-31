@@ -18,7 +18,10 @@
               </template>
               快速同步媒体元数据
             </n-tooltip>
-
+            <n-button type="primary" ghost @click="handleSyncAll" :loading="isSyncingAll">
+              <template #icon><n-icon :component="GenerateIcon" /></template>
+              一键生成所有
+            </n-button>
             <n-button type="primary" @click="handleCreateClick">
               <template #icon><n-icon :component="AddIcon" /></template>
               创建新合集
@@ -215,6 +218,7 @@ const formRef = ref(null);
 const syncLoading = ref({});
 const isSyncingMetadata = ref(false);
 const countryOptions = ref([]);
+const isSyncingAll = ref(false);
 const genreOptions = ref([]);
 const studioOptions = ref([]);
 const isSearchingStudios = ref(false);
@@ -420,6 +424,19 @@ const fetchCollections = async () => {
     message.error('加载自定义合集列表失败。');
   } finally {
     isLoading.value = false;
+  }
+};
+
+// --- ★★★ 新增：一键生成所有合集的处理函数 ★★★ ---
+const handleSyncAll = async () => {
+  isSyncingAll.value = true;
+  try {
+    const response = await axios.post('/api/custom_collections/sync_all');
+    message.success(response.data.message || '已提交一键生成任务！');
+  } catch (error) {
+    message.error(error.response?.data?.error || '提交一键生成任务失败。');
+  } finally {
+    isSyncingAll.value = false;
   }
 };
 

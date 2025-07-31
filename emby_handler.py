@@ -1108,26 +1108,37 @@ def add_items_to_collection(collection_id: str, item_ids: List[str], base_url: s
 
 # ★★★ 创建或更新一个合集 ★★★
 def create_or_update_collection_with_tmdb_ids(
-    collection_name: str, tmdb_ids: List[int], base_url: str, api_key: str, 
-    user_id: str, library_ids: List[str], item_type: str = 'Movie'
-) -> Optional[Tuple[str, List[str]]]: 
+    collection_name: str, tmdb_ids: List[int], base_url: str, api_key: str,
+    user_id: str, library_ids: List[str] = None, item_type: str = 'Movie',
+    prefetched_emby_items: Optional[list] = None
+) -> Optional[Tuple[str, List[str]]]:
     """
-    【V8 - 修复创建逻辑的终极版】在Emby中创建或更新一个合集，支持电影和电视剧。
-    核心修复：修正了创建新合集时因ID过多导致URL超长(414)的错误。
+    【V9 - 高效版】在Emby中创建或更新一个合集，支持电影和电视剧。
+    新增支持传入预先获取的媒体列表，避免重复API调用。
     """
     log_item_type = "电影" if item_type == "Movie" else "电视剧"
     logger.info(f"开始在Emby中处理名为 '{collection_name}' 的{log_item_type}合集...")
     
     try:
-        # 1. 获取媒体库中所有对应类型的项目 (这部分逻辑不变)
-        all_media_items = get_emby_library_items(
-            base_url=base_url, api_key=api_key, user_id=user_id, 
-            media_type_filter=item_type, library_ids=library_ids
-        )
+        # ★★★ 核心修改：如果传入了预加载数据，就用它；否则，像以前一样去获取 ★★★
+        if prefetched_emby_items is not None:
+            logger.debug("使用预加载的Emby媒体数据进行匹配。")
+            all_media_items = prefetched_emby_items
+        else:
+            logger.debug("未提供预加载数据，将从Emby API获取。")
+            if not library_ids:
+                logger.error("在非预加载模式下，必须提供 library_ids。")
+                return None
+            all_media_items = get_emby_library_items(
+                base_url=base_url, api_key=api_key, user_id=user_id,
+                media_type_filter=item_type, library_ids=library_ids
+            )
+
         if all_media_items is None:
             logger.error(f"无法从Emby获取{log_item_type}列表，操作中止。")
             return None
-            
+
+        # (后续逻辑与原版保持一致)
         tmdb_to_emby_id_map = {
             item['ProviderIds']['Tmdb']: item['Id']
             for item in all_media_items
@@ -1137,53 +1148,42 @@ def create_or_update_collection_with_tmdb_ids(
         tmdb_ids_in_library = [str(tid) for tid in tmdb_ids if str(tid) in tmdb_to_emby_id_map]
         emby_item_ids_to_add = [tmdb_to_emby_id_map[tid] for tid in tmdb_ids_in_library]
         
-        # 2. 检查合集是否已存在
         collection = get_collection_by_name(collection_name, base_url, api_key, user_id)
         
         emby_collection_id = None
         success = False
 
         if collection:
-            # --- 更新逻辑 (这条路径是正常的) ---
             emby_collection_id = collection['Id']
             logger.info(f"发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，将更新其内容。")
-            # 调用我们之前修复好的、健壮的函数
             success = add_items_to_collection(emby_collection_id, emby_item_ids_to_add, base_url, api_key)
         else:
-            # --- 创建逻辑 (这是本次修复的核心) ---
             logger.info(f"未找到合集 '{collection_name}'，将开始创建...")
             
             if not emby_item_ids_to_add:
                 logger.warning(f"无法创建合集 '{collection_name}'，因为媒体库中没有任何匹配的{log_item_type}可供添加。")
-                return (None, [])
+                return None
 
             api_url = f"{base_url.rstrip('/')}/Collections"
-            
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★★★ 核心修复：将 Name 和 Ids 放入请求体(data)，而不是URL参数(params) ★★★
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            params = {
-                'api_key': api_key,
-            }
+            params = {'api_key': api_key}
             payload = {
                 'Name': collection_name,
                 'Ids': ",".join(emby_item_ids_to_add)
             }
             
             try:
-                # 使用 data 参数发送数据，避免URL过长
                 response = requests.post(api_url, params=params, data=payload, timeout=30)
                 response.raise_for_status()
                 new_collection_info = response.json()
                 emby_collection_id = new_collection_info.get('Id')
                 if emby_collection_id:
-                    logger.info(f"成功通过通用接口创建新合集 '{collection_name}' (ID: {emby_collection_id}) 并添加了 {len(emby_item_ids_to_add)} 个项目。")
+                    logger.info(f"成功创建新合集 '{collection_name}' (ID: {emby_collection_id}) 并添加了 {len(emby_item_ids_to_add)} 个项目。")
                     success = True
                 else:
                     logger.error("通用接口创建合集API调用成功，但响应中未包含ID。")
             except requests.RequestException as e:
                 response_text = e.response.text[:500] if e.response is not None else ""
-                logger.error(f"通过通用接口创建新合集 '{collection_name}' 时失败: {e}. 响应: {response_text}")
+                logger.error(f"创建新合集 '{collection_name}' 时失败: {e}. 响应: {response_text}")
 
         if success and emby_collection_id:
             return (emby_collection_id, tmdb_ids_in_library)

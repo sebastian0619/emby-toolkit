@@ -841,6 +841,21 @@ def get_all_custom_collections(db_path: str) -> List[Dict[str, Any]]:
         logger.error(f"获取所有自定义合集时发生数据库错误: {e}", exc_info=True)
         return []
 
+# ★★★ 获取所有已启用的自定义合集，供“一键生成”任务使用 ★★★
+def get_all_active_custom_collections(db_path: str) -> List[Dict[str, Any]]:
+    """获取所有状态为 'active' 的自定义合集"""
+    try:
+        with get_db_connection(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM custom_collections WHERE status = 'active' ORDER BY name ASC")
+            rows = cursor.fetchall()
+            logger.info(f"从数据库找到 {len(rows)} 个已启用的自定义合集。")
+            return [dict(row) for row in rows]
+    except sqlite3.Error as e:
+        logger.error(f"获取所有已启用的自定义合集时发生数据库错误: {e}", exc_info=True)
+        return []
+
 def get_custom_collection_by_id(db_path: str, collection_id: int) -> Optional[Dict[str, Any]]:
     """
     根据ID获取单个自定义合集的详细信息。
