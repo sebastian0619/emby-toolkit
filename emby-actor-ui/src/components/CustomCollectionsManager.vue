@@ -76,14 +76,7 @@
           />
         </n-form-item>
 
-        <n-form-item v-if="currentCollection.type === 'filter'" label="合集内容" path="definition.item_type">
-          <n-radio-group v-model:value="currentCollection.definition.item_type">
-            <n-space>
-             <n-radio value="Movie">电影</n-radio>
-             <n-radio value="Series">电视剧</n-radio>
-            </n-space>
-          </n-radio-group>
-        </n-form-item>
+        
 
         <!-- ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★ -->
         <!-- ★★★ 核心升级: 动态表单区域 ★★★ -->
