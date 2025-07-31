@@ -66,6 +66,7 @@ COPY requirements.txt \
      extensions.py \
      tasks.py \
      github_handler.py \
+     custom_collection_handler.py \
      ./
 
 COPY routes/ ./routes/
