@@ -681,18 +681,34 @@ def get_single_subscription_details(db_path: str, subscription_id: int) -> Optio
         raise
 
 
-def add_actor_subscription(db_path: str, tmdb_person_id: int, actor_name: str, profile_path: str, config: Dict[str, Any]) -> int:
+def safe_json_dumps(value):
+    """
+    将 Python 对象转换成 JSON 字符串。
+    如果传入的是字符串且能被解析成合法 JSON，则先解析再序列化，避免重复转义。
+    否则按字符串处理。
+    """
+    if isinstance(value, str):
+        try:
+            # 尝试解析字符串（可能是JSON字符串）
+            parsed = json.loads(value)
+            # 重新序列化，保证仅一层转义
+            return json.dumps(parsed, ensure_ascii=False)
+        except Exception:
+            # 解析失败，按字符串序列化
+            return json.dumps(value, ensure_ascii=False)
+    else:
+        # 普通Python对象，正常序列化
+        return json.dumps(value, ensure_ascii=False)
+
+def add_actor_subscription(db_path: str, tmdb_person_id: int, actor_name: str, profile_path: str, config: dict) -> int:
     """
     新增一个演员订阅。
-    如果已存在，会因 UNIQUE 约束而失败，并由上层捕获 IntegrityError。
-    成功则返回新订阅的 ID。
+    正确处理配置中的 JSON 字段，避免多层转义。
     """
-    # 从配置字典中安全地提取值
     start_year = config.get('start_year', 1900)
     media_types = config.get('media_types', 'Movie,TV')
-    # 确保 genres 是 JSON 字符串
-    genres_include = json.dumps(config.get('genres_include_json', []))
-    genres_exclude = json.dumps(config.get('genres_exclude_json', []))
+    genres_include = safe_json_dumps(config.get('genres_include_json', []))
+    genres_exclude = safe_json_dumps(config.get('genres_exclude_json', []))
     min_rating = config.get('min_rating', 6.0)
 
     try:
@@ -711,37 +727,38 @@ def add_actor_subscription(db_path: str, tmdb_person_id: int, actor_name: str, p
             logger.info(f"DB: 成功添加演员订阅 '{actor_name}' (ID: {new_sub_id})。")
             return new_sub_id
     except sqlite3.IntegrityError:
-        # 不记录日志，直接向上抛出，让业务逻辑层知道是“重复”错误
         raise
     except Exception as e:
         logger.error(f"DB: 添加演员订阅 '{actor_name}' 时失败: {e}", exc_info=True)
         raise
 
-
-def update_actor_subscription(db_path: str, subscription_id: int, data: Dict[str, Any]) -> bool:
+def update_actor_subscription(db_path: str, subscription_id: int, data: dict) -> bool:
     """
     更新一个演员订阅的状态或配置。
-    返回 True 表示成功，False 表示未找到。
+    处理 JSON 字段时避免多层转义。
     """
     try:
         with get_db_connection(db_path) as conn:
             cursor = conn.cursor()
-            
-            # 为了避免覆盖，先获取当前值
             cursor.execute("SELECT * FROM actor_subscriptions WHERE id = ?", (subscription_id,))
             current_sub = cursor.fetchone()
             if not current_sub:
                 return False
 
-            # 使用新值，如果新值不存在，则使用当前数据库中的旧值
             new_status = data.get('status', current_sub['status'])
             config = data.get('config')
-            
+
             if config is not None:
                 new_start_year = config.get('start_year', current_sub['config_start_year'])
                 new_media_types = config.get('media_types', current_sub['config_media_types'])
-                new_genres_include = json.dumps(config.get('genres_include_json', json.loads(current_sub['config_genres_include_json'])))
-                new_genres_exclude = json.dumps(config.get('genres_exclude_json', json.loads(current_sub['config_genres_exclude_json'])))
+
+                # 先拿配置传入值，没有则尝试从数据库旧值解析Python对象
+                genres_include_raw = config.get('genres_include_json', current_sub['config_genres_include_json'])
+                genres_exclude_raw = config.get('genres_exclude_json', current_sub['config_genres_exclude_json'])
+
+                new_genres_include = safe_json_dumps(genres_include_raw)
+                new_genres_exclude = safe_json_dumps(genres_exclude_raw)
+
                 new_min_rating = config.get('min_rating', current_sub['config_min_rating'])
             else:
                 new_start_year = current_sub['config_start_year']

@@ -1331,63 +1331,47 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         if not emby_collection_id:
             raise RuntimeError("在Emby中创建或更新合集失败。")
 
-        # --- ★★★ 步骤 3: 创后即检！立即分析这个新合集的缺失状态 ★★★ ---
-        task_manager.update_status_from_thread(90, "合集已同步，正在分析缺失内容...")
-        
-        # 3.1 获取这个新合集的详细信息，主要是为了海报
-        emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-        image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
-        poster_path = f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
-
-        # 3.2 获取合集内已有的项目的TMDb ID
-        existing_items = emby_handler.get_emby_library_items(
-            base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
-            library_ids=[emby_collection_id], media_type_filter=item_type_for_collection
-        )
-        existing_tmdb_ids = {item['ProviderIds'].get('Tmdb') for item in existing_items if item.get('ProviderIds', {}).get('Tmdb')}
-        
-        # 3.3 调用TMDb API获取榜单上所有电影的详细信息（为了上映日期）
-        all_movies_details = [tmdb_handler.get_movie_details(tid, processor.tmdb_api_key) for tid in tmdb_ids]
-        
-        # 3.4 执行与 `_process_single_collection_concurrently` 相同的分析逻辑
-        all_movies_with_status = []
-        today_str = datetime.now().strftime('%Y-%m-%d')
-        has_missing = False
-
-        for movie in all_movies_details:
-            if not movie: continue
-            movie_tmdb_id = str(movie.get("id"))
-            movie_status = "unknown"
+        # --- ★★★ 步骤 3: 智能缺失检查 ★★★ ---
+        # ★★★ 只有“榜单导入”类型的合集，才需要进行缺失检查 ★★★
+        if collection_type == 'list':
+            task_manager.update_status_from_thread(90, "榜单合集已生成，正在分析缺失内容...")
             
-            if movie_tmdb_id in existing_tmdb_ids:
-                movie_status = "in_library"
-            elif movie.get("release_date", '') > today_str:
-                movie_status = "unreleased"
-            else:
-                movie_status = "missing"
-                has_missing = True
+            # (这里是我们之前写的、完整的“创后即检”逻辑)
+            emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+            image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
+            poster_path = f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
             
-            all_movies_with_status.append({
-                "tmdb_id": movie_tmdb_id, "title": movie.get("title"),
-                "release_date": movie.get("release_date"), "poster_path": movie.get("poster_path"),
-                "status": movie_status
-            })
+            existing_items = emby_handler.get_emby_library_items(
+                base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
+                library_ids=[emby_collection_id], media_type_filter=item_type_for_collection
+            )
+            existing_tmdb_ids = {item['ProviderIds'].get('Tmdb') for item in existing_items if item.get('ProviderIds', {}).get('Tmdb')}
+            
+            all_movies_details = [tmdb_handler.get_movie_details(tid, processor.tmdb_api_key) for tid in tmdb_ids]
+            
+            all_movies_with_status, has_missing = [], False
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            for movie in all_movies_details:
+                if not movie: continue
+                movie_tmdb_id, movie_status = str(movie.get("id")), "unknown"
+                if movie_tmdb_id in existing_tmdb_ids: movie_status = "in_library"
+                elif movie.get("release_date", '') > today_str: movie_status = "unreleased"
+                else: movie_status, has_missing = "missing", True
+                all_movies_with_status.append({
+                    "tmdb_id": movie_tmdb_id, "title": movie.get("title"), "release_date": movie.get("release_date"), 
+                    "poster_path": movie.get("poster_path"), "status": movie_status
+                })
 
-        # 3.5 将完整的分析结果打包
-        analysis_result = {
-            "emby_collection_id": emby_collection_id,
-            "name": collection_name,
-            "tmdb_collection_id": None, # 自定义合集没有TMDb合集ID
-            "status": "has_missing" if has_missing else "ok",
-            "has_missing": has_missing,
-            "missing_movies_json": json.dumps(all_movies_with_status),
-            "last_checked_at": time.time(),
-            "poster_path": poster_path,
-            "in_library_count": len(existing_tmdb_ids)
-        }
-        
-        # 3.6 将分析结果写入 collections_info 表
-        db_handler.upsert_collection_info(config_manager.DB_PATH, analysis_result)
+            analysis_result = {
+                "emby_collection_id": emby_collection_id, "name": collection_name, "tmdb_collection_id": None,
+                "status": "has_missing" if has_missing else "ok", "has_missing": has_missing,
+                "missing_movies_json": json.dumps(all_movies_with_status), "last_checked_at": time.time(),
+                "poster_path": poster_path, "in_library_count": len(existing_tmdb_ids)
+            }
+            db_handler.upsert_collection_info(config_manager.DB_PATH, analysis_result)
+        else:
+            # 对于“筛选类”合集，我们只记录一个简单的成功状态，不进行缺失分析
+            task_manager.update_status_from_thread(95, "筛选合集已生成，跳过缺失分析。")
 
         # --- 步骤 4: 更新自定义合集表的状态 (这部分不变) ---
         db_handler.update_custom_collection_sync_status(config_manager.DB_PATH, custom_collection_id, emby_collection_id)

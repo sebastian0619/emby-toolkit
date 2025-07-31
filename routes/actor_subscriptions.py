@@ -31,7 +31,7 @@ def api_search_actors():
         return jsonify({"error": "服务器未配置TMDb API Key"}), 503
 
     try:
-        search_results = tmdb_handler.search_media(query, tmdb_api_key)
+        search_results = tmdb_handler.search_person_tmdb(query, tmdb_api_key)
         if search_results is None:
             return jsonify({"error": "从TMDb搜索演员时发生错误"}), 500
         

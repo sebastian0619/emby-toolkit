@@ -244,9 +244,9 @@ class ActorSubscriptionProcessor:
                         continue
             
             title = work.get('title') or work.get('name', '')
-            if not chinese_char_regex.search(title):
-                logger.trace(f"过滤作品: '{title}' (排除无中文片名)。")
-                continue
+            # if not chinese_char_regex.search(title):
+            #     logger.debug(f"过滤作品: '{title}' (排除无中文片名)。")
+            #     continue
             
             handled_media_ids.add(media_id)
             filtered.append(work)

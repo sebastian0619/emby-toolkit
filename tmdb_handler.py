@@ -230,6 +230,23 @@ def search_media(query: str, api_key: str, item_type: str = 'movie') -> Optional
         data = _tmdb_request(endpoint, api_key, params)
 
     return data.get("results") if data else None
+# --- 搜索演员 ---
+def search_person_tmdb(query: str, api_key: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    【新】通过名字在 TMDb 上搜索演员。
+    """
+    if not query or not api_key:
+        return None
+    endpoint = "/search/person"
+    # 我们可以添加一些参数来优化搜索，比如只搜索非成人内容，并优先中文结果
+    params = {
+        "query": query,
+        "include_adult": "false",
+        "language": DEFAULT_LANGUAGE # 使用模块内定义的默认语言
+    }
+    logger.debug(f"TMDb: 正在搜索演员: '{query}'")
+    data = _tmdb_request(endpoint, api_key, params)
+    return data.get("results") if data else None
 # --- 获取演员的所有影视作品 ---
 def get_person_credits_tmdb(person_id: int, api_key: str) -> Optional[Dict[str, Any]]:
     """
