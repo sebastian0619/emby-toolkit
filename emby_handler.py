@@ -1076,23 +1076,29 @@ def get_collection_by_name(name: str, base_url: str, api_key: str, user_id: str)
     logger.debug(f"未找到名为 '{name}' 的合集。")
     return None
 
+# --- 将一个项目ID列表添加到一个合集中 ---
 def add_items_to_collection(collection_id: str, item_ids: List[str], base_url: str, api_key: str) -> bool:
     """
-    将一个项目ID列表添加到一个合集中。此操作会替换合集内原有的所有项目。
+    【健壮版】将一个项目ID列表添加到一个合集中。此操作会替换合集内原有的所有项目。
     :param collection_id: 目标合集的 ID。
     :param item_ids: 要添加的媒体项目（电影）的 Emby ID 列表。
     :return: True 表示成功，False 表示失败。
     """
     api_url = f"{base_url.rstrip('/')}/Collections/{collection_id}/Items"
-    # Emby API 需要一个逗号分隔的ID字符串
     ids_str = ",".join(item_ids)
-    params = {
-        'api_key': api_key,
+    
+    # ★★★ 核心修复：使用 data 参数而不是 params，将ID列表放入请求体中 ★★★
+    # 这样可以避免URL长度限制
+    payload = {
         'Ids': ids_str
+    }
+    params = {
+        'api_key': api_key
     }
     
     try:
-        response = requests.post(api_url, params=params, timeout=20)
+        # POST请求的data参数会将数据放在请求体中
+        response = requests.post(api_url, params=params, data=payload, timeout=30)
         response.raise_for_status()
         logger.info(f"成功将 {len(item_ids)} 个项目更新到合集 ID: {collection_id}。")
         return True
@@ -1190,40 +1196,39 @@ def create_or_update_collection_with_tmdb_ids(
 # ★★★ 新增：向合集追加单个项目的函数 ★★★
 def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: str, api_key: str, user_id: str) -> bool:
     """
-    向一个已存在的合集中追加单个媒体项，而不会删除原有项目。
+    【V2 - 高效修正版】向一个已存在的合集中追加单个媒体项。
+    此版本直接调用API添加单个项目，避免了获取和重传整个列表，解决了URL过长的问题。
     :param collection_id: 目标合集的ID。
     :param item_emby_id: 要追加的媒体项的Emby ID。
     :return: True 如果成功，否则 False。
     """
     logger.info(f"准备将项目 {item_emby_id} 追加到合集 {collection_id}...")
+    
+    # Emby API的 /Collections/{Id}/Items 端点本身就是追加逻辑
+    api_url = f"{base_url.rstrip('/')}/Collections/{collection_id}/Items"
+    
+    # ★★★ 核心修复：只发送需要添加的单个ID ★★★
+    params = {
+        'api_key': api_key,
+        'Ids': item_emby_id  # 只传递单个ID，URL长度绝对安全
+    }
+    
     try:
-        # 1. 获取合集当前的所有项目ID
-        children_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
-        children_params = {
-            "api_key": api_key,
-            "ParentId": collection_id,
-            "Fields": "Id" # 我们只需要ID
-        }
-        response = requests.get(children_url, params=children_params, timeout=15)
+        # 使用POST请求添加
+        response = requests.post(api_url, params=params, timeout=20)
         response.raise_for_status()
         
-        current_item_ids = {item['Id'] for item in response.json().get("Items", [])}
-        logger.debug(f"合集 {collection_id} 当前包含 {len(current_item_ids)} 个项目。")
-
-        # 2. 如果要添加的项目已在其中，则无需操作
-        if item_emby_id in current_item_ids:
-            logger.info(f"项目 {item_emby_id} 已存在于合集 {collection_id} 中，无需追加。")
-            return True
-
-        # 3. 将新项目ID加入列表，并调用“替换”API
-        updated_item_ids = list(current_item_ids) + [item_emby_id]
+        # Emby成功后通常返回 204 No Content
+        logger.info(f"成功发送追加请求：将项目 {item_emby_id} 添加到合集 {collection_id}。")
+        return True
         
-        # 复用我们已有的 add_items_to_collection 函数
-        return add_items_to_collection(collection_id, updated_item_ids, base_url, api_key)
-
     except requests.RequestException as e:
-        logger.error(f"追加项目到合集 {collection_id} 时发生网络错误: {e}", exc_info=True)
+        # 检查是否是因为项目已存在而导致的特定错误（虽然通常Emby会直接返回成功）
+        if e.response is not None:
+            logger.error(f"向合集 {collection_id} 追加项目 {item_emby_id} 时失败: HTTP {e.response.status_code} - {e.response.text[:200]}")
+        else:
+            logger.error(f"向合集 {collection_id} 追加项目 {item_emby_id} 时发生网络错误: {e}")
         return False
     except Exception as e:
-        logger.error(f"追加项目到合集 {collection_id} 时发生未知错误: {e}", exc_info=True)
+        logger.error(f"向合集 {collection_id} 追加项目时发生未知错误: {e}", exc_info=True)
         return False
