@@ -48,7 +48,40 @@ def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] 
     except json.JSONDecodeError as e:
         logger.error(f"TMDb API JSON Decode Error: {e}. URL: {full_url}. Response: {response.text[:200] if response else 'N/A'}", exc_info=False)
         return None
+# --- 获取电影的详细信息 ---
+def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,release_dates") -> Optional[Dict[str, Any]]:
+    """
+    【新增】获取电影的详细信息。
+    """
+    endpoint = f"/movie/{movie_id}"
+    params = {
+        "language": DEFAULT_LANGUAGE,
+        "append_to_response": append_to_response or ""
+    }
+    logger.debug(f"TMDb: 获取电影详情 (ID: {movie_id})")
+    details = _tmdb_request(endpoint, api_key, params)
+    
+    # 同样为电影补充英文标题，保持逻辑一致性
+    if details and details.get("original_language") != "en" and DEFAULT_LANGUAGE.startswith("zh"):
+        # 优先从 translations 获取
+        if "translations" in (append_to_response or "") and details.get("translations", {}).get("translations"):
+            for trans in details["translations"]["translations"]:
+                if trans.get("iso_639_1") == "en" and trans.get("data", {}).get("title"):
+                    details["english_title"] = trans["data"]["title"]
+                    logger.debug(f"  从translations补充电影英文名: {details['english_title']}")
+                    break
+        # 如果没有，再单独请求一次英文版
+        if not details.get("english_title"):
+            logger.debug(f"  尝试获取电影 {movie_id} 的英文名...")
+            en_params = {"language": "en-US"}
+            en_details = _tmdb_request(f"/movie/{movie_id}", api_key, en_params)
+            if en_details and en_details.get("title"):
+                details["english_title"] = en_details.get("title")
+                logger.debug(f"  通过请求英文版补充电影英文名: {details['english_title']}")
+    elif details and details.get("original_language") == "en":
+        details["english_title"] = details.get("original_title")
 
+    return details
 # --- 获取电视剧的详细信息 ---
 def get_tv_details_tmdb(tv_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,content_ratings") -> Optional[Dict[str, Any]]:
     """
@@ -160,22 +193,42 @@ def get_collection_details_tmdb(collection_id: int, api_key: str) -> Optional[Di
     
     logger.debug(f"TMDb: 获取合集详情 (ID: {collection_id})")
     return _tmdb_request(endpoint, api_key, params)
-# --- 搜索演员 ---
-def search_person_tmdb(query: str, api_key: str) -> Optional[List[Dict[str, Any]]]:
+# --- 搜索媒体 ---
+def search_media(query: str, api_key: str, item_type: str = 'movie') -> Optional[List[Dict[str, Any]]]:
     """
-    【新】通过名字在 TMDb 上搜索演员。
+    【V2 - 通用版】通过名字在 TMDb 上搜索媒体（电影、电视剧、演员）。
     """
     if not query or not api_key:
         return None
-    endpoint = "/search/person"
-    # 我们可以添加一些参数来优化搜索，比如只搜索非成人内容，并优先中文结果
+    
+    # 根据 item_type 决定 API 的端点
+    endpoint_map = {
+        'movie': '/search/movie',
+        'tv': '/search/tv',
+        'series': '/search/tv', # series 是 tv 的别名
+        'person': '/search/person'
+    }
+    endpoint = endpoint_map.get(item_type.lower())
+    
+    if not endpoint:
+        logger.error(f"不支持的搜索类型: '{item_type}'")
+        return None
+
     params = {
         "query": query,
-        "include_adult": "false",
-        "language": DEFAULT_LANGUAGE # 使用模块内定义的默认语言
+        "include_adult": "true", # 电影搜索通常需要包含成人内容
+        "language": DEFAULT_LANGUAGE
     }
-    logger.debug(f"TMDb: 正在搜索演员: '{query}'")
+    
+    logger.debug(f"TMDb: 正在搜索 {item_type}: '{query}'")
     data = _tmdb_request(endpoint, api_key, params)
+    
+    # 如果中文搜索不到，可以尝试用英文再搜一次
+    if data and not data.get("results") and params['language'].startswith("zh"):
+        logger.debug(f"中文搜索 '{query}' 未找到结果，尝试使用英文再次搜索...")
+        params['language'] = 'en-US'
+        data = _tmdb_request(endpoint, api_key, params)
+
     return data.get("results") if data else None
 # --- 获取演员的所有影视作品 ---
 def get_person_credits_tmdb(person_id: int, api_key: str) -> Optional[Dict[str, Any]]:

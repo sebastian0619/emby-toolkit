@@ -11,7 +11,7 @@ import docker
 import task_manager
 from logger_setup import frontend_log_queue
 import config_manager
-import config_manager
+import db_handler
 # 导入共享模块
 import extensions
 from extensions import login_required, task_lock_required
@@ -310,3 +310,55 @@ def stream_update_progress():
             yield from send_event({"status": error_message, "event": "ERROR"})
 
     return Response(stream_with_context(generate_progress()), mimetype='text/event-stream')
+# ★★★ 提供国家/地区映射的API ★★★
+@system_bp.route('/config/countries', methods=['GET'])
+@login_required
+def api_get_countries_config():
+    """
+    读取并返回国家/地区的中英文映射JSON文件。
+    """
+    try:
+        # 从持久化数据目录读取文件
+        countries_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'countries.json')
+        
+        if not os.path.exists(countries_path):
+            logger.warning("请求国家/地区配置失败，因为 countries.json 文件不存在。")
+            return jsonify({"error": "配置文件 'countries.json' 未找到"}), 404
+
+        with open(countries_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            return jsonify(data)
+
+    except Exception as e:
+        logger.error(f"读取 countries.json 时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+# ★★★ 提供电影类型映射的API ★★★
+@system_bp.route('/config/genres', methods=['GET'])
+@login_required
+def api_get_genres_config():
+    """
+    (V2 - 数据库驱动版)
+    从媒体元数据缓存中动态获取所有唯一的电影类型。
+    """
+    try:
+        # ★★★ 核心修复：直接调用新的数据库函数 ★★★
+        genres = db_handler.get_unique_genres(config_manager.DB_PATH)
+        # API直接返回一个字符串列表，例如 ["动作", "喜剧", "科幻"]
+        return jsonify(genres)
+    except Exception as e:
+        logger.error(f"动态获取电影类型时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+    
+# ★★★ 提供电影工作室列表的API ★★★
+@system_bp.route('/config/studios', methods=['GET'])
+@login_required
+def api_get_studios_config():
+    """
+    从媒体元数据缓存中动态获取所有唯一的工作室。
+    """
+    try:
+        studios = db_handler.get_unique_studios(config_manager.DB_PATH)
+        return jsonify(studios)
+    except Exception as e:
+        logger.error(f"动态获取工作室列表时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500

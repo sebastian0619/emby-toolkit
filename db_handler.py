@@ -780,3 +780,308 @@ def delete_actor_subscription(db_path: str, subscription_id: int) -> bool:
     except Exception as e:
         logger.error(f"DB: 删除订阅 {subscription_id} 失败: {e}", exc_info=True)
         raise
+
+# ======================================================================
+# 模块 6: 自定义电影合集数据访问 (custom_collections Data Access)
+# ======================================================================
+
+def create_custom_collection(db_path: str, name: str, type: str, definition_json: str) -> Optional[int]:
+    """
+    在数据库中创建一个新的自定义合集定义。
+    :param name: 合集名称。
+    :param type: 合集类型 ('filter' 或 'list')。
+    :param definition_json: 存储规则或URL的JSON字符串。
+    :return: 新创建的合集的ID，如果失败则返回None。
+    """
+    sql = """
+        INSERT INTO custom_collections (name, type, definition_json, status, created_at)
+        VALUES (?, ?, ?, 'active', CURRENT_TIMESTAMP)
+    """
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (name, type, definition_json))
+            conn.commit()
+            logger.info(f"成功创建自定义合集 '{name}' (类型: {type})。")
+            return cursor.lastrowid
+    except sqlite3.Error as e:
+        logger.error(f"创建自定义合集 '{name}' 时发生数据库错误: {e}", exc_info=True)
+        return None
+
+def get_all_custom_collections(db_path: str) -> List[Dict[str, Any]]:
+    """
+    获取所有已定义的自定义合集。
+    :return: 包含所有合集信息的字典列表。
+    """
+    try:
+        with get_db_connection(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM custom_collections ORDER BY name ASC")
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    except sqlite3.Error as e:
+        logger.error(f"获取所有自定义合集时发生数据库错误: {e}", exc_info=True)
+        return []
+
+def get_custom_collection_by_id(db_path: str, collection_id: int) -> Optional[Dict[str, Any]]:
+    """
+    根据ID获取单个自定义合集的详细信息。
+    :param collection_id: 自定义合集的ID。
+    :return: 包含合集信息的字典，如果未找到则返回None。
+    """
+    try:
+        with get_db_connection(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM custom_collections WHERE id = ?", (collection_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except sqlite3.Error as e:
+        logger.error(f"根据ID {collection_id} 获取自定义合集时发生数据库错误: {e}", exc_info=True)
+        return None
+
+def update_custom_collection(db_path: str, collection_id: int, name: str, type: str, definition_json: str, status: str) -> bool:
+    """
+    更新一个已存在的自定义合集。
+    """
+    sql = """
+        UPDATE custom_collections
+        SET name = ?, type = ?, definition_json = ?, status = ?
+        WHERE id = ?
+    """
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (name, type, definition_json, status, collection_id))
+            conn.commit()
+            logger.info(f"成功更新自定义合集 ID: {collection_id}。")
+            return True
+    except sqlite3.Error as e:
+        logger.error(f"更新自定义合集 ID {collection_id} 时发生数据库错误: {e}", exc_info=True)
+        return False
+
+def delete_custom_collection(db_path: str, collection_id: int) -> bool:
+    """
+    从数据库中删除一个自定义合集定义。
+    """
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            # 在这里可以添加逻辑，比如先去Emby删除关联的合集
+            # ...
+            cursor.execute("DELETE FROM custom_collections WHERE id = ?", (collection_id,))
+            conn.commit()
+            logger.info(f"成功删除自定义合集 ID: {collection_id}。")
+            return True
+    except sqlite3.Error as e:
+        logger.error(f"删除自定义合集 ID {collection_id} 时发生数据库错误: {e}", exc_info=True)
+        return False
+
+def update_custom_collection_sync_status(db_path: str, collection_id: int, emby_collection_id: Optional[str] = None) -> bool:
+    """
+    更新自定义合集的同步状态，包括最后同步时间和关联的Emby ID。
+    """
+    sql = "UPDATE custom_collections SET last_synced_at = CURRENT_TIMESTAMP, emby_collection_id = ? WHERE id = ?"
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (emby_collection_id, collection_id))
+            conn.commit()
+            logger.info(f"已更新自定义合集 {collection_id} 的同步状态，关联Emby ID: {emby_collection_id}。")
+            return True
+    except sqlite3.Error as e:
+        logger.error(f"更新自定义合集 {collection_id} 同步状态时出错: {e}", exc_info=True)
+        return False
+    
+# +++ 自定义合集筛选引擎所需函数 +++
+
+def get_media_metadata_by_tmdb_id(db_path: str, tmdb_id: str) -> Optional[Dict[str, Any]]:
+    """
+    根据TMDb ID从媒体元数据缓存表中获取单条记录。
+    """
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM media_metadata WHERE tmdb_id = ?", (tmdb_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except sqlite3.Error as e:
+        logger.error(f"根据TMDb ID {tmdb_id} 获取媒体元数据时出错: {e}", exc_info=True)
+        return None
+    
+# ★★★ 新增：获取所有媒体元数据 ★★★
+def get_all_media_metadata(db_path: str, item_type: str = 'Movie') -> List[Dict[str, Any]]:
+    """
+    从媒体元数据缓存表中获取指定类型的所有记录。
+    :param item_type: 'Movie' 或 'Series'。默认为 'Movie'，因为合集主要是电影。
+    """
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM media_metadata WHERE item_type = ?", (item_type,))
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    except sqlite3.Error as e:
+        logger.error(f"获取所有媒体元数据时出错 (类型: {item_type}): {e}", exc_info=True)
+        return []
+    
+# ★★★ 新增：批量写入媒体元数据 ★★★
+def bulk_upsert_media_metadata(db_path: str, metadata_list: List[Dict[str, Any]]):
+    """
+    使用 INSERT OR REPLACE 批量插入或更新媒体元数据。
+    """
+    if not metadata_list:
+        return
+
+    sql = """
+        INSERT OR REPLACE INTO media_metadata (
+            tmdb_id, item_type, title, original_title, release_year, rating,
+            genres_json, actors_json, directors_json, studios_json, countries_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    
+    # 将字典列表转换为元组列表
+    data_to_insert = [
+        (
+            item.get('tmdb_id'), item.get('item_type'), item.get('title'),
+            item.get('original_title'), item.get('release_year'), item.get('rating'),
+            item.get('genres_json'), item.get('actors_json'), item.get('directors_json'),
+            item.get('studios_json'), item.get('countries_json')
+        )
+        for item in metadata_list
+    ]
+
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN TRANSACTION;")
+            cursor.executemany(sql, data_to_insert)
+            conn.commit()
+            logger.info(f"成功批量写入/更新 {len(data_to_insert)} 条媒体元数据到缓存表。")
+    except sqlite3.Error as e:
+        logger.error(f"批量写入媒体元数据时发生数据库错误: {e}", exc_info=True)
+        # 重新抛出，让上层任务知道失败了
+        raise
+# ★★★ 从元数据表中提取所有唯一的类型 ★★★
+def get_unique_genres(db_path: str) -> List[str]:
+    """
+    从 media_metadata 表中扫描所有电影，提取出所有不重复的类型(genres)。
+    """
+    unique_genres = set()
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            # 我们只需要 genres_json 这一列
+            cursor.execute("SELECT genres_json FROM media_metadata WHERE item_type = 'Movie'")
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                if row['genres_json']:
+                    try:
+                        # 解析JSON数组
+                        genres = json.loads(row['genres_json'])
+                        # 将列表中的每个类型都加入到集合中，集合会自动处理重复
+                        for genre in genres:
+                            if genre: # 确保不是空字符串
+                                unique_genres.add(genre.strip())
+                    except (json.JSONDecodeError, TypeError):
+                        continue # 如果某行数据有问题，跳过
+                        
+        # 将集合转换为列表并排序
+        sorted_genres = sorted(list(unique_genres))
+        logger.info(f"从数据库中成功提取出 {len(sorted_genres)} 个唯一的电影类型。")
+        return sorted_genres
+        
+    except sqlite3.Error as e:
+        logger.error(f"提取唯一电影类型时发生数据库错误: {e}", exc_info=True)
+        return []
+
+# ★★★ 从元数据表中提取所有唯一的工作室 ★★★
+def get_unique_studios(db_path: str) -> List[str]:
+    """
+    从 media_metadata 表中扫描所有电影，提取出所有不重复的工作室(studios)。
+    """
+    unique_studios = set()
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT studios_json FROM media_metadata WHERE item_type = 'Movie'")
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                if row['studios_json']:
+                    try:
+                        studios = json.loads(row['studios_json'])
+                        for studio in studios:
+                            if studio:
+                                unique_studios.add(studio.strip())
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                        
+        sorted_studios = sorted(list(unique_studios))
+        logger.info(f"从数据库中成功提取出 {len(sorted_studios)} 个唯一的工作室。")
+        return sorted_studios
+        
+    except sqlite3.Error as e:
+        logger.error(f"提取唯一工作室时发生数据库错误: {e}", exc_info=True)
+        return []
+    
+# ★★★ 根据关键词搜索唯一的工作室 ★★★
+def search_unique_studios(db_path: str, search_term: str, limit: int = 20) -> List[str]:
+    """
+    (V3 - 智能排序版)
+    从数据库中搜索工作室，并优先返回名称以 search_term 开头的结果。
+    """
+    if not search_term:
+        return []
+    
+    all_studios = get_unique_studios(db_path)
+    
+    if not all_studios:
+        return []
+
+    search_term_lower = search_term.lower()
+    
+    # ★★★ 核心升级：创建两个列表来存放不同优先级的匹配结果 ★★★
+    starts_with_matches = []
+    contains_matches = []
+    
+    for studio in all_studios:
+        studio_lower = studio.lower()
+        # 1. 优先检查是否以搜索词开头
+        if studio_lower.startswith(search_term_lower):
+            starts_with_matches.append(studio)
+        # 2. 如果不是开头匹配，再检查是否包含
+        elif search_term_lower in studio_lower:
+            contains_matches.append(studio)
+            
+    # ★★★ 核心升级：将两个列表合并，高优先级的在前 ★★★
+    final_matches = starts_with_matches + contains_matches
+    
+    logger.debug(f"智能搜索 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
+    
+    # 只返回限定数量的结果
+    return final_matches[:limit]
+
+# ★★★ 新增：写入或更新一条完整的合集检查信息 ★★★
+def upsert_collection_info(db_path: str, collection_data: Dict[str, Any]):
+    """
+    使用 INSERT OR REPLACE 写入或更新一条合集信息到 collections_info 表。
+    """
+    sql = """
+        INSERT OR REPLACE INTO collections_info 
+        (emby_collection_id, name, tmdb_collection_id, status, has_missing, 
+        missing_movies_json, last_checked_at, poster_path, in_library_count)
+        VALUES (:emby_collection_id, :name, :tmdb_collection_id, :status, :has_missing, 
+        :missing_movies_json, :last_checked_at, :poster_path, :in_library_count)
+    """
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, collection_data)
+            conn.commit()
+            logger.info(f"成功写入/更新合集检查信息到数据库 (ID: {collection_data.get('emby_collection_id')})。")
+    except sqlite3.Error as e:
+        logger.error(f"写入合集检查信息时发生数据库错误: {e}", exc_info=True)
+        raise

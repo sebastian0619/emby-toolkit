@@ -10,6 +10,7 @@ import emby_handler
 import config_manager
 import task_manager
 import extensions
+import db_handler
 from extensions import login_required, processor_ready_required
 
 
@@ -283,3 +284,22 @@ def api_get_emby_libraries():
     else: # get_emby_libraries 返回了 None，表示获取失败
         logger.error("/api/emby_libraries: 无法获取Emby媒体库列表 (emby_handler返回None)。")
         return jsonify({"error": "无法获取Emby媒体库列表，请检查Emby连接和日志"}), 500
+    
+# ★★★ 提供工作室远程搜索的API ★★★
+@media_api_bp.route('/search_studios', methods=['GET'])
+@login_required
+def api_search_studios():
+    """
+    根据查询参数 'q' 动态搜索工作室列表。
+    """
+    search_term = request.args.get('q', '').strip()
+    
+    if not search_term:
+        return jsonify([])
+        
+    try:
+        studios = db_handler.search_unique_studios(config_manager.DB_PATH, search_term)
+        return jsonify(studios)
+    except Exception as e:
+        logger.error(f"搜索工作室时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500

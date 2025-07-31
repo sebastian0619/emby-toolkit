@@ -46,7 +46,61 @@ def _read_local_json(file_path: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"读取本地JSON文件失败: {file_path}, 错误: {e}")
         return None
+def _save_metadata_to_cache(
+    cursor: sqlite3.Cursor,
+    tmdb_id: str,
+    item_type: str,
+    item_details: Dict[str, Any],
+    processed_cast: List[Dict[str, Any]],
+    raw_tmdb_json: Dict[str, Any]
+):
+    """
+    将媒体项的关键元数据保存到 media_metadata 表中，用于后续的筛选。
+    """
+    try:
+        # 提取导演信息
+        directors = []
+        crew = []
+        if item_type == "Movie":
+            crew = raw_tmdb_json.get("casts", {}).get("crew", [])
+        elif item_type == "Series":
+            crew = raw_tmdb_json.get("credits", {}).get("crew", [])
+        
+        for member in crew:
+            if member.get("job") == "Director":
+                directors.append({"id": member.get("id"), "name": member.get("name")})
 
+        # ★★★ 新增：从原始TMDb JSON中提取国家/地区信息 ★★★
+        countries = [
+            country.get("name") 
+            for country in raw_tmdb_json.get("production_countries", []) 
+            if country.get("name")
+        ]
+        # 准备要存入数据库的数据
+        metadata = {
+            "tmdb_id": tmdb_id,
+            "item_type": item_type,
+            "title": item_details.get("Name"),
+            "original_title": item_details.get("OriginalTitle"),
+            "release_year": item_details.get("ProductionYear"),
+            "rating": item_details.get("CommunityRating"),
+            "genres_json": json.dumps(item_details.get("Genres", [])),
+            "actors_json": json.dumps([{"id": p.get("id"), "name": p.get("name")} for p in processed_cast]),
+            "directors_json": json.dumps(directors),
+            "studios_json": json.dumps([s.get("Name") for s in item_details.get("Studios", [])]),
+            "countries_json": json.dumps(countries),
+        }
+
+        # 使用 INSERT OR REPLACE 插入或更新数据
+        columns = ', '.join(metadata.keys())
+        placeholders = ', '.join('?' for _ in metadata)
+        sql = f"INSERT OR REPLACE INTO media_metadata ({columns}) VALUES ({placeholders})"
+        
+        cursor.execute(sql, tuple(metadata.values()))
+        logger.debug(f"成功将《{metadata['title']}》的元数据缓存到数据库。")
+
+    except Exception as e:
+        logger.error(f"保存元数据到缓存表时失败: {e}", exc_info=True)
 class MediaProcessor:
     def __init__(self, config: Dict[str, Any]):
         # ★★★ 然后，从这个 config 字典里，解析出所有需要的属性 ★★★
@@ -1062,7 +1116,18 @@ class MediaProcessor:
                         
                         logger.info("所有分集覆盖文件写入完成。")
 
-
+                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                # ★★★ 新增：在所有处理完成后，刷新前，调用保存函数 ★★★
+                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                _save_metadata_to_cache(
+                    cursor=cursor,
+                    tmdb_id=tmdb_id,
+                    item_type=item_type,
+                    item_details=item_details_from_emby,
+                    processed_cast=final_cast_perfect,
+                    raw_tmdb_json=base_json_data_original # 传递我们读取的原始JSON
+                )
+                
                 # 【同步图片】
                 if self.sync_images_enabled:
                     if self.is_stop_requested(): raise InterruptedError("任务被中止")

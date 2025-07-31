@@ -1,6 +1,7 @@
 # web_app.py
 import os
 import sqlite3
+import shutil
 from datetime import datetime
 from actor_sync_handler import UnifiedSyncHandler
 from db_handler import ActorDBManager
@@ -42,6 +43,7 @@ import logging
 # --- 导入蓝图 ---
 from routes.watchlist import watchlist_bp
 from routes.collections import collections_bp
+from routes.custom_collections import custom_collections_bp
 from routes.actor_subscriptions import actor_subscriptions_bp
 from routes.logs import logs_bp
 from routes.database_admin import db_admin_bp
@@ -95,6 +97,23 @@ def init_db():
         if not os.path.exists(config_manager.PERSISTENT_DATA_PATH):
             os.makedirs(config_manager.PERSISTENT_DATA_PATH, exist_ok=True)
 
+        # 定义源文件（模板）和目标文件的路径
+        source_countries_path = os.path.join(os.path.dirname(__file__), 'assets', 'countries.json')
+        dest_countries_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'countries.json')
+
+        # 检查目标文件是否存在
+        if not os.path.exists(dest_countries_path):
+            logger.info(f"检测到 'countries.json' 不存在，将从模板创建...")
+            try:
+                # 如果源模板存在，则复制
+                if os.path.exists(source_countries_path):
+                    shutil.copy2(source_countries_path, dest_countries_path)
+                    logger.info(f"成功创建 'countries.json' 到: {dest_countries_path}")
+                else:
+                    logger.error(f"无法创建 'countries.json'，因为源模板文件未找到: {source_countries_path}")
+            except Exception as e_copy:
+                logger.error(f"复制 'countries.json' 模板时发生错误: {e_copy}", exc_info=True)
+
         with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
 
@@ -142,6 +161,60 @@ def init_db():
                     logger.info("    -> 'in_library_count' 字段添加成功。")
             except Exception as e_alter:
                 logger.error(f"  -> 为 'collections_info' 表添加新字段时出错: {e_alter}")
+
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # ★★★ 新增: 'custom_collections' 表 (自定义合集) ★★★
+            # ★★★ 这是实现你新功能的核心地基。                ★★★
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            logger.trace("  -> 正在创建 'custom_collections' 表 (自定义合集)...")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS custom_collections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,      -- 唯一ID
+                    name TEXT NOT NULL,                        -- 合集名称, e.g., "诺兰导演4K电影"
+                    type TEXT NOT NULL,                        -- 合集类型: 'filter' (筛选) 或 'list' (榜单)
+                    
+                    -- 定义合集内容的核心字段 --
+                    definition_json TEXT NOT NULL,             -- 存储合集定义的JSON。
+                                                               -- 对于 'filter' 类型, 存储筛选规则, e.g., {"rules": [...], "logic": "AND"}
+                                                               -- 对于 'list' 类型, 存储榜单信息, e.g., {"url": "http://...", "format": "rss"}
+                    
+                    -- 状态与关联 --
+                    status TEXT DEFAULT 'active',              -- 状态: 'active', 'paused', 'error'
+                    emby_collection_id TEXT,                   -- 在Emby中成功创建后，关联的Emby合集ID。可以为NULL。
+                    
+                    -- 维护时间戳 --
+                    last_synced_at TIMESTAMP,                  -- 上次同步（生成/更新）的时间
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_type ON custom_collections (type)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_status ON custom_collections (status)")
+
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # ★★★ 新增: 'media_metadata' 表 (筛选引擎的数据源) ★★★
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            logger.trace("  -> 正在创建 'media_metadata' 表 (用于自定义筛选)...")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS media_metadata (
+                    tmdb_id TEXT PRIMARY KEY,          -- 媒体在TMDb的ID (电影或剧集)
+                    item_type TEXT NOT NULL,           -- 'Movie' 或 'Series'
+                    title TEXT,                        -- 标题
+                    original_title TEXT,               -- 原始标题
+                    release_year INTEGER,              -- 上映年份
+                    rating REAL,                       -- 评分 (例如 CommunityRating)
+                    
+                    -- 使用JSON存储列表数据，这是SQLite的常用做法
+                    genres_json TEXT,                  -- 类型 (e.g., '["动作", "科幻"]')
+                    actors_json TEXT,                  -- 演员 (e.g., '[{"id": "123", "name": "演员A"}]')
+                    directors_json TEXT,               -- 导演
+                    studios_json TEXT,                 -- 工作室
+                    countries_json TEXT,               -- 国家地区
+                    
+                    last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_item_type ON media_metadata (item_type)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_release_year ON media_metadata (release_year)")
 
             # 剧集追踪 (追剧列表) 
             logger.trace("  -> 正在创建/更新 'watchlist' 表...")
@@ -715,6 +788,7 @@ def serve(path):
 # +++ 在应用对象上注册所有蓝图 +++
 app.register_blueprint(watchlist_bp)
 app.register_blueprint(collections_bp)
+app.register_blueprint(custom_collections_bp)
 app.register_blueprint(actor_subscriptions_bp)
 app.register_blueprint(logs_bp)
 app.register_blueprint(db_admin_bp)

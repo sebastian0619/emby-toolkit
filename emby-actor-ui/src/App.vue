@@ -133,6 +133,7 @@ import {
   AlbumsOutline as CollectionsIcon,
   PeopleOutline as ActorSubIcon,
   InformationCircleOutline as AboutIcon,
+  CreateOutline as CustomCollectionsIcon,
 } from '@vicons/ionicons5';
 import { Password24Regular as PasswordIcon } from '@vicons/fluent'
 import { watchEffect } from 'vue'
@@ -193,6 +194,7 @@ const menuOptions = computed(() => [
   { type: 'divider', key: 'd1' },
   { label: '任务中心', key: 'actions-status', icon: renderIcon(ActionsIcon) },
   { label: '合集检查', key: 'Collections', icon: renderIcon(CollectionsIcon) },
+  { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) },
   { label: '智能追剧', key: 'Watchlist', icon: renderIcon(WatchlistIcon) },
   { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) },
   { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },

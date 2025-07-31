@@ -2,6 +2,7 @@
 
 import time
 import re
+import os
 import json
 import sqlite3
 import logging
@@ -13,6 +14,7 @@ from typing import Optional
 from core_processor import MediaProcessor
 from watchlist_processor import WatchlistProcessor
 from actor_subscription_processor import ActorSubscriptionProcessor
+from custom_collection_handler import ListImporter, FilterEngine
 
 # 导入需要的底层模块和共享实例
 import db_handler
@@ -26,6 +28,8 @@ import task_manager
 from actor_utils import enrich_all_actor_aliases_task
 from actor_sync_handler import UnifiedSyncHandler
 from extensions import TASK_REGISTRY
+from custom_collection_handler import ListImporter, FilterEngine
+from core_processor import _read_local_json
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +238,7 @@ def task_scan_actor_media(processor: ActorSubscriptionProcessor, subscription_id
 def task_process_actor_subscriptions(processor: ActorSubscriptionProcessor):
     """【新】后台任务：执行所有启用的演员订阅扫描。"""
     processor.run_scheduled_task(update_status_callback=task_manager.update_status_from_thread)
-# ★★★ 1. 定义一个webhoo专用追剧、用于编排任务的函数 ★★★
+# ★★★ 处理webhook、用于编排任务的函数 ★★★
 def webhook_processing_task(processor: MediaProcessor, item_id: str, force_reprocess: bool, process_episodes: bool):
     """
     【修复版】这个函数编排了处理新入库项目的完整流程。
@@ -260,12 +264,49 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
 
     # 步骤 C: 执行通用的元数据处理流程
     # ★★★ 修复：使用传入的 processor ★★★
-    processor.process_single_item(
+    processed_successfully = processor.process_single_item(
         item_id, 
         force_reprocess_this_item=force_reprocess, 
         process_episodes=process_episodes
     )
     
+    # --- ★★★ 步骤 D: 新增的实时合集匹配逻辑 ★★★ ---
+    if not processed_successfully:
+        logger.warning(f"项目 {item_id} 的元数据处理未成功完成，跳过自定义合集匹配。")
+        return
+
+    try:
+        tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+        if not tmdb_id:
+            logger.debug("项目缺少TMDb ID，无法进行自定义合集匹配。")
+            return
+
+        # 1. 从我们的缓存表中获取刚刚存入的元数据
+        item_metadata = db_handler.get_media_metadata_by_tmdb_id(config_manager.DB_PATH, tmdb_id) # (需要添加这个db函数)
+        if not item_metadata:
+            logger.warning(f"无法从本地缓存中找到TMDb ID为 {tmdb_id} 的元数据，无法匹配合集。")
+            return
+
+        # 2. 初始化筛选引擎并查找匹配的合集
+        engine = FilterEngine(db_path=config_manager.DB_PATH)
+        matching_collections = engine.find_matching_collections(item_metadata)
+
+        if not matching_collections:
+            logger.info(f"影片《{item_metadata.get('title')}》没有匹配到任何自定义合集。")
+            return
+
+        # 3. 遍历所有匹配的合集，并向其中追加当前项目
+        for collection in matching_collections:
+            emby_handler.append_item_to_collection(
+                collection_id=collection['emby_collection_id'],
+                item_emby_id=item_id, # 这是新入库项目的Emby ID
+                base_url=processor.emby_url,
+                api_key=processor.emby_api_key,
+                user_id=processor.emby_user_id
+            )
+    except Exception as e:
+        logger.error(f"为新入库项目 {item_id} 匹配自定义合集时发生意外错误: {e}", exc_info=True)
+
     logger.debug(f"Webhook 任务完成: {item_id}")
 # --- 追剧 ---    
 def task_process_watchlist(processor: WatchlistProcessor, item_id: Optional[str] = None):
@@ -1235,6 +1276,7 @@ def get_task_registry():
     # 在函数内部，所有 task_... 函数都已经是已定义的
     return {
         'full-scan': (task_process_full_library, "立即执行全量扫描"),
+        'populate-metadata': (task_populate_metadata_cache, "快速同步媒体元数据"),
         'sync-person-map': (task_sync_person_map, "立即执行同步演员映射表"),
         'process-watchlist': (task_process_watchlist, "立即执行智能追剧刷新"),
         'enrich-aliases': (task_enrich_aliases, "立即执行演员元数据补充"),
@@ -1243,3 +1285,212 @@ def get_task_registry():
         'auto-subscribe': (task_auto_subscribe, "立即执行智能订阅"),
         'actor-tracking': (task_process_actor_subscriptions, "立即执行演员订阅")
     }
+# --- 处理单个自定义合集的核心任务 ---
+def task_process_custom_collection(processor: MediaProcessor, custom_collection_id: int):
+    """
+    【V4 - 终极闭环版】处理单个自定义合集，并在成功后立即分析其缺失状态。
+    """
+    task_name = f"处理自定义合集 (ID: {custom_collection_id})"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    
+    try:
+        # --- 步骤 1: 获取定义并生成TMDb ID列表 (这部分不变) ---
+        task_manager.update_status_from_thread(0, "正在读取合集定义...")
+        collection = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, custom_collection_id)
+        if not collection: raise ValueError(f"未找到ID为 {custom_collection_id} 的自定义合集。")
+        
+        collection_name = collection['name']
+        collection_type = collection['type']
+        definition = json.loads(collection['definition_json'])
+        
+        tmdb_ids = []
+        if collection_type == 'list':
+            importer = ListImporter(processor.tmdb_api_key)
+            tmdb_ids = importer.process(definition)
+        elif collection_type == 'filter':
+            engine = FilterEngine(db_path=config_manager.DB_PATH)
+            tmdb_ids = engine.process(definition)
+        
+        if not tmdb_ids:
+            logger.warning(f"处理合集 '{collection_name}' 后，未能生成任何电影ID。任务结束。")
+            task_manager.update_status_from_thread(100, "处理完成，但未生成任何电影。")
+            db_handler.update_custom_collection_sync_status(config_manager.DB_PATH, custom_collection_id, None)
+            return
+
+        # --- 步骤 2: 在Emby中创建/更新合集 (这部分不变) ---
+        task_manager.update_status_from_thread(70, f"已生成 {len(tmdb_ids)} 个ID，正在Emby中创建/更新合集...")
+        libs_to_process_ids = processor.config.get("libraries_to_process", [])
+        item_type_for_collection = definition.get('item_type', 'Movie')
+
+        emby_collection_id = emby_handler.create_or_update_collection_with_tmdb_ids(
+            collection_name=collection_name, tmdb_ids=tmdb_ids, base_url=processor.emby_url,
+            api_key=processor.emby_api_key, user_id=processor.emby_user_id,
+            library_ids=libs_to_process_ids, item_type=item_type_for_collection
+        )
+
+        if not emby_collection_id:
+            raise RuntimeError("在Emby中创建或更新合集失败。")
+
+        # --- ★★★ 步骤 3: 创后即检！立即分析这个新合集的缺失状态 ★★★ ---
+        task_manager.update_status_from_thread(90, "合集已同步，正在分析缺失内容...")
+        
+        # 3.1 获取这个新合集的详细信息，主要是为了海报
+        emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+        image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
+        poster_path = f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
+
+        # 3.2 获取合集内已有的项目的TMDb ID
+        existing_items = emby_handler.get_emby_library_items(
+            base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
+            library_ids=[emby_collection_id], media_type_filter=item_type_for_collection
+        )
+        existing_tmdb_ids = {item['ProviderIds'].get('Tmdb') for item in existing_items if item.get('ProviderIds', {}).get('Tmdb')}
+        
+        # 3.3 调用TMDb API获取榜单上所有电影的详细信息（为了上映日期）
+        all_movies_details = [tmdb_handler.get_movie_details(tid, processor.tmdb_api_key) for tid in tmdb_ids]
+        
+        # 3.4 执行与 `_process_single_collection_concurrently` 相同的分析逻辑
+        all_movies_with_status = []
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        has_missing = False
+
+        for movie in all_movies_details:
+            if not movie: continue
+            movie_tmdb_id = str(movie.get("id"))
+            movie_status = "unknown"
+            
+            if movie_tmdb_id in existing_tmdb_ids:
+                movie_status = "in_library"
+            elif movie.get("release_date", '') > today_str:
+                movie_status = "unreleased"
+            else:
+                movie_status = "missing"
+                has_missing = True
+            
+            all_movies_with_status.append({
+                "tmdb_id": movie_tmdb_id, "title": movie.get("title"),
+                "release_date": movie.get("release_date"), "poster_path": movie.get("poster_path"),
+                "status": movie_status
+            })
+
+        # 3.5 将完整的分析结果打包
+        analysis_result = {
+            "emby_collection_id": emby_collection_id,
+            "name": collection_name,
+            "tmdb_collection_id": None, # 自定义合集没有TMDb合集ID
+            "status": "has_missing" if has_missing else "ok",
+            "has_missing": has_missing,
+            "missing_movies_json": json.dumps(all_movies_with_status),
+            "last_checked_at": time.time(),
+            "poster_path": poster_path,
+            "in_library_count": len(existing_tmdb_ids)
+        }
+        
+        # 3.6 将分析结果写入 collections_info 表
+        db_handler.upsert_collection_info(config_manager.DB_PATH, analysis_result)
+
+        # --- 步骤 4: 更新自定义合集表的状态 (这部分不变) ---
+        db_handler.update_custom_collection_sync_status(config_manager.DB_PATH, custom_collection_id, emby_collection_id)
+
+        task_manager.update_status_from_thread(100, "自定义合集同步并分析完成！")
+        logger.info(f"--- 任务 '{task_name}' 成功完成，并已更新健康检查状态 ---")
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★★★ 新增：轻量级的元数据缓存填充任务 ★★★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+def task_populate_metadata_cache(processor: MediaProcessor):
+    """
+    【V2 - 曲线救国版】一个轻量、快速的全量任务，用于填充 media_metadata 缓存表。
+    它会读取本地TMDB JSON缓存，以获取最完整的元数据，特别是国家/地区信息。
+    """
+    task_name = "快速同步媒体元数据"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    task_manager.update_status_from_thread(0, "正在准备从Emby获取媒体列表...")
+
+    try:
+        # 1. 获取所有需要处理的媒体项 (这部分不变)
+        libs_to_process_ids = processor.config.get("libraries_to_process", [])
+        if not libs_to_process_ids:
+            raise ValueError("未在配置中指定要处理的媒体库。")
+
+        all_libraries = emby_handler.get_emby_libraries(processor.emby_url, processor.emby_api_key, processor.emby_user_id) or []
+        library_name_map = {lib.get('Id'): lib.get('Name', '未知库名') for lib in all_libraries}
+        
+        # 我们仍然需要从Emby获取People信息，所以get_emby_library_items的改动需要保留
+        movies = emby_handler.get_emby_library_items(processor.emby_url, processor.emby_api_key, "Movie", processor.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
+        series = emby_handler.get_emby_library_items(processor.emby_url, processor.emby_api_key, "Series", processor.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
+        all_items = movies + series
+        total = len(all_items)
+
+        if total == 0:
+            task_manager.update_status_from_thread(100, "未找到任何媒体项。")
+            return
+
+        task_manager.update_status_from_thread(10, f"共找到 {total} 个媒体项，开始提取元数据...")
+        
+        metadata_batch = []
+        # 2. 遍历所有媒体项，提取关键元数据
+        for i, item in enumerate(all_items):
+            if processor.is_stop_requested():
+                logger.warning("任务被用户中止。")
+                break
+            
+            task_manager.update_status_from_thread(10 + int((i / total) * 80), f"({i+1}/{total}) 提取: {item.get('Name')}")
+
+            tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
+            item_type = item.get("Type")
+            if not tmdb_id or not item_type:
+                continue
+
+            # --- ★★★ 核心修改：读取本地TMDB JSON文件来获取国家信息 ★★★ ---
+            countries = []
+            local_data_path = processor.config.get("local_data_path", "")
+            if local_data_path:
+                cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+                base_json_filename = "all.json" if item_type == "Movie" else "series.json"
+                json_file_path = os.path.join(local_data_path, "cache", cache_folder_name, tmdb_id, base_json_filename)
+                
+                local_tmdb_data = _read_local_json(json_file_path)
+                if local_tmdb_data:
+                    countries = [
+                        country.get("name") 
+                        for country in local_tmdb_data.get("production_countries", []) 
+                        if country.get("name")
+                    ]
+                    if countries:
+                        logger.trace(f"  -> 成功从本地JSON为《{item.get('Name')}》提取到国家: {countries}")
+
+            # 提取导演信息 (这部分不变)
+            directors = []
+            for person in item.get("People", []):
+                if person.get("Type") == "Director":
+                    directors.append({"id": person.get("ProviderIds", {}).get("Tmdb"), "name": person.get("Name")})
+
+            metadata_batch.append({
+                "tmdb_id": tmdb_id,
+                "item_type": item_type,
+                "title": item.get("Name"),
+                "original_title": item.get("OriginalTitle"),
+                "release_year": item.get("ProductionYear"),
+                "rating": item.get("CommunityRating"),
+                "genres_json": json.dumps(item.get("Genres", [])),
+                "actors_json": json.dumps([{"id": p.get("ProviderIds", {}).get("Tmdb"), "name": p.get("Name")} for p in item.get("People", []) if p.get("Type") == "Actor"]),
+                "directors_json": json.dumps(directors),
+                "studios_json": json.dumps([s.get("Name") for s in item.get("Studios", [])]),
+                "countries_json": json.dumps(countries), # 使用我们新获取的数据
+            })
+
+        # 3. 批量写入数据库 (这部分不变)
+        if metadata_batch:
+            task_manager.update_status_from_thread(95, f"提取完成，正在将 {len(metadata_batch)} 条数据写入数据库...")
+            db_handler.bulk_upsert_media_metadata(config_manager.DB_PATH, metadata_batch)
+
+        task_manager.update_status_from_thread(100, f"元数据同步完成！共处理 {len(metadata_batch)} 条。")
+        logger.info(f"--- '{task_name}' 任务成功完成 ---")
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")

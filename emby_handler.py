@@ -409,7 +409,7 @@ def get_emby_library_items(
             api_url = f"{base_url.rstrip('/')}/Items"
             params = {
                 "api_key": api_key, "Recursive": "true", "ParentId": lib_id,
-                "Fields": "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines",
+                "Fields": "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,People,ProductionLocations",
             }
             if media_type_filter:
                 params["IncludeItemTypes"] = media_type_filter
@@ -1054,3 +1054,170 @@ def get_emby_server_info(base_url: str, api_key: str) -> Optional[Dict[str, Any]
     except Exception as e:
         logger.error(f"获取 Emby 服务器信息失败: {e}")
         return None
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★★★ 新增：自定义合集所需的核心Emby交互函数 ★★★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+def get_collection_by_name(name: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """
+    根据名称查找一个特定的电影合集 (BoxSet)。
+    :return: 如果找到，返回合集信息的字典；否则返回 None。
+    """
+    # 我们可以复用已有的 get_all_collections_with_items 函数
+    all_collections = get_all_collections_with_items(base_url, api_key, user_id)
+    if all_collections is None:
+        return None
+    
+    for collection in all_collections:
+        if collection.get('Name', '').lower() == name.lower():
+            logger.debug(f"根据名称 '{name}' 找到了已存在的合集 (ID: {collection.get('Id')})。")
+            return collection
+    
+    logger.debug(f"未找到名为 '{name}' 的合集。")
+    return None
+
+def add_items_to_collection(collection_id: str, item_ids: List[str], base_url: str, api_key: str) -> bool:
+    """
+    将一个项目ID列表添加到一个合集中。此操作会替换合集内原有的所有项目。
+    :param collection_id: 目标合集的 ID。
+    :param item_ids: 要添加的媒体项目（电影）的 Emby ID 列表。
+    :return: True 表示成功，False 表示失败。
+    """
+    api_url = f"{base_url.rstrip('/')}/Collections/{collection_id}/Items"
+    # Emby API 需要一个逗号分隔的ID字符串
+    ids_str = ",".join(item_ids)
+    params = {
+        'api_key': api_key,
+        'Ids': ids_str
+    }
+    
+    try:
+        response = requests.post(api_url, params=params, timeout=20)
+        response.raise_for_status()
+        logger.info(f"成功将 {len(item_ids)} 个项目更新到合集 ID: {collection_id}。")
+        return True
+    except requests.RequestException as e:
+        logger.error(f"向合集 {collection_id} 添加项目时失败: {e}")
+        return False
+
+# ★★★ 这是一个完整的、可工作的版本，用于替换你在 tasks.py 中引用的那个占位函数 ★★★
+def create_or_update_collection_with_tmdb_ids(
+    collection_name: str, 
+    tmdb_ids: List[int], 
+    base_url: str, 
+    api_key: str, 
+    user_id: str, 
+    library_ids: List[str],
+    # ★★★ 新增：接收一个明确的媒体类型参数 ★★★
+    item_type: str = 'Movie'
+) -> Optional[str]:
+    """
+    【V6 - 终极完全体】在Emby中创建或更新一个合集，支持电影和电视剧。
+    """
+    log_item_type = "电影" if item_type == "Movie" else "电视剧"
+    logger.info(f"开始在Emby中处理名为 '{collection_name}' 的{log_item_type}合集...")
+    
+    try:
+        # 1. ★★★ 核心修复：根据 item_type 获取对应的媒体列表 ★★★
+        all_media_items = get_emby_library_items(
+            base_url=base_url, 
+            api_key=api_key, 
+            user_id=user_id, 
+            media_type_filter=item_type, # 使用传入的 item_type
+            library_ids=library_ids
+        )
+        if all_media_items is None:
+            logger.error(f"无法从Emby获取{log_item_type}列表，操作中止。")
+            return None
+            
+        tmdb_to_emby_id_map = {
+            item['ProviderIds']['Tmdb']: item['Id']
+            for item in all_media_items
+            if 'ProviderIds' in item and 'Tmdb' in item['ProviderIds']
+        }
+        
+        emby_item_ids_to_add = [tmdb_to_emby_id_map[str(tid)] for tid in tmdb_ids if str(tid) in tmdb_to_emby_id_map]
+        
+        # 2. 检查合集是否已存在 (这部分不变)
+        collection = get_collection_by_name(collection_name, base_url, api_key, user_id)
+        
+        if collection:
+            # --- 更新逻辑 ---
+            emby_collection_id = collection['Id']
+            logger.info(f"发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，将更新其内容。")
+            success = add_items_to_collection(emby_collection_id, emby_item_ids_to_add, base_url, api_key)
+            return emby_collection_id if success else None
+        else:
+            # --- 创建逻辑 ---
+            logger.info(f"未找到合集 '{collection_name}'，将通过通用接口一步创建。")
+            
+            if not emby_item_ids_to_add:
+                logger.warning(f"无法创建合集 '{collection_name}'，因为媒体库中没有任何匹配的{log_item_type}可供添加。")
+                return None
+
+            api_url = f"{base_url.rstrip('/')}/Collections"
+            params = {
+                'api_key': api_key,
+                'Name': collection_name,
+                'Ids': ",".join(emby_item_ids_to_add)
+            }
+            
+            try:
+                response = requests.post(api_url, params=params, timeout=30)
+                response.raise_for_status()
+                new_collection_info = response.json()
+                new_id = new_collection_info.get('Id')
+                if new_id:
+                    logger.info(f"成功通过通用接口创建新合集 '{collection_name}' (ID: {new_id}) 并添加了 {len(emby_item_ids_to_add)} 个项目。")
+                    return new_id
+                else:
+                    logger.error("通用接口创建合集API调用成功，但响应中未包含ID。")
+                    return None
+            except requests.RequestException as e:
+                response_text = e.response.text[:500] if e.response is not None else ""
+                logger.error(f"通过通用接口创建新合集 '{collection_name}' 时失败: {e}. 响应: {response_text}")
+                return None
+
+    except Exception as e:
+        logger.error(f"处理Emby合集 '{collection_name}' 时发生未知错误: {e}", exc_info=True)
+        return None
+# ★★★ 新增：向合集追加单个项目的函数 ★★★
+def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: str, api_key: str, user_id: str) -> bool:
+    """
+    向一个已存在的合集中追加单个媒体项，而不会删除原有项目。
+    :param collection_id: 目标合集的ID。
+    :param item_emby_id: 要追加的媒体项的Emby ID。
+    :return: True 如果成功，否则 False。
+    """
+    logger.info(f"准备将项目 {item_emby_id} 追加到合集 {collection_id}...")
+    try:
+        # 1. 获取合集当前的所有项目ID
+        children_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+        children_params = {
+            "api_key": api_key,
+            "ParentId": collection_id,
+            "Fields": "Id" # 我们只需要ID
+        }
+        response = requests.get(children_url, params=children_params, timeout=15)
+        response.raise_for_status()
+        
+        current_item_ids = {item['Id'] for item in response.json().get("Items", [])}
+        logger.debug(f"合集 {collection_id} 当前包含 {len(current_item_ids)} 个项目。")
+
+        # 2. 如果要添加的项目已在其中，则无需操作
+        if item_emby_id in current_item_ids:
+            logger.info(f"项目 {item_emby_id} 已存在于合集 {collection_id} 中，无需追加。")
+            return True
+
+        # 3. 将新项目ID加入列表，并调用“替换”API
+        updated_item_ids = list(current_item_ids) + [item_emby_id]
+        
+        # 复用我们已有的 add_items_to_collection 函数
+        return add_items_to_collection(collection_id, updated_item_ids, base_url, api_key)
+
+    except requests.RequestException as e:
+        logger.error(f"追加项目到合集 {collection_id} 时发生网络错误: {e}", exc_info=True)
+        return False
+    except Exception as e:
+        logger.error(f"追加项目到合集 {collection_id} 时发生未知错误: {e}", exc_info=True)
+        return False

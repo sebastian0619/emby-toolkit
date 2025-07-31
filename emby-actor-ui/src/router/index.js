@@ -71,6 +71,13 @@ const routes = [
     meta: { requiresAuth: true },
   },
   {
+    path: '/custom-collections',
+    name: 'CustomCollectionsManager',
+    // 使用动态导入，这是一种最佳实践，只在访问此页面时才加载组件代码
+    component: () => import('../components/CustomCollectionsManager.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
     path: '/edit-media/:itemId',
     name: 'MediaEditPage', // ✨✨✨ [修改] 将名字改为 MediaEditSA，以明确区分
     component: () => import('../components/MediaEditPage.vue'),
