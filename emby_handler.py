@@ -1106,7 +1106,7 @@ def add_items_to_collection(collection_id: str, item_ids: List[str], base_url: s
         logger.error(f"向合集 {collection_id} 添加项目时失败: {e}")
         return False
 
-# ★★★ 这是一个完整的、可工作的版本，用于替换你在 tasks.py 中引用的那个占位函数 ★★★
+# ★★★ 创建或更新一个合集 ★★★
 def create_or_update_collection_with_tmdb_ids(
     collection_name: str, tmdb_ids: List[int], base_url: str, api_key: str, 
     user_id: str, library_ids: List[str], item_type: str = 'Movie'
@@ -1151,7 +1151,7 @@ def create_or_update_collection_with_tmdb_ids(
             success = add_items_to_collection(emby_collection_id, emby_item_ids_to_add, base_url, api_key)
         else:
             # --- 创建逻辑 (这是本次修复的核心) ---
-            logger.info(f"未找到合集 '{collection_name}'，将通过通用接口一步创建。")
+            logger.info(f"未找到合集 '{collection_name}'，将开始创建...")
             
             if not emby_item_ids_to_add:
                 logger.warning(f"无法创建合集 '{collection_name}'，因为媒体库中没有任何匹配的{log_item_type}可供添加。")

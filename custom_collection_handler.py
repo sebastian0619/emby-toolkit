@@ -234,7 +234,7 @@ class FilterEngine:
         logic = definition.get('logic', 'AND')
         # ★★★ 核心修复：从定义中获取要筛选的媒体类型，默认为 Movie ★★★
         item_type_to_process = definition.get('item_type', 'Movie')
-        logger.info(f"筛选使用的 item_type_to_process: {item_type_to_process}")
+        logger.trace(f"筛选使用的 item_type_to_process: {item_type_to_process}")
 
         if not rules:
             logger.warning("合集定义中没有任何规则，将返回空列表。")

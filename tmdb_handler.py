@@ -155,6 +155,18 @@ def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append
     logger.debug(f"TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) 第 {season_number} 季的详情...")
     
     return _tmdb_request(endpoint, api_key, params)
+# +++ 获取集详情 +++
+def get_episode_details_tmdb(tv_id: int, season_number: int, episode_number: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,external_ids") -> Optional[Dict[str, Any]]:
+    """
+    【新增】获取电视剧某一集的详细信息。
+    """
+    endpoint = f"/tv/{tv_id}/season/{season_number}/episode/{episode_number}"
+    params = {
+        "language": DEFAULT_LANGUAGE,
+        "append_to_response": append_to_response
+    }
+    logger.trace(f"TMDb API: 获取电视剧 (ID: {tv_id}) S{season_number}E{episode_number} 的详情...")
+    return _tmdb_request(endpoint, api_key, params)
 # --- 通过外部ID (如 IMDb ID) 在 TMDb 上查找人物 ---
 def find_person_by_external_id(external_id: str, api_key: str, source: str = "imdb_id") -> Optional[Dict[str, Any]]:
     """

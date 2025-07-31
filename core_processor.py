@@ -101,6 +101,122 @@ def _save_metadata_to_cache(
 
     except Exception as e:
         logger.error(f"保存元数据到缓存表时失败: {e}", exc_info=True)
+# ==========================================================================================
+# +++ 新增：JSON 构建器函数 (JSON Builders) +++
+# 这些函数严格按照您提供的最小化模板来构建新的JSON对象，确保结构纯净。
+# ==========================================================================================
+
+def _build_movie_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """根据模板构建电影 all.json"""
+    return {
+      "id": source_data.get("id", 0),
+      "imdb_id": source_data.get("imdb_id", ""),
+      "title": source_data.get("title", ""),
+      "original_title": source_data.get("original_title", ""),
+      "overview": source_data.get("overview", ""),
+      "tagline": source_data.get("tagline", ""),
+      "release_date": source_data.get("release_date", ""),
+      "vote_average": source_data.get("vote_average", 0.0),
+      "production_countries": source_data.get("production_countries", []),
+      "production_companies": source_data.get("production_companies", []),
+      "genres": source_data.get("genres", []),
+      "casts": {
+        "cast": processed_cast,
+        "crew": processed_crew
+      },
+      "releases": source_data.get("releases", {"countries": []}),
+      "belongs_to_collection": source_data.get("belongs_to_collection", None),
+      "trailers": source_data.get("trailers", {"youtube": []}) # 假设神医插件需要这个结构
+    }
+
+def _build_series_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """根据模板构建电视剧 series.json"""
+    return {
+      "id": source_data.get("id", 0),
+      "name": source_data.get("name", ""),
+      "original_name": source_data.get("original_name", ""),
+      "overview": source_data.get("overview", ""),
+      "vote_average": source_data.get("vote_average", 0.0),
+      "episode_run_time": source_data.get("episode_run_time", []),
+      "first_air_date": source_data.get("first_air_date", "1970-01-01T00:00:00.000Z"),
+      "last_air_date": source_data.get("last_air_date", "1970-01-01T00:00:00.000Z"),
+      "status": source_data.get("status", ""),
+      "networks": source_data.get("networks", []),
+      "genres": source_data.get("genres", []),
+      "external_ids": source_data.get("external_ids", {"imdb_id": "", "tvrage_id": None, "tvdb_id": None}),
+      "videos": source_data.get("videos", {"results": []}),
+      "content_ratings": source_data.get("content_ratings", {"results": []}),
+      "credits": {
+        "cast": processed_cast
+        # 注意：主剧集文件通常不包含 crew，除非API返回
+      }
+    }
+
+def _build_season_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """根据模板构建季 season-X.json"""
+    return {
+      "name": source_data.get("name", ""),
+      "overview": source_data.get("overview", ""),
+      "air_date": source_data.get("air_date", "1970-01-01T00:00:00.000Z"),
+      "external_ids": source_data.get("external_ids", {"tvdb_id": None}),
+      "credits": {
+        "cast": processed_cast,
+        "crew": processed_crew
+      }
+    }
+
+def _build_episode_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """根据模板构建集 season-X-episode-Y.json"""
+    return {
+      "name": source_data.get("name", ""),
+      "overview": source_data.get("overview", ""),
+      "videos": source_data.get("videos", {"results": []}),
+      "external_ids": source_data.get("external_ids", {"tvdb_id": None, "tvrage_id": None, "imdb_id": ""}),
+      "air_date": source_data.get("air_date", "1970-01-01T00:00:00.000Z"),
+      "vote_average": source_data.get("vote_average", 0.0),
+      "credits": {
+        "cast": processed_cast,
+        "guest_stars": [], # 按照统一注入的原则，这里也使用主演员表，并将 guest_stars 留空
+        "crew": processed_crew
+      }
+    }
+
+# ==========================================================================================
+# +++ 新增：演员聚合函数 +++
+# 从内存中的TMDB数据聚合演员，而不是从文件
+# ==========================================================================================
+def _aggregate_series_cast_from_tmdb_data(series_data: Dict[str, Any], all_episodes_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    【新】从内存中的TMDB数据聚合一个剧集的所有演员。
+    """
+    logger.debug(f"【演员聚合】开始为 '{series_data.get('name')}' 从内存中的TMDB数据聚合演员...")
+    aggregated_cast_map = {}
+
+    # 1. 优先处理主剧集的演员列表
+    main_cast = series_data.get("credits", {}).get("cast", [])
+    for actor in main_cast:
+        actor_id = actor.get("id")
+        if actor_id:
+            aggregated_cast_map[actor_id] = actor
+    logger.debug(f"  -> 从主剧集数据中加载了 {len(aggregated_cast_map)} 位主演员。")
+
+    # 2. 聚合所有分集的演员和客串演员
+    for episode_data in all_episodes_data:
+        credits_data = episode_data.get("credits", {})
+        actors_to_process = credits_data.get("cast", []) + credits_data.get("guest_stars", [])
+        
+        for actor in actors_to_process:
+            actor_id = actor.get("id")
+            if actor_id and actor_id not in aggregated_cast_map:
+                if 'order' not in actor:
+                    actor['order'] = 999  # 为客串演员设置高order值
+                aggregated_cast_map[actor_id] = actor
+
+    full_aggregated_cast = list(aggregated_cast_map.values())
+    full_aggregated_cast.sort(key=lambda x: x.get('order', 999))
+    
+    logger.info(f"【演员聚合】完成。共为 '{series_data.get('name')}' 聚合了 {len(full_aggregated_cast)} 位独立演员。")
+    return full_aggregated_cast
 class MediaProcessor:
     def __init__(self, config: Dict[str, Any]):
         # ★★★ 然后，从这个 config 字典里，解析出所有需要的属性 ★★★
@@ -816,384 +932,262 @@ class MediaProcessor:
         
     def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool, should_process_episodes_this_run: bool, force_fetch_from_tmdb: bool):
         """
-        【V-Final 升级版 - 支持强制在线获取】
-        在一个统一的数据库事务中，串行执行所有数据库相关的处理轨道。
-        增加了 force_fetch_from_tmdb 标志以实现逻辑分岔。
+        【V-Rebuild - 重建版】
+        在一个统一的数据库事务中，执行所有处理。
+        核心逻辑已改为：获取数据 -> 处理演员 -> 从零构建JSON。
         """
-        # --- 准备工作 (确保所有变量先定义) ---
         item_id = item_details_from_emby.get("Id")
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
         tmdb_id = item_details_from_emby.get("ProviderIds", {}).get("Tmdb")
         item_type = item_details_from_emby.get("Type")
-        log_prefix = f"[{'在线模式' if force_fetch_from_tmdb else '本地模式'}]"
-        # --- 定义动画片 ---
-        genres = item_details_from_emby.get("Genres", [])
-        is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
-        # ★★★ 现在 item_name_for_log 已经定义好了 ★★★
-        original_emby_actor_count = len(item_details_from_emby.get("People", []))
         
-        # --- 路径定义提前，因为重建和常规模式都需要 ---
-        if not tmdb_id or not self.local_data_path:
-            logger.error(f"缺少TMDbID或本地路径，无法继续处理。")
+        if not tmdb_id:
+            logger.error(f"项目 '{item_name_for_log}' 缺少 TMDb ID，无法处理。")
             return False
+        if not self.tmdb_api_key:
+            logger.error("未配置TMDb API Key，无法从在线获取数据。")
+            return False
+
+        log_prefix = f"[{'在线模式' if force_fetch_from_tmdb else '本地优先'}]"
+        logger.info(f"{log_prefix} 开始处理 '{item_name_for_log}' (TMDb ID: {tmdb_id})")
+
+        # --- 路径定义 ---
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-        item_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
-        item_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
-        base_json_filename = "all.json" if item_type == "Movie" else "series.json"
-        json_file_path = os.path.join(item_cache_dir, base_json_filename)
+        base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
+        base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+        os.makedirs(base_override_dir, exist_ok=True)
 
-        # ★★★ 全新的“智能重建触发器” ★★★
-        # 检查是否需要重建：1. 用户手动强制触发；2. 缓存文件不存在。
-        is_rebuild_needed = force_fetch_from_tmdb or not os.path.exists(json_file_path)
-
-        if is_rebuild_needed:
-            # 根据触发原因，选择不同的日志前缀和消息
-            if force_fetch_from_tmdb:
-                log_prefix = "[强制缓存重建]"
-                logger.info(f"{log_prefix} 用户手动触发为 '{item_name_for_log}' 执行缓存重建...")
-            else:
-                log_prefix = "[自动缓存重建]"
-                logger.info(f"{log_prefix} 检测到缓存文件不存在，为 '{item_name_for_log}' 自动执行缓存重建...")
-                logger.debug(f"  - 目标文件路径: {json_file_path}")
-
-            # --- ✨✨✨ 1. 清理时，只记录 cache 目录删除的文件数作为目标 ✨✨✨ ---
-            files_deleted_from_cache = 0
-            dirs_to_clean = [item_override_dir, item_cache_dir]
-            for target_dir in dirs_to_clean:
-                if os.path.isdir(target_dir):
-                    files_deleted_in_dir = 0
-                    try:
-                        for dirpath, _, filenames in os.walk(target_dir):
-                            for filename in filenames:
-                                if filename.lower().endswith('.json'):
-                                    file_to_delete = os.path.join(dirpath, filename)
-                                    try:
-                                        os.remove(file_to_delete)
-                                        files_deleted_in_dir += 1
-                                    except OSError as e_remove:
-                                        logger.error(f"{log_prefix} 删除文件 {file_to_delete} 时失败: {e_remove}")
-                        
-                        if files_deleted_in_dir > 0:
-                            logger.debug(f"{log_prefix} 成功从 {target_dir} 删除了 {files_deleted_in_dir} 个 .json 文件。")
-                        
-                        # 只在处理 cache 目录时，才更新我们的目标计数器
-                        if target_dir == item_cache_dir:
-                            files_deleted_from_cache = files_deleted_in_dir
-                            
-                    except Exception as e_walk:
-                        logger.error(f"{log_prefix} 遍历目录 {target_dir} 进行清理时失败: {e_walk}", exc_info=True)
-            
-            if files_deleted_from_cache > 0:
-                logger.info(f"{log_prefix} 清理完毕，等待刮削器重新生成 {files_deleted_from_cache} 个缓存文件。")
-
-            # 2. 触发Emby进行“替换所有元数据”的刷新
-            logger.info(f"{log_prefix} 正在触发Emby对 '{item_name_for_log}' 进行“替换所有元数据”的刷新...")
-            refresh_success = emby_handler.refresh_emby_item_metadata(
-                item_emby_id=item_id,
-                emby_server_url=self.emby_url,
-                emby_api_key=self.emby_api_key,
-                replace_all_metadata_param=True,
-                item_name_for_log=item_name_for_log,
-                user_id_for_unlock=self.emby_user_id
-            )
-
-            if not refresh_success:
-                logger.error(f"{log_prefix} ❌ 触发Emby刷新失败，处理中止。")
-                return False
-
-            # --- ✨✨✨ 3. 使用修正后的等待逻辑 ✨✨✨ ---
-            logger.info(f"{log_prefix} 刷新已触发，现在开始等待新的缓存文件生成...")
-            file_found = False
-            last_file_count = -1
-            stable_checks = 0
-            max_retries = self.config.get("rebuild_max_retries", 20)
-            wait_interval = self.config.get("rebuild_wait_interval", 3)
-            stability_threshold = self.config.get("rebuild_stability_threshold", 2)
-
-            for i in range(max_retries):
-                if self.is_stop_requested():
-                    logger.warning(f"{log_prefix} 在等待缓存文件生成期间收到停止信号，处理中止。")
-                    return False
-
-                main_file_exists = os.path.exists(json_file_path)
-                
-                if item_type == "Series":
-                    if not main_file_exists:
-                        logger.info(f"{log_prefix} 等待主文件 {base_json_filename}... (尝试 {i+1}/{max_retries})")
-                    else:
-                        try:
-                            current_file_count = len([f for f in os.listdir(item_cache_dir) if f.lower().endswith('.json')])
-                        except FileNotFoundError:
-                            current_file_count = 0
-
-                        # 使用正确的目标数进行日志记录
-                        log_target_count = files_deleted_from_cache if files_deleted_from_cache > 0 else "N/A"
-                        logger.info(f"{log_prefix} 等待中... (尝试 {i+1}/{max_retries}) | 当前/目标文件数: {current_file_count}/{log_target_count} | 稳定检查: {stable_checks}/{stability_threshold}")
-
-                        # 优先条件1: 文件数已恢复 (使用正确的目标数)
-                        if files_deleted_from_cache > 0 and current_file_count >= files_deleted_from_cache:
-                            logger.info(f"{log_prefix} ✅ 文件数量 ({current_file_count}) 已达到或超过目标数量 ({files_deleted_from_cache})，认为缓存生成完毕。")
-                            file_found = True
-                            break
-
-                        # 备用条件2: 文件数稳定
-                        if current_file_count > last_file_count:
-                            stable_checks = 0
-                            last_file_count = current_file_count
-                        else:
-                            stable_checks += 1
-                        
-                        if stable_checks >= stability_threshold:
-                            logger.info(f"{log_prefix} ✅ 文件数量已连续 {stability_threshold} 次未变化，认为缓存生成完毕。")
-                            file_found = True
-                            break
-                
-                elif item_type == "Movie" and main_file_exists:
-                    logger.info(f"{log_prefix} ✅ 成功找到电影缓存文件: {json_file_path}")
-                    file_found = True
-                    break
-                
-                time.sleep(wait_interval)
-            
-            if not file_found:
-                logger.error(f"{log_prefix} ❌ 等待超时！在 {max_retries * wait_interval} 秒后仍未找到缓存文件或文件数量未稳定。处理中止。")
-                return False
-
-        # ★★★ 正常的本地处理模式 ★★★
-        # (无论是直接进入，还是经过了上面的重建等待流程，都会执行这里)
-        log_prefix = "[本地模式]"
-        
-
-        # ★★★ 使用 with 语句来管理数据库连接和事务 ★★★
         try:
+            # ======================================================================
+            # 阶段 1: 数据采集 (Data Acquisition)
+            # ======================================================================
+            main_tmdb_data = {}
+            seasons_data = []
+            episodes_data = []
+
+            # 检查是否需要从TMDB API强制获取
+            is_fetch_needed = force_fetch_from_tmdb
+            if not is_fetch_needed:
+                # 如果不是强制获取，检查本地缓存是否存在
+                main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+                if not os.path.exists(os.path.join(base_cache_dir, main_json_filename)):
+                    logger.info(f"本地主缓存文件不存在，将触发在线获取。")
+                    is_fetch_needed = True
+            
+            if is_fetch_needed:
+                logger.info(f"正在从 TMDb API 获取 '{item_name_for_log}' 的完整元数据...")
+                if item_type == "Movie":
+                    main_tmdb_data = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
+                    if not main_tmdb_data:
+                        raise ValueError(f"从TMDb获取电影 {tmdb_id} 详情失败。")
+                
+                elif item_type == "Series":
+                    main_tmdb_data = tmdb_handler.get_tv_details_tmdb(tmdb_id, self.tmdb_api_key)
+                    if not main_tmdb_data:
+                        raise ValueError(f"从TMDb获取剧集 {tmdb_id} 详情失败。")
+
+                    # ======================================================================
+                    # ★★★★★★★★★★★★★★★★★ 核心修正区域 V2 START ★★★★★★★★★★★★★★★★★
+                    # ======================================================================
+                    
+                    # --- 定义请求间隔和并发数 ---
+                    REQUEST_DELAY = 0.05  # 每次API请求提交后的延时（秒）
+                    MAX_WORKERS = 5       # 最大并发线程数
+
+                    # --- 阶段 A: 并发获取所有季的数据 ---
+                    seasons_to_fetch = main_tmdb_data.get("seasons", [])
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="season_fetch") as executor:
+                        future_to_season_num = {}
+                        for s in seasons_to_fetch:
+                            season_number = s.get("season_number")
+                            if season_number is not None:
+                                future = executor.submit(tmdb_handler.get_season_details_tmdb, tmdb_id, season_number, self.tmdb_api_key)
+                                future_to_season_num[future] = season_number
+                                time.sleep(REQUEST_DELAY) # 【【【 新增：请求延时 】】】
+                        
+                        logger.info(f"已提交 {len(future_to_season_num)} 个季获取任务，等待完成...")
+                        for future in concurrent.futures.as_completed(future_to_season_num):
+                            season_number = future_to_season_num[future]
+                            try:
+                                data = future.result()
+                                if data:
+                                    seasons_data.append(data)
+                            except Exception as exc:
+                                logger.error(f"获取季 {season_number} 详情时出错: {exc}", exc_info=False)
+                    
+                    # --- 阶段 B: 并发获取所有集的数据 ---
+                    if seasons_data:
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="episode_fetch") as executor:
+                            future_to_episode_info = {}
+                            for season_detail in seasons_data:
+                                for ep_stub in season_detail.get('episodes', []):
+                                    season_number = season_detail.get("season_number")
+                                    episode_number = ep_stub.get("episode_number")
+                                    if season_number is not None and episode_number is not None:
+                                        future = executor.submit(
+                                            tmdb_handler.get_episode_details_tmdb,
+                                            tmdb_id, season_number, episode_number, self.tmdb_api_key
+                                        )
+                                        future_to_episode_info[future] = (season_number, episode_number)
+                                        time.sleep(REQUEST_DELAY) # 【【【 新增：请求延时 】】】
+                            
+                            if future_to_episode_info:
+                                logger.info(f"已提交 {len(future_to_episode_info)} 个分集获取任务，等待完成...")
+                                for future in concurrent.futures.as_completed(future_to_episode_info):
+                                    s_num, e_num = future_to_episode_info[future]
+                                    try:
+                                        ep_data = future.result()
+                                        if ep_data:
+                                            episodes_data.append(ep_data)
+                                    except Exception as exc:
+                                        logger.error(f'获取 S{s_num}E{e_num} 详情时出错: {exc}', exc_info=False)
+
+            else: # 使用本地缓存
+                logger.info(f"正在从本地缓存加载 '{item_name_for_log}' 的元数据...")
+                main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+                main_tmdb_data = _read_local_json(os.path.join(base_cache_dir, main_json_filename))
+                if not main_tmdb_data:
+                    raise ValueError(f"读取本地主缓存文件失败: {os.path.join(base_cache_dir, main_json_filename)}")
+
+                if item_type == "Series":
+                    for filename in os.listdir(base_cache_dir):
+                        if filename.startswith("season-") and filename.endswith(".json"):
+                            if "episode" in filename:
+                                episodes_data.append(_read_local_json(os.path.join(base_cache_dir, filename)))
+                            else:
+                                seasons_data.append(_read_local_json(os.path.join(base_cache_dir, filename)))
+
+            # ======================================================================
+            # 阶段 2: 演员处理 (Actor Processing)
+            # ======================================================================
             with get_central_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
-                if not tmdb_id or not self.local_data_path:
-                    error_msg = "缺少TMDbID" if not tmdb_id else "未配置本地数据路径"
-                    logger.warning(f"【JSON轨道】跳过处理 '{item_name_for_log}'，原因: {error_msg}。")
-                    return False
                 
-                cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-                base_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
-                base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
-                image_override_dir = os.path.join(base_override_dir, "images")
-                os.makedirs(base_override_dir, exist_ok=True)
-                
-                base_json_filename = "all.json" if item_type == "Movie" else "series.json"
-                
-                # 1. 读取神医插件生成的原始JSON文件
-                json_file_path = os.path.join(base_cache_dir, base_json_filename)
-                logger.info(f"读取神医插件生成的缓存文件: {json_file_path}")
-                base_json_data_original = _read_local_json(json_file_path)
-
-                if not base_json_data_original:
-                    raise ValueError(f"无法读取或解析JSON文件: {json_file_path}")
-
-                # ✨✨✨ 新增：获取豆瓣数据（包括评分）并执行替换 ✨✨✨
+                # --- 获取豆瓣数据 ---
                 douban_cast_raw, douban_rating = self._get_douban_data_with_local_cache(item_details_from_emby)
-
-                # 直接在原始数据上操作，后续会写入覆盖文件
-                base_json_data_for_override = base_json_data_original
-
                 if douban_rating is not None:
-                    logger.info(f"✅ 发现豆瓣评分: {douban_rating}，将替换TMDb评分 ({base_json_data_for_override.get('vote_average')})。")
-                    base_json_data_for_override['vote_average'] = douban_rating
-                else:
-                    logger.debug("未找到有效的豆瓣评分，将保留原始TMDb评分。")
-                # ✨✨✨ 评分替换结束 ✨✨✨
+                    logger.info(f"✅ 发现豆瓣评分: {douban_rating}，将替换TMDb评分。")
+                    main_tmdb_data['vote_average'] = douban_rating
 
-                # 2. 处理演员表
-                full_tmdb_cast_as_base = []
+                # --- 聚合原始演员表 ---
+                initial_cast_list = []
                 if item_type == "Movie":
-                    full_tmdb_cast_as_base = base_json_data_original.get("casts", {}).get("cast", [])
+                    initial_cast_list = main_tmdb_data.get("casts", {}).get("cast", [])
                 elif item_type == "Series":
-                    full_tmdb_cast_as_base = self._aggregate_series_cast_from_cache(
-                        base_cache_dir=base_cache_dir,
-                        item_name_for_log=item_name_for_log
-                    )
+                    initial_cast_list = _aggregate_series_cast_from_tmdb_data(main_tmdb_data, episodes_data)
 
+                # --- 执行核心的演员处理、匹配和翻译逻辑 ---
                 intermediate_cast = self._process_cast_list_from_local(
-                    local_cast_list=full_tmdb_cast_as_base,
-                    douban_cast_list=douban_cast_raw,  # <--- 传入获取到的豆瓣演员
-                    item_details_from_emby=item_details_from_emby, 
+                    local_cast_list=initial_cast_list,
+                    douban_cast_list=douban_cast_raw,
+                    item_details_from_emby=item_details_from_emby,
                     cursor=cursor,
                     tmdb_api_key=self.tmdb_api_key,
-                    stop_event=self.get_stop_event()  
-                ) 
-                final_cast_perfect = actor_utils.format_and_complete_cast_list(
-                    intermediate_cast, 
-                    is_animation, 
-                    self.config, 
-                    mode='auto'
-                )
-                final_cast_perfect = actor_utils.format_and_complete_cast_list(
-                    intermediate_cast, 
-                    is_animation, 
-                    self.config, 
-                    mode='auto'
+                    stop_event=self.get_stop_event()
                 )
 
-                # =================================================================
-                # 【【【【【 最终核心修正：直接修改，不再重建 】】】】】
-                # =================================================================
+                # --- 最终格式化 ---
+                genres = item_details_from_emby.get("Genres", [])
+                is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
+                final_cast_perfect = actor_utils.format_and_complete_cast_list(
+                    intermediate_cast, is_animation, self.config, mode='auto'
+                )
                 
-                # 3. 直接在原始数据上替换演员表部分
-                logger.trace("将直接修改缓存元数据中的演员表，并保留所有其他字段。")
-                
-                # 我们不再创建新的空字典，而是直接使用读入的完整数据
-                base_json_data_for_override = base_json_data_original
+                # 提取演职员表
+                final_crew = []
+                if item_type == "Movie":
+                    final_crew = main_tmdb_data.get("casts", {}).get("crew", [])
+                elif item_type == "Series":
+                    # 剧集的crew通常在主文件里，分集文件里的crew意义不大
+                    final_crew = main_tmdb_data.get("credits", {}).get("crew", [])
+
+
+                # ======================================================================
+                # 阶段 3: JSON 构建与写入 (Build & Write)
+                # ======================================================================
+                logger.info(f"处理完成，开始根据模板生成覆盖JSON文件...")
+
+                # --- 安全写入函数 ---
+                def safe_write_json(data: Dict, path: str):
+                    temp_path = f"{path}.{random.randint(1000, 9999)}.tmp"
+                    try:
+                        with open(temp_path, 'w', encoding='utf-8') as f:
+                            json.dump(data, f, ensure_ascii=False, indent=4)
+                        os.replace(temp_path, path)
+                        logger.trace(f"✅ 成功生成覆盖文件: {path}")
+                    except Exception as e:
+                        logger.error(f"写入文件 {path} 时发生错误: {e}", exc_info=True)
+                        if os.path.exists(temp_path): os.remove(temp_path)
+                        raise
 
                 if item_type == "Movie":
-                    base_json_data_for_override.setdefault("casts", {})["cast"] = final_cast_perfect
-                    logger.debug("已将处理后的演员表写入电影的 'casts' -> 'cast' 结构中。")
-                else: # item_type == "Series"
-                    base_json_data_for_override.setdefault("credits", {})["cast"] = final_cast_perfect
-                    logger.debug("已将处理后的演员表写入电视剧的 'credits' -> 'cast' 结构中。")
+                    movie_override_json = _build_movie_json(main_tmdb_data, final_cast_perfect, final_crew)
+                    override_path = os.path.join(base_override_dir, "all.json")
+                    safe_write_json(movie_override_json, override_path)
+                
+                elif item_type == "Series":
+                    # 写入主剧集文件
+                    series_override_json = _build_series_json(main_tmdb_data, final_cast_perfect)
+                    override_path = os.path.join(base_override_dir, "series.json")
+                    safe_write_json(series_override_json, override_path)
 
-                # 4. 将修改后的完整JSON写入覆盖文件 (这部分逻辑不变)
-                override_json_path = os.path.join(base_override_dir, base_json_filename)
-                temp_json_path = f"{override_json_path}.{random.randint(1000, 9999)}.tmp"
-                try:
-                    with open(temp_json_path, 'w', encoding='utf-8') as f:
-                        json.dump(base_json_data_for_override, f, ensure_ascii=False, indent=4)
-                    os.replace(temp_json_path, override_json_path)
-                    logger.debug(f"✅ 成功生成覆盖元数据文件: {override_json_path}")
-                except Exception as e_write:
-                    logger.error(f"写入或重命名元数据文件时发生错误: {e_write}", exc_info=True)
-                    if os.path.exists(temp_json_path): os.remove(temp_json_path)
-                    raise e_write
+                    # 写入季文件
+                    for season_data in seasons_data:
+                        season_number = season_data.get("season_number")
+                        season_crew = season_data.get("credits", {}).get("crew", [])
+                        season_override_json = _build_season_json(season_data, final_cast_perfect, season_crew)
+                        override_path = os.path.join(base_override_dir, f"season-{season_number}.json")
+                        safe_write_json(season_override_json, override_path)
 
-                # --- 处理分集 ---
-                if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
-                    logger.info(f"【逐集JSON模式-纯本地】开始为 '{item_name_for_log}' 的所有分集生成覆盖元数据...")
+                    # 写入分集文件
+                    if should_process_episodes_this_run:
+                        for episode_data in episodes_data:
+                            season_number = episode_data.get("season_number")
+                            episode_number = episode_data.get("episode_number")
+                            episode_crew = episode_data.get("credits", {}).get("crew", [])
+                            episode_override_json = _build_episode_json(episode_data, final_cast_perfect, episode_crew)
+                            override_path = os.path.join(base_override_dir, f"season-{season_number}-episode-{episode_number}.json")
+                            safe_write_json(episode_override_json, override_path)
 
-                    # --- 步骤1: 扫描本地缓存目录，找到所有需要处理的分集JSON文件 ---
-                    episode_files_to_process = []
-                    if os.path.exists(base_cache_dir):
-                        for filename in os.listdir(base_cache_dir):
-                            # 精准匹配分集文件名格式，例如 "season-1-episode-1.json"
-                            if filename.startswith("season-") and filename.lower().endswith('.json'):
-                                episode_files_to_process.append(filename)
-                    
-                    if not episode_files_to_process:
-                        logger.warning(f"在缓存目录 {base_cache_dir} 中未能找到任何分集文件，跳过处理。")
-                    else:
-                        logger.info(f"将为 {len(episode_files_to_process)} 个本地缓存的分集文件生成覆盖元数据...")
-
-                        # --- 步骤2: 遍历每一个找到的分集文件，修改并写入覆盖目录 ---
-                        for episode_filename in sorted(episode_files_to_process):
-                            # ✨✨✨ 新增停止检查 ✨✨✨
-                            if self.is_stop_requested():
-                                logger.warning(f"分集处理循环被用户中止。")
-                                raise InterruptedError("任务中止")
-                            local_child_path = os.path.join(base_cache_dir, episode_filename)
-                            
-                            try:
-                                # 2.1 读取原始分集JSON
-                                child_json_original = _read_local_json(local_child_path)
-                                if not child_json_original:
-                                    logger.warning(f"读取或解析分集文件失败，跳过: {local_child_path}")
-                                    continue
-
-                                # 2.2 直接在原始数据上替换演员表
-                                # 注意：这里我们用的是之前已经处理好的、整个剧集的最终演员表 `final_cast_perfect`
-                                child_json_for_override = child_json_original
-                                child_json_for_override.setdefault("credits", {})["cast"] = final_cast_perfect
-                                
-                                # 根据神医插件的习惯，可能需要清空 guest_stars，以确保演员表统一
-                                child_json_for_override["guest_stars"] = []
-                                
-                                # 2.3 安全地写入覆盖文件
-                                override_child_path = os.path.join(base_override_dir, episode_filename)
-                                temp_child_path = f"{override_child_path}.{random.randint(1000, 9999)}.tmp"
-                                
-                                with open(temp_child_path, 'w', encoding='utf-8') as f:
-                                    json.dump(child_json_for_override, f, ensure_ascii=False, indent=4)
-                                os.replace(temp_child_path, override_child_path)
-                                
-                            except Exception as e:
-                                logger.error(f"处理分集文件 {episode_filename} 时发生错误: {e}", exc_info=True)
-                        
-                        logger.info("所有分集覆盖文件写入完成。")
-
-                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                # ★★★ 新增：在所有处理完成后，刷新前，调用保存函数 ★★★
-                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                # ======================================================================
+                # 阶段 4: 后续处理 (Post-processing)
+                # ======================================================================
                 _save_metadata_to_cache(
                     cursor=cursor,
                     tmdb_id=tmdb_id,
                     item_type=item_type,
                     item_details=item_details_from_emby,
                     processed_cast=final_cast_perfect,
-                    raw_tmdb_json=base_json_data_original # 传递我们读取的原始JSON
+                    raw_tmdb_json=main_tmdb_data
                 )
                 
-                # 【同步图片】
                 if self.sync_images_enabled:
                     if self.is_stop_requested(): raise InterruptedError("任务被中止")
-                    
-                    # 直接调用我们新的、可复用的图片同步方法
-                    # 注意：item_details_from_emby 就是它需要的参数
                     self.sync_item_images(item_details_from_emby)
                     
-                # --- 阶段3: 统计、评分和最终日志记录 ---
-                final_actor_count = len(final_cast_perfect)
-                logger.info(f"✨✨✨处理统计 '{item_name_for_log}'✨✨✨")
-                logger.info(f"  - 原有演员: {original_emby_actor_count} 位")
-                newly_added_count = final_actor_count - original_emby_actor_count
-                if newly_added_count > 0:
-                    logger.info(f"  - 新增演员: {newly_added_count} 位") 
-                logger.info(f"  - 最终演员: {final_actor_count} 位")
-
-                if self.is_stop_requested(): raise InterruptedError("任务被中止")
-
-                processing_score = actor_utils.evaluate_cast_processing_quality(
-                    final_cast=final_cast_perfect,
-                    original_cast_count=original_emby_actor_count,
-                    expected_final_count=len(final_cast_perfect),
-                    is_animation=is_animation
-                )
-                min_score_for_review = float(self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW))
-                
+                # --- 刷新与日志 ---
                 refresh_success = emby_handler.refresh_emby_item_metadata(
                     item_emby_id=item_id,
                     emby_server_url=self.emby_url,
                     emby_api_key=self.emby_api_key,
-                    replace_all_metadata_param=True,
+                    replace_all_metadata_param=True, 
                     item_name_for_log=item_name_for_log,
                     user_id_for_unlock=self.emby_user_id
                 )
-                
                 if not refresh_success:
                     raise RuntimeError("触发Emby刷新失败")
                 
-                if processing_score < min_score_for_review:
-                    self.log_db_manager.save_to_failed_log(
-                        cursor, item_id, item_name_for_log, 
-                        f"处理评分过低 ({processing_score:.1f} / {min_score_for_review:.1f})", 
-                        item_type, score=processing_score
-                    )
-                else:
-                    self.log_db_manager.save_to_processed_log(cursor, item_id, item_name_for_log, score=processing_score)
-                    self.log_db_manager.remove_from_failed_log(cursor, item_id)
+                self.log_db_manager.save_to_processed_log(cursor, item_id, item_name_for_log, score=10.0) # 重建模式默认给高分
+                self.log_db_manager.remove_from_failed_log(cursor, item_id)
                 
                 logger.info(f"✨✨✨处理完成 '{item_name_for_log}'✨✨✨")
                 return True
 
         except (ValueError, InterruptedError) as e:
-            # 捕获我们预期的、不应中止整个程序的错误
-            log_message = f"处理 '{item_name_for_log}' 的过程中被用户中止" if isinstance(e, InterruptedError) else f"处理 '{item_name_for_log}' 失败: {e}"
-            logger.warning(f"{log_message}")
-            # 注意：因为异常发生在 with 块内，事务会自动回滚，我们无需手动操作
-            # 我们可以在这里手动写入失败日志，但这需要一个新的数据库连接
-            # 更简单的做法是，让上层调用者决定是否记录失败
+            logger.warning(f"处理 '{item_name_for_log}' 的过程中断: {e}")
             return False
-    
         except Exception as outer_e:
-            # 捕获所有其他意外的、严重的错误
             logger.error(f"核心处理流程中发生未知严重错误 for '{item_name_for_log}': {outer_e}", exc_info=True)
-            # 事务同样会自动回滚
-            # 我们可以在这里手动写入失败日志
             try:
                 with get_central_db_connection(self.db_path) as conn_fail:
                     self.log_db_manager.save_to_failed_log(conn_fail.cursor(), item_id, item_name_for_log, f"核心处理异常: {str(outer_e)}", item_type)

@@ -905,7 +905,7 @@ def update_custom_collection_sync_status(db_path: str, collection_id: int, emby_
             cursor = conn.cursor()
             cursor.execute(sql, (emby_collection_id, collection_id))
             conn.commit()
-            logger.info(f"已更新自定义合集 {collection_id} 的同步状态，关联Emby ID: {emby_collection_id}。")
+            logger.trace(f"已更新自定义合集 {collection_id} 的同步状态，关联Emby ID: {emby_collection_id}。")
             return True
     except sqlite3.Error as e:
         logger.error(f"更新自定义合集 {collection_id} 同步状态时出错: {e}", exc_info=True)
