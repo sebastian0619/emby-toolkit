@@ -27,11 +27,39 @@ def api_get_collections_status():
         logger.error(f"读取合集状态时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "读取合集时发生服务器内部错误"}), 500
 
+# ★★★ 将电影提交到 MoviePilot 订阅  ★★★
+@collections_bp.route('/subscribe', methods=['POST'])
+@login_required
+def api_subscribe_moviepilot():
+    data = request.json
+    tmdb_id = data.get('tmdb_id')
+    title = data.get('title')
+
+    if not tmdb_id or not title:
+        return jsonify({"error": "请求中缺少 tmdb_id 或 title"}), 400
+
+    # 1. 准备传递给业务逻辑函数的数据
+    movie_info = {
+        'tmdb_id': tmdb_id,
+        'title': title
+    }
+
+    # 2. 直接调用业务逻辑函数，并将全局配置传递进去
+    #    所有复杂的登录、请求、错误处理都已封装在函数内部
+    success = moviepilot_handler.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
+
+    # 3. 根据返回的布尔值，生成对应的API响应
+    if success:
+        return jsonify({"message": f"《{title}》已成功提交到 MoviePilot 订阅！"}), 200
+    else:
+        # 具体的错误原因已经被 moviepilot_handler 记录到日志中
+        # API层面只需返回一个通用的失败信息
+        return jsonify({"error": "订阅失败，请检查后端日志获取详细信息。"}), 500
+
 @collections_bp.route('/subscribe_all_missing', methods=['POST'])
 @login_required
 @task_lock_required
 def api_subscribe_all_missing():
-    # ... (函数逻辑和原来完全一样) ...
     logger.info("API (Blueprint): 收到一键订阅所有缺失电影的请求。")
     total_subscribed_count = 0
     total_failed_count = 0
@@ -78,7 +106,6 @@ def api_subscribe_all_missing():
 @collections_bp.route('/update_movie_status', methods=['POST'])
 @login_required
 def api_update_movie_status():
-    # ... (函数逻辑和原来完全一样) ...
     data = request.json
     collection_id = data.get('collection_id')
     movie_tmdb_id = data.get('movie_tmdb_id')

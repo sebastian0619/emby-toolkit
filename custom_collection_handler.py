@@ -48,55 +48,64 @@ class ListImporter:
             logger.error(f"解析RSS内容失败: {e}")
             return []
 
-    def _match_title_to_tmdb(self, title: str) -> Optional[int]:
-        """(V4 - 最终校对版) 使用 tmdb_handler 中经过升级的通用搜索函数。"""
+    def _match_title_to_tmdb(self, title: str, item_type: str = 'movie') -> Optional[int]:
+        """(V3 - 剧集支持版) 使用TMDb API将单个标题匹配为TMDb ID。"""
         try:
-            # ★★★ 核心修复：调用我们100%确定存在的 tmdb_handler.search_media 函数 ★★★
             search_results = tmdb_handler.search_media(
                 query=title,
                 api_key=self.tmdb_api_key,
-                item_type='movie' # 明确告诉它我们只找电影
+                # ★★★ 核心修复：使用传入的 item_type ★★★
+                item_type=item_type 
             )
             
             if search_results:
                 best_match = search_results[0]
-                logger.debug(f"标题 '{title}' 成功匹配到 TMDb 电影: '{best_match.get('title')}' (ID: {best_match.get('id')})")
+                
+                # ★★★ 核心修复：将 item_type 转换为小写再进行比较，避免大小写问题 ★★★
+                is_movie = item_type.lower() == 'movie'
+                
+                log_item_type_cn = "电影" if is_movie else "电视剧"
+                log_title_key = "title" if is_movie else "name"
+                
+                logger.debug(f"标题 '{title}' 成功匹配到 TMDb {log_item_type_cn}: '{best_match.get(log_title_key)}' (ID: {best_match.get('id')})")
                 return best_match.get('id')
             else:
-                logger.warning(f"标题 '{title}' 未能在TMDb上找到匹配的电影。")
+                logger.warning(f"标题 '{title}' 未能在TMDb上找到匹配的{log_item_type_cn}。")
                 return None
         except Exception as e:
             logger.error(f"通过TMDb API匹配标题 '{title}' 时出错: {e}", exc_info=True)
             return None
-        
+
     def process(self, definition: Dict[str, Any]) -> List[int]:
         """
-        【V2 - 双核版】处理 'list' 类型合集的总入口。
-        能根据 definition 中的内容，智能选择使用 TMDb列表导入 或 RSS导入。
+        【V3 - 剧集支持版】处理 'list' 类型合集的总入口。
         """
-        # ★★★ 核心升级：优先检查 TMDb 列表 ID ★★★
-        tmdb_list_id = definition.get('tmdb_list_id')
-        if tmdb_list_id:
-            logger.info(f"检测到TMDb列表ID: {tmdb_list_id}，将使用TMDb API进行导入。")
-            # 直接调用我们刚刚创建的新函数
-            return tmdb_handler.get_movies_from_tmdb_list(tmdb_list_id, self.tmdb_api_key)
-
-        # --- 如果没有TMDb列表ID，则回退到旧的RSS逻辑 ---
+        # ★★★ 核心修复：从 definition 中读取 item_type ★★★
+        item_type_to_process = definition.get('item_type', 'movie') # 默认为电影
         url = definition.get('url')
+        
         if not url:
-            logger.error("榜单合集定义中既没有 'tmdb_list_id' 也没有 'url'。")
+            logger.error("榜单合集定义中缺少 'url'。")
             return []
 
-        logger.info(f"开始处理RSS榜单合集，URL: {url}")
+        logger.info(f"开始处理RSS榜单合集 (类型: {item_type_to_process})，URL: {url}")
         rss_content = self._fetch_rss_content(url)
         if not rss_content: return []
+
         titles = self._parse_rss_for_titles(rss_content)
         if not titles:
             logger.warning(f"未能从 {url} 中解析出任何电影标题。")
             return []
         
         logger.info(f"从RSS中解析出 {len(titles)} 个标题，开始匹配TMDb ID...")
-        tmdb_ids = [self._match_title_to_tmdb(title) for title in titles if self._match_title_to_tmdb(title)]
+        
+        tmdb_ids = []
+        for title in titles:
+            # ★★★ 核心修复：将 item_type 传递下去 ★★★
+            tmdb_id = self._match_title_to_tmdb(title, item_type=item_type_to_process)
+            if tmdb_id:
+                tmdb_ids.append(tmdb_id)
+        
         logger.info(f"RSS匹配完成，成功获得 {len(tmdb_ids)} 个TMDb ID。")
         return tmdb_ids
 

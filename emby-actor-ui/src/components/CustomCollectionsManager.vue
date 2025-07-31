@@ -89,14 +89,24 @@
         <!-- ★★★ 核心升级: 动态表单区域 ★★★ -->
         <!-- ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★ -->
 
+        <n-form-item v-if="currentCollection.type" label="合集内容" path="definition.item_type">
+        <n-radio-group v-model:value="currentCollection.definition.item_type">
+            <n-space>
+            <n-radio value="Movie">电影</n-radio>
+            <n-radio value="Series">电视剧</n-radio>
+            </n-space>
+        </n-radio-group>
+        </n-form-item>
+
         <!-- 榜单导入 (List) 类型的表单 -->
         <div v-if="currentCollection.type === 'list'">
-          <n-form-item label="榜单URL" path="definition.url">
+        <!-- ★★★ 核心修改：将旧的 tmdb_list_id 输入框改回 URL 输入框 ★★★ -->
+        <n-form-item label="榜单URL" path="definition.url">
             <n-input v-model:value="currentCollection.definition.url" placeholder="请输入RSS源的URL" />
             <template #feedback>
-              目前仅支持标准的RSS格式，例如 IMDb Top 250 的RSS源。
+            请输入一个有效的RSS订阅源地址。
             </template>
-          </n-form-item>
+        </n-form-item>
         </div>
 
         <!-- 筛选规则 (Filter) 类型的表单 -->
@@ -230,12 +240,9 @@ const currentCollection = ref(getInitialFormModel());
 
 // ★★★ 监听类型变化，动态切换 definition 结构 ★★★
 watch(() => currentCollection.value.type, (newType) => {
-  // ★★★ 核心修复：只有在“创建”模式下，才执行重置逻辑 ★★★
-  if (isEditing.value) {
-    return; // 如果是编辑模式，直接退出，不要做任何事！
-  }
-
-  // 下面的逻辑现在只会在 isEditing.value 为 false 时运行
+  if (isEditing.value) { return; }
+  
+  // ★★★ 核心修复：为两种类型都设置包含 item_type 的 definition 结构 ★★★
   if (newType === 'filter') {
     currentCollection.value.definition = {
       item_type: 'Movie', 
@@ -243,7 +250,10 @@ watch(() => currentCollection.value.type, (newType) => {
       rules: [{ field: null, operator: null, value: '' }]
     };
   } else if (newType === 'list') {
-    currentCollection.value.definition = { url: '' };
+    currentCollection.value.definition = { 
+      item_type: 'Movie', // 榜单导入也默认是电影
+      url: '' 
+    };
   }
 });
 
@@ -380,7 +390,10 @@ const formRules = computed(() => {
     type: { required: true, message: '请选择合集类型' },
   };
   if (currentCollection.value.type === 'list') {
-    baseRules.definition = { url: { required: true, message: '请输入榜单的URL', trigger: 'blur' } };
+    baseRules.definition = { 
+      url: { required: true, message: '请输入榜单的URL', trigger: 'blur' },
+      item_type: { required: true, message: '请选择合集内容类型' }
+    };
   } else if (currentCollection.value.type === 'filter') {
     baseRules.definition = {
       rules: {

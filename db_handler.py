@@ -1088,9 +1088,9 @@ def upsert_collection_info(db_path: str, collection_data: Dict[str, Any]):
     """
     sql = """
         INSERT OR REPLACE INTO collections_info 
-        (emby_collection_id, name, tmdb_collection_id, status, has_missing, 
+        (emby_collection_id, name, tmdb_collection_id, item_type, status, has_missing, 
         missing_movies_json, last_checked_at, poster_path, in_library_count)
-        VALUES (:emby_collection_id, :name, :tmdb_collection_id, :status, :has_missing, 
+        VALUES (:emby_collection_id, :name, :tmdb_collection_id, :item_type, :status, :has_missing, 
         :missing_movies_json, :last_checked_at, :poster_path, :in_library_count)
     """
     try:

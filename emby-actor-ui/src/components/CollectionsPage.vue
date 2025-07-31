@@ -66,14 +66,17 @@
                 <div class="card-header"><n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.name }}</n-ellipsis></div>
                 <div class="card-status-area">
                   <n-space align="center">
+                    <n-tag v-if="item.item_type" :type="item.item_type === 'Series' ? 'info' : 'default'" size="small" round>
+                      {{ item.item_type === 'Series' ? '电视剧' : '电影' }}
+                    </n-tag>
                     <n-tooltip :disabled="!isTooltipNeeded(item)">
-                      <template #trigger>
-                        <n-tag :type="getStatusTagType(item)" round>
-                          {{ getShortStatusText(item) }}
-                        </n-tag>
-                      </template>
-                      {{ getFullStatusText(item) }}
-                    </n-tooltip>
+                    <template #trigger>
+                      <n-tag :type="getStatusTagType(item)" round>
+                        {{ getShortStatusText(item) }}
+                      </n-tag>
+                    </template>
+                    {{ getFullStatusText(item) }}
+                  </n-tooltip>
                     <n-text :depth="3" class="last-checked-text">上次检查: {{ formatTimestamp(item.last_checked_at) }}</n-text>
                   </n-space>
                 </div>
@@ -379,7 +382,7 @@ const subscribeMovie = async (movie) => {
   subscribing.value[movie.tmdb_id] = true;
   try {
     // 先提交到 MoviePilot
-    await axios.post('/api/subscribe/moviepilot', { tmdb_id: movie.tmdb_id, title: movie.title });
+    await axios.post('/api/collections/subscribe', { tmdb_id: movie.tmdb_id, title: movie.title });
     message.success(`《${movie.title}》已提交订阅`);
     // MoviePilot 成功后，再更新我们自己的数据库状态
     await updateMovieStatus(movie, 'subscribed');

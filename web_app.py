@@ -142,6 +142,7 @@ def init_db():
                     emby_collection_id TEXT PRIMARY KEY,
                     name TEXT,
                     tmdb_collection_id TEXT,
+                    item_type TEXT DEFAULT 'Movie' NOT NULL,
                     status TEXT,
                     has_missing BOOLEAN, 
                     missing_movies_json TEXT,
@@ -159,6 +160,10 @@ def init_db():
                     logger.info("    -> 检测到旧版 'collections_info' 表，正在添加 'in_library_count' 字段...")
                     cursor.execute("ALTER TABLE collections_info ADD COLUMN in_library_count INTEGER DEFAULT 0;")
                     logger.info("    -> 'in_library_count' 字段添加成功。")
+                if 'item_type' not in columns:
+                        logger.info("    -> 检测到旧版 'collections_info' 表，正在添加 'item_type' 字段...")
+                        cursor.execute("ALTER TABLE collections_info ADD COLUMN item_type TEXT DEFAULT 'Movie' NOT NULL;")
+                        logger.info("    -> 'item_type' 字段添加成功。")
             except Exception as e_alter:
                 logger.error(f"  -> 为 'collections_info' 表添加新字段时出错: {e_alter}")
 

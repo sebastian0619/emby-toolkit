@@ -1102,28 +1102,24 @@ def add_items_to_collection(collection_id: str, item_ids: List[str], base_url: s
 
 # ★★★ 这是一个完整的、可工作的版本，用于替换你在 tasks.py 中引用的那个占位函数 ★★★
 def create_or_update_collection_with_tmdb_ids(
-    collection_name: str, 
-    tmdb_ids: List[int], 
-    base_url: str, 
-    api_key: str, 
-    user_id: str, 
-    library_ids: List[str],
-    # ★★★ 新增：接收一个明确的媒体类型参数 ★★★
-    item_type: str = 'Movie'
-) -> Optional[str]:
+    collection_name: str, tmdb_ids: List[int], base_url: str, api_key: str, 
+    user_id: str, library_ids: List[str], item_type: str = 'Movie'
+) -> Optional[Tuple[str, List[str]]]: 
     """
-    【V6 - 终极完全体】在Emby中创建或更新一个合集，支持电影和电视剧。
+    【V7 - 修复剧集缺失检查的最终版】在Emby中创建或更新一个合集，支持电影和电视剧。
+    核心修复：现在稳定返回一个元组 (emby_collection_id, tmdb_ids_in_library)，
+    其中第二个元素是本次操作中确认已存在于媒体库的 TMDb ID 列表。
     """
     log_item_type = "电影" if item_type == "Movie" else "电视剧"
     logger.info(f"开始在Emby中处理名为 '{collection_name}' 的{log_item_type}合集...")
     
     try:
-        # 1. ★★★ 核心修复：根据 item_type 获取对应的媒体列表 ★★★
+        # 1. 获取媒体库中所有对应类型的项目，并建立 TMDb ID -> Emby ID 的映射
         all_media_items = get_emby_library_items(
             base_url=base_url, 
             api_key=api_key, 
             user_id=user_id, 
-            media_type_filter=item_type, # 使用传入的 item_type
+            media_type_filter=item_type,
             library_ids=library_ids
         )
         if all_media_items is None:
@@ -1136,24 +1132,29 @@ def create_or_update_collection_with_tmdb_ids(
             if 'ProviderIds' in item and 'Tmdb' in item['ProviderIds']
         }
         
-        emby_item_ids_to_add = [tmdb_to_emby_id_map[str(tid)] for tid in tmdb_ids if str(tid) in tmdb_to_emby_id_map]
+        # ★★★ 核心逻辑1：计算出哪些TMDb ID是存在于媒体库中的，以及它们对应的Emby ID ★★★
+        tmdb_ids_in_library = [str(tid) for tid in tmdb_ids if str(tid) in tmdb_to_emby_id_map]
+        emby_item_ids_to_add = [tmdb_to_emby_id_map[tid] for tid in tmdb_ids_in_library]
         
-        # 2. 检查合集是否已存在 (这部分不变)
+        # 2. 检查合集是否已存在
         collection = get_collection_by_name(collection_name, base_url, api_key, user_id)
         
+        emby_collection_id = None
+        success = False
+
         if collection:
             # --- 更新逻辑 ---
             emby_collection_id = collection['Id']
             logger.info(f"发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，将更新其内容。")
             success = add_items_to_collection(emby_collection_id, emby_item_ids_to_add, base_url, api_key)
-            return emby_collection_id if success else None
         else:
             # --- 创建逻辑 ---
             logger.info(f"未找到合集 '{collection_name}'，将通过通用接口一步创建。")
             
             if not emby_item_ids_to_add:
                 logger.warning(f"无法创建合集 '{collection_name}'，因为媒体库中没有任何匹配的{log_item_type}可供添加。")
-                return None
+                # 即使无法创建，也认为操作“技术上”成功了，但返回的ID是None
+                return (None, [])
 
             api_url = f"{base_url.rstrip('/')}/Collections"
             params = {
@@ -1166,17 +1167,22 @@ def create_or_update_collection_with_tmdb_ids(
                 response = requests.post(api_url, params=params, timeout=30)
                 response.raise_for_status()
                 new_collection_info = response.json()
-                new_id = new_collection_info.get('Id')
-                if new_id:
-                    logger.info(f"成功通过通用接口创建新合集 '{collection_name}' (ID: {new_id}) 并添加了 {len(emby_item_ids_to_add)} 个项目。")
-                    return new_id
+                emby_collection_id = new_collection_info.get('Id')
+                if emby_collection_id:
+                    logger.info(f"成功通过通用接口创建新合集 '{collection_name}' (ID: {emby_collection_id}) 并添加了 {len(emby_item_ids_to_add)} 个项目。")
+                    success = True
                 else:
                     logger.error("通用接口创建合集API调用成功，但响应中未包含ID。")
-                    return None
             except requests.RequestException as e:
                 response_text = e.response.text[:500] if e.response is not None else ""
                 logger.error(f"通过通用接口创建新合集 '{collection_name}' 时失败: {e}. 响应: {response_text}")
-                return None
+
+        # ★★★ 核心逻辑2：无论创建还是更新，只要成功，就返回合集ID和已入库的TMDb ID列表 ★★★
+        if success and emby_collection_id:
+            return (emby_collection_id, tmdb_ids_in_library)
+        else:
+            # 如果操作失败，返回None
+            return None
 
     except Exception as e:
         logger.error(f"处理Emby合集 '{collection_name}' 时发生未知错误: {e}", exc_info=True)
