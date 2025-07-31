@@ -297,13 +297,23 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
 
         # 3. 遍历所有匹配的合集，并向其中追加当前项目
         for collection in matching_collections:
-            emby_handler.append_item_to_collection(
-                collection_id=collection['emby_collection_id'],
-                item_emby_id=item_id, # 这是新入库项目的Emby ID
-                base_url=processor.emby_url,
-                api_key=processor.emby_api_key,
-                user_id=processor.emby_user_id
-            )
+            collection_id = collection.get('id')
+            collection_name = collection.get('name')
+            
+            if not collection_id:
+                logger.warning(f"匹配到的合集《{collection_name}》缺少内部ID，无法为其触发更新任务。")
+                continue
+
+            logger.info(f"新项目《{item_metadata.get('title')}》匹配到合集《{collection_name}》。正在为其触发一次完整的后台同步任务...")
+            
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # ★★★ 核心修复：不再调用脆弱的append方法，而是调用已知能正常工作的完整同步任务 ★★★
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            try:
+                # 直接调用那个您手动运行时会生效的任务
+                task_process_custom_collection(processor, collection_id)
+            except Exception as e_task:
+                logger.error(f"为合集《{collection_name}》(ID: {collection_id}) 触发同步任务时失败: {e_task}", exc_info=True)
     except Exception as e:
         logger.error(f"为新入库项目 {item_id} 匹配自定义合集时发生意外错误: {e}", exc_info=True)
 
