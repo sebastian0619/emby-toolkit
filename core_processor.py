@@ -996,7 +996,7 @@ class MediaProcessor:
 
                     # --- 阶段 A: 并发获取所有季的数据 ---
                     seasons_to_fetch = main_tmdb_data.get("seasons", [])
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="season_fetch") as executor:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                         future_to_season_num = {}
                         for s in seasons_to_fetch:
                             season_number = s.get("season_number")
@@ -1017,7 +1017,7 @@ class MediaProcessor:
                     
                     # --- 阶段 B: 并发获取所有集的数据 ---
                     if seasons_data:
-                        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="episode_fetch") as executor:
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                             future_to_episode_info = {}
                             for season_detail in seasons_data:
                                 for ep_stub in season_detail.get('episodes', []):
