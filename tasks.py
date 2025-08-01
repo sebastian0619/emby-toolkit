@@ -859,75 +859,74 @@ def _process_single_collection_concurrently(collection_data: dict, db_path: str,
         "last_checked_at": time.time(), "poster_path": poster_path, 
         "in_library_count": in_library_count
     }
-# ★★★ 刷新合集的后台任务函数（排除自定义合集） ★★★
+# ★★★ 刷新合集的后台任务函数 ★★★
 def task_refresh_collections(processor: MediaProcessor):
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
     task_manager.update_status_from_thread(0, "正在获取 Emby 电影合集列表...")
     try:
-        # 1. 获取所有Emby上的潜在合集 (BoxSet)
+        # 1. 获取所有Emby上的合集 (BoxSet)，不做任何预先过滤
         all_emby_boxsets = emby_handler.get_all_collections_with_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id
         )
-        if all_emby_boxsets is None:
-            raise RuntimeError("从 Emby 获取电影合集列表失败")
-        
-        # 2. 【【【 核心分离逻辑 】】】
-        #    自定义合集tmdb_collection_id为空，故直接用该字段排除自定义合集
-        #    过滤掉tmdb_collection_id为None的合集，得到纯常规合集列表
-        pure_emby_collections = [
-            coll for coll in all_emby_boxsets
-            if coll.get('tmdb_collection_id') is not None
-        ]
-        
-        logger.info(f"Emby共返回 {len(all_emby_boxsets)} 个BoxSet，过滤掉自定义合集后，将处理 {len(pure_emby_collections)} 个常规电影合集。")
-        total = len(pure_emby_collections)
-        task_manager.update_status_from_thread(5, f"共找到 {total} 个常规电影合集，准备处理...")
+        if all_emby_boxsets is None: raise RuntimeError("从 Emby 获取电影合集列表失败")
 
-        # 3. 执行安全的清理逻辑 (只删除tmdb_collection_id不为空的合集)
+        # 为了后续进行差集计算，创建一个包含所有当前Emby上合集ID的集合
+        emby_current_ids = {c['Id'] for c in all_emby_boxsets}
+        
+        logger.info(f"Emby共返回 {len(emby_current_ids)} 个BoxSet，将开始清理与同步...")
+
+        # 2. 【【【 核心修改：安全清理逻辑 】】】
+        #    此逻辑现在只关心数据库中被标记为“常规合集”的条目。
         with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
             
-            # 只关注tmdb_collection_id不为空的合集ID
-            emby_current_ids = {c['Id'] for c in pure_emby_collections}
+            # 从数据库中，只选出那些我们认为是“常规合集”的ID。
+            # 判断依据：tmdb_collection_id 字段不为 NULL。
+            # 自定义合集（tmdb_collection_id IS NULL）将完全不被此查询触及。
             cursor.execute("SELECT emby_collection_id FROM collections_info WHERE tmdb_collection_id IS NOT NULL")
-            db_regular_ids = {row[0] for row in cursor.fetchall()}
+            db_known_regular_ids = {row[0] for row in cursor.fetchall()}
             
-            deleted_ids = db_regular_ids - emby_current_ids
+            # 计算差集：在数据库中是常规合集，但在当前Emby上已不存在的 -> 这些是需要被删除的。
+            deleted_ids = db_known_regular_ids - emby_current_ids
             
             if deleted_ids:
-                logger.info(f"将从数据库清理 {len(deleted_ids)} 个已不存在的常规电影合集。")
-                cursor.executemany("""
-                    DELETE FROM collections_info 
-                    WHERE emby_collection_id = ? AND tmdb_collection_id IS NOT NULL
-                """, [(id,) for id in deleted_ids])
+                logger.info(f"将从数据库清理 {len(deleted_ids)} 个已不存在的【常规】电影合集。")
+                cursor.executemany("DELETE FROM collections_info WHERE emby_collection_id = ?", [(id,) for id in deleted_ids])
             conn.commit()
 
         tmdb_api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-        if not tmdb_api_key:
-            raise RuntimeError("未配置 TMDb API Key")
+        if not tmdb_api_key: raise RuntimeError("未配置 TMDb API Key")
 
-        # 4. 并发处理每个纯常规电影合集
+        # 3. 【【【 核心修改：处理逻辑 】】】
+        #    并发处理所有从Emby获取的合集，不再预先分离。
+        #    由处理函数 _process_single_collection_concurrently 的结果来决定其身份。
+        total = len(all_emby_boxsets)
+        task_manager.update_status_from_thread(5, f"共找到 {total} 个合集，准备进行信息同步...")
+
         all_results = []
         with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = {
-                executor.submit(_process_single_collection_concurrently, collection, config_manager.DB_PATH, tmdb_api_key): collection 
-                for collection in pure_emby_collections
-            }
+            # 将所有合集都提交去处理
+            futures = {executor.submit(_process_single_collection_concurrently, collection, config_manager.DB_PATH, tmdb_api_key): collection for collection in all_emby_boxsets}
             for i, future in enumerate(as_completed(futures)):
                 if processor.is_stop_requested():
-                    for f in futures:
-                        f.cancel()
+                    for f in futures: f.cancel()
                     break
                 collection_name = futures[future].get('Name', '未知合集')
                 try:
+                    # _process_single_collection_concurrently 的执行结果将决定
+                    # tmdb_collection_id 是一个具体ID还是None
                     result = future.result()
                     all_results.append(result)
                 except Exception as e:
                     logger.error(f"处理合集 '{collection_name}' 时线程内发生错误: {e}", exc_info=True)
                 progress = 10 + int(((i + 1) / total) * 90) if total > 0 else 100
                 task_manager.update_status_from_thread(progress, f"处理中: {collection_name[:20]}... ({i+1}/{total})")
-
-        # 5. 批量写入数据库，更新或插入常规合集数据
+        
+        # 4. 数据库批量写入
+        #    INSERT OR REPLACE 会对所有合集（无论常规还是自定义）进行更新。
+        #    - 对于常规合集，会更新其TMDB信息。
+        #    - 对于自定义合集，会更新其名称、海报等信息，但tmdb_collection_id字段依然是NULL。
         if all_results:
             with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
                 cursor = conn.cursor()
@@ -944,9 +943,8 @@ def task_refresh_collections(processor: MediaProcessor):
                     logger.error(f"数据库批量写入时发生错误: {e_db}", exc_info=True)
         
     except Exception as e:
-        logger.error(f"刷新常规电影合集任务失败: {e}", exc_info=True)
+        logger.error(f"刷新合集任务失败: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"错误: {e}")
-
 # ★★★ 带智能预判的自动订阅任务 ★★★
 def task_auto_subscribe(processor: MediaProcessor):
     task_manager.update_status_from_thread(0, "正在启动智能订阅任务...")
