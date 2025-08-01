@@ -186,14 +186,16 @@ class FilterEngine:
 
     def find_matching_collections(self, item_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        【新增】为单个媒体项查找所有匹配的自定义合集。
-        :param item_metadata: 新入库媒体的元数据。
-        :return: 匹配到的合集列表，e.g., [{'id': 1, 'emby_collection_id': '12345'}]
+        【V2 - 修正版】为单个媒体项查找所有匹配的自定义合集。
+        增加了对内容类型的严格检查。
         """
-        logger.info(f"正在为影片《{item_metadata.get('title')}》实时匹配自定义合集...")
+        # ★★★ 核心修正 1：动态生成日志中的媒体类型名称 ★★★
+        media_item_type = item_metadata.get('item_type')
+        media_type_cn = "剧集" if media_item_type == "Series" else "影片"
+        
+        logger.info(f"正在为{media_type_cn}《{item_metadata.get('title')}》实时匹配自定义合集...")
         matched_collections = []
         
-        # 1. 获取所有启用的、基于筛选的自定义合集定义
         all_filter_collections = [
             c for c in db_handler.get_all_custom_collections(self.db_path) 
             if c['type'] == 'filter' and c['status'] == 'active' and c['emby_collection_id']
@@ -203,15 +205,23 @@ class FilterEngine:
             logger.debug("没有发现任何已启用的筛选类合集，跳过匹配。")
             return []
 
-        # 2. 遍历每个合集定义，进行匹配
         for collection_def in all_filter_collections:
             try:
                 definition = json.loads(collection_def['definition_json'])
+                
+                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                # ★★★ 核心修正 2：在检查规则之前，首先检查内容类型是否匹配！ ★★★
+                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                collection_item_type = definition.get('item_type', 'Movie') # 合集定义的内容类型
+                if media_item_type != collection_item_type:
+                    logger.trace(f"  -> 跳过合集《{collection_def['name']}》，因为内容类型不匹配 (需要: {collection_item_type}, 实际: {media_item_type})。")
+                    continue # 如果类型不匹配，直接跳过这个合集，不进行后续规则检查
+
                 rules = definition.get('rules', [])
                 logic = definition.get('logic', 'AND')
 
                 if self._item_matches_rules(item_metadata, rules, logic):
-                    logger.info(f"  -> 匹配成功！影片《{item_metadata.get('title')}》属于合集《{collection_def['name']}》。")
+                    logger.info(f"  -> 匹配成功！{media_type_cn}《{item_metadata.get('title')}》属于合集《{collection_def['name']}》。")
                     matched_collections.append({
                         'id': collection_def['id'],
                         'name': collection_def['name'],

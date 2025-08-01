@@ -1080,6 +1080,7 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
     except Exception as e:
         logger.error(f"处理 Emby 电影合集时发生未知错误: {e}", exc_info=True)
         return None
+
 # ✨✨✨ 获取 Emby 服务器信息 (如 Server ID) ✨✨✨
 def get_emby_server_info(base_url: str, api_key: str) -> Optional[Dict[str, Any]]:
     """
@@ -1100,10 +1101,8 @@ def get_emby_server_info(base_url: str, api_key: str) -> Optional[Dict[str, Any]
     except Exception as e:
         logger.error(f"获取 Emby 服务器信息失败: {e}")
         return None
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★★★ 新增：自定义合集所需的核心Emby交互函数 ★★★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
+# --- 根据名称查找一个特定的电影合集 ---
 def get_collection_by_name(name: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
     """
     【V2 - 修正版】根据名称查找一个特定的电影合集 (BoxSet)，不再过滤自建合集。
