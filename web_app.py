@@ -171,27 +171,43 @@ def init_db():
             # ★★★ 新增: 'custom_collections' 表 (自定义合集) ★★★
             # ★★★ 这是实现你新功能的核心地基。                ★★★
             # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            logger.trace("  -> 正在创建 'custom_collections' 表 (自定义合集)...")
+            logger.trace("  -> 正在创建/升级 'custom_collections' 表 (自建合集)...")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS custom_collections (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,      -- 唯一ID
-                    name TEXT NOT NULL,                        -- 合集名称, e.g., "诺兰导演4K电影"
-                    type TEXT NOT NULL,                        -- 合集类型: 'filter' (筛选) 或 'list' (榜单)
-                    
-                    -- 定义合集内容的核心字段 --
-                    definition_json TEXT NOT NULL,             -- 存储合集定义的JSON。
-                                                               -- 对于 'filter' 类型, 存储筛选规则, e.g., {"rules": [...], "logic": "AND"}
-                                                               -- 对于 'list' 类型, 存储榜单信息, e.g., {"url": "http://...", "format": "rss"}
-                    
-                    -- 状态与关联 --
-                    status TEXT DEFAULT 'active',              -- 状态: 'active', 'paused', 'error'
-                    emby_collection_id TEXT,                   -- 在Emby中成功创建后，关联的Emby合集ID。可以为NULL。
-                    
-                    -- 维护时间戳 --
-                    last_synced_at TIMESTAMP,                  -- 上次同步（生成/更新）的时间
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    definition_json TEXT NOT NULL,
+                    status TEXT DEFAULT 'active',
+                    emby_collection_id TEXT,
+                    last_synced_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            
+            # ★★★ 为老用户平滑升级 custom_collections 表的逻辑 ★★★
+            try:
+                cursor.execute("PRAGMA table_info(custom_collections)")
+                existing_columns = {row[1] for row in cursor.fetchall()}
+                
+                new_columns_to_add = {
+                    "health_status": "TEXT",
+                    "item_type": "TEXT",
+                    "in_library_count": "INTEGER DEFAULT 0",
+                    "missing_count": "INTEGER DEFAULT 0",
+                    "generated_media_info_json": "TEXT",
+                    "poster_path": "TEXT"
+                }
+
+                for col_name, col_type in new_columns_to_add.items():
+                    if col_name not in existing_columns:
+                        logger.info(f"    -> 检测到旧版 'custom_collections' 表，正在添加 '{col_name}' 字段...")
+                        cursor.execute(f"ALTER TABLE custom_collections ADD COLUMN {col_name} {col_type};")
+                        logger.info(f"    -> '{col_name}' 字段添加成功。")
+            except Exception as e_alter_cc:
+                logger.error(f"  -> 为 'custom_collections' 表添加新字段时出错: {e_alter_cc}")
+
+
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_type ON custom_collections (type)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_status ON custom_collections (status)")
 

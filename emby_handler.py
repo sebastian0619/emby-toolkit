@@ -968,21 +968,20 @@ def prepare_actor_translation_data(
     
     # --- 核心修改：返回两个关键的数据结构，而不是执行写回 ---
     return translation_map, name_to_persons_map
-# ✨✨✨ 获取所有电影合集及其包含的媒体项 ✨✨✨
-def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) -> Optional[List[Dict[str, Any]]]:
+# --- 获取所有合集 ---
+def get_all_collections_from_emby_generic(base_url: str, api_key: str, user_id: str) -> Optional[List[Dict[str, Any]]]:
     """
-    【V7 - 纯粹电影版】只获取 Emby 中所有的电影合集 (BoxSet)，并获取其内容。
+    【新增】一个通用的、无过滤的函数，用于获取Emby中所有类型为'BoxSet'的合集。
+    这个函数是其他合集处理函数的基础。
     """
     if not all([base_url, api_key, user_id]):
-        logger.error("get_all_collections_with_items: 缺少必要的参数。")
+        logger.error("get_all_collections_from_emby_generic: 缺少必要的参数。")
         return None
 
-    logger.info("正在从 Emby 获取所有电影合集 (BoxSet)...")
-    
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
     params = {
         "api_key": api_key,
-        "IncludeItemTypes": "BoxSet", # ★★★ 核心修改：只查找 BoxSet ★★★
+        "IncludeItemTypes": "BoxSet",
         "Recursive": "true",
         "Fields": "ProviderIds,Name,ImageTags"
     }
@@ -990,8 +989,48 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
     try:
         response = requests.get(api_url, params=params, timeout=60)
         response.raise_for_status()
-        collections_data = response.json().get("Items", [])
-        logger.info(f"成功获取到 {len(collections_data)} 个电影合集，准备获取其内容...")
+        all_collections = response.json().get("Items", [])
+        logger.debug(f"通用函数成功从 Emby 获取到 {len(all_collections)} 个BoxSet合集。")
+        return all_collections
+    except Exception as e:
+        logger.error(f"通用函数在获取所有Emby合集时发生错误: {e}", exc_info=True)
+        return None
+# ✨✨✨ 获取所有合集（过滤自建） ✨✨✨
+def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    【V8 - 隔离版】
+    只获取 Emby 中拥有 TMDB ID 的“常规”电影合集，
+    从而在源头上阻止“自建合集”流入常规合集的处理流程。
+    """
+    if not all([base_url, api_key, user_id]):
+        logger.error("get_all_collections_with_items: 缺少必要的参数。")
+        return None
+
+    logger.info("正在从 Emby 获取所有合集...")
+    
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    params = {
+        "api_key": api_key,
+        "IncludeItemTypes": "BoxSet",
+        "Recursive": "true",
+        "Fields": "ProviderIds,Name,ImageTags"
+    }
+    
+    try:
+        response = requests.get(api_url, params=params, timeout=60)
+        response.raise_for_status()
+        all_collections_from_emby = response.json().get("Items", [])
+        
+        # ★★★ 核心修改：在这里设置“门卫”，检查合集是否有TMDB ID ★★★
+        regular_collections = []
+        for coll in all_collections_from_emby:
+            # 只有当 ProviderIds 字典中存在 'Tmdb' 这个键时，才认为是常规合集
+            if coll.get("ProviderIds", {}).get("Tmdb"):
+                regular_collections.append(coll)
+            else:
+                logger.debug(f"  - 已跳过自建合集: '{coll.get('Name')}' (ID: {coll.get('Id')})。")
+
+        logger.info(f"成功从 Emby 获取到 {len(regular_collections)} 个合集，准备获取其内容...")
 
         detailed_collections = []
         
@@ -1003,7 +1042,7 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
             children_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
             children_params = {
                 "api_key": api_key, "ParentId": collection_id,
-                "IncludeItemTypes": "Movie", # ★★★ 核心修改：只查找 Movie ★★★
+                "IncludeItemTypes": "Movie",
                 "Fields": "ProviderIds"
             }
             try:
@@ -1022,9 +1061,10 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
                 collection['ExistingMovieTmdbIds'] = []
                 return collection
 
+        # 使用过滤后的 regular_collections 列表进行后续操作
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_to_collection = {}
-            for coll in collections_data:
+            for coll in regular_collections:
                 future = executor.submit(_fetch_collection_children, coll)
                 future_to_collection[future] = coll
                 time.sleep(0.1)
@@ -1034,7 +1074,7 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
                 if result:
                     detailed_collections.append(result)
 
-        logger.info(f"所有电影合集内容获取完成，共成功处理 {len(detailed_collections)} 个合集。")
+        logger.info(f"所有合集内容获取完成，共成功处理 {len(detailed_collections)} 个合集。")
         return detailed_collections
 
     except Exception as e:
@@ -1066,11 +1106,10 @@ def get_emby_server_info(base_url: str, api_key: str) -> Optional[Dict[str, Any]
 
 def get_collection_by_name(name: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
     """
-    根据名称查找一个特定的电影合集 (BoxSet)。
-    :return: 如果找到，返回合集信息的字典；否则返回 None。
+    【V2 - 修正版】根据名称查找一个特定的电影合集 (BoxSet)，不再过滤自建合集。
     """
-    # 我们可以复用已有的 get_all_collections_with_items 函数
-    all_collections = get_all_collections_with_items(base_url, api_key, user_id)
+    # ★★★ 核心修复：调用新的、不过滤的通用函数 ★★★
+    all_collections = get_all_collections_from_emby_generic(base_url, api_key, user_id)
     if all_collections is None:
         return None
     
@@ -1192,42 +1231,6 @@ def create_or_update_collection_with_tmdb_ids(
     except Exception as e:
         logger.error(f"处理Emby合集 '{collection_name}' 时发生未知错误: {e}", exc_info=True)
         return None
-
-# ★★★ 从Emby中删除一个项目（如合集） ★★★
-def delete_item_from_emby(item_id: str, base_url: str, api_key: str) -> bool:
-    """
-    从 Emby 中永久删除一个项目 (Item)。
-    这适用于任何项目类型，包括合集 (BoxSet)。
-
-    :param item_id: 要删除的项目的 Emby ID。
-    :param base_url: Emby 服务器 URL。
-    :param api_key: Emby API Key。
-    :return: True 表示成功，False 表示失败。
-    """
-    if not all([item_id, base_url, api_key]):
-        logger.error("delete_item_from_emby: 缺少必要的参数。")
-        return False
-
-    api_url = f"{base_url.rstrip('/')}/Items/{item_id}"
-    params = {'api_key': api_key}
-
-    logger.info(f"准备从 Emby 删除项目 ID: {item_id}...")
-    try:
-        response = requests.delete(api_url, params=params, timeout=20)
-        response.raise_for_status()
-        
-        # HTTP 204 No Content 是删除成功的标准响应
-        logger.info(f"成功从 Emby 删除项目 ID: {item_id}。")
-        return True
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-            logger.warning(f"尝试删除项目 {item_id} 时，Emby返回404，可能已被删除。视作成功。")
-            return True
-        logger.error(f"从 Emby 删除项目 {item_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text[:200]}")
-        return False
-    except requests.exceptions.RequestException as e:
-        logger.error(f"从 Emby 删除项目 {item_id} 时发生网络错误: {e}")
-        return False
 
 # ★★★ 新增：向合集追加单个项目的函数 ★★★
 def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: str, api_key: str, user_id: str) -> bool:

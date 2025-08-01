@@ -5,6 +5,7 @@ from datetime import date, timedelta, datetime
 import logging
 from typing import Optional, Dict, Any, List, Tuple
 from flask import jsonify
+import emby_handler
 logger = logging.getLogger(__name__)
 
 # ======================================================================
@@ -912,93 +913,34 @@ def update_custom_collection(db_path: str, collection_id: int, name: str, type: 
         logger.error(f"更新自定义合集 ID {collection_id} 时发生数据库错误: {e}", exc_info=True)
         return False
 
-def delete_custom_collection(
-    db_path: str, 
-    collection_id: int, 
-    emby_url: str, 
-    emby_api_key: str
-) -> bool:
+def delete_custom_collection(db_path: str, collection_id: int) -> bool:
     """
-    【V2 - 联动删除版】
-    彻底删除一个自定义合集，同步操作三处：
-    1. 从 Emby 服务器删除合集本身。
-    2. 从 collections_info 表删除其缓存/状态记录。
-    3. 从 custom_collections 表删除其定义。
-    """
-    emby_collection_id_to_delete = None
+    【V5 - 职责单一版】从数据库中删除一个自定义合集定义。
+    此函数只负责数据库删除操作，不再与任何其他表或外部服务交互。
+    联动删除Emby实体的逻辑应由调用方（API层）处理。
     
-    # 使用一个数据库连接来执行所有操作，方便事务管理
-    conn = None
-    try:
-        conn = get_db_connection(db_path)
-        cursor = conn.cursor()
-
-        # 步骤 0: 根据自定义合集的主键ID，获取它在Emby中的ID
-        cursor.execute("SELECT emby_collection_id FROM custom_collections WHERE id = ?", (collection_id,))
-        result = cursor.fetchone()
-        if not result or not result[0]:
-            logger.warning(f"在数据库中未找到自定义合集定义 (ID: {collection_id}) 或其没有关联的Emby ID，无法继续删除。")
-            # 可能已经被删了，或者数据不一致，直接返回成功让前端刷新
-            return True 
-        
-        emby_collection_id_to_delete = result[0]
-        logger.info(f"开始联动删除自定义合集 (DB ID: {collection_id}, Emby ID: {emby_collection_id_to_delete})...")
-
-        # 步骤 1: 从 Emby 服务器删除合集
-        from emby_handler import delete_item_from_emby
-        logger.info(f"  - 步骤 1/3: 正在从 Emby 删除合集...")
-        emby_delete_success = delete_item_from_emby(
-            item_id=emby_collection_id_to_delete,
-            base_url=emby_url,
-            api_key=emby_api_key
-        )
-        if not emby_delete_success:
-            # 如果Emby删除失败，这是一个严重问题，我们应该中止操作，不修改本地数据库
-            raise RuntimeError(f"从Emby删除合集 {emby_collection_id_to_delete} 失败，操作已回滚。")
-        logger.info(f"  - Emby合集删除成功。")
-
-        # 步骤 2: 从 collections_info 表删除记录
-        logger.info(f"  - 步骤 2/3: 正在从 collections_info 表删除记录...")
-        cursor.execute("DELETE FROM collections_info WHERE emby_collection_id = ?", (emby_collection_id_to_delete,))
-        
-        # 步骤 3: 从 custom_collections 表删除定义
-        logger.info(f"  - 步骤 3/3: 正在从 custom_collections 表删除定义...")
-        cursor.execute("DELETE FROM custom_collections WHERE id = ?", (collection_id,))
-        
-        # 所有操作成功，提交事务
-        conn.commit()
-        logger.info(f"✅ 成功联动删除自定义合集 (DB ID: {collection_id})。")
-        return True
-
-    except Exception as e:
-        logger.error(f"删除自定义合集 (ID: {collection_id}) 时发生错误: {e}", exc_info=True)
-        if conn:
-            # 如果发生任何错误，回滚所有数据库操作
-            conn.rollback()
-            logger.warning("数据库事务已回滚。")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def update_custom_collection_sync_status(db_path: str, collection_id: int, emby_collection_id: Optional[str] = None) -> bool:
+    :param db_path: 数据库路径。
+    :param collection_id: 要删除的自定义合集的数据库ID。
+    :return: 如果成功删除了记录，返回 True；如果未找到记录或发生错误，返回 False。
     """
-    更新自定义合集的同步状态，包括最后同步时间和关联的Emby ID。
-    """
-    sql = "UPDATE custom_collections SET last_synced_at = CURRENT_TIMESTAMP, emby_collection_id = ? WHERE id = ?"
+    sql = "DELETE FROM custom_collections WHERE id = ?"
     try:
         with get_db_connection(db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute(sql, (emby_collection_id, collection_id))
+            cursor.execute(sql, (collection_id,))
             conn.commit()
-            logger.trace(f"已更新自定义合集 {collection_id} 的同步状态，关联Emby ID: {emby_collection_id}。")
-            return True
+            # cursor.rowcount > 0 确保确实有一行被删除了
+            if cursor.rowcount > 0:
+                logger.info(f"✅ 成功从数据库中删除了自定义合集定义 (ID: {collection_id})。")
+                return True
+            else:
+                logger.warning(f"尝试删除自定义合集 (ID: {collection_id})，但在数据库中未找到该记录。")
+                return False # 虽然不是错误，但操作未产生效果
     except sqlite3.Error as e:
-        logger.error(f"更新自定义合集 {collection_id} 同步状态时出错: {e}", exc_info=True)
-        return False
-    
-# +++ 自定义合集筛选引擎所需函数 +++
+        logger.error(f"删除自定义合集 (ID: {collection_id}) 时发生数据库错误: {e}", exc_info=True)
+        raise # 向上抛出异常，让API层可以捕获并返回500错误
 
+# +++ 自定义合集筛选引擎所需函数 +++
 def get_media_metadata_by_tmdb_id(db_path: str, tmdb_id: str) -> Optional[Dict[str, Any]]:
     """
     根据TMDb ID从媒体元数据缓存表中获取单条记录。
@@ -1187,4 +1129,88 @@ def upsert_collection_info(db_path: str, collection_data: Dict[str, Any]):
             logger.info(f"成功写入/更新合集检查信息到数据库 (ID: {collection_data.get('emby_collection_id')})。")
     except sqlite3.Error as e:
         logger.error(f"写入合集检查信息时发生数据库错误: {e}", exc_info=True)
+        raise
+
+def update_custom_collection_after_sync(db_path: str, collection_id: int, update_data: Dict[str, Any]) -> bool:
+    """
+    在同步任务完成后，使用一个包含多个字段的字典来更新自定义合集的状态。
+    这是一个灵活的函数，可以动态构建SQL语句。
+    """
+    if not update_data:
+        logger.warning(f"尝试更新自定义合集 {collection_id}，但没有提供任何更新数据。")
+        return False
+
+    # 动态构建 SET 子句
+    set_clauses = [f"{key} = ?" for key in update_data.keys()]
+    values = list(update_data.values())
+    
+    sql = f"UPDATE custom_collections SET {', '.join(set_clauses)} WHERE id = ?"
+    values.append(collection_id)
+
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, tuple(values))
+            conn.commit()
+            logger.trace(f"已更新自定义合集 {collection_id} 的同步后状态。")
+            return True
+    except sqlite3.Error as e:
+        logger.error(f"更新自定义合集 {collection_id} 同步后状态时出错: {e}", exc_info=True)
+        return False
+
+def update_single_media_status_in_custom_collection(db_path: str, collection_id: int, media_tmdb_id: str, new_status: str) -> bool:
+    """
+    更新自定义合集中单个媒体项的状态，并重新计算合集的健康度。
+    """
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN TRANSACTION;")
+            
+            cursor.execute("SELECT generated_media_info_json FROM custom_collections WHERE id = ?", (collection_id,))
+            row = cursor.fetchone()
+            if not row:
+                conn.rollback()
+                return False
+
+            try:
+                media_items = json.loads(row['generated_media_info_json'] or '[]')
+            except (json.JSONDecodeError, TypeError):
+                media_items = []
+
+            item_found = False
+            for item in media_items:
+                if str(item.get('tmdb_id')) == str(media_tmdb_id):
+                    item['status'] = new_status
+                    item_found = True
+                    break
+            
+            if not item_found:
+                conn.rollback()
+                return False
+
+            # 重新计算健康状态
+            missing_count = sum(1 for item in media_items if item.get('status') == 'missing')
+            new_health_status = 'has_missing' if missing_count > 0 else 'ok'
+            
+            # 准备更新的数据
+            update_data = {
+                "generated_media_info_json": json.dumps(media_items),
+                "missing_count": missing_count,
+                "health_status": new_health_status
+            }
+            
+            set_clauses = [f"{key} = ?" for key in update_data.keys()]
+            values = list(update_data.values())
+            sql = f"UPDATE custom_collections SET {', '.join(set_clauses)} WHERE id = ?"
+            values.append(collection_id)
+            
+            cursor.execute(sql, tuple(values))
+            conn.commit()
+            logger.info(f"DB: 已更新自定义合集 {collection_id} 中媒体 {media_tmdb_id} 的状态为 '{new_status}'。")
+            return True
+    except Exception as e:
+        logger.error(f"DB: 更新自定义合集中媒体状态时发生数据库错误: {e}", exc_info=True)
+        if conn and conn.in_transaction:
+            conn.rollback()
         raise

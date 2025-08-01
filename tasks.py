@@ -863,81 +863,63 @@ def _process_single_collection_concurrently(collection_data: dict, db_path: str,
 def task_refresh_collections(processor: MediaProcessor):
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    task_manager.update_status_from_thread(0, "正在获取 Emby 电影合集列表...")
+    task_manager.update_status_from_thread(0, "正在获取 Emby 合集列表...")
     try:
-        # 1. 获取所有Emby上的合集 (BoxSet)，这是原始的全量列表
-        all_emby_boxsets = emby_handler.get_all_collections_with_items(
+        emby_collections = emby_handler.get_all_collections_with_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id
         )
-        if all_emby_boxsets is None: raise RuntimeError("从 Emby 获取电影合集列表失败")
+        if emby_collections is None: raise RuntimeError("从 Emby 获取合集列表失败")
 
-        # 2. 【【【 核心修复：预先分离自定义合集 】】】
-        #    在进行任何操作之前，先从数据库中找出所有我们已知的“自定义合集”的ID。
-        #    判断依据是 tmdb_collection_id 字段为 NULL。
-        db_known_custom_ids = set()
+        total = len(emby_collections)
+        task_manager.update_status_from_thread(5, f"共找到 {total} 个合集，准备开始并发处理...")
+
+        # 清理数据库中已不存在的合集
         with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT emby_collection_id FROM collections_info WHERE tmdb_collection_id IS NULL")
-            db_known_custom_ids = {row[0] for row in cursor.fetchall() if row[0]}
-        
-        # 3. 创建一个纯净的、只包含“常规合集”的列表用于后续所有处理。
-        #    这是本函数唯一需要操作的对象列表。
-        pure_emby_collections = [
-            coll for coll in all_emby_boxsets 
-            if coll.get('Id') not in db_known_custom_ids
-        ]
-        
-        logger.info(f"Emby共返回 {len(all_emby_boxsets)} 个BoxSet, 识别并排除了 {len(db_known_custom_ids)} 个自定义合集后，将只处理 {len(pure_emby_collections)} 个常规电影合集。")
-
-        # 4. 【安全清理逻辑】
-        #    此逻辑现在只在“常规合集”的范围内进行比较和删除，因此是完全安全的。
-        with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
-            cursor = conn.cursor()
-            
-            # 获取当前Emby上所有常规合集的ID
-            emby_current_regular_ids = {c['Id'] for c in pure_emby_collections}
-            
-            # 获取数据库中所有已知常规合集的ID (tmdb_collection_id IS NOT NULL)
-            cursor.execute("SELECT emby_collection_id FROM collections_info WHERE tmdb_collection_id IS NOT NULL")
-            db_known_regular_ids = {row[0] for row in cursor.fetchall()}
-            
-            # 计算差集：数据库里有，但现在Emby上没有的常规合集 -> 这些是需要被删除的。
-            deleted_ids = db_known_regular_ids - emby_current_regular_ids
-            
+            emby_current_ids = {c['Id'] for c in emby_collections}
+            cursor.execute("SELECT emby_collection_id FROM collections_info")
+            db_known_ids = {row[0] for row in cursor.fetchall()}
+            deleted_ids = db_known_ids - emby_current_ids
             if deleted_ids:
-                logger.info(f"将从数据库清理 {len(deleted_ids)} 个已不存在的【常规】电影合集。")
                 cursor.executemany("DELETE FROM collections_info WHERE emby_collection_id = ?", [(id,) for id in deleted_ids])
             conn.commit()
 
         tmdb_api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
         if not tmdb_api_key: raise RuntimeError("未配置 TMDb API Key")
 
-        # 5. 【安全并发处理逻辑】
-        #    线程池现在只处理纯净的常规合集列表，自定义合集完全不会进入此流程。
-        total = len(pure_emby_collections)
-        task_manager.update_status_from_thread(5, f"共找到 {total} 个常规电影合集，准备处理...")
-
+        processed_count = 0
         all_results = []
+        
+        # ✨ 核心修改：使用线程池进行并发处理
         with ThreadPoolExecutor(max_workers=5) as executor:
-            # 只将 pure_emby_collections 提交给线程池
-            futures = {executor.submit(_process_single_collection_concurrently, collection, config_manager.DB_PATH, tmdb_api_key): collection for collection in pure_emby_collections}
-            for i, future in enumerate(as_completed(futures)):
+            # 提交所有任务
+            futures = {executor.submit(_process_single_collection_concurrently, collection, config_manager.DB_PATH, tmdb_api_key): collection for collection in emby_collections}
+            
+            # 实时获取已完成的结果并更新进度条
+            for future in as_completed(futures):
                 if processor.is_stop_requested():
+                    # 如果用户请求停止，我们可以尝试取消未开始的任务
                     for f in futures: f.cancel()
                     break
+                
                 collection_name = futures[future].get('Name', '未知合集')
                 try:
                     result = future.result()
                     all_results.append(result)
                 except Exception as e:
                     logger.error(f"处理合集 '{collection_name}' 时线程内发生错误: {e}", exc_info=True)
-                progress = 10 + int(((i + 1) / total) * 90) if total > 0 else 100
-                task_manager.update_status_from_thread(progress, f"处理中: {collection_name[:20]}... ({i+1}/{total})")
+                
+                processed_count += 1
+                progress = 10 + int((processed_count / total) * 90)
+                task_manager.update_status_from_thread(progress, f"处理中: {collection_name[:20]}... ({processed_count}/{total})")
+
+        if processor.is_stop_requested():
+            logger.warning("任务被用户中断，部分数据可能未被处理。")
+            # 即使被中断，我们依然保存已成功处理的结果
         
-        # 6. 【安全数据库写入逻辑】
-        #    因为 all_results 只包含常规合集的数据，所以 INSERT OR REPLACE 语句
-        #    永远不会触及到自定义合集的记录，从而避免了数据被覆盖的问题。
+        # ✨ 所有并发任务完成后，在主线程中安全地、一次性地写入数据库
         if all_results:
+            logger.info(f"并发处理完成，准备将 {len(all_results)} 条结果写入数据库...")
             with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
                 cursor = conn.cursor()
                 cursor.execute("BEGIN TRANSACTION;")
@@ -948,15 +930,20 @@ def task_refresh_collections(processor: MediaProcessor):
                         VALUES (:emby_collection_id, :name, :tmdb_collection_id, :status, :has_missing, :missing_movies_json, :last_checked_at, :poster_path, :in_library_count)
                     """, all_results)
                     conn.commit()
+                    logger.info("数据库写入成功！")
                 except Exception as e_db:
-                    conn.rollback()
                     logger.error(f"数据库批量写入时发生错误: {e_db}", exc_info=True)
+                    conn.rollback()
         
     except Exception as e:
-        logger.error(f"刷新常规电影合集任务失败: {e}", exc_info=True)
+        logger.error(f"刷新合集任务失败: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"错误: {e}")
 # ★★★ 带智能预判的自动订阅任务 ★★★
 def task_auto_subscribe(processor: MediaProcessor):
+    """
+    【V2 - 自建合集增强版】
+    不仅处理常规合集和追剧列表，还能扫描自建的RSS剧集榜单，并自动订阅其中已播出的缺失剧集。
+    """
     task_manager.update_status_from_thread(0, "正在启动智能订阅任务...")
     
     if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
@@ -973,223 +960,159 @@ def task_auto_subscribe(processor: MediaProcessor):
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            # --- 1. 处理电影合集 ---
+            # --- 1. 处理常规电影合集 (不变) ---
             task_manager.update_status_from_thread(20, "正在检查缺失的电影...")
-            
             sql_query_movies = "SELECT * FROM collections_info WHERE status = 'has_missing' AND missing_movies_json IS NOT NULL AND missing_movies_json != '[]'"
-            logger.debug(f"【智能订阅-电影】执行查询: {sql_query_movies}")
             cursor.execute(sql_query_movies)
             collections_to_check = cursor.fetchall()
-
-            logger.info(f"【智能订阅-电影】从数据库找到 {len(collections_to_check)} 个有缺失影片的电影合集需要检查。")
+            logger.info(f"【智能订阅-电影】找到 {len(collections_to_check)} 个有缺失影片的电影合集需要检查。")
 
             for collection in collections_to_check:
                 if processor.is_stop_requested(): break
-                
                 collection_name = collection['name']
-                logger.info(f"【智能订阅-电影】>>> 正在检查合集: 《{collection_name}》")
-
                 movies_to_keep = []
                 all_missing_movies = json.loads(collection['missing_movies_json'])
                 movies_changed = False
                 for movie in all_missing_movies:
                     if processor.is_stop_requested(): break
-                    
-                    movie_title = movie.get('title', '未知电影')
-                    movie_status = movie.get('status', 'unknown')
-
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    # ★★★  核心逻辑修改：在这里处理 ignored 状态，打破死循环！ ★★★
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    if movie_status == 'ignored':
-                        logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》已被用户忽略，跳过。")
-                        movies_to_keep.append(movie) # 保持 ignored 状态，下次不再处理
-                        continue
-                    
-                    if movie_status == 'missing':
+                    if movie.get('status') == 'missing':
                         release_date_str = movie.get('release_date')
-                        if release_date_str:
-                            release_date_str = release_date_str.strip()
-                        
                         if not release_date_str:
-                            logger.warning(f"【智能订阅-电影】   -> 影片《{movie_title}》缺少上映日期，无法判断，跳过。")
                             movies_to_keep.append(movie)
                             continue
-                        
                         try:
-                            release_date = datetime.strptime(release_date_str, '%Y-%m-%d').date()
+                            release_date = datetime.strptime(release_date_str.strip(), '%Y-%m-%d').date()
                         except (ValueError, TypeError):
-                            logger.warning(f"【智能订阅-电影】   -> 影片《{movie_title}》的上映日期 '{release_date_str}' 格式无效，跳过。")
                             movies_to_keep.append(movie)
                             continue
-
                         if release_date <= today:
-                            logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》(上映日期: {release_date}) 已上映，符合订阅条件，正在提交...")
-                            
-                            try:
-                                success = moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG)
-                                if success:
-                                    logger.info(f"【智能订阅-电影】      -> 订阅成功！")
-                                    successfully_subscribed_items.append(f"电影《{movie['title']}》")
-                                    movies_changed = True # 订阅成功后，从缺失列表移除
-                                else:
-                                    logger.error(f"【智能订阅-电影】      -> MoviePilot报告订阅失败！将保留在缺失列表中。")
-                                    movies_to_keep.append(movie)
-                            except Exception as e:
-                                logger.error(f"【智能订阅-电影】      -> 提交订阅到MoviePilot时发生内部错误: {e}", exc_info=True)
+                            if moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG):
+                                successfully_subscribed_items.append(f"电影《{movie['title']}》")
+                                movies_changed = True
+                            else:
                                 movies_to_keep.append(movie)
                         else:
-                            logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》(上映日期: {release_date}) 尚未上映，跳过订阅。")
                             movies_to_keep.append(movie)
                     else:
-                        status_translation = {
-                            'unreleased': '未上映',
-                            # 可以在这里添加更多翻译
-                            'unknown': '未知状态'
-                        }
-                        # 使用 .get() 方法，如果找不到翻译，则显示原始状态，保证程序不会出错
-                        display_status = status_translation.get(movie_status, movie_status)
-                        # 此处会处理 'unreleased' 等其他所有状态
-                        logger.info(f"【智能订阅-电影】   -> 影片《{movie_title}》因状态为 '{display_status}'，本次跳过订阅检查。")
                         movies_to_keep.append(movie)
-                
-                # 只有在订阅成功导致列表变化时才更新数据库
                 if movies_changed:
-                    # 重新生成缺失电影的JSON，只包含未被成功订阅的
                     new_missing_json = json.dumps(movies_to_keep)
-                    # 如果更新后列表为空，可以顺便更新合集的状态
-                    new_status = 'ok' if not movies_to_keep else 'has_missing'
+                    new_status = 'ok' if not any(m.get('status') == 'missing' for m in movies_to_keep) else 'has_missing'
                     cursor.execute("UPDATE collections_info SET missing_movies_json = ?, status = ? WHERE emby_collection_id = ?", (new_missing_json, new_status, collection['emby_collection_id']))
 
-            # --- 2. 处理剧集 ---
+            # --- 2. 处理追剧列表中的剧集 (不变) ---
             if not processor.is_stop_requested():
-                task_manager.update_status_from_thread(60, "正在检查缺失的剧集...")
-                
+                task_manager.update_status_from_thread(50, "正在检查追剧列表中的缺失季...")
                 sql_query = "SELECT * FROM watchlist WHERE status IN ('Watching', 'Paused') AND missing_info_json IS NOT NULL AND missing_info_json != '[]'"
-                logger.debug(f"【智能订阅-剧集】执行查询: {sql_query}")
                 cursor.execute(sql_query)
                 series_to_check = cursor.fetchall()
-                
-                logger.info(f"【智能订阅-剧集】从数据库找到 {len(series_to_check)} 部状态为'在追'或'暂停'且有缺失信息的剧集需要检查。")
+                logger.info(f"【智能订阅-剧集】找到 {len(series_to_check)} 部有缺失信息的在追剧集。")
 
                 for series in series_to_check:
                     if processor.is_stop_requested(): break
-                    
-                    series_name = series['item_name']
-                    logger.info(f"【智能订阅-剧集】>>> 正在检查: 《{series_name}》")
-                    
                     try:
                         missing_info = json.loads(series['missing_info_json'])
                         missing_seasons = missing_info.get('missing_seasons', [])
-                        
-                        if not missing_seasons:
-                            logger.info(f"【智能订阅-剧集】   -> 《{series_name}》没有记录在案的缺失季(missing_seasons为空)，跳过。")
-                            continue
-
+                        if not missing_seasons: continue
                         seasons_to_keep = []
                         seasons_changed = False
                         for season in missing_seasons:
                             if processor.is_stop_requested(): break
-                            
-                            season_num = season.get('season_number')
                             air_date_str = season.get('air_date')
-                            if air_date_str:
-                                air_date_str = air_date_str.strip()
-                            
                             if not air_date_str:
-                                logger.warning(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季缺少播出日期(air_date)，无法判断，跳过。")
                                 seasons_to_keep.append(season)
                                 continue
-                            
                             try:
-                                season_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                                season_date = datetime.strptime(air_date_str.strip(), '%Y-%m-%d').date()
                             except (ValueError, TypeError):
-                                logger.warning(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季的播出日期 '{air_date_str}' 格式无效，跳过。")
                                 seasons_to_keep.append(season)
                                 continue
-
                             if season_date <= today:
-                                logger.info(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 已播出，符合订阅条件，正在提交...")
-                                try:
-                                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                                    # ★★★  核心修复：剧集订阅也需要传递 config_manager.APP_CONFIG！ ★★★
-                                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                                    success = moviepilot_handler.subscribe_series_to_moviepilot(dict(series), season['season_number'], config_manager.APP_CONFIG)
-                                    if success:
-                                        logger.info(f"【智能订阅-剧集】      -> 订阅成功！")
-                                        successfully_subscribed_items.append(f"《{series['item_name']}》第 {season['season_number']} 季")
-                                        seasons_changed = True
-                                    else:
-                                        logger.error(f"【智能订阅-剧集】      -> MoviePilot报告订阅失败！将保留在缺失列表中。")
-                                        seasons_to_keep.append(season)
-                                except Exception as e:
-                                    logger.error(f"【智能订阅-剧集】      -> 提交订阅到MoviePilot时发生内部错误: {e}", exc_info=True)
+                                if moviepilot_handler.subscribe_series_to_moviepilot(dict(series), season['season_number'], config_manager.APP_CONFIG):
+                                    successfully_subscribed_items.append(f"《{series['item_name']}》第 {season['season_number']} 季")
+                                    seasons_changed = True
+                                else:
                                     seasons_to_keep.append(season)
                             else:
-                                logger.info(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 尚未播出，跳过订阅。")
                                 seasons_to_keep.append(season)
-                        
                         if seasons_changed:
                             missing_info['missing_seasons'] = seasons_to_keep
                             cursor.execute("UPDATE watchlist SET missing_info_json = ? WHERE item_id = ?", (json.dumps(missing_info), series['item_id']))
                     except Exception as e_series:
                         logger.error(f"【智能订阅-剧集】处理剧集 '{series['item_name']}' 时出错: {e_series}")
             
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             # ★★★ 核心新增：处理自定义合集(RSS)中的缺失剧集 ★★★
-            task_manager.update_status_from_thread(70, "正在检查自定义合集中的缺失剧集...")
-            sql_query_series_collections = "SELECT * FROM collections_info WHERE item_type = 'Series' AND status = 'has_missing' AND missing_movies_json IS NOT NULL AND missing_movies_json != '[]'"
-            cursor.execute(sql_query_series_collections)
-            series_collections_to_check = cursor.fetchall()
-            logger.info(f"【智能订阅-RSS剧集】找到 {len(series_collections_to_check)} 个有缺失剧集的自定义合集。")
-
-            for collection in series_collections_to_check:
-                if processor.is_stop_requested(): break
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            if not processor.is_stop_requested():
+                task_manager.update_status_from_thread(75, "正在检查自定义合集中的缺失剧集...")
                 
-                collection_name = collection['name']
-                logger.info(f"【智能订阅-RSS剧集】>>> 正在检查合集: 《{collection_name}》")
+                sql_query_series_collections = """
+                    SELECT * FROM custom_collections 
+                    WHERE type = 'list' 
+                      AND item_type = 'Series' 
+                      AND health_status = 'has_missing' 
+                      AND generated_media_info_json IS NOT NULL 
+                      AND generated_media_info_json != '[]'
+                """
+                cursor.execute(sql_query_series_collections)
+                series_collections_to_check = cursor.fetchall()
+                logger.info(f"【智能订阅-RSS剧集】找到 {len(series_collections_to_check)} 个有缺失剧集的自定义合集。")
 
-                series_to_keep = []
-                all_missing_series = json.loads(collection['missing_movies_json'])
-                series_changed = False
-                for series in all_missing_series:
+                for collection in series_collections_to_check:
                     if processor.is_stop_requested(): break
                     
-                    if series.get('status') == 'missing':
-                        release_date_str = series.get('release_date')
-                        if not release_date_str:
-                            series_to_keep.append(series)
-                            continue
+                    collection_name = collection['name']
+                    collection_id = collection['id']
+                    logger.info(f"【智能订阅-RSS剧集】>>> 正在检查合集: 《{collection_name}》")
+
+                    series_to_keep = []
+                    all_missing_series = json.loads(collection['generated_media_info_json'])
+                    series_changed = False
+                    
+                    for series in all_missing_series:
+                        if processor.is_stop_requested(): break
                         
-                        try:
-                            release_date = datetime.strptime(release_date_str.strip(), '%Y-%m-%d').date()
-                        except (ValueError, TypeError):
-                            series_to_keep.append(series)
-                            continue
-
-                        if release_date <= today:
-                            logger.info(f"【智能订阅-RSS剧集】   -> 剧集《{series.get('title')}》(首播: {release_date}) 已播出，符合订阅条件，正在提交...")
+                        if series.get('status') == 'missing':
+                            release_date_str = series.get('release_date')
+                            if not release_date_str:
+                                series_to_keep.append(series)
+                                continue
                             
-                            # ★★★ 核心修复：构建符合真实函数签名的 series_info 字典 ★★★
-                            series_info_for_mp = {
-                                "item_name": series.get('title'), # moviepilot_handler 需要 'item_name'
-                                "tmdb_id": series.get('tmdb_id')
-                            }
+                            try:
+                                release_date = datetime.strptime(release_date_str.strip(), '%Y-%m-%d').date()
+                            except (ValueError, TypeError):
+                                series_to_keep.append(series)
+                                continue
 
-                            # 调用真实的函数，不传递季号，订阅整部剧
-                            if moviepilot_handler.subscribe_series_to_moviepilot(series_info_for_mp, season_number=None, config=config_manager.APP_CONFIG):
-                                successfully_subscribed_items.append(f"剧集《{series.get('title')}》")
-                                series_changed = True
+                            if release_date <= today:
+                                logger.info(f"【智能订阅-RSS剧集】   -> 剧集《{series.get('title')}》(首播: {release_date}) 已播出，符合订阅条件，正在提交...")
+                                
+                                series_info_for_mp = {
+                                    "item_name": series.get('title'),
+                                    "tmdb_id": series.get('tmdb_id')
+                                }
+
+                                # 调用订阅函数，不传递季号，订阅整部剧
+                                if moviepilot_handler.subscribe_series_to_moviepilot(series_info_for_mp, season_number=None, config=config_manager.APP_CONFIG):
+                                    successfully_subscribed_items.append(f"剧集《{series.get('title')}》")
+                                    series_changed = True
+                                else:
+                                    series_to_keep.append(series)
                             else:
                                 series_to_keep.append(series)
                         else:
                             series_to_keep.append(series)
-                    else:
-                        series_to_keep.append(series)
-                
-                if series_changed:
-                    new_missing_json = json.dumps(series_to_keep)
-                    new_status = 'ok' if not any(s.get('status') == 'missing' for s in series_to_keep) else 'has_missing'
-                    cursor.execute("UPDATE collections_info SET missing_movies_json = ?, status = ? WHERE emby_collection_id = ?", (new_missing_json, new_status, collection['emby_collection_id']))
+                    
+                    if series_changed:
+                        new_missing_json = json.dumps(series_to_keep)
+                        new_missing_count = sum(1 for s in series_to_keep if s.get('status') == 'missing')
+                        new_health_status = 'has_missing' if new_missing_count > 0 else 'ok'
+                        
+                        cursor.execute(
+                            "UPDATE custom_collections SET generated_media_info_json = ?, health_status = ?, missing_count = ? WHERE id = ?", 
+                            (new_missing_json, new_health_status, new_missing_count, collection_id)
+                        )
 
             conn.commit()
 
@@ -1364,14 +1287,14 @@ def get_task_registry():
 # ★★★ 一键生成所有合集的后台任务，核心优化在于只获取一次Emby媒体库 ★★★
 def task_process_all_custom_collections(processor: MediaProcessor):
     """
-    【V2 - 终极高效版】处理所有已启用的自定义合集。
-    一次性获取所有Emby媒体内容和合集列表，在内存中进行匹配，实现零重复API调用。
+    【V3 - 终极完整版】处理所有已启用的自定义合集。
+    不仅在Emby中创建/更新，还为每个合集执行完整的健康状态分析并写入数据库。
     """
     task_name = "一键生成所有自建合集"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
 
     try:
-        # --- 步骤 1: 获取所有启用的自定义合集定义 (不变) ---
+        # --- 步骤 1: 获取所有启用的自定义合集定义 ---
         task_manager.update_status_from_thread(0, "正在获取所有启用的合集定义...")
         active_collections = db_handler.get_all_active_custom_collections(config_manager.DB_PATH)
         if not active_collections:
@@ -1383,26 +1306,21 @@ def task_process_all_custom_collections(processor: MediaProcessor):
         logger.info(f"共找到 {total} 个已启用的自定义合集需要处理。")
 
         # --- 步骤 2: 【核心优化】一次性获取所有需要的数据 ---
-        # 2a. 获取媒体库内容
         task_manager.update_status_from_thread(2, "正在从Emby获取全库媒体数据...")
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
         if not libs_to_process_ids: raise ValueError("未在配置中指定要处理的媒体库。")
+        
         movies = emby_handler.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter="Movie", library_ids=libs_to_process_ids) or []
         series = emby_handler.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter="Series", library_ids=libs_to_process_ids) or []
         all_emby_items = movies + series
         logger.info(f"已从Emby获取 {len(all_emby_items)} 个媒体项目。")
 
-        # 2b. ★★★ 新增：一次性获取所有合集列表 ★★★
         task_manager.update_status_from_thread(5, "正在从Emby获取现有合集列表...")
-        all_emby_collections = emby_handler.get_all_collections_with_items(
+        all_emby_collections = emby_handler.get_all_collections_from_emby_generic(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id
         ) or []
         
-        # 2c. ★★★ 新增：将合集列表转换为方便查找的字典 (key为小写名字) ★★★
-        prefetched_collection_map = {
-            coll.get('Name', '').lower(): coll 
-            for coll in all_emby_collections
-        }
+        prefetched_collection_map = {coll.get('Name', '').lower(): coll for coll in all_emby_collections}
         logger.info(f"已预加载 {len(prefetched_collection_map)} 个现有合集的信息。")
 
         # --- 步骤 3: 遍历所有合集，在内存中进行处理 ---
@@ -1415,12 +1333,13 @@ def task_process_all_custom_collections(processor: MediaProcessor):
             collection_name = collection['name']
             collection_type = collection['type']
             definition = json.loads(collection['definition_json'])
+            item_type_for_collection = definition.get('item_type', 'Movie')
             
             progress = 10 + int((i / total) * 90)
             task_manager.update_status_from_thread(progress, f"({i+1}/{total}) 正在处理: {collection_name}")
 
             try:
-                # 3a. 生成目标TMDb ID列表 (不变)
+                # 3a. 生成目标TMDb ID列表
                 tmdb_ids = []
                 if collection_type == 'list':
                     importer = ListImporter(processor.tmdb_api_key)
@@ -1431,24 +1350,74 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                 
                 if not tmdb_ids:
                     logger.warning(f"合集 '{collection_name}' 未能生成任何媒体ID，跳过。")
-                    db_handler.update_custom_collection_sync_status(config_manager.DB_PATH, collection_id, None)
+                    db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, collection_id, {"emby_collection_id": None})
                     continue
 
-                # 3b. ★★★ 核心修改：将两份预加载数据都传递下去 ★★★
-                emby_collection_id, _ = emby_handler.create_or_update_collection_with_tmdb_ids(
-                    collection_name=collection_name,
-                    tmdb_ids=tmdb_ids,
-                    base_url=processor.emby_url,
-                    api_key=processor.emby_api_key,
-                    user_id=processor.emby_user_id,
-                    prefetched_emby_items=all_emby_items, 
-                    prefetched_collection_map=prefetched_collection_map, # <--- 传递合集字典
-                    item_type=definition.get('item_type', 'Movie')
+                # 3b. 在Emby中创建/更新合集
+                result_tuple = emby_handler.create_or_update_collection_with_tmdb_ids(
+                    collection_name=collection_name, tmdb_ids=tmdb_ids, base_url=processor.emby_url,
+                    api_key=processor.emby_api_key, user_id=processor.emby_user_id,
+                    prefetched_emby_items=all_emby_items, prefetched_collection_map=prefetched_collection_map,
+                    item_type=item_type_for_collection
                 )
+                
+                if not result_tuple:
+                    raise RuntimeError("在Emby中创建或更新合集失败。")
+                
+                emby_collection_id, tmdb_ids_in_library = result_tuple
 
-                # 3c. 更新数据库状态 (不变)
-                db_handler.update_custom_collection_sync_status(config_manager.DB_PATH, collection_id, emby_collection_id)
-                logger.info(f"合集 '{collection_name}' 处理完成。")
+                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                # ★★★ 核心改造：在这里执行完整的健康状态分析和数据准备 ★★★
+                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                update_data = {
+                    "emby_collection_id": emby_collection_id,
+                    "item_type": item_type_for_collection,
+                    "last_synced_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+
+                if not emby_collection_id:
+                    logger.warning(f"合集 '{collection_name}' 未能在Emby中创建，跳过分析。")
+                elif collection_type == 'list':
+                    # 对榜单类型进行详细分析
+                    existing_tmdb_ids = set(map(str, tmdb_ids_in_library))
+                    emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                    image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
+                    
+                    all_media_details = []
+                    if item_type_for_collection == 'Series':
+                        all_media_details = [tmdb_handler.get_tv_details_tmdb(tid, processor.tmdb_api_key) for tid in tmdb_ids]
+                    else:
+                        all_media_details = [tmdb_handler.get_movie_details(tid, processor.tmdb_api_key) for tid in tmdb_ids]
+                    
+                    all_media_with_status, has_missing, missing_count = [], False, 0
+                    today_str = datetime.now().strftime('%Y-%m-%d')
+                    for media in all_media_details:
+                        if not media: continue
+                        media_tmdb_id = str(media.get("id"))
+                        release_date = media.get("release_date") or media.get("first_air_date", '')
+                        status = "in_library" if media_tmdb_id in existing_tmdb_ids else ("unreleased" if release_date and release_date > today_str else "missing")
+                        if status == "missing": has_missing, missing_count = True, missing_count + 1
+                        
+                        all_media_with_status.append({
+                            "tmdb_id": media_tmdb_id, "title": media.get("title") or media.get("name"),
+                            "release_date": release_date, "poster_path": media.get("poster_path"), "status": status
+                        })
+
+                    update_data.update({
+                        "health_status": "has_missing" if has_missing else "ok",
+                        "in_library_count": len(existing_tmdb_ids), "missing_count": missing_count,
+                        "generated_media_info_json": json.dumps(all_media_with_status),
+                        "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
+                    })
+                else: # 对于 'filter' 类型，写入默认的健康状态
+                    update_data.update({
+                        "health_status": "ok", "in_library_count": len(tmdb_ids_in_library),
+                        "missing_count": 0, "generated_media_info_json": '[]', "poster_path": None
+                    })
+                
+                # 3c. ★★★ 核心改造：调用新的、功能更全的数据库更新函数 ★★★
+                db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, collection_id, update_data)
+                logger.info(f"合集 '{collection_name}' 处理完成，并已更新数据库状态。")
 
             except Exception as e_coll:
                 logger.error(f"处理合集 '{collection_name}' (ID: {collection_id}) 时发生错误: {e_coll}", exc_info=True)
@@ -1467,15 +1436,15 @@ def task_process_all_custom_collections(processor: MediaProcessor):
 # --- 处理单个自定义合集的核心任务 ---
 def task_process_custom_collection(processor: MediaProcessor, custom_collection_id: int):
     """
-    【V6 - 订阅增强版】处理单个自定义合集。
-    - 对于RSS榜单(list)类型，在成功生成后，会立即分析其缺失状态并存入collections_info表。
-    - 对于筛选(filter)类型，则跳过缺失分析。
+    【V7 - 数据库独立版】处理单个自定义合集。
+    - 完全脱离 collections_info 表，所有状态和分析结果都存入 custom_collections 表自身。
+    - 统一了 list 和 filter 类型的处理流程和数据更新。
     """
     task_name = f"处理自定义合集 (ID: {custom_collection_id})"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
-        # --- 步骤 1: 获取定义并生成TMDb ID列表 (不变) ---
+        # --- 步骤 1: 获取定义并生成TMDb ID列表 ---
         task_manager.update_status_from_thread(0, "正在读取合集定义...")
         collection = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, custom_collection_id)
         if not collection: raise ValueError(f"未找到ID为 {custom_collection_id} 的自定义合集。")
@@ -1483,6 +1452,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         collection_name = collection['name']
         collection_type = collection['type']
         definition = json.loads(collection['definition_json'])
+        item_type_for_collection = definition.get('item_type', 'Movie')
         
         tmdb_ids = []
         if collection_type == 'list':
@@ -1495,13 +1465,12 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         if not tmdb_ids:
             logger.warning(f"合集 '{collection_name}' 未能生成任何媒体ID，任务结束。")
             task_manager.update_status_from_thread(100, "处理完成，未生成任何媒体。")
-            db_handler.update_custom_collection_sync_status(config_manager.DB_PATH, custom_collection_id, None)
+            db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, custom_collection_id, {"emby_collection_id": None})
             return
 
-        # --- 步骤 2: 在Emby中创建/更新合集 (不变) ---
+        # --- 步骤 2: 在Emby中创建/更新合集 ---
         task_manager.update_status_from_thread(70, f"已生成 {len(tmdb_ids)} 个ID，正在Emby中创建/更新合集...")
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
-        item_type_for_collection = definition.get('item_type', 'Movie')
 
         result_tuple = emby_handler.create_or_update_collection_with_tmdb_ids(
             collection_name=collection_name, tmdb_ids=tmdb_ids, base_url=processor.emby_url,
@@ -1516,13 +1485,21 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
 
         if not emby_collection_id:
             logger.warning(f"合集 '{collection_name}' 未能在Emby中创建（可能无匹配项），跳过缺失分析。")
-            db_handler.update_custom_collection_sync_status(config_manager.DB_PATH, custom_collection_id, emby_collection_id)
+            db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, custom_collection_id, {"emby_collection_id": emby_collection_id})
             task_manager.update_status_from_thread(100, "任务完成，未在Emby中创建合集。")
             return
 
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        # ★★★ 核心改造：为RSS合集增加缺失分析，并将结果存入 collections_info ★★★
+        # ★★★ 核心改造：分析合集状态并准备写入 custom_collections 表 ★★★
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        
+        update_data = {
+            "emby_collection_id": emby_collection_id,
+            "item_type": item_type_for_collection,
+            "last_synced_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+
+        # 只有 'list' 类型的合集才需要进行详细的缺失分析
         if collection_type == 'list':
             task_manager.update_status_from_thread(90, "榜单合集已生成/更新，正在分析缺失内容...")
             
@@ -1530,7 +1507,6 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
             
             emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
             image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
-            poster_path = f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
             
             all_media_details = []
             if item_type_for_collection == 'Series':
@@ -1538,7 +1514,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
             else:
                 all_media_details = [tmdb_handler.get_movie_details(tid, processor.tmdb_api_key) for tid in tmdb_ids]
             
-            all_media_with_status, has_missing = [], False
+            all_media_with_status, has_missing, missing_count = [], False, 0
             today_str = datetime.now().strftime('%Y-%m-%d')
             for media in all_media_details:
                 if not media: continue
@@ -1551,7 +1527,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 elif release_date and release_date > today_str:
                     media_status = "unreleased"
                 else:
-                    media_status, has_missing = "missing", True
+                    media_status, has_missing, missing_count = "missing", True, missing_count + 1
                 
                 all_media_with_status.append({
                     "tmdb_id": media_tmdb_id, 
@@ -1561,25 +1537,27 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                     "status": media_status
                 })
 
-            # 将分析结果打包，准备写入 `collections_info` 表
-            analysis_result = {
-                "emby_collection_id": emby_collection_id, "name": collection_name,
-                "tmdb_collection_id": None, # 自定义合集没有TMDb Collection ID
-                "item_type": item_type_for_collection,
-                "status": "has_missing" if has_missing else "ok", "has_missing": has_missing,
-                "missing_movies_json": json.dumps(all_media_with_status), 
-                "last_checked_at": time.time(),
-                "poster_path": poster_path, 
-                "in_library_count": len(existing_tmdb_ids)
-            }
-            # 调用db_handler写入或更新健康检查信息
-            db_handler.upsert_collection_info(config_manager.DB_PATH, analysis_result)
-            logger.info(f"已为RSS合集 '{collection_name}' 更新健康检查状态。")
-        else:
+            update_data.update({
+                "health_status": "has_missing" if has_missing else "ok",
+                "in_library_count": len(existing_tmdb_ids),
+                "missing_count": missing_count,
+                "generated_media_info_json": json.dumps(all_media_with_status),
+                "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
+            })
+            logger.info(f"已为RSS合集 '{collection_name}' 分析健康状态。")
+        else: # 对于 'filter' 类型
             task_manager.update_status_from_thread(95, "筛选合集已生成，跳过缺失分析。")
+            update_data.update({
+                "health_status": "ok",
+                "in_library_count": len(tmdb_ids_in_library),
+                "missing_count": 0,
+                "generated_media_info_json": '[]',
+                "poster_path": None
+            })
 
-        # --- 步骤 4: 更新自定义合集表的状态 (不变) ---
-        db_handler.update_custom_collection_sync_status(config_manager.DB_PATH, custom_collection_id, emby_collection_id)
+        # --- 步骤 3: 统一更新数据库 ---
+        db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, custom_collection_id, update_data)
+        logger.info(f"已更新自定义合集 '{collection_name}' (ID: {custom_collection_id}) 的同步状态和健康信息。")
 
         task_manager.update_status_from_thread(100, "自定义合集同步并分析完成！")
 
