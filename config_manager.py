@@ -114,6 +114,8 @@ CONFIG_DEFINITION = {
     constants.CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_CRON: ('Scheduler', 'string', constants.DEFAULT_SCHEDULE_REFRESH_COLLECTIONS_CRON),
     constants.CONFIG_OPTION_SCHEDULE_ACTOR_TRACKING_ENABLED: ('Scheduler', 'boolean', False),
     constants.CONFIG_OPTION_SCHEDULE_ACTOR_TRACKING_CRON: ('Scheduler', 'string', "0 5 * * *"), # 默认每天早上5点
+    constants.CONFIG_OPTION_SCHEDULE_CUSTOM_COLLECTIONS_ENABLED: ('Scheduler', 'boolean', False),
+    constants.CONFIG_OPTION_SCHEDULE_CUSTOM_COLLECTIONS_CRON: ('Scheduler', 'string', constants.DEFAULT_SCHEDULE_CUSTOM_COLLECTIONS_CRON),
     
     # [Authentication]
     constants.CONFIG_OPTION_AUTH_ENABLED: (constants.CONFIG_SECTION_AUTH, 'boolean', False),

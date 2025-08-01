@@ -657,6 +657,25 @@ def setup_scheduled_tasks():
     else:
         logger.info("定时演员订阅扫描任务未启用。")
 
+    # 任务 9 - 定时刷新自建合集 ★★★
+    JOB_ID_CUSTOM_COLLECTIONS = 'scheduled_custom_collections'
+    if scheduler.get_job(JOB_ID_CUSTOM_COLLECTIONS): scheduler.remove_job(JOB_ID_CUSTOM_COLLECTIONS)
+    if config.get(constants.CONFIG_OPTION_SCHEDULE_CUSTOM_COLLECTIONS_ENABLED, False):
+        try:
+            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_CUSTOM_COLLECTIONS_CRON)
+            scheduler.add_job(
+                func=lambda: task_manager.submit_task(task_process_all_custom_collections, "定时刷新自建合集"),
+                trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                id=JOB_ID_CUSTOM_COLLECTIONS,
+                name="定时刷新自建合集",
+                replace_existing=True
+            )
+            logger.info(f"已设置定时任务：刷新自建合集，将{_get_next_run_time_str(cron)}")
+        except Exception as e:
+            logger.error(f"设置定时刷新自建合集任务失败: {e}", exc_info=True)
+    else:
+        logger.info("定时刷新自建合集任务未启用。")
+
     # --- 启动调度器逻辑 (包含所有任务开关) ---
     all_schedules_enabled = [
         config.get(constants.CONFIG_OPTION_SCHEDULE_ENABLED, False),
@@ -665,7 +684,8 @@ def setup_scheduled_tasks():
         config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False),
         config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED, False),
         config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED, True),
-        config.get(constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_ENABLED, False)
+        config.get(constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_ENABLED, False),
+        config.get(constants.CONFIG_OPTION_SCHEDULE_CUSTOM_COLLECTIONS_ENABLED, False)
     ]
     if not scheduler.running and any(all_schedules_enabled):
         try:

@@ -169,7 +169,7 @@
                         立即执行
                       </n-button>
                     </n-input-group>
-                    <template #feedback>自动订阅缺失的电影合集和追更的剧集。</template>
+                    <template #feedback>自动订阅缺失的电影合集和追更的剧集以及RSS订阅合集。</template>
                   </n-form-item>
                 </n-form>
               </div>
@@ -213,7 +213,24 @@
                   </n-form-item>
                 </n-form>
               </div>
-
+              <div class="task-item">
+                <n-space align="center" justify="space-between">
+                  <n-text strong>自建合集刷新</n-text>
+                  <n-switch v-model:value="configModel.schedule_custom_collections_enabled" />
+                </n-space>
+                <n-form :model="configModel" label-placement="left" label-width="80" class="mt-3">
+                  <n-form-item label="" path="schedule_custom_collections_cron">
+                    <n-input-group>
+                      <n-input v-model:value="configModel.schedule_custom_collections_cron" :disabled="!configModel.schedule_custom_collections_enabled" placeholder="例如: 0 6 * * *" />
+                      <n-button type="primary" ghost @click="triggerTaskNow('custom-collections')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
+                        <template #icon><n-icon :component="Play24Regular" /></template>
+                        立即执行
+                      </n-button>
+                    </n-input-group>
+                    <template #feedback>定时刷新所有RSS榜单和筛选规则合集。</template>
+                  </n-form-item>
+                </n-form>
+              </div>
             </div>
           </n-card>
         </n-gi>
@@ -262,7 +279,8 @@ const tasksToWatch = [
   { enabledKey: 'schedule_actor_cleanup_enabled', cronKey: 'schedule_actor_cleanup_cron' },
   { enabledKey: 'schedule_autosub_enabled', cronKey: 'schedule_autosub_cron' },
   { enabledKey: 'schedule_refresh_collections_enabled', cronKey: 'schedule_refresh_collections_cron' },
-  { enabledKey: 'schedule_actor_tracking_enabled', cronKey: 'schedule_actor_tracking_cron' }
+  { enabledKey: 'schedule_actor_tracking_enabled', cronKey: 'schedule_actor_tracking_cron' },
+  { enabledKey: 'schedule_custom_collections_enabled', cronKey: 'schedule_custom_collections_cron' }
 ];
 
 watch(isLoading, (loading) => {

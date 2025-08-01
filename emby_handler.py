@@ -1150,7 +1150,75 @@ def add_items_to_collection(collection_id: str, item_ids: List[str], base_url: s
         logger.error(f"向合集 {collection_id} 添加项目时失败: {e}")
         return False
 
-# ★★★ 创建或更新一个合集 ★★★
+def get_collection_members(collection_id: str, base_url: str, api_key: str, user_id: str) -> Optional[List[str]]:
+    """获取一个合集内所有媒体项的ID列表。"""
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    params = {'api_key': api_key, 'ParentId': collection_id, 'Fields': 'Id'}
+    try:
+        response = requests.get(api_url, params=params, timeout=30)
+        response.raise_for_status()
+        items = response.json().get("Items", [])
+        return [item['Id'] for item in items]
+    except Exception as e:
+        logger.error(f"获取合集 {collection_id} 成员时失败: {e}")
+        return None
+
+def add_items_to_collection(collection_id: str, item_ids: List[str], base_url: str, api_key: str) -> bool:
+    """【原子操作】只负责向合集添加项目。"""
+    if not item_ids: return True
+    api_url = f"{base_url.rstrip('/')}/Collections/{collection_id}/Items"
+    params = {'api_key': api_key, 'Ids': ",".join(item_ids)}
+    try:
+        response = requests.post(api_url, params=params, timeout=30)
+        response.raise_for_status()
+        return True
+    except requests.RequestException:
+        return False
+
+def remove_items_from_collection(collection_id: str, item_ids: List[str], base_url: str, api_key: str) -> bool:
+    """【新增原子操作】只负责从合集移除项目。"""
+    if not item_ids: return True
+    api_url = f"{base_url.rstrip('/')}/Collections/{collection_id}/Items"
+    params = {'api_key': api_key, 'Ids': ",".join(item_ids)}
+    try:
+        # ★★★ 使用 DELETE 方法 ★★★
+        response = requests.delete(api_url, params=params, timeout=30)
+        response.raise_for_status()
+        return True
+    except requests.RequestException:
+        return False
+
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★★★ 核心新增：基于“移除”API的、真正有效的“清空”函数 ★★★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, user_id: str) -> bool:
+    """
+    【最终正确版】通过移除所有成员的方式，来间接“清空”并删除一个Emby合集。
+    """
+    logger.info(f"开始清空 Emby 合集 {collection_id} 的所有成员...")
+    
+    # 步骤 1: 获取当前所有成员的ID
+    member_ids = get_collection_members(collection_id, base_url, api_key, user_id)
+    
+    if member_ids is None:
+        logger.error("  - 无法获取合集成员，清空操作中止。")
+        return False # 获取成员失败
+        
+    if not member_ids:
+        logger.info("  - 合集本身已为空，无需清空。")
+        return True # 合集已是空的，视为成功
+
+    # 步骤 2: 调用我们已经验证过的 remove_items_from_collection 函数，移除所有成员
+    logger.info(f"  - 正在从合集 {collection_id} 中移除 {len(member_ids)} 个成员...")
+    success = remove_items_from_collection(collection_id, member_ids, base_url, api_key)
+    
+    if success:
+        logger.info(f"✅ 成功发送清空合集 {collection_id} 的请求。")
+    else:
+        logger.error(f"❌ 发送清空合集 {collection_id} 的请求失败。")
+        
+    return success
+
 def create_or_update_collection_with_tmdb_ids(
     collection_name: str, tmdb_ids: list, base_url: str, api_key: str, 
     user_id: str, library_ids: list = None, item_type: str = 'Movie',
@@ -1158,79 +1226,86 @@ def create_or_update_collection_with_tmdb_ids(
     prefetched_collection_map: Optional[dict] = None
 ) -> Optional[Tuple[str, List[str]]]: 
     """
-    【V11 - 终极类型安全版】在Emby中创建或更新一个合集。
-    修复了在使用预加载数据时，未按 item_type 筛选媒体的致命bug。
+    【V15 - 会计对账最终版】通过精确计算差异，实现完美的合集同步。
     """
     log_item_type = "电影" if item_type == "Movie" else "电视剧"
     logger.info(f"开始在Emby中处理名为 '{collection_name}' 的{log_item_type}合集...")
     
     try:
-        # 1. 确定要处理的媒体项列表
+        # 1. & 2. 获取媒体项并计算出“应该有”的成员列表 (desired_emby_ids)
         if prefetched_emby_items is not None:
             all_media_items = prefetched_emby_items
         else:
             if not library_ids: raise ValueError("非预加载模式下必须提供 library_ids。")
-            all_media_items = get_emby_library_items(
-                base_url=base_url, api_key=api_key, user_id=user_id, 
-                media_type_filter=item_type, library_ids=library_ids
-            )
-        if all_media_items is None:
-            logger.error(f"无法从Emby获取{log_item_type}列表，操作中止。")
-            return None
+            all_media_items = get_emby_library_items(base_url=base_url, api_key=api_key, user_id=user_id, media_type_filter=item_type, library_ids=library_ids)
+        if all_media_items is None: return None
             
-        # 2. ★★★ 核心修复：在构建映射表时，严格遵守 item_type 过滤器 ★★★
         tmdb_to_emby_id_map = {
             item['ProviderIds']['Tmdb']: item['Id']
             for item in all_media_items
-            if item.get('Type') == item_type  # <--- 加上这个关键的类型检查！
-            and 'ProviderIds' in item 
-            and 'Tmdb' in item['ProviderIds']
+            if item.get('Type') == item_type and 'ProviderIds' in item and 'Tmdb' in item['ProviderIds']
         }
-        
         tmdb_ids_in_library = [str(tid) for tid in tmdb_ids if str(tid) in tmdb_to_emby_id_map]
-        emby_item_ids_to_add = [tmdb_to_emby_id_map[tid] for tid in tmdb_ids_in_library]
+        desired_emby_ids = [tmdb_to_emby_id_map[tid] for tid in tmdb_ids_in_library]
         
-        # 3. 检查合集是否存在 (这部分逻辑已优化，保持不变)
+        # 3. 检查合集是否存在
         collection = prefetched_collection_map.get(collection_name.lower()) if prefetched_collection_map is not None else get_collection_by_name(collection_name, base_url, api_key, user_id)
         
         emby_collection_id = None
-        success = False
 
         if collection:
-            # --- 更新逻辑 ---
+            # --- 更新逻辑：会计对账 ---
             emby_collection_id = collection['Id']
-            logger.info(f"发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，将更新其内容。")
-            success = add_items_to_collection(emby_collection_id, emby_item_ids_to_add, base_url, api_key)
+            logger.info(f"发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，开始对账同步...")
+            
+            # 步骤 1: 盘点库存 (获取当前成员)
+            current_emby_ids = get_collection_members(emby_collection_id, base_url, api_key, user_id)
+            if current_emby_ids is None:
+                raise Exception("无法获取当前合集成员，同步中止。")
+
+            # 步骤 2: 核对清单 (计算差异)
+            set_current = set(current_emby_ids)
+            set_desired = set(desired_emby_ids)
+            
+            ids_to_remove = list(set_current - set_desired)
+            ids_to_add = list(set_desired - set_current)
+
+            # 步骤 3: 调整差异
+            if ids_to_remove:
+                logger.info(f"  - 对账发现 {len(ids_to_remove)} 个项目需要移除...")
+                remove_items_from_collection(emby_collection_id, ids_to_remove, base_url, api_key)
+            
+            if ids_to_add:
+                logger.info(f"  - 对账发现 {len(ids_to_add)} 个新项目需要添加...")
+                add_items_to_collection(emby_collection_id, ids_to_add, base_url, api_key)
+
+            if not ids_to_remove and not ids_to_add:
+                logger.info("  - 对账完成，合集内容已是最新，无需改动。")
+
+            return (emby_collection_id, tmdb_ids_in_library)
         else:
-            # --- 创建逻辑 ---
+            # --- 创建逻辑 (不变) ---
             logger.info(f"未找到合集 '{collection_name}'，将开始创建...")
-            if not emby_item_ids_to_add:
-                logger.warning(f"无法创建合集 '{collection_name}'，因为媒体库中没有任何匹配的{log_item_type}可供添加。")
+            if not desired_emby_ids:
                 return (None, [])
 
             api_url = f"{base_url.rstrip('/')}/Collections"
             params = {'api_key': api_key}
-            payload = {'Name': collection_name, 'Ids': ",".join(emby_item_ids_to_add)}
+            payload = {'Name': collection_name, 'Ids': ",".join(desired_emby_ids)}
             
             response = requests.post(api_url, params=params, data=payload, timeout=30)
             response.raise_for_status()
             new_collection_info = response.json()
             emby_collection_id = new_collection_info.get('Id')
+            
             if emby_collection_id:
-                logger.info(f"成功创建新合集 '{collection_name}' (ID: {emby_collection_id})。")
-                success = True
-            else:
-                logger.error("创建合集API调用成功，但响应中未包含ID。")
-
-        if success and emby_collection_id:
-            return (emby_collection_id, tmdb_ids_in_library)
-        else:
+                return (emby_collection_id, tmdb_ids_in_library)
             return None
 
     except Exception as e:
         logger.error(f"处理Emby合集 '{collection_name}' 时发生未知错误: {e}", exc_info=True)
         return None
-
+    
 # ★★★ 新增：向合集追加单个项目的函数 ★★★
 def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: str, api_key: str, user_id: str) -> bool:
     """

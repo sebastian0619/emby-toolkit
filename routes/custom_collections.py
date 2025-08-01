@@ -106,26 +106,37 @@ def api_update_custom_collection(collection_id):
 @custom_collections_bp.route('/<int:collection_id>', methods=['DELETE'])
 @login_required
 def api_delete_custom_collection(collection_id):
-    """【安全模式】只删除本地数据库中的自定义合集定义。"""
+    """【V8 - 最终决战版】通过清空所有成员来联动删除Emby合集"""
     try:
+        # 步骤 1: 获取待删除合集的完整信息
         collection_to_delete = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, collection_id)
         if not collection_to_delete:
-            # 即使找不到，也返回成功，因为最终结果是一样的
-            return jsonify({"message": "合集已删除或不存在。"}), 200
+            return jsonify({"error": "未找到要删除的合集"}), 404
 
-        collection_name = collection_to_delete.get('name', f"ID: {collection_id}")
+        emby_id_to_empty = collection_to_delete.get('emby_collection_id')
+        collection_name = collection_to_delete.get('name')
 
-        # ★★★ 核心修改：只调用数据库删除，不再与Emby交互 ★★★
+        # 步骤 2: 如果存在关联的Emby ID，则调用Emby Handler，清空其内容
+        if emby_id_to_empty:
+            logger.info(f"准备在 Emby 上通过清空成员的方式删除合集 '{collection_name}' (Emby ID: {emby_id_to_empty})...")
+            
+            # ★★★ 调用我们全新的、真正有效的清空函数 ★★★
+            emby_handler.empty_collection_in_emby(
+                collection_id=emby_id_to_empty,
+                base_url=config_manager.APP_CONFIG.get('emby_server_url'),
+                api_key=config_manager.APP_CONFIG.get('emby_api_key'),
+                user_id=config_manager.APP_CONFIG.get('emby_user_id')
+            )
+
+        # 步骤 3: 无论Emby端是否成功，都删除本地数据库中的记录
         db_success = db_handler.delete_custom_collection(
             db_path=config_manager.DB_PATH, 
             collection_id=collection_id
         )
 
         if db_success:
-            logger.info(f"已从本地数据库删除合集 '{collection_name}' 的定义。Emby中的合集实体需要手动清理。")
-            return jsonify({"message": f"合集 '{collection_name}' 的本地定义已删除。"}), 200
+            return jsonify({"message": f"自定义合集 '{collection_name}' 已成功联动删除。"}), 200
         else:
-            # 理论上，如果前面能找到，这里不应该失败
             return jsonify({"error": "数据库删除操作失败，请查看日志。"}), 500
 
     except Exception as e:

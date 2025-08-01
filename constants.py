@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "2.9.71.2"  # 更新版本号
+APP_VERSION = "2.9.72"  # 更新版本号
 GITHUB_REPO_OWNER = "hbq0405"  # 您的 GitHub 用户名
 GITHUB_REPO_NAME = "emby-toolkit" # 您的 GitHub 仓库名
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
@@ -102,6 +102,11 @@ CONFIG_OPTION_SCHEDULE_SYNC_MAP_CRON = "schedule_sync_map_cron"       # 同步�
 CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED = "schedule_watchlist_enabled" # 是否启用智能追剧任务
 CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON = "schedule_watchlist_cron"       # 智能追剧的CRON表达式
 DEFAULT_SCHEDULE_WATCHLIST_CRON = "0 */6 * * *" # 默认每6小时执行一次
+
+# --- 自建合集定时刷新任务 ---
+CONFIG_OPTION_SCHEDULE_CUSTOM_COLLECTIONS_ENABLED = "schedule_custom_collections_enabled"
+CONFIG_OPTION_SCHEDULE_CUSTOM_COLLECTIONS_CRON = "schedule_custom_collections_cron"
+DEFAULT_SCHEDULE_CUSTOM_COLLECTIONS_CRON = "0 6 * * *" # 默认每天早上6点执行
 
 # --- 演员处理相关配置 ---
 CONFIG_SECTION_ACTOR = "Actor"

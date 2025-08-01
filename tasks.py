@@ -1281,7 +1281,8 @@ def get_task_registry():
         'actor-cleanup': (task_actor_translation_cleanup, "立即执行演员名翻译"),
         'refresh-collections': (task_refresh_collections, "立即执行电影合集刷新"),
         'auto-subscribe': (task_auto_subscribe, "立即执行智能订阅"),
-        'actor-tracking': (task_process_actor_subscriptions, "立即执行演员订阅")
+        'actor-tracking': (task_process_actor_subscriptions, "立即执行演员订阅"),
+        'custom-collections': (task_process_all_custom_collections, "立即执行自建合集刷新"),
     }
 
 # ★★★ 一键生成所有合集的后台任务，核心优化在于只获取一次Emby媒体库 ★★★
