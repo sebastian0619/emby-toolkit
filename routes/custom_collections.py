@@ -3,11 +3,10 @@
 from flask import Blueprint, request, jsonify
 import logging
 import json
-
+import constants
 import db_handler
 import config_manager
 import task_manager
-import emby_handler
 from extensions import login_required
 
 # 1. 创建自定义合集蓝图
@@ -104,13 +103,30 @@ def api_update_custom_collection(collection_id):
 @custom_collections_bp.route('/<int:collection_id>', methods=['DELETE'])
 @login_required
 def api_delete_custom_collection(collection_id):
-    """删除一个自定义合集定义"""
+    """【V2 - 联动删除版】删除一个自定义合集定义，并同步删除Emby上的合集"""
     try:
-        success = db_handler.delete_custom_collection(config_manager.DB_PATH, collection_id)
+        # 1. 从配置中获取 Emby 连接信息
+        emby_url = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+        emby_api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+
+        # 2. 检查配置是否齐全
+        if not emby_url or not emby_api_key:
+            logger.error("尝试删除自定义合集，但Emby服务器地址或API Key未配置。")
+            return jsonify({"error": "Emby服务器地址或API Key未配置，无法执行删除操作。"}), 500
+
+        # 3. 使用新的、包含所有参数的调用方式
+        success = db_handler.delete_custom_collection(
+            db_path=config_manager.DB_PATH, 
+            collection_id=collection_id,
+            emby_url=emby_url,
+            emby_api_key=emby_api_key
+        )
+
         if success:
-            return jsonify({"message": "删除成功"}), 200
+            return jsonify({"message": "自定义合集已成功联动删除。"}), 200
         else:
-            return jsonify({"error": "删除失败"}), 404
+            return jsonify({"error": "删除自定义合集时发生错误，请查看日志。"}), 500
+
     except Exception as e:
         logger.error(f"删除自定义合集 {collection_id} 时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
