@@ -7,6 +7,7 @@ import json
 import db_handler
 import config_manager
 import task_manager
+import emby_handler
 from extensions import login_required
 
 # 1. 创建自定义合集蓝图

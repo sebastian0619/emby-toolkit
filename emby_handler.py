@@ -1192,6 +1192,43 @@ def create_or_update_collection_with_tmdb_ids(
     except Exception as e:
         logger.error(f"处理Emby合集 '{collection_name}' 时发生未知错误: {e}", exc_info=True)
         return None
+
+# ★★★ 从Emby中删除一个项目（如合集） ★★★
+def delete_item_from_emby(item_id: str, base_url: str, api_key: str) -> bool:
+    """
+    从 Emby 中永久删除一个项目 (Item)。
+    这适用于任何项目类型，包括合集 (BoxSet)。
+
+    :param item_id: 要删除的项目的 Emby ID。
+    :param base_url: Emby 服务器 URL。
+    :param api_key: Emby API Key。
+    :return: True 表示成功，False 表示失败。
+    """
+    if not all([item_id, base_url, api_key]):
+        logger.error("delete_item_from_emby: 缺少必要的参数。")
+        return False
+
+    api_url = f"{base_url.rstrip('/')}/Items/{item_id}"
+    params = {'api_key': api_key}
+
+    logger.info(f"准备从 Emby 删除项目 ID: {item_id}...")
+    try:
+        response = requests.delete(api_url, params=params, timeout=20)
+        response.raise_for_status()
+        
+        # HTTP 204 No Content 是删除成功的标准响应
+        logger.info(f"成功从 Emby 删除项目 ID: {item_id}。")
+        return True
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            logger.warning(f"尝试删除项目 {item_id} 时，Emby返回404，可能已被删除。视作成功。")
+            return True
+        logger.error(f"从 Emby 删除项目 {item_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text[:200]}")
+        return False
+    except requests.exceptions.RequestException as e:
+        logger.error(f"从 Emby 删除项目 {item_id} 时发生网络错误: {e}")
+        return False
+
 # ★★★ 新增：向合集追加单个项目的函数 ★★★
 def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: str, api_key: str, user_id: str) -> bool:
     """

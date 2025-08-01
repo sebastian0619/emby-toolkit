@@ -912,22 +912,74 @@ def update_custom_collection(db_path: str, collection_id: int, name: str, type: 
         logger.error(f"更新自定义合集 ID {collection_id} 时发生数据库错误: {e}", exc_info=True)
         return False
 
-def delete_custom_collection(db_path: str, collection_id: int) -> bool:
+def delete_custom_collection(
+    db_path: str, 
+    collection_id: int, 
+    emby_url: str, 
+    emby_api_key: str
+) -> bool:
     """
-    从数据库中删除一个自定义合集定义。
+    【V2 - 联动删除版】
+    彻底删除一个自定义合集，同步操作三处：
+    1. 从 Emby 服务器删除合集本身。
+    2. 从 collections_info 表删除其缓存/状态记录。
+    3. 从 custom_collections 表删除其定义。
     """
+    emby_collection_id_to_delete = None
+    
+    # 使用一个数据库连接来执行所有操作，方便事务管理
+    conn = None
     try:
-        with get_db_connection(db_path) as conn:
-            cursor = conn.cursor()
-            # 在这里可以添加逻辑，比如先去Emby删除关联的合集
-            # ...
-            cursor.execute("DELETE FROM custom_collections WHERE id = ?", (collection_id,))
-            conn.commit()
-            logger.info(f"成功删除自定义合集 ID: {collection_id}。")
-            return True
-    except sqlite3.Error as e:
-        logger.error(f"删除自定义合集 ID {collection_id} 时发生数据库错误: {e}", exc_info=True)
+        conn = get_db_connection(db_path)
+        cursor = conn.cursor()
+
+        # 步骤 0: 根据自定义合集的主键ID，获取它在Emby中的ID
+        cursor.execute("SELECT emby_collection_id FROM custom_collections WHERE id = ?", (collection_id,))
+        result = cursor.fetchone()
+        if not result or not result[0]:
+            logger.warning(f"在数据库中未找到自定义合集定义 (ID: {collection_id}) 或其没有关联的Emby ID，无法继续删除。")
+            # 可能已经被删了，或者数据不一致，直接返回成功让前端刷新
+            return True 
+        
+        emby_collection_id_to_delete = result[0]
+        logger.info(f"开始联动删除自定义合集 (DB ID: {collection_id}, Emby ID: {emby_collection_id_to_delete})...")
+
+        # 步骤 1: 从 Emby 服务器删除合集
+        from emby_handler import delete_item_from_emby
+        logger.info(f"  - 步骤 1/3: 正在从 Emby 删除合集...")
+        emby_delete_success = delete_item_from_emby(
+            item_id=emby_collection_id_to_delete,
+            base_url=emby_url,
+            api_key=emby_api_key
+        )
+        if not emby_delete_success:
+            # 如果Emby删除失败，这是一个严重问题，我们应该中止操作，不修改本地数据库
+            raise RuntimeError(f"从Emby删除合集 {emby_collection_id_to_delete} 失败，操作已回滚。")
+        logger.info(f"  - Emby合集删除成功。")
+
+        # 步骤 2: 从 collections_info 表删除记录
+        logger.info(f"  - 步骤 2/3: 正在从 collections_info 表删除记录...")
+        cursor.execute("DELETE FROM collections_info WHERE emby_collection_id = ?", (emby_collection_id_to_delete,))
+        
+        # 步骤 3: 从 custom_collections 表删除定义
+        logger.info(f"  - 步骤 3/3: 正在从 custom_collections 表删除定义...")
+        cursor.execute("DELETE FROM custom_collections WHERE id = ?", (collection_id,))
+        
+        # 所有操作成功，提交事务
+        conn.commit()
+        logger.info(f"✅ 成功联动删除自定义合集 (DB ID: {collection_id})。")
+        return True
+
+    except Exception as e:
+        logger.error(f"删除自定义合集 (ID: {collection_id}) 时发生错误: {e}", exc_info=True)
+        if conn:
+            # 如果发生任何错误，回滚所有数据库操作
+            conn.rollback()
+            logger.warning("数据库事务已回滚。")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def update_custom_collection_sync_status(db_path: str, collection_id: int, emby_collection_id: Optional[str] = None) -> bool:
     """
