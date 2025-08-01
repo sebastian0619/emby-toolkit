@@ -187,11 +187,12 @@
         </n-space>
       </template>
     </n-modal>
-    <!-- ★★★ 新增：缺失详情查看模态框 ★★★ -->
+    <!-- ★★★ 缺失详情查看模态框 (已完全实现) ★★★ -->
     <n-modal v-model:show="showDetailsModal" preset="card" style="width: 90%; max-width: 1200px;" :title="detailsModalTitle" :bordered="false" size="huge">
       <div v-if="isLoadingDetails" class="center-container"><n-spin size="large" /></div>
       <div v-else-if="selectedCollectionDetails">
         <n-tabs type="line" animated>
+          <!-- 缺失 -->
           <n-tab-pane name="missing" :tab="`缺失${mediaTypeName} (${missingMediaInModal.length})`">
             <n-empty v-if="missingMediaInModal.length === 0" :description="`太棒了！没有已上映的缺失${mediaTypeName}。`" style="margin-top: 40px;"></n-empty>
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
@@ -209,7 +210,57 @@
               </n-gi>
             </n-grid>
           </n-tab-pane>
-          <!-- ... 其他标签页 (已入库, 未上映, 已订阅) ... -->
+          
+          <!-- 已入库 -->
+          <n-tab-pane name="in_library" :tab="`已入库 (${inLibraryMediaInModal.length})`">
+             <n-empty v-if="inLibraryMediaInModal.length === 0" :description="`该合集在媒体库中没有任何${mediaTypeName}。`" style="margin-top: 40px;"></n-empty>
+            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
+              <n-gi v-for="media in inLibraryMediaInModal" :key="media.tmdb_id">
+                <n-card class="movie-card" content-style="padding: 0;">
+                  <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" /></template>
+                  <div class="movie-info"><div class="movie-title">{{ media.title }}<br />({{ extractYear(media.release_date) || '未知年份' }})</div></div>
+                   <template #action>
+                    <n-tag type="success" size="small" style="width: 100%; justify-content: center;">
+                      <template #icon><n-icon :component="CheckmarkCircle" /></template>
+                      已在库
+                    </n-tag>
+                  </template>
+                </n-card>
+              </n-gi>
+            </n-grid>
+          </n-tab-pane>
+
+          <!-- 未上映 -->
+          <n-tab-pane name="unreleased" :tab="`未上映 (${unreleasedMediaInModal.length})`">
+            <n-empty v-if="unreleasedMediaInModal.length === 0" :description="`该合集没有已知的未上映${mediaTypeName}。`" style="margin-top: 40px;"></n-empty>
+            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
+              <n-gi v-for="media in unreleasedMediaInModal" :key="media.tmdb_id">
+                <n-card class="movie-card" content-style="padding: 0;">
+                  <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster"></template>
+                  <div class="movie-info"><div class="movie-title">{{ media.title }}<br />({{ extractYear(media.release_date) || '未知年份' }})</div></div>
+                </n-card>
+              </n-gi>
+            </n-grid>
+          </n-tab-pane>
+
+          <!-- 已订阅 -->
+          <n-tab-pane name="subscribed" :tab="`已订阅 (${subscribedMediaInModal.length})`">
+            <n-empty v-if="subscribedMediaInModal.length === 0" :description="`你没有订阅此合集中的任何${mediaTypeName}。`" style="margin-top: 40px;"></n-empty>
+            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
+              <n-gi v-for="media in subscribedMediaInModal" :key="media.tmdb_id">
+                <n-card class="movie-card" content-style="padding: 0;">
+                  <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" /></template>
+                  <div class="movie-info"><div class="movie-title">{{ media.title }}<br />({{ extractYear(media.release_date) || '未知年份' }})</div></div>
+                  <template #action>
+                    <n-button @click="updateMediaStatus(media, 'missing')" type="warning" size="small" block ghost>
+                      <template #icon><n-icon :component="CloseCircleIcon" /></template>
+                      取消订阅
+                    </n-button>
+                  </template>
+                </n-card>
+              </n-gi>
+            </n-grid>
+          </n-tab-pane>
         </n-tabs>
       </div>
     </n-modal>
@@ -446,7 +497,7 @@ const formRules = computed(() => {
   return baseRules;
 });
 
-// ★★★ 新增：用于详情模态框的计算属性 ★★★
+// --- 详情模态框计算属性 ---
 const detailsModalTitle = computed(() => {
   if (!selectedCollectionDetails.value) return '';
   const typeLabel = selectedCollectionDetails.value.item_type === 'Series' ? '电视剧合集' : '电影合集';
@@ -456,12 +507,16 @@ const mediaTypeName = computed(() => {
   if (!selectedCollectionDetails.value) return '媒体';
   return selectedCollectionDetails.value.item_type === 'Series' ? '剧集' : '影片';
 });
-const missingMediaInModal = computed(() => {
+const filterMediaByStatus = (status) => {
   if (!selectedCollectionDetails.value || !Array.isArray(selectedCollectionDetails.value.missing_movies)) return [];
-  return selectedCollectionDetails.value.missing_movies.filter(media => media.status === 'missing');
-});
+  return selectedCollectionDetails.value.missing_movies.filter(media => media.status === status);
+};
+const missingMediaInModal = computed(() => filterMediaByStatus('missing'));
+const inLibraryMediaInModal = computed(() => filterMediaByStatus('in_library'));
+const unreleasedMediaInModal = computed(() => filterMediaByStatus('unreleased'));
+const subscribedMediaInModal = computed(() => filterMediaByStatus('subscribed'));
 
-// --- API 调用函数 (保持不变) ---
+// --- API 调用 ---
 const fetchCollections = async () => {
   isLoading.value = true;
   try {
@@ -519,6 +574,20 @@ const handleSyncAll = async () => {
     message.error(error.response?.data?.error || '提交一键生成任务失败。');
   } finally {
     isSyncingAll.value = false;
+  }
+};
+
+const updateMediaStatus = async (media, newStatus) => {
+  try {
+    await axios.post('/api/collections/update_movie_status', {
+      collection_id: selectedCollectionDetails.value.emby_collection_id,
+      movie_tmdb_id: media.tmdb_id,
+      new_status: newStatus
+    });
+    media.status = newStatus; // 本地更新UI
+    message.success(`状态已更新为: ${newStatus}`);
+  } catch (err) {
+    message.error(err.response?.data?.error || '更新状态失败');
   }
 };
 
@@ -622,7 +691,6 @@ const columns = [
       return h(NTag, { type: tagType, bordered: false }, { default: () => text });
     }
   },
-  // ★★★ 新增“健康检查”列 ★★★
   {
     title: '健康检查',
     key: 'health_check',
@@ -630,12 +698,8 @@ const columns = [
       if (row.type !== 'list' || !row.emby_collection_id) {
         return h(NText, { depth: 3 }, { default: () => 'N/A' });
       }
-      // 这里我们需要从一个地方获取健康状态，暂时留空，后续API会提供
-      // 暂时先只提供按钮
       return h(NButton, {
-        size: 'small',
-        type: 'default',
-        ghost: true,
+        size: 'small', type: 'default', ghost: true,
         onClick: () => openDetailsModal(row)
       }, { default: () => '查看详情', icon: () => h(NIcon, { component: EyeIcon }) });
     }
@@ -654,9 +718,8 @@ const columns = [
     key: 'last_synced_at',
     render(row) {
       if (!row.last_synced_at) return '从未';
-      try {
-        return format(new Date(row.last_synced_at), 'yyyy-MM-dd HH:mm:ss');
-      } catch { return '日期无效'; }
+      try { return format(new Date(row.last_synced_at), 'yyyy-MM-dd HH:mm:ss'); } 
+      catch { return '日期无效'; }
     }
   },
   { title: '关联Emby合集ID', key: 'emby_collection_id' },
