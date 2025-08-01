@@ -1120,36 +1120,6 @@ def get_collection_by_name(name: str, base_url: str, api_key: str, user_id: str)
     logger.debug(f"未找到名为 '{name}' 的合集。")
     return None
 
-# --- 将一个项目ID列表添加到一个合集中 ---
-def add_items_to_collection(collection_id: str, item_ids: List[str], base_url: str, api_key: str) -> bool:
-    """
-    【健壮版】将一个项目ID列表添加到一个合集中。此操作会替换合集内原有的所有项目。
-    :param collection_id: 目标合集的 ID。
-    :param item_ids: 要添加的媒体项目（电影）的 Emby ID 列表。
-    :return: True 表示成功，False 表示失败。
-    """
-    api_url = f"{base_url.rstrip('/')}/Collections/{collection_id}/Items"
-    ids_str = ",".join(item_ids)
-    
-    # ★★★ 核心修复：使用 data 参数而不是 params，将ID列表放入请求体中 ★★★
-    # 这样可以避免URL长度限制
-    payload = {
-        'Ids': ids_str
-    }
-    params = {
-        'api_key': api_key
-    }
-    
-    try:
-        # POST请求的data参数会将数据放在请求体中
-        response = requests.post(api_url, params=params, data=payload, timeout=30)
-        response.raise_for_status()
-        logger.info(f"成功将 {len(item_ids)} 个项目更新到合集 ID: {collection_id}。")
-        return True
-    except requests.RequestException as e:
-        logger.error(f"向合集 {collection_id} 添加项目时失败: {e}")
-        return False
-
 def get_collection_members(collection_id: str, base_url: str, api_key: str, user_id: str) -> Optional[List[str]]:
     """获取一个合集内所有媒体项的ID列表。"""
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
@@ -1176,7 +1146,7 @@ def add_items_to_collection(collection_id: str, item_ids: List[str], base_url: s
         return False
 
 def remove_items_from_collection(collection_id: str, item_ids: List[str], base_url: str, api_key: str) -> bool:
-    """【新增原子操作】只负责从合集移除项目。"""
+    """【原子操作】只负责从合集移除项目。"""
     if not item_ids: return True
     api_url = f"{base_url.rstrip('/')}/Collections/{collection_id}/Items"
     params = {'api_key': api_key, 'Ids': ",".join(item_ids)}
@@ -1188,12 +1158,9 @@ def remove_items_from_collection(collection_id: str, item_ids: List[str], base_u
     except requests.RequestException:
         return False
 
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★★★ 核心新增：基于“移除”API的、真正有效的“清空”函数 ★★★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, user_id: str) -> bool:
     """
-    【最终正确版】通过移除所有成员的方式，来间接“清空”并删除一个Emby合集。
+    【通过移除所有成员的方式，来间接“清空”并删除一个Emby合集。
     """
     logger.info(f"开始清空 Emby 合集 {collection_id} 的所有成员...")
     
@@ -1226,7 +1193,7 @@ def create_or_update_collection_with_tmdb_ids(
     prefetched_collection_map: Optional[dict] = None
 ) -> Optional[Tuple[str, List[str]]]: 
     """
-    【V15 - 会计对账最终版】通过精确计算差异，实现完美的合集同步。
+    通过精确计算差异，实现完美的合集同步。
     """
     log_item_type = "电影" if item_type == "Movie" else "电视剧"
     logger.info(f"开始在Emby中处理名为 '{collection_name}' 的{log_item_type}合集...")
@@ -1256,7 +1223,7 @@ def create_or_update_collection_with_tmdb_ids(
         if collection:
             # --- 更新逻辑：会计对账 ---
             emby_collection_id = collection['Id']
-            logger.info(f"发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，开始对账同步...")
+            logger.info(f"发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，开始同步...")
             
             # 步骤 1: 盘点库存 (获取当前成员)
             current_emby_ids = get_collection_members(emby_collection_id, base_url, api_key, user_id)
@@ -1272,15 +1239,15 @@ def create_or_update_collection_with_tmdb_ids(
 
             # 步骤 3: 调整差异
             if ids_to_remove:
-                logger.info(f"  - 对账发现 {len(ids_to_remove)} 个项目需要移除...")
+                logger.info(f"  - 发现 {len(ids_to_remove)} 个项目需要移除...")
                 remove_items_from_collection(emby_collection_id, ids_to_remove, base_url, api_key)
             
             if ids_to_add:
-                logger.info(f"  - 对账发现 {len(ids_to_add)} 个新项目需要添加...")
+                logger.info(f"  - 发现 {len(ids_to_add)} 个新项目需要添加...")
                 add_items_to_collection(emby_collection_id, ids_to_add, base_url, api_key)
 
             if not ids_to_remove and not ids_to_add:
-                logger.info("  - 对账完成，合集内容已是最新，无需改动。")
+                logger.info("  - 完成，合集内容已是最新，无需改动。")
 
             return (emby_collection_id, tmdb_ids_in_library)
         else:
