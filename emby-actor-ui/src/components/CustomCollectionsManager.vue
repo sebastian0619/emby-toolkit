@@ -741,6 +741,19 @@ const columns = [
   }
 ];
 
+// ★★★ 新增：补全缺失的辅助函数 ★★★
+const getTmdbImageUrl = (posterPath) => {
+  // 如果没有海报路径，返回一个占位图
+  if (!posterPath) return '/img/poster-placeholder.png';
+  return `https://image.tmdb.org/t/p/w300${posterPath}`;
+};
+
+const extractYear = (dateStr) => {
+  if (!dateStr) return null;
+  // 从 'YYYY-MM-DD' 格式的日期字符串中提取年份
+  return dateStr.substring(0, 4);
+};
+
 // --- onMounted (保持不变) ---
 onMounted(() => {
   fetchCollections();

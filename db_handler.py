@@ -1041,7 +1041,7 @@ def get_unique_genres(db_path: str) -> List[str]:
                         
         # 将集合转换为列表并排序
         sorted_genres = sorted(list(unique_genres))
-        logger.info(f"从数据库中成功提取出 {len(sorted_genres)} 个唯一的电影类型。")
+        logger.trace(f"从数据库中成功提取出 {len(sorted_genres)} 个唯一的电影类型。")
         return sorted_genres
         
     except sqlite3.Error as e:
@@ -1071,7 +1071,7 @@ def get_unique_studios(db_path: str) -> List[str]:
                         continue
                         
         sorted_studios = sorted(list(unique_studios))
-        logger.info(f"从数据库中成功提取出 {len(sorted_studios)} 个唯一的工作室。")
+        logger.trace(f"从数据库中成功提取出 {len(sorted_studios)} 个唯一的工作室。")
         return sorted_studios
         
     except sqlite3.Error as e:
