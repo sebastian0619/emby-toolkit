@@ -1119,6 +1119,62 @@ def task_auto_subscribe(processor: MediaProcessor):
                     except Exception as e_series:
                         logger.error(f"【智能订阅-剧集】处理剧集 '{series['item_name']}' 时出错: {e_series}")
             
+            # ★★★ 核心新增：处理自定义合集(RSS)中的缺失剧集 ★★★
+            task_manager.update_status_from_thread(70, "正在检查自定义合集中的缺失剧集...")
+            sql_query_series_collections = "SELECT * FROM collections_info WHERE item_type = 'Series' AND status = 'has_missing' AND missing_movies_json IS NOT NULL AND missing_movies_json != '[]'"
+            cursor.execute(sql_query_series_collections)
+            series_collections_to_check = cursor.fetchall()
+            logger.info(f"【智能订阅-RSS剧集】找到 {len(series_collections_to_check)} 个有缺失剧集的自定义合集。")
+
+            for collection in series_collections_to_check:
+                if processor.is_stop_requested(): break
+                
+                collection_name = collection['name']
+                logger.info(f"【智能订阅-RSS剧集】>>> 正在检查合集: 《{collection_name}》")
+
+                series_to_keep = []
+                all_missing_series = json.loads(collection['missing_movies_json'])
+                series_changed = False
+                for series in all_missing_series:
+                    if processor.is_stop_requested(): break
+                    
+                    if series.get('status') == 'missing':
+                        release_date_str = series.get('release_date')
+                        if not release_date_str:
+                            series_to_keep.append(series)
+                            continue
+                        
+                        try:
+                            release_date = datetime.strptime(release_date_str.strip(), '%Y-%m-%d').date()
+                        except (ValueError, TypeError):
+                            series_to_keep.append(series)
+                            continue
+
+                        if release_date <= today:
+                            logger.info(f"【智能订阅-RSS剧集】   -> 剧集《{series.get('title')}》(首播: {release_date}) 已播出，符合订阅条件，正在提交...")
+                            
+                            # ★★★ 核心修复：构建符合真实函数签名的 series_info 字典 ★★★
+                            series_info_for_mp = {
+                                "item_name": series.get('title'), # moviepilot_handler 需要 'item_name'
+                                "tmdb_id": series.get('tmdb_id')
+                            }
+
+                            # 调用真实的函数，不传递季号，订阅整部剧
+                            if moviepilot_handler.subscribe_series_to_moviepilot(series_info_for_mp, season_number=None, config=config_manager.APP_CONFIG):
+                                successfully_subscribed_items.append(f"剧集《{series.get('title')}》")
+                                series_changed = True
+                            else:
+                                series_to_keep.append(series)
+                        else:
+                            series_to_keep.append(series)
+                    else:
+                        series_to_keep.append(series)
+                
+                if series_changed:
+                    new_missing_json = json.dumps(series_to_keep)
+                    new_status = 'ok' if not any(s.get('status') == 'missing' for s in series_to_keep) else 'has_missing'
+                    cursor.execute("UPDATE collections_info SET missing_movies_json = ?, status = ? WHERE emby_collection_id = ?", (new_missing_json, new_status, collection['emby_collection_id']))
+
             conn.commit()
 
         if successfully_subscribed_items:
