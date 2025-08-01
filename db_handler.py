@@ -536,7 +536,7 @@ def get_all_collections(db_path: str) -> List[Dict[str, Any]]:
     try:
         with get_db_connection(db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM collections_info ORDER BY name")
+            cursor.execute("SELECT * FROM collections_info WHERE tmdb_collection_id IS NOT NULL ORDER BY name")
             
             final_results = []
             for row in cursor.fetchall():
