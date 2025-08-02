@@ -480,13 +480,30 @@ const openDetailsModal = async (collection) => {
 };
 
 const subscribeMedia = async (media) => {
+  // 检查确保 selectedCollectionDetails 和它的 id 存在
+  if (!selectedCollectionDetails.value?.id) {
+    message.error("无法确定当前操作的合集ID，请重试。");
+    return;
+  }
+
   subscribing.value[media.tmdb_id] = true;
   try {
-    await axios.post('/api/collections/subscribe', { tmdb_id: media.tmdb_id, title: media.title, item_type: selectedCollectionDetails.value.item_type });
-    message.success(`《${media.title}》已提交订阅`);
-    media.status = 'subscribed';
+    // ▼▼▼【核心修复】▼▼▼
+    await axios.post('/api/custom_collections/subscribe', { // 1. 修正API路径
+      collection_id: selectedCollectionDetails.value.id, // 2. 新增 collection_id
+      tmdb_id: media.tmdb_id,
+      title: media.title,
+      item_type: selectedCollectionDetails.value.item_type
+    });
+    // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+
+    message.success(`《${media.title}》已成功提交订阅并更新状态！`);
+    
+    // 现在这行代码的行为和后端是一致的了
+    media.status = 'subscribed'; 
+
   } catch (err) {
-    message.error(err.response?.data?.error || '订阅失败');
+    message.error(err.response?.data?.error || '订阅失败，请检查后端日志。');
   } finally {
     subscribing.value[media.tmdb_id] = false;
   }

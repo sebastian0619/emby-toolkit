@@ -941,8 +941,8 @@ def task_refresh_collections(processor: MediaProcessor):
 # ★★★ 带智能预判的自动订阅任务 ★★★
 def task_auto_subscribe(processor: MediaProcessor):
     """
-    【V2 - 自建合集增强版】
-    不仅处理常规合集和追剧列表，还能扫描自建的RSS剧集榜单，并自动订阅其中已播出的缺失剧集。
+    【V5 - 最终完整版】
+    全面覆盖原生电影合集、自定义电影合集、自定义剧集合集，并统一使用 'subscribed' 状态。
     """
     task_manager.update_status_from_thread(0, "正在启动智能订阅任务...")
     
@@ -953,107 +953,121 @@ def task_auto_subscribe(processor: MediaProcessor):
 
     try:
         today = date.today()
-        task_manager.update_status_from_thread(10, f"智能订阅已启动...")
+        task_manager.update_status_from_thread(10, "智能订阅已启动...")
         successfully_subscribed_items = []
 
         with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            # --- 1. 处理常规电影合集 (不变) ---
-            task_manager.update_status_from_thread(20, "正在检查缺失的电影...")
-            sql_query_movies = "SELECT * FROM collections_info WHERE status = 'has_missing' AND missing_movies_json IS NOT NULL AND missing_movies_json != '[]'"
-            cursor.execute(sql_query_movies)
-            collections_to_check = cursor.fetchall()
-            logger.info(f"【智能订阅-电影】找到 {len(collections_to_check)} 个有缺失影片的电影合集需要检查。")
+            # ★★★ 1. 处理原生电影合集 (collections_info) ★★★
+            if not processor.is_stop_requested():
+                task_manager.update_status_from_thread(20, "正在检查原生电影合集...")
+                sql_query_native_movies = "SELECT * FROM collections_info WHERE status = 'has_missing' AND missing_movies_json IS NOT NULL AND missing_movies_json != '[]'"
+                cursor.execute(sql_query_native_movies)
+                native_collections_to_check = cursor.fetchall()
+                logger.info(f"【智能订阅-原生电影】找到 {len(native_collections_to_check)} 个有缺失影片的原生合集。")
 
-            for collection in collections_to_check:
-                if processor.is_stop_requested(): break
-                collection_name = collection['name']
-                movies_to_keep = []
-                all_missing_movies = json.loads(collection['missing_movies_json'])
-                movies_changed = False
-                for movie in all_missing_movies:
+                for collection in native_collections_to_check:
                     if processor.is_stop_requested(): break
-                    if movie.get('status') == 'missing':
-                        release_date_str = movie.get('release_date')
-                        if not release_date_str:
-                            movies_to_keep.append(movie)
-                            continue
-                        try:
-                            release_date = datetime.strptime(release_date_str.strip(), '%Y-%m-%d').date()
-                        except (ValueError, TypeError):
-                            movies_to_keep.append(movie)
-                            continue
-                        if release_date <= today:
-                            if moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG):
-                                successfully_subscribed_items.append(f"电影《{movie['title']}》")
-                                movies_changed = True
+                    
+                    movies_to_keep = []
+                    all_movies = json.loads(collection['missing_movies_json'])
+                    movies_changed = False
+                    
+                    for movie in all_movies:
+                        if processor.is_stop_requested(): break
+                        if movie.get('status') == 'missing':
+                            release_date_str = movie.get('release_date')
+                            if not release_date_str:
+                                movies_to_keep.append(movie)
+                                continue
+                            try:
+                                release_date = datetime.strptime(release_date_str.strip(), '%Y-%m-%d').date()
+                            except (ValueError, TypeError):
+                                movies_to_keep.append(movie)
+                                continue
+                            
+                            if release_date <= today:
+                                if moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG):
+                                    successfully_subscribed_items.append(f"电影《{movie['title']}》")
+                                    movies_changed = True
+                                    movie['status'] = 'subscribed'
+                                    movies_to_keep.append(movie)
+                                else:
+                                    movies_to_keep.append(movie)
                             else:
                                 movies_to_keep.append(movie)
                         else:
                             movies_to_keep.append(movie)
-                    else:
-                        movies_to_keep.append(movie)
-                if movies_changed:
-                    new_missing_json = json.dumps(movies_to_keep)
-                    new_status = 'ok' if not any(m.get('status') == 'missing' for m in movies_to_keep) else 'has_missing'
-                    cursor.execute("UPDATE collections_info SET missing_movies_json = ?, status = ? WHERE emby_collection_id = ?", (new_missing_json, new_status, collection['emby_collection_id']))
+                            
+                    if movies_changed:
+                        new_missing_json = json.dumps(movies_to_keep)
+                        new_status = 'ok' if not any(m.get('status') == 'missing' for m in movies_to_keep) else 'has_missing'
+                        cursor.execute("UPDATE collections_info SET missing_movies_json = ?, status = ? WHERE emby_collection_id = ?", (new_missing_json, new_status, collection['emby_collection_id']))
 
-            # --- 2. 处理追剧列表中的剧集 (不变) ---
+            # ★★★ 2. 处理自定义电影合集 (custom_collections, item_type='Movie') ★★★
             if not processor.is_stop_requested():
-                task_manager.update_status_from_thread(50, "正在检查追剧列表中的缺失季...")
-                sql_query = "SELECT * FROM watchlist WHERE status IN ('Watching', 'Paused') AND missing_info_json IS NOT NULL AND missing_info_json != '[]'"
-                cursor.execute(sql_query)
-                series_to_check = cursor.fetchall()
-                logger.info(f"【智能订阅-剧集】找到 {len(series_to_check)} 部有缺失信息的在追剧集。")
+                task_manager.update_status_from_thread(45, "正在检查自定义电影合集...")
+                sql_query_custom_movies = """
+                    SELECT * FROM custom_collections 
+                    WHERE type = 'list' AND item_type = 'Movie' AND health_status = 'has_missing' 
+                    AND generated_media_info_json IS NOT NULL AND generated_media_info_json != '[]'
+                """
+                cursor.execute(sql_query_custom_movies)
+                custom_movie_collections_to_check = cursor.fetchall()
+                logger.info(f"【智能订阅-RSS电影】找到 {len(custom_movie_collections_to_check)} 个有缺失电影的自定义合集。")
 
-                for series in series_to_check:
+                for collection in custom_movie_collections_to_check:
                     if processor.is_stop_requested(): break
-                    try:
-                        missing_info = json.loads(series['missing_info_json'])
-                        missing_seasons = missing_info.get('missing_seasons', [])
-                        if not missing_seasons: continue
-                        seasons_to_keep = []
-                        seasons_changed = False
-                        for season in missing_seasons:
-                            if processor.is_stop_requested(): break
-                            air_date_str = season.get('air_date')
-                            if not air_date_str:
-                                seasons_to_keep.append(season)
+                    
+                    collection_id = collection['id']
+                    movies_to_keep = []
+                    all_movies = json.loads(collection['generated_media_info_json'])
+                    movies_changed = False
+                    
+                    for movie in all_movies:
+                        if processor.is_stop_requested(): break
+                        if movie.get('status') == 'missing':
+                            release_date_str = movie.get('release_date')
+                            if not release_date_str:
+                                movies_to_keep.append(movie)
                                 continue
                             try:
-                                season_date = datetime.strptime(air_date_str.strip(), '%Y-%m-%d').date()
+                                release_date = datetime.strptime(release_date_str.strip(), '%Y-%m-%d').date()
                             except (ValueError, TypeError):
-                                seasons_to_keep.append(season)
+                                movies_to_keep.append(movie)
                                 continue
-                            if season_date <= today:
-                                if moviepilot_handler.subscribe_series_to_moviepilot(dict(series), season['season_number'], config_manager.APP_CONFIG):
-                                    successfully_subscribed_items.append(f"《{series['item_name']}》第 {season['season_number']} 季")
-                                    seasons_changed = True
+                            
+                            if release_date <= today:
+                                if moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG):
+                                    successfully_subscribed_items.append(f"电影《{movie['title']}》")
+                                    movies_changed = True
+                                    movie['status'] = 'subscribed'
+                                    movies_to_keep.append(movie)
                                 else:
-                                    seasons_to_keep.append(season)
+                                    movies_to_keep.append(movie)
                             else:
-                                seasons_to_keep.append(season)
-                        if seasons_changed:
-                            missing_info['missing_seasons'] = seasons_to_keep
-                            cursor.execute("UPDATE watchlist SET missing_info_json = ? WHERE item_id = ?", (json.dumps(missing_info), series['item_id']))
-                    except Exception as e_series:
-                        logger.error(f"【智能订阅-剧集】处理剧集 '{series['item_name']}' 时出错: {e_series}")
-            
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★★★ 核心新增：处理自定义合集(RSS)中的缺失剧集 ★★★
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                                movies_to_keep.append(movie)
+                        else:
+                            movies_to_keep.append(movie)
+                            
+                    if movies_changed:
+                        new_missing_json = json.dumps(movies_to_keep)
+                        new_missing_count = sum(1 for m in movies_to_keep if m.get('status') == 'missing')
+                        new_health_status = 'has_missing' if new_missing_count > 0 else 'ok'
+                        cursor.execute(
+                            "UPDATE custom_collections SET generated_media_info_json = ?, health_status = ?, missing_count = ? WHERE id = ?", 
+                            (new_missing_json, new_health_status, new_missing_count, collection_id)
+                        )
+
+            # ★★★ 3. 处理自定义剧集合集 (custom_collections, item_type='Series') ★★★
             if not processor.is_stop_requested():
-                task_manager.update_status_from_thread(75, "正在检查自定义合集中的缺失剧集...")
-                
+                task_manager.update_status_from_thread(70, "正在检查自定义剧集合集...")
                 sql_query_series_collections = """
                     SELECT * FROM custom_collections 
-                    WHERE type = 'list' 
-                      AND item_type = 'Series' 
-                      AND health_status = 'has_missing' 
-                      AND generated_media_info_json IS NOT NULL 
-                      AND generated_media_info_json != '[]'
+                    WHERE type = 'list' AND item_type = 'Series' AND health_status = 'has_missing' 
+                    AND generated_media_info_json IS NOT NULL AND generated_media_info_json != '[]'
                 """
                 cursor.execute(sql_query_series_collections)
                 series_collections_to_check = cursor.fetchall()
@@ -1062,23 +1076,18 @@ def task_auto_subscribe(processor: MediaProcessor):
                 for collection in series_collections_to_check:
                     if processor.is_stop_requested(): break
                     
-                    collection_name = collection['name']
                     collection_id = collection['id']
-                    logger.info(f"【智能订阅-RSS剧集】>>> 正在检查合集: 《{collection_name}》")
-
                     series_to_keep = []
-                    all_missing_series = json.loads(collection['generated_media_info_json'])
+                    all_series = json.loads(collection['generated_media_info_json'])
                     series_changed = False
                     
-                    for series in all_missing_series:
+                    for series in all_series:
                         if processor.is_stop_requested(): break
-                        
                         if series.get('status') == 'missing':
                             release_date_str = series.get('release_date')
                             if not release_date_str:
                                 series_to_keep.append(series)
                                 continue
-                            
                             try:
                                 release_date = datetime.strptime(release_date_str.strip(), '%Y-%m-%d').date()
                             except (ValueError, TypeError):
@@ -1086,17 +1095,12 @@ def task_auto_subscribe(processor: MediaProcessor):
                                 continue
 
                             if release_date <= today:
-                                logger.info(f"【智能订阅-RSS剧集】   -> 剧集《{series.get('title')}》(首播: {release_date}) 已播出，符合订阅条件，正在提交...")
-                                
-                                series_info_for_mp = {
-                                    "item_name": series.get('title'),
-                                    "tmdb_id": series.get('tmdb_id')
-                                }
-
-                                # 调用订阅函数，不传递季号，订阅整部剧
+                                series_info_for_mp = { "item_name": series.get('title'), "tmdb_id": series.get('tmdb_id') }
                                 if moviepilot_handler.subscribe_series_to_moviepilot(series_info_for_mp, season_number=None, config=config_manager.APP_CONFIG):
                                     successfully_subscribed_items.append(f"剧集《{series.get('title')}》")
                                     series_changed = True
+                                    series['status'] = 'subscribed'
+                                    series_to_keep.append(series)
                                 else:
                                     series_to_keep.append(series)
                             else:
@@ -1108,7 +1112,6 @@ def task_auto_subscribe(processor: MediaProcessor):
                         new_missing_json = json.dumps(series_to_keep)
                         new_missing_count = sum(1 for s in series_to_keep if s.get('status') == 'missing')
                         new_health_status = 'has_missing' if new_missing_count > 0 else 'ok'
-                        
                         cursor.execute(
                             "UPDATE custom_collections SET generated_media_info_json = ?, health_status = ?, missing_count = ? WHERE id = ?", 
                             (new_missing_json, new_health_status, new_missing_count, collection_id)
@@ -1379,6 +1382,14 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                 if not emby_collection_id:
                     logger.warning(f"合集 '{collection_name}' 未能在Emby中创建，跳过分析。")
                 elif collection_type == 'list':
+
+                    previous_media_map = {}
+                    try:
+                        previous_media_list = json.loads(collection.get('generated_media_info_json') or '[]')
+                        previous_media_map = {str(m.get('tmdb_id')): m for m in previous_media_list}
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(f"解析合集 {collection_name} 的旧媒体JSON失败，将无法保留'subscribed'状态。")
+
                     # 对榜单类型进行详细分析
                     existing_tmdb_ids = set(map(str, tmdb_ids_in_library))
                     emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
@@ -1396,8 +1407,15 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                         if not media: continue
                         media_tmdb_id = str(media.get("id"))
                         release_date = media.get("release_date") or media.get("first_air_date", '')
-                        status = "in_library" if media_tmdb_id in existing_tmdb_ids else ("unreleased" if release_date and release_date > today_str else "missing")
-                        if status == "missing": has_missing, missing_count = True, missing_count + 1
+                        
+                        if media_tmdb_id in existing_tmdb_ids:
+                            status = "in_library"
+                        elif previous_media_map.get(media_tmdb_id, {}).get('status') == 'subscribed':
+                            status = "subscribed"
+                        elif release_date and release_date > today_str:
+                            status = "unreleased"
+                        else:
+                            status, has_missing, missing_count = "missing", True, missing_count + 1
                         
                         all_media_with_status.append({
                             "tmdb_id": media_tmdb_id, "title": media.get("title") or media.get("name"),
@@ -1504,6 +1522,15 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         if collection_type == 'list':
             task_manager.update_status_from_thread(90, "榜单合集已生成/更新，正在分析缺失内容...")
             
+            # 在分析前，加载当前已存在的媒体状态信息
+            previous_media_map = {}
+            try:
+                # collection 对象是从数据库里读出来的，它包含了旧的JSON数据
+                previous_media_list = json.loads(collection.get('generated_media_info_json') or '[]')
+                previous_media_map = {str(m.get('tmdb_id')): m for m in previous_media_list}
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(f"解析合集 {collection_name} 的旧媒体JSON失败，将无法保留'subscribed'状态。")
+
             existing_tmdb_ids = set(map(str, tmdb_ids_in_library))
             
             emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
@@ -1523,6 +1550,16 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 media_status = "unknown"
                 release_date = media.get("release_date") or media.get("first_air_date", '')
             
+                # 重新排序判断逻辑，优先保留 'subscribed' 状态
+                if media_tmdb_id in existing_tmdb_ids:
+                    media_status = "in_library"
+                elif previous_media_map.get(media_tmdb_id, {}).get('status') == 'subscribed':
+                    media_status = "subscribed"  # 保留已订阅状态！
+                elif release_date and release_date > today_str:
+                    media_status = "unreleased"
+                else:
+                    media_status, has_missing, missing_count = "missing", True, missing_count + 1
+                
                 if media_tmdb_id in existing_tmdb_ids:
                     media_status = "in_library"
                 elif release_date and release_date > today_str:

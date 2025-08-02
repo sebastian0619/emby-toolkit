@@ -2,6 +2,7 @@
 
 from flask import Blueprint, request, jsonify
 import logging
+import sqlite3
 import json
 import constants
 import db_handler
@@ -235,39 +236,85 @@ def api_update_custom_collection_media_status(collection_id):
         logger.error(f"更新自定义合集 {collection_id} 中媒体状态时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
     
-# --- 订阅单部剧集 ---
+# --- 手动订阅 ---
 @custom_collections_bp.route('/subscribe', methods=['POST'])
 @login_required
 def api_subscribe_media_from_custom_collection():
     """
-    【新位置】从自建合集页面手动订阅电影或剧集到MoviePilot。
+    【V3 - 最终修复版】从自建合集页面手动订阅，并确保本地数据库状态同步。
     """
     data = request.json
     tmdb_id = data.get('tmdb_id')
     title = data.get('title')
-    item_type = data.get('item_type', 'Movie') 
+    item_type = data.get('item_type', 'Movie')
+    collection_id = data.get('collection_id')
 
-    if not tmdb_id or not title:
-        return jsonify({"error": "请求无效: 缺少 tmdb_id 或 title"}), 400
+    if not all([tmdb_id, title, collection_id]):
+        return jsonify({"error": "请求无效: 缺少 tmdb_id, title 或 collection_id"}), 400
 
-    logger.info(f"收到来自[自建合集]的手动订阅请求: 类型='{item_type}', 名称='{title}', TMDb ID='{tmdb_id}'")
+    logger.info(f"收到来自[自建合集]的手动订阅请求: 合集ID='{collection_id}', 类型='{item_type}', 名称='{title}', TMDb ID='{tmdb_id}'")
 
-    success = False
+    # 1. 先执行对外的订阅操作
     try:
+        success = False
         if item_type == 'Movie':
             movie_info = {"tmdb_id": tmdb_id, "title": title}
             success = moviepilot_handler.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
         elif item_type == 'Series':
             series_info = {"tmdb_id": tmdb_id, "item_name": title}
             success = moviepilot_handler.subscribe_series_to_moviepilot(series_info, season_number=None, config=config_manager.APP_CONFIG)
-        else:
-            return jsonify({"error": f"不支持的订阅类型: '{item_type}'"}), 400
-
-        if success:
-            return jsonify({"message": f"《{title}》已成功提交订阅任务。"}), 200
-        else:
+        
+        if not success:
             return jsonify({"error": "提交到 MoviePilot 失败，请检查日志。"}), 500
 
     except Exception as e:
-        logger.error(f"处理订阅请求时发生严重错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器内部错误"}), 500
+        logger.error(f"调用MoviePilot订阅时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "提交订阅时发生服务器内部错误"}), 500
+
+    # 2. 订阅成功后，更新本地数据库
+    try:
+        with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT generated_media_info_json FROM custom_collections WHERE id = ?", (collection_id,))
+            result = cursor.fetchone()
+            if not result or not result['generated_media_info_json']:
+                return jsonify({"error": "数据库错误: 找不到合集或其媒体列表为空。"}), 404
+            
+            media_list = json.loads(result['generated_media_info_json'])
+            
+            item_found = False
+            for item in media_list:
+                # 使用 str() 转换进行鲁棒比较，避免数字和字符串的类型问题
+                if str(item.get('tmdb_id')) == str(tmdb_id):
+                    # ▼▼▼【核心修复 1】▼▼▼
+                    # 将状态更新为 'subscribed'，与前端保持一致
+                    item['status'] = 'subscribed' 
+                    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+                    item_found = True
+                    break
+            
+            # ▼▼▼【核心修复 2】▼▼▼
+            # 如果在JSON中没有找到该项目，这是一个错误，必须告知前端
+            if not item_found:
+                logger.error(f"严重错误：在合集 {collection_id} 的JSON中未找到TMDb ID为 {tmdb_id} 的项目，数据库未更新！")
+                return jsonify({"error": f"订阅成功，但本地状态更新失败：在合集数据中未找到TMDb ID为 {tmdb_id} 的项目。"}), 500
+            # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+
+            new_missing_count = sum(1 for s in media_list if s.get('status') == 'missing')
+            new_health_status = 'has_missing' if new_missing_count > 0 else 'ok'
+            new_missing_json = json.dumps(media_list, ensure_ascii=False)
+
+            cursor.execute(
+                "UPDATE custom_collections SET generated_media_info_json = ?, health_status = ?, missing_count = ? WHERE id = ?",
+                (new_missing_json, new_health_status, new_missing_count, collection_id)
+            )
+            conn.commit()
+            logger.info(f"已成功更新合集 {collection_id} 中《{title}》的状态为 'subscribed'。")
+
+        return jsonify({"message": f"《{title}》已成功提交订阅，并已更新本地状态。"}), 200
+
+    except Exception as e:
+        logger.error(f"更新本地数据库状态时发生严重错误: {e}", exc_info=True)
+        return jsonify({"error": "订阅已提交，但更新本地状态时发生服务器内部错误。"}), 500
