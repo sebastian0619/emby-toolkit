@@ -1383,8 +1383,11 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                     logger.warning(f"合集 '{collection_name}' 未能在Emby中创建，跳过分析。")
                 elif collection_type == 'list':
 
+                    # ▼▼▼ 核心修正点 ▼▼▼
+                    # 在分析前，加载当前已存在的媒体状态信息，以便保留 'subscribed' 状态
                     previous_media_map = {}
                     try:
+                        # collection 对象是从数据库循环中得到的，它包含了旧的JSON数据
                         previous_media_list = json.loads(collection.get('generated_media_info_json') or '[]')
                         previous_media_map = {str(m.get('tmdb_id')): m for m in previous_media_list}
                     except (json.JSONDecodeError, TypeError):
@@ -1408,10 +1411,11 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                         media_tmdb_id = str(media.get("id"))
                         release_date = media.get("release_date") or media.get("first_air_date", '')
                         
+                        # ▼▼▼ 核心修正点：修正状态判断的优先级 ▼▼▼
                         if media_tmdb_id in existing_tmdb_ids:
                             status = "in_library"
                         elif previous_media_map.get(media_tmdb_id, {}).get('status') == 'subscribed':
-                            status = "subscribed"
+                            status = "subscribed" # 优先保留已订阅状态
                         elif release_date and release_date > today_str:
                             status = "unreleased"
                         else:
@@ -1455,9 +1459,8 @@ def task_process_all_custom_collections(processor: MediaProcessor):
 # --- 处理单个自定义合集的核心任务 ---
 def task_process_custom_collection(processor: MediaProcessor, custom_collection_id: int):
     """
-    【V7 - 数据库独立版】处理单个自定义合集。
-    - 完全脱离 collections_info 表，所有状态和分析结果都存入 custom_collections 表自身。
-    - 统一了 list 和 filter 类型的处理流程和数据更新。
+    【V8 - 状态持久化修复版】处理单个自定义合集。
+    - 修正了状态判断逻辑，确保在重新生成时能正确保留 'subscribed' 状态。
     """
     task_name = f"处理自定义合集 (ID: {custom_collection_id})"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
@@ -1522,6 +1525,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         if collection_type == 'list':
             task_manager.update_status_from_thread(90, "榜单合集已生成/更新，正在分析缺失内容...")
             
+            # ▼▼▼ 核心修正点 ▼▼▼
             # 在分析前，加载当前已存在的媒体状态信息
             previous_media_map = {}
             try:
@@ -1550,20 +1554,17 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 media_status = "unknown"
                 release_date = media.get("release_date") or media.get("first_air_date", '')
             
-                # 重新排序判断逻辑，优先保留 'subscribed' 状态
+                # ▼▼▼ 核心修正点：修正状态判断的优先级，并移除重复逻辑 ▼▼▼
+                # 1. 检查是否在库
                 if media_tmdb_id in existing_tmdb_ids:
                     media_status = "in_library"
+                # 2. 如果不在库，检查之前是否为“已订阅”
                 elif previous_media_map.get(media_tmdb_id, {}).get('status') == 'subscribed':
                     media_status = "subscribed"  # 保留已订阅状态！
+                # 3. 如果也不是已订阅，检查是否“未上映”
                 elif release_date and release_date > today_str:
                     media_status = "unreleased"
-                else:
-                    media_status, has_missing, missing_count = "missing", True, missing_count + 1
-                
-                if media_tmdb_id in existing_tmdb_ids:
-                    media_status = "in_library"
-                elif release_date and release_date > today_str:
-                    media_status = "unreleased"
+                # 4. 都不是，则为“缺失”
                 else:
                     media_status, has_missing, missing_count = "missing", True, missing_count + 1
                 
