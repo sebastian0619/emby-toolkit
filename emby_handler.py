@@ -363,11 +363,13 @@ def get_emby_library_items(
     user_id: Optional[str] = None,
     library_ids: Optional[List[str]] = None,
     search_term: Optional[str] = None,
-    library_name_map: Optional[Dict[str, str]] = None
+    library_name_map: Optional[Dict[str, str]] = None,
+    fields: Optional[str] = None  # ★ 1. 添加新的 'fields' 参数，让函数能接收它
 ) -> Optional[List[Dict[str, Any]]]:
     """
-    【V3 - 安静且信息补充版】
-    获取项目，并为每个项目添加来源库ID，不再打印每个库的日志。
+    【V4 - fields 参数修复版】
+    获取项目，并为每个项目添加来源库ID。
+    此版本可以接受一个 'fields' 参数来定制请求的字段，以提高效率。
     """
     if not base_url or not api_key:
         logger.error("get_emby_library_items: base_url 或 api_key 未提供。")
@@ -408,10 +410,13 @@ def get_emby_library_items(
         
         try:
             api_url = f"{base_url.rstrip('/')}/Items"
+            fields_to_request = fields if fields else "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,People,ProductionLocations"
             params = {
                 "api_key": api_key, "Recursive": "true", "ParentId": lib_id,
-                "Fields": "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,People,ProductionLocations",
+                "Fields": fields_to_request, # ★ 3. 使用我们决定的字段列表
+                "PersonFields": "ProviderIds" # ★ 4. 确保无论如何都请求演员的ID，这是关键！
             }
+            
             if media_type_filter:
                 params["IncludeItemTypes"] = media_type_filter
             else:

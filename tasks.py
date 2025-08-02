@@ -1453,7 +1453,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                     update_data.update({
                         "health_status": "has_missing" if has_missing else "ok",
                         "in_library_count": len(existing_tmdb_ids), "missing_count": missing_count,
-                        "generated_media_info_json": json.dumps(all_media_with_status),
+                        "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False),
                         "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
                     })
                 else: # 对于 'filter' 类型，写入默认的健康状态
@@ -1625,7 +1625,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 "health_status": "has_missing" if has_missing else "ok",
                 "in_library_count": len(existing_tmdb_ids),
                 "missing_count": missing_count,
-                "generated_media_info_json": json.dumps(all_media_with_status),
+                "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False),
                 "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
             })
             logger.info(f"已为RSS合集 '{collection_name}' 分析健康状态。")
@@ -1651,107 +1651,134 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 # ★★★ 新增：轻量级的元数据缓存填充任务 ★★★
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-def task_populate_metadata_cache(processor: MediaProcessor):
+def task_populate_metadata_cache(processor: 'MediaProcessor'):
     """
-    【V2 - 曲线救国版】一个轻量、快速的全量任务，用于填充 media_metadata 缓存表。
-    它会读取本地TMDB JSON缓存，以获取最完整的元数据，特别是国家/地区信息。
+    【V10 - 最终单文件修复版】
+    严格按照用户提供的 all.json 和 series.json 文件结构进行数据提取。
+    已完全移除对不存在的 credits.json 文件的依赖。
     """
     task_name = "快速同步媒体元数据"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
-    task_manager.update_status_from_thread(0, "正在准备从Emby获取媒体列表...")
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (单文件修复模式) ---")
+    task_manager.update_status_from_thread(0, "正在准备从Emby获取媒体索引...")
 
     try:
-        # 1. 获取所有需要处理的媒体项 (这部分不变)
+        # 预加载国家代码到名称的映射表 (电视剧将使用此表)
+        country_map = {}
+        try:
+            map_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'countries.json')
+            with open(map_path, 'r', encoding='utf-8') as f:
+                country_map = json.load(f)
+        except Exception as e:
+            logger.warning(f"加载国家映射文件失败: {e}，电视剧国家信息可能不完整。")
+
+        # 步骤 1: 从Emby获取基础索引
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
         if not libs_to_process_ids:
             raise ValueError("未在配置中指定要处理的媒体库。")
 
-        all_libraries = emby_handler.get_emby_libraries(processor.emby_url, processor.emby_api_key, processor.emby_user_id) or []
-        library_name_map = {lib.get('Id'): lib.get('Name', '未知库名') for lib in all_libraries}
+        emby_items = emby_handler.get_emby_library_items(
+            base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
+            media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
+            fields="ProviderIds,Type,DateCreated,Name,ProductionYear"
+        ) or []
         
-        # 我们仍然需要从Emby获取People信息，所以get_emby_library_items的改动需要保留
-        movies = emby_handler.get_emby_library_items(processor.emby_url, processor.emby_api_key, "Movie", processor.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
-        series = emby_handler.get_emby_library_items(processor.emby_url, processor.emby_api_key, "Series", processor.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
-        all_items = movies + series
-        total = len(all_items)
-
+        total = len(emby_items)
         if total == 0:
             task_manager.update_status_from_thread(100, "未找到任何媒体项。")
             return
 
-        task_manager.update_status_from_thread(10, f"共找到 {total} 个媒体项，开始提取元数据...")
+        task_manager.update_status_from_thread(10, f"共找到 {total} 个媒体项，开始从本地JSON提取元数据...")
         
         metadata_batch = []
-        # 2. 遍历所有媒体项，提取关键元数据
-        for i, item in enumerate(all_items):
+        local_data_path = processor.config.get("local_data_path", "")
+
+        # 步骤 2: 遍历索引，从本地JSON文件读取详细信息
+        for i, item in enumerate(emby_items):
             if processor.is_stop_requested():
-                logger.warning("任务被用户中止。")
                 break
             
             task_manager.update_status_from_thread(10 + int((i / total) * 80), f"({i+1}/{total}) 提取: {item.get('Name')}")
 
             tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
             item_type = item.get("Type")
-            if not tmdb_id or not item_type:
+            if not tmdb_id or not item_type or not local_data_path:
                 continue
 
-            # 辅助函数，用于将Emby的完整时间戳转换为 'YYYY-MM-DD' 格式
-            def format_date(date_str: Optional[str]) -> Optional[str]:
-                if not date_str:
-                    return None
-                try:
-                    # Emby 的日期格式通常是 "2024-01-15T08:00:00.000Z"
-                    return date_str.split('T')[0]
-                except Exception:
-                    return None
+            actors, directors, studios, countries = [], [], [], []
+            metadata_to_save = {}
+            
+            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+            item_cache_path = os.path.join(local_data_path, "cache", cache_folder_name, tmdb_id)
 
-            # 提取上映日期 (PremiereDate)
-            release_date = format_date(item.get("PremiereDate"))
-            # 提取媒体的入库日期 (DateCreated)
-            date_added = format_date(item.get("DateCreated"))
-            # 提取社区评分 (CommunityRating)
-            rating = item.get("CommunityRating")
-            # --- ★★★ 核心修改：读取本地TMDB JSON文件来获取国家信息 ★★★ ---
-            countries = []
-            local_data_path = processor.config.get("local_data_path", "")
-            if local_data_path:
-                cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-                base_json_filename = "all.json" if item_type == "Movie" else "series.json"
-                json_file_path = os.path.join(local_data_path, "cache", cache_folder_name, tmdb_id, base_json_filename)
+            if item_type == 'Movie':
+                # --- 电影处理逻辑 (核心修正) ---
+                details_file = os.path.join(item_cache_path, "all.json")
+                details_data = _read_local_json(details_file)
+
+                if details_data:
+                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                    # ★★★ 核心修正：直接从 all.json 提取所有信息，不再读取 credits.json ★★★
+                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                    studios = [s['name'] for s in details_data.get('production_companies', []) if s.get('name')]
+                    countries = [c['name'] for c in details_data.get('production_countries', []) if c.get('name')]
+                    
+                    # 从 all.json 内嵌的 'casts' 对象中提取演职员
+                    casts_container = details_data.get('casts', {})
+                    actors = [{'id': p.get('id'), 'name': p.get('name')} for p in casts_container.get('cast', [])]
+                    # 注意：根据您的示例，all.json中的crew可能为空，此代码会正确处理这种情况
+                    directors = [{'id': p.get('id'), 'name': p.get('name')} for p in casts_container.get('crew', []) if p.get('job') == 'Director']
+
+                    metadata_to_save = {
+                        "title": details_data.get('title'),
+                        "original_title": details_data.get('original_title'),
+                        "release_year": (details_data.get('release_date') or '0000')[:4],
+                        "rating": details_data.get('vote_average'),
+                        "release_date": details_data.get('release_date'),
+                        "genres_json": json.dumps([g['name'] for g in details_data.get('genres', [])], ensure_ascii=False),
+                    }
+
+            elif item_type == 'Series':
+                # --- 电视剧处理逻辑 (此部分逻辑已正确，无需修改) ---
+                series_file = os.path.join(item_cache_path, "series.json")
+                series_data = _read_local_json(series_file)
+
+                if series_data:
+                    studios = [s['name'] for s in series_data.get('networks', []) if s.get('name')]
+                    origin_codes = series_data.get('origin_country', [])
+                    countries = [country_map.get(code, code) for code in origin_codes]
+
+                    credits_container = series_data.get('credits', {})
+                    actors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_container.get('cast', [])]
+                    directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_container.get('crew', []) if p.get('job') == 'Director']
+
+                    metadata_to_save = {
+                        "title": series_data.get('name'),
+                        "original_title": series_data.get('original_name'),
+                        "release_year": (series_data.get('first_air_date') or '0000')[:4],
+                        "rating": series_data.get('vote_average'),
+                        "release_date": series_data.get('first_air_date'),
+                        "genres_json": json.dumps([g['name'] for g in series_data.get('genres', [])], ensure_ascii=False),
+                    }
+
+            if metadata_to_save:
+                # --- 公共数据合并与写入准备 ---
+                metadata_to_save.update({
+                    "tmdb_id": tmdb_id,
+                    "item_type": item_type,
+                    "actors_json": json.dumps(actors, ensure_ascii=False),
+                    "directors_json": json.dumps(directors, ensure_ascii=False),
+                    "studios_json": json.dumps(studios, ensure_ascii=False),
+                    "countries_json": json.dumps(countries, ensure_ascii=False),
+                })
                 
-                local_tmdb_data = _read_local_json(json_file_path)
-                if local_tmdb_data:
-                    countries = [
-                        country.get("name") 
-                        for country in local_tmdb_data.get("production_countries", []) 
-                        if country.get("name")
-                    ]
-                    if countries:
-                        logger.trace(f"  -> 成功从本地JSON为《{item.get('Name')}》提取到国家: {countries}")
+                date_added_str = item.get("DateCreated")
+                metadata_to_save["date_added"] = date_added_str.split('T')[0] if date_added_str else None
+                
+                metadata_batch.append(metadata_to_save)
+            else:
+                logger.warning(f"未找到项目 '{item.get('Name')}' (TMDb ID: {tmdb_id}) 的完整本地JSON缓存，跳过此项。")
 
-            # 提取导演信息 (这部分不变)
-            directors = []
-            for person in item.get("People", []):
-                if person.get("Type") == "Director":
-                    directors.append({"id": person.get("ProviderIds", {}).get("Tmdb"), "name": person.get("Name")})
-
-            metadata_batch.append({
-                "tmdb_id": tmdb_id,
-                "item_type": item_type,
-                "title": item.get("Name"),
-                "original_title": item.get("OriginalTitle"),
-                "release_year": item.get("ProductionYear"),
-                "rating": rating, # ★ 填充评分
-                "release_date": release_date, # ★ 填充上映日期
-                "date_added": date_added, # ★ 填充入库日期
-                "genres_json": json.dumps(item.get("Genres", [])),
-                "actors_json": json.dumps([{"id": p.get("ProviderIds", {}).get("Tmdb"), "name": p.get("Name")} for p in item.get("People", []) if p.get("Type") == "Actor"]),
-                "directors_json": json.dumps(directors),
-                "studios_json": json.dumps([s.get("Name") for s in item.get("Studios", [])]),
-                "countries_json": json.dumps(countries),
-            })
-
-        # 3. 批量写入数据库 (这部分不变)
+        # 步骤 4: 批量写入数据库
         if metadata_batch:
             task_manager.update_status_from_thread(95, f"提取完成，正在将 {len(metadata_batch)} 条数据写入数据库...")
             db_handler.bulk_upsert_media_metadata(config_manager.DB_PATH, metadata_batch)

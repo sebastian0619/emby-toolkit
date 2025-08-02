@@ -212,7 +212,26 @@ class FilterEngine:
             # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             # ★★★ 核心修正：补全所有操作符的判断逻辑 ★★★
             # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            if field in ['release_date', 'date_added']:
+            def check_list_contains(values_to_check, target_list):
+                for item in target_list:
+                    if isinstance(item, dict) and values_to_check in item.get("name", ""):
+                        return True
+                    elif isinstance(item, str) and values_to_check in item:
+                        return True
+                return False
+
+            if op == 'is_one_of':
+                # value 应该是一个列表, e.g., ['张国立', '王刚']
+                # 只要 actual_values 中包含 value 列表里的任意一项，就匹配成功
+                if isinstance(value, list) and any(check_list_contains(v, actual_values) for v in value):
+                    match = True
+            
+            elif op == 'is_none_of':
+                # value 应该是一个列表
+                # 只要 actual_values 中不包含 value 列表里的任何一项，就匹配成功
+                if isinstance(value, list) and not any(check_list_contains(v, actual_values) for v in value):
+                    match = True
+            elif field in ['release_date', 'date_added']:
                 item_date_str = item_metadata.get(field)
                 # ★ 核心修正：在调用 .isdigit() 前，先用 str() 将 value 转为字符串
                 if item_date_str and str(value).isdigit():

@@ -318,3 +318,19 @@ def api_subscribe_media_from_custom_collection():
     except Exception as e:
         logger.error(f"更新本地数据库状态时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "订阅已提交，但更新本地状态时发生服务器内部错误。"}), 500
+    
+# ★★★ 根据关键词搜索演员的API ★★★
+@custom_collections_bp.route('/search_actors') # 或者 @media_api_bp.route('/search_actors')
+@login_required
+def api_search_actors():
+    search_term = request.args.get('q', '')
+    if len(search_term) < 1:
+        return jsonify([])
+    
+    try:
+        actors = db_handler.search_unique_actors(config_manager.DB_PATH, search_term)
+        # 返回简单的字符串列表
+        return jsonify(actors)
+    except Exception as e:
+        logger.error(f"搜索演员API出错: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500

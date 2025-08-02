@@ -107,54 +107,36 @@ def _save_metadata_to_cache(
 # ==========================================================================================
 
 def _build_movie_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """根据模板构建电影 all.json"""
-    return {
-      "id": source_data.get("id", 0),
-      "imdb_id": source_data.get("imdb_id", ""),
-      "title": source_data.get("title", ""),
-      "original_title": source_data.get("original_title", ""),
-      "overview": source_data.get("overview", ""),
-      "tagline": source_data.get("tagline", ""),
-      "release_date": source_data.get("release_date", ""),
-      "vote_average": source_data.get("vote_average", 0.0),
-      "production_countries": source_data.get("production_countries", []),
-      "production_companies": source_data.get("production_companies", []),
-      "genres": source_data.get("genres", []),
-      "casts": {
-        "cast": processed_cast,
-        "crew": processed_crew
-      },
-      "releases": source_data.get("releases", {"countries": []}),
-      "belongs_to_collection": source_data.get("belongs_to_collection", None),
-      "trailers": source_data.get("trailers", {"youtube": []}) # 假设神医插件需要这个结构
-    }
+    """【已修复】根据模板更新电影 all.json。保留所有原始键，仅更新处理过的演职员表。"""
+    # 1. 创建源数据的深拷贝以安全修改
+    final_json = copy.deepcopy(source_data)
+    
+    # 2. 确保 'casts' 结构存在
+    if "casts" not in final_json:
+        final_json["casts"] = {}
+    
+    # 3. 注入处理过的演员和职员列表
+    final_json["casts"]["cast"] = processed_cast
+    final_json["casts"]["crew"] = processed_crew
+    
+    return final_json
 
-def _build_series_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """根据模板构建电视剧 series.json"""
-    return {
-      "id": source_data.get("id", 0),
-      "name": source_data.get("name", ""),
-      "original_name": source_data.get("original_name", ""),
-      "overview": source_data.get("overview", ""),
-      "vote_average": source_data.get("vote_average", 0.0),
-      "episode_run_time": source_data.get("episode_run_time", []),
-      "first_air_date": source_data.get("first_air_date", "1970-01-01T00:00:00.000Z"),
-      "last_air_date": source_data.get("last_air_date", "1970-01-01T00:00:00.000Z"),
-      "status": source_data.get("status", ""),
-      "networks": source_data.get("networks", []),
-      "genres": source_data.get("genres", []),
-      "external_ids": source_data.get("external_ids", {"imdb_id": "", "tvrage_id": None, "tvdb_id": None}),
-      "videos": source_data.get("videos", {"results": []}),
-      "content_ratings": source_data.get("content_ratings", {"results": []}),
-      "credits": {
-        "cast": processed_cast
-        # 注意：主剧集文件通常不包含 crew，除非API返回
-      }
-    }
+def _build_series_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """【已修复】根据模板更新电视剧 series.json。保留所有原始键，仅更新处理过的演职员表。"""
+    final_json = copy.deepcopy(source_data)
+    
+    if "credits" not in final_json:
+        final_json["credits"] = {}
+    
+    final_json["credits"]["cast"] = processed_cast
+    final_json["credits"]["crew"] = processed_crew # <-- 关键修复：将职员信息加回来
+    
+    return final_json
 
 def _build_season_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """根据模板构建季 season-X.json"""
+    """【V3 最终修复版】根据最小化模板构建季 season-X.json，确保Emby兼容性。"""
     return {
+      # "id" 和 "_id" 都不会被包含，因为模板里没有
       "name": source_data.get("name", ""),
       "overview": source_data.get("overview", ""),
       "air_date": source_data.get("air_date", "1970-01-01T00:00:00.000Z"),
@@ -163,11 +145,13 @@ def _build_season_json(source_data: Dict[str, Any], processed_cast: List[Dict[st
         "cast": processed_cast,
         "crew": processed_crew
       }
+      # "episodes" 数组不会被包含，因为模板里没有
     }
 
 def _build_episode_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """根据模板构建集 season-X-episode-Y.json"""
+    """【V3 最终修复版】根据最小化模板构建集 season-X-episode-Y.json，确保Emby兼容性。"""
     return {
+      # "id" 和 "_id" 都不会被包含
       "name": source_data.get("name", ""),
       "overview": source_data.get("overview", ""),
       "videos": source_data.get("videos", {"results": []}),
@@ -176,7 +160,7 @@ def _build_episode_json(source_data: Dict[str, Any], processed_cast: List[Dict[s
       "vote_average": source_data.get("vote_average", 0.0),
       "credits": {
         "cast": processed_cast,
-        "guest_stars": [], # 按照统一注入的原则，这里也使用主演员表，并将 guest_stars 留空
+        "guest_stars": [], # 保持清空
         "crew": processed_crew
       }
     }
@@ -1132,23 +1116,26 @@ class MediaProcessor:
                 
                 elif item_type == "Series":
                     # 写入主剧集文件
-                    series_override_json = _build_series_json(main_tmdb_data, final_cast_perfect)
+                    # --- 核心修正：将 final_crew 传递给 _build_series_json ---
+                    series_override_json = _build_series_json(main_tmdb_data, final_cast_perfect, final_crew)
                     override_path = os.path.join(base_override_dir, "series.json")
                     safe_write_json(series_override_json, override_path)
 
-                    # 写入季文件
+                    # 写入季文件 (这里也需要传递 crew)
                     for season_data in seasons_data:
                         season_number = season_data.get("season_number")
+                        # 从季的原始数据中提取其独立的crew
                         season_crew = season_data.get("credits", {}).get("crew", [])
                         season_override_json = _build_season_json(season_data, final_cast_perfect, season_crew)
                         override_path = os.path.join(base_override_dir, f"season-{season_number}.json")
                         safe_write_json(season_override_json, override_path)
 
-                    # 写入分集文件
+                    # 写入分集文件 (同样需要传递 crew)
                     if should_process_episodes_this_run:
                         for episode_data in episodes_data:
                             season_number = episode_data.get("season_number")
                             episode_number = episode_data.get("episode_number")
+                            # 从集的原始数据中提取其独立的crew
                             episode_crew = episode_data.get("credits", {}).get("crew", [])
                             episode_override_json = _build_episode_json(episode_data, final_cast_perfect, episode_crew)
                             override_path = os.path.join(base_override_dir, f"season-{season_number}-episode-{episode_number}.json")

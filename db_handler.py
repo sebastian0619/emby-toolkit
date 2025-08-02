@@ -596,7 +596,7 @@ def update_collection_movies(db_path: str, collection_id: str, movies: List[Dict
         with get_db_connection(db_path) as conn:
             # 业务逻辑：根据更新后的电影列表，重新判断是否还有缺失
             still_has_missing = any(m.get('status') == 'missing' for m in movies)
-            new_missing_json = json.dumps(movies)
+            new_missing_json = json.dumps(movies, ensure_ascii=False)
             
             cursor = conn.cursor()
             cursor.execute(
@@ -644,7 +644,7 @@ def update_single_movie_status_in_collection(db_path: str, collection_id: str, m
 
             # 状态更新后，重新计算合集的 has_missing 标志
             still_has_missing = any(m.get('status') == 'missing' for m in movies)
-            new_missing_json = json.dumps(movies)
+            new_missing_json = json.dumps(movies, ensure_ascii=False)
             
             cursor.execute(
                 "UPDATE collections_info SET missing_movies_json = ?, has_missing = ? WHERE emby_collection_id = ?", 
@@ -1110,7 +1110,60 @@ def search_unique_studios(db_path: str, search_term: str, limit: int = 20) -> Li
     
     # 只返回限定数量的结果
     return final_matches[:limit]
+# --- 搜索演员 ---
+def search_unique_actors(db_path: str, search_term: str, limit: int = 20) -> List[str]:
+    """
+    (V5 - 回归本源、绝对可靠版)
+    直接从 media_metadata 表中提取所有演员名进行搜索。
+    这个方案不依赖任何其他表，只要媒体库元数据被缓存，就一定能提供搜索建议。
+    """
+    if not search_term:
+        return []
+    
+    unique_actors = set()
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            # 步骤 1: 直接从元数据缓存中提取所有演员的名字
+            cursor.execute("SELECT actors_json FROM media_metadata")
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                if row['actors_json']:
+                    try:
+                        actors = json.loads(row['actors_json'])
+                        for actor in actors:
+                            actor_name = actor.get('name')
+                            # ★★★ 核心：只关心名字，不管ID是否存在或是什么 ★★★
+                            if actor_name:
+                                unique_actors.add(actor_name.strip())
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+        
+        if not unique_actors:
+            return []
 
+        # 步骤 2: 在提取出的名字集合中进行搜索
+        search_term_lower = search_term.lower()
+        starts_with_matches = []
+        contains_matches = []
+        
+        # 智能排序
+        for actor in sorted(list(unique_actors)):
+            actor_lower = actor.lower()
+            if actor_lower.startswith(search_term_lower):
+                starts_with_matches.append(actor)
+            elif search_term_lower in actor_lower:
+                contains_matches.append(actor)
+        
+        final_matches = starts_with_matches + contains_matches
+        logger.debug(f"直接在元数据中搜索演员 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
+        
+        return final_matches[:limit]
+        
+    except sqlite3.Error as e:
+        logger.error(f"提取并搜索唯一演员时发生数据库错误: {e}", exc_info=True)
+        return []
 # ★★★ 新增：写入或更新一条完整的合集检查信息 ★★★
 def upsert_collection_info(db_path: str, collection_data: Dict[str, Any]):
     """
@@ -1197,7 +1250,7 @@ def update_single_media_status_in_custom_collection(db_path: str, collection_id:
             
             # 准备更新的数据
             update_data = {
-                "generated_media_info_json": json.dumps(media_items),
+                "generated_media_info_json": json.dumps(media_items, ensure_ascii=False),
                 "missing_count": missing_count,
                 "health_status": new_health_status
             }

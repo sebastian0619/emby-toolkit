@@ -112,8 +112,132 @@
               <n-space v-for="(rule, index) in currentCollection.definition.rules" :key="index" style="margin-bottom: 12px;" align="center">
                 <n-select v-model:value="rule.field" :options="fieldOptions" placeholder="字段" style="width: 150px;" clearable />
                 <n-select v-model:value="rule.operator" :options="getOperatorOptionsForRow(rule)" placeholder="操作" style="width: 120px;" :disabled="!rule.field" clearable />
+                <!-- 1. 为“类型”提供输入框 -->
+                <template v-if="rule.field === 'genres'">
+                  <!-- 1a. 如果是多选操作符 -->
+                  <n-select
+                    v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                    v-model:value="rule.value"
+                    multiple filterable
+                    placeholder="选择一个或多个类型"
+                    :options="genreOptions"
+                    :disabled="!rule.operator"
+                    style="flex-grow: 1; min-width: 180px;"
+                  />
+                  <!-- 1b. 如果是单选操作符 (包含) -->
+                  <n-select
+                    v-else
+                    v-model:value="rule.value"
+                    filterable
+                    placeholder="选择类型"
+                    :options="genreOptions"
+                    :disabled="!rule.operator"
+                    style="flex-grow: 1;"
+                  />
+                </template>
+
+                <!-- 2. 为“国家/地区”提供输入框 -->
+                <template v-else-if="rule.field === 'countries'">
+                  <!-- 2a. 如果是多选操作符 -->
+                  <n-select
+                    v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                    v-model:value="rule.value"
+                    multiple filterable
+                    placeholder="选择一个或多个地区"
+                    :options="countryOptions"
+                    :disabled="!rule.operator"
+                    style="flex-grow: 1; min-width: 180px;"
+                  />
+                  <!-- 2b. 如果是单选操作符 (包含) -->
+                  <n-select
+                    v-else
+                    v-model:value="rule.value"
+                    filterable
+                    placeholder="选择地区"
+                    :options="countryOptions"
+                    :disabled="!rule.operator"
+                    style="flex-grow: 1;"
+                  />
+                </template>
+
+                <!-- 3. 为“工作室”提供输入框 -->
+                <!-- 3. 为“工作室”提供带搜索建议的输入框 -->
+                <template v-else-if="rule.field === 'studios'">
+
+                  <!-- 3a. 如果是多选操作符，使用可远程搜索的多选框 -->
+                  <n-select
+                    v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                    v-model:value="rule.value"
+                    multiple
+                    filterable
+                    remote
+                    placeholder="输入以搜索并添加工作室"
+                    :options="studioOptions"
+                    :loading="isSearchingStudios"
+                    @search="handleStudioSearch"
+                    :disabled="!rule.operator"
+                    style="flex-grow: 1; min-width: 220px;"
+                  />
+
+                  <!-- 3b. 如果是单选操作符 (包含)，使用自动完成输入框 -->
+                  <n-auto-complete
+                    v-else
+                    v-model:value="rule.value"
+                    :options="studioOptions"
+                    :loading="isSearchingStudios"
+                    placeholder="边输入边搜索工作室"
+                    @update:value="handleStudioSearch"
+                    :disabled="!rule.operator"
+                    clearable
+                  />
+                </template>
+
+                <!-- 4. 为“演员”、“导演”提供输入框 -->
+                <template v-else-if="rule.field === 'actors'">
+                  <!-- 4a. 如果是多选操作符，使用可远程搜索的多选框 -->
+                  <n-select
+                    v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                    v-model:value="rule.value"
+                    multiple filterable remote
+                    placeholder="输入以搜索并添加演员"
+                    :options="actorOptions"
+                    :loading="isSearchingActors"
+                    @search="handleActorSearch"
+                    :disabled="!rule.operator"
+                    style="flex-grow: 1; min-width: 220px;"
+                  />
+                  <!-- 4b. 如果是单选操作符 (包含)，使用自动完成输入框 -->
+                  <n-auto-complete
+                    v-else
+                    v-model:value="rule.value"
+                    :options="actorOptions"
+                    :loading="isSearchingActors"
+                    placeholder="边输入边搜索演员"
+                    @update:value="handleActorSearch"
+                    :disabled="!rule.operator"
+                    clearable
+                  />
+                </template>
+
+                <!-- 4-bis. 为“导演”保留原来的手动输入框 -->
+                <template v-else-if="rule.field === 'directors'">
+                  <n-dynamic-tags
+                    v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                    v-model:value="rule.value"
+                    :disabled="!rule.operator"
+                    style="flex-grow: 1;"
+                  />
+                  <n-input
+                    v-else
+                    v-model:value="rule.value"
+                    placeholder="输入导演名称"
+                    :disabled="!rule.operator"
+                  />
+                </template>
+
+                <!-- 5. 其他所有字段（日期、年份、评分）的回退逻辑 -->
                 <n-input-number
-                  v-if="['release_date', 'date_added'].includes(rule.field)"
+                  v-else-if="['release_date', 'date_added'].includes(rule.field)"
                   v-model:value="rule.value"
                   placeholder="天数"
                   :disabled="!rule.operator"
@@ -121,7 +245,6 @@
                 >
                   <template #suffix>天内</template>
                 </n-input-number>
-                
                 <n-input-number
                   v-else-if="['rating', 'release_year'].includes(rule.field)"
                   v-model:value="rule.value"
@@ -130,33 +253,7 @@
                   :show-button="false"
                   style="width: 180px;"
                 />
-                <n-select
-                    v-if="rule.field === 'countries'"
-                    v-model:value="rule.value"
-                    :options="countryOptions"
-                    placeholder="选择地区"
-                    :disabled="!rule.operator"
-                    filterable
-                />
-                <n-select
-                    v-else-if="rule.field === 'genres'"
-                    v-model:value="rule.value"
-                    :options="genreOptions"
-                    placeholder="选择类型"
-                    :disabled="!rule.operator"
-                    filterable
-                />
-                <n-select
-                    v-else-if="rule.field === 'studios'"
-                    v-model:value="rule.value"
-                    :options="studioOptions"
-                    placeholder="输入以搜索工作室"
-                    :disabled="!rule.operator"
-                    filterable
-                    remote
-                    :loading="isSearchingStudios"
-                    @search="handleStudioSearch"
-                />
+                <n-input v-else v-model:value="rule.value" placeholder="值" :disabled="!rule.operator" />
                 <n-input v-else v-model:value="rule.value" placeholder="值" :disabled="!rule.operator" />
                 <n-button text type="error" @click="removeRule(index)">
                   <template #icon><n-icon :component="DeleteIcon" /></template>
@@ -303,6 +400,8 @@ const showDetailsModal = ref(false);
 const isLoadingDetails = ref(false);
 const selectedCollectionDetails = ref(null);
 const subscribing = ref({});
+const actorOptions = ref([]); 
+const isSearchingActors = ref(false); 
 
 const getInitialFormModel = () => ({
   id: null,
@@ -358,20 +457,58 @@ const fetchGenreOptions = async () => {
   }
 };
 
-const handleStudioSearch = async (query) => {
-  if (!query) { 
+// 2. 添加新的搜索处理函数 (可以放在 handleStudioSearch 旁边)
+let actorSearchTimeout = null;
+const handleActorSearch = (query) => {
+  if (!query) {
+    actorOptions.value = [];
+    return;
+  }
+  isSearchingActors.value = true;
+  
+  if (actorSearchTimeout) {
+    clearTimeout(actorSearchTimeout);
+  }
+  
+  actorSearchTimeout = setTimeout(async () => {
+    try {
+      const response = await axios.get(`/api/custom_collections/search_actors?q=${query}`);
+      actorOptions.value = response.data.map(name => ({ label: name, value: name }));
+    } catch (error) {
+      console.error('搜索演员失败:', error);
+      actorOptions.value = [];
+    } finally {
+      isSearchingActors.value = false;
+    }
+  }, 300);
+};
+
+let searchTimeout = null;
+const handleStudioSearch = (query) => {
+  if (!query) {
     studioOptions.value = [];
     return;
   }
   isSearchingStudios.value = true;
-  try {
-    const response = await axios.get(`/api/search_studios?q=${query}`);
-    studioOptions.value = response.data.map(name => ({ label: name, value: name }));
-  } catch (error) {
-    console.error('搜索工作室失败:', error);
-  } finally {
-    isSearchingStudios.value = false;
+  
+  // 清除上一个定时器
+  if (searchTimeout) {
+    clearTimeout(searchTimeout);
   }
+  
+  // 设置一个新的定时器，延迟300毫秒后执行搜索
+  searchTimeout = setTimeout(async () => {
+    try {
+      const response = await axios.get(`/api/search_studios?q=${query}`);
+      // ★ 核心修改：为 n-auto-complete 和 n-select 提供兼容的 options 格式
+      studioOptions.value = response.data.map(name => ({ label: name, value: name }));
+    } catch (error) {
+      console.error('搜索工作室失败:', error);
+      studioOptions.value = []; // 出错时清空
+    } finally {
+      isSearchingStudios.value = false;
+    }
+  }, 300);
 };
 
 watch(() => currentCollection.value.definition.rules, (newRules) => {
@@ -388,25 +525,32 @@ watch(() => currentCollection.value.definition.rules, (newRules) => {
           rule.operator = options[0].value;
         }
       }
+      const isMultiValueOp = ['is_one_of', 'is_none_of'].includes(rule.operator);
+      if (isMultiValueOp && !Array.isArray(rule.value)) {
+        rule.value = []; // 切换到多值操作符，值应变为空数组
+      } else if (!isMultiValueOp && Array.isArray(rule.value)) {
+        rule.value = ''; // 从多值操作符切走，值应变为空字符串
+      }
     });
   }
 }, { deep: true });
 
 const ruleConfig = {
-  actors: { label: '演员', type: 'text', operators: ['contains'] },
-  directors: { label: '导演', type: 'text', operators: ['contains'] },
+  actors: { label: '演员', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, // ★ 修改
+  directors: { label: '导演', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, // ★ 修改
   release_year: { label: '年份', type: 'number', operators: ['gte', 'lte', 'eq'] },
-  rating: { label: '评分', type: 'number', operators: ['gte', 'lte'] }, // ★ 新增
-  genres: { label: '类型', type: 'select', operators: ['contains'] },
-  countries: { label: '国家/地区', type: 'select', operators: ['contains'] },
-  studios: { label: '工作室', type: 'select', operators: ['contains'] },
-  release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] }, // ★ 新增
-  date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] }, // ★ 新增
+  rating: { label: '评分', type: 'number', operators: ['gte', 'lte'] },
+  genres: { label: '类型', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, // ★ 修改
+  countries: { label: '国家/地区', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, // ★ 修改
+  studios: { label: '工作室', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, // ★ 修改
+  release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
+  date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
 };
 
 const operatorLabels = {
   contains: '包含', gte: '大于等于', lte: '小于等于', eq: '等于',
-  in_last_days: '最近N天内', not_in_last_days: 'N天以前' // ★ 新增
+  in_last_days: '最近N天内', not_in_last_days: 'N天以前',
+  is_one_of: '是其中之一', is_none_of: '不是任何一个' // ★ 新增
 };
 
 const fieldOptions = computed(() => 
@@ -449,7 +593,10 @@ const formRules = computed(() => {
       type: 'array', required: true,
       validator: (rule, value) => {
         if (!value || value.length === 0) return new Error('请至少添加一条筛选规则');
-        if (value.some(r => !r.field || !r.operator || !r.value)) return new Error('请将所有规则填写完整');
+        // ★ 核心修改：检查 rule.value 是否为空，无论是字符串还是数组
+        if (value.some(r => !r.field || !r.operator || (Array.isArray(r.value) ? r.value.length === 0 : !r.value))) {
+          return new Error('请将所有规则填写完整');
+        }
         return true;
       },
       trigger: 'change'
@@ -457,6 +604,7 @@ const formRules = computed(() => {
   }
   return baseRules;
 });
+
 
 const detailsModalTitle = computed(() => {
   if (!selectedCollectionDetails.value) return '';
