@@ -201,7 +201,7 @@ class FilterEngine:
                 if value in self.country_map:
                     # 注意：此处的逻辑可能仍需完善（比较代码与名称），但它已不会导致程序崩溃
                     value_to_compare = self.country_map[value]
-                    logger.debug(f"国家/地区反向映射: '{value}' -> '{value_to_compare}'")
+                    logger.trace(f"国家/地区反向映射: '{value}' -> '{value_to_compare}'")
             # --- 修复结束 ---
 
             # 统一获取元数据
