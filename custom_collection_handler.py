@@ -191,18 +191,7 @@ class FilterEngine:
         for rule in rules:
             field, op, value = rule.get("field"), rule.get("operator"), rule.get("value")
             
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★★★ 核心修复：仅在单值比较时执行国家/地区映射，避免对列表操作 ★★★
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             value_to_compare = value
-            # 只有当字段是'countries'且操作符不是多选类型时，才尝试进行名称到代码的映射
-            if field == 'countries' and op not in ['is_one_of', 'is_none_of']:
-                # 此时我们知道 value 应该是一个字符串
-                if value in self.country_map:
-                    # 注意：此处的逻辑可能仍需完善（比较代码与名称），但它已不会导致程序崩溃
-                    value_to_compare = self.country_map[value]
-                    logger.trace(f"国家/地区反向映射: '{value}' -> '{value_to_compare}'")
-            # --- 修复结束 ---
 
             # 统一获取元数据
             if field == 'release_year':
@@ -217,26 +206,44 @@ class FilterEngine:
 
             match = False
             
-            def check_list_contains(values_to_check, target_list):
-                # 使用精确匹配而不是'in'，避免"国"匹配到"中国"的问题
-                target_set = set()
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # ★★★ 核心修复：统一所有文本匹配逻辑为“子字符串包含” ★★★
+            # ★★★ 这次彻底修复了 is_one_of 在特定字段下的崩溃问题 ★★★
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+            # 辅助函数，用于处理 actual_values 可能是字典列表或字符串列表的情况
+            def check_substring_match(substring, target_list):
                 for item in target_list:
+                    # 提取要被检查的文本
+                    text_to_check = ""
                     if isinstance(item, dict):
-                        target_set.add(item.get("name", ""))
+                        text_to_check = item.get("name", "")
                     elif isinstance(item, str):
-                        target_set.add(item)
-                return values_to_check in target_set
+                        text_to_check = item
+                    
+                    # 执行子字符串包含检查
+                    if str(substring) in text_to_check:
+                        return True
+                return False
 
             if op == 'is_one_of':
-                # value 是一个列表, e.g., ['张国立', '王刚']
-                if isinstance(value, list) and any(check_list_contains(v, actual_values) for v in value):
-                    match = True
+                if isinstance(value_to_compare, list):
+                    # 只要 actual_values 中的任何一项 包含了 value_to_compare 列表中的任何一项，就匹配
+                    if any(check_substring_match(v, actual_values) for v in value_to_compare):
+                        match = True
             
             elif op == 'is_none_of':
-                # value 是一个列表
-                if isinstance(value, list) and not any(check_list_contains(v, actual_values) for v in value):
-                    match = True
+                if isinstance(value_to_compare, list):
+                    # 只有 actual_values 中的所有项 都不包含 value_to_compare 列表中的任何一项，才匹配
+                    if not any(check_substring_match(v, actual_values) for v in value_to_compare):
+                        match = True
 
+            elif op == 'contains':
+                # 检查 actual_values 中是否有任何一项 包含了 value_to_compare
+                if check_substring_match(value_to_compare, actual_values):
+                    match = True
+            
+            # --- 其他操作符的逻辑保持不变 ---
             elif field in ['release_date', 'date_added']:
                 item_date_str = item_metadata.get(field)
                 if item_date_str and str(value).isdigit():
@@ -250,15 +257,6 @@ class FilterEngine:
                         elif op == 'not_in_last_days':
                             if item_date < cutoff_date: match = True
                     except (ValueError, TypeError): pass
-            
-            elif op == 'contains':
-                # 此时 value_to_compare 是单个值
-                if isinstance(actual_values, list):
-                    for item in actual_values:
-                        item_name = item.get("name") if isinstance(item, dict) else item
-                        if item_name and str(value_to_compare) in str(item_name):
-                            match = True
-                            break
             
             elif op == 'gte':
                 item_value = item_metadata.get(field)
