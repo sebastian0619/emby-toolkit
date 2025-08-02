@@ -1165,7 +1165,7 @@ def search_unique_actors(db_path: str, search_term: str, limit: int = 20) -> Lis
                 contains_matches.append(name)
         
         final_matches = starts_with_matches + contains_matches
-        logger.debug(f"双语搜索演员 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
+        logger.trace(f"双语搜索演员 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
         
         return final_matches[:limit]
         
