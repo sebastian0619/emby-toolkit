@@ -191,10 +191,18 @@ class FilterEngine:
         for rule in rules:
             field, op, value = rule.get("field"), rule.get("operator"), rule.get("value")
             
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # ★★★ 核心修复：仅在单值比较时执行国家/地区映射，避免对列表操作 ★★★
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             value_to_compare = value
-            if field == 'countries' and value in self.country_map:
-                value_to_compare = self.country_map[value]
-                logger.debug(f"国家/地区反向映射: '{value}' -> '{value_to_compare}'")
+            # 只有当字段是'countries'且操作符不是多选类型时，才尝试进行名称到代码的映射
+            if field == 'countries' and op not in ['is_one_of', 'is_none_of']:
+                # 此时我们知道 value 应该是一个字符串
+                if value in self.country_map:
+                    # 注意：此处的逻辑可能仍需完善（比较代码与名称），但它已不会导致程序崩溃
+                    value_to_compare = self.country_map[value]
+                    logger.debug(f"国家/地区反向映射: '{value}' -> '{value_to_compare}'")
+            # --- 修复结束 ---
 
             # 统一获取元数据
             if field == 'release_year':
@@ -209,31 +217,28 @@ class FilterEngine:
 
             match = False
             
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★★★ 核心修正：补全所有操作符的判断逻辑 ★★★
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             def check_list_contains(values_to_check, target_list):
+                # 使用精确匹配而不是'in'，避免"国"匹配到"中国"的问题
+                target_set = set()
                 for item in target_list:
-                    if isinstance(item, dict) and values_to_check in item.get("name", ""):
-                        return True
-                    elif isinstance(item, str) and values_to_check in item:
-                        return True
-                return False
+                    if isinstance(item, dict):
+                        target_set.add(item.get("name", ""))
+                    elif isinstance(item, str):
+                        target_set.add(item)
+                return values_to_check in target_set
 
             if op == 'is_one_of':
-                # value 应该是一个列表, e.g., ['张国立', '王刚']
-                # 只要 actual_values 中包含 value 列表里的任意一项，就匹配成功
+                # value 是一个列表, e.g., ['张国立', '王刚']
                 if isinstance(value, list) and any(check_list_contains(v, actual_values) for v in value):
                     match = True
             
             elif op == 'is_none_of':
-                # value 应该是一个列表
-                # 只要 actual_values 中不包含 value 列表里的任何一项，就匹配成功
+                # value 是一个列表
                 if isinstance(value, list) and not any(check_list_contains(v, actual_values) for v in value):
                     match = True
+
             elif field in ['release_date', 'date_added']:
                 item_date_str = item_metadata.get(field)
-                # ★ 核心修正：在调用 .isdigit() 前，先用 str() 将 value 转为字符串
                 if item_date_str and str(value).isdigit():
                     try:
                         item_date = datetime.strptime(item_date_str, '%Y-%m-%d').date()
@@ -247,34 +252,29 @@ class FilterEngine:
                     except (ValueError, TypeError): pass
             
             elif op == 'contains':
-                # 适用于文本列表，如 Genres, Studios, Countries, Actors, Directors
-                # actual_values 可能是 ["Warner Bros.", "Legendary"] 或 [{"name": "Action"}, {"name": "Thriller"}]
+                # 此时 value_to_compare 是单个值
                 if isinstance(actual_values, list):
                     for item in actual_values:
-                        if isinstance(item, dict) and value_to_compare in item.get("name", ""):
-                            match = True
-                            break
-                        elif isinstance(item, str) and value_to_compare in item:
+                        item_name = item.get("name") if isinstance(item, dict) else item
+                        if item_name and str(value_to_compare) in str(item_name):
                             match = True
                             break
             
-            elif op == 'gte': # 大于等于 (用于评分、年份)
+            elif op == 'gte':
                 item_value = item_metadata.get(field)
-                # ★ 核心修正：同样，在调用字符串方法前，先用 str() 转换
                 if item_value is not None and str(value).replace('.', '', 1).isdigit():
                     try:
                         if float(item_value) >= float(value): match = True
                     except (ValueError, TypeError): pass
             
-            elif op == 'lte': # 小于等于 (用于评分、年份)
+            elif op == 'lte':
                 item_value = item_metadata.get(field)
-                # ★ 核心修正：同样，在调用字符串方法前，先用 str() 转换
                 if item_value is not None and str(value).replace('.', '', 1).isdigit():
                     try:
                         if float(item_value) <= float(value): match = True
                     except (ValueError, TypeError): pass
 
-            elif op == 'eq': # 等于 (主要用于年份)
+            elif op == 'eq':
                 if actual_values and actual_values[0] is not None:
                     try:
                         if str(actual_values[0]) == str(value_to_compare): match = True
