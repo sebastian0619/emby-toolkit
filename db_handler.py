@@ -982,8 +982,9 @@ def bulk_upsert_media_metadata(db_path: str, metadata_list: List[Dict[str, Any]]
     sql = """
         INSERT OR REPLACE INTO media_metadata (
             tmdb_id, item_type, title, original_title, release_year, rating,
+            release_date, date_added, -- ★ 新增
             genres_json, actors_json, directors_json, studios_json, countries_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) -- ★ 占位符数量从11个增加到13个
     """
     
     # 将字典列表转换为元组列表
@@ -991,6 +992,7 @@ def bulk_upsert_media_metadata(db_path: str, metadata_list: List[Dict[str, Any]]
         (
             item.get('tmdb_id'), item.get('item_type'), item.get('title'),
             item.get('original_title'), item.get('release_year'), item.get('rating'),
+            item.get('release_date'), item.get('date_added'), # ★ 新增
             item.get('genres_json'), item.get('actors_json'), item.get('directors_json'),
             item.get('studios_json'), item.get('countries_json')
         )

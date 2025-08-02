@@ -214,28 +214,42 @@ def init_db():
             # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             # ★★★ 新增: 'media_metadata' 表 (筛选引擎的数据源) ★★★
             # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            logger.trace("  -> 正在创建 'media_metadata' 表 (用于自定义筛选)...")
+            logger.trace("  -> 正在创建/升级 'media_metadata' 表 (用于自定义筛选)...")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS media_metadata (
-                    tmdb_id TEXT PRIMARY KEY,          -- 媒体在TMDb的ID (电影或剧集)
-                    item_type TEXT NOT NULL,           -- 'Movie' 或 'Series'
-                    title TEXT,                        -- 标题
-                    original_title TEXT,               -- 原始标题
-                    release_year INTEGER,              -- 上映年份
+                    tmdb_id TEXT,
+                    item_type TEXT NOT NULL,
+                    title TEXT,
+                    original_title TEXT,
+                    release_year INTEGER,
                     rating REAL,                       -- 评分 (例如 CommunityRating)
+                    release_date TEXT,                 -- ★ 新增: 上映日期 (格式: YYYY-MM-DD)
+                    date_added TEXT,                   -- ★ 新增: 入库日期 (格式: YYYY-MM-DD)
                     
-                    -- 使用JSON存储列表数据，这是SQLite的常用做法
-                    genres_json TEXT,                  -- 类型 (e.g., '["动作", "科幻"]')
-                    actors_json TEXT,                  -- 演员 (e.g., '[{"id": "123", "name": "演员A"}]')
-                    directors_json TEXT,               -- 导演
-                    studios_json TEXT,                 -- 工作室
-                    countries_json TEXT,               -- 国家地区
+                    -- 使用JSON存储列表数据...
+                    genres_json TEXT,
+                    actors_json TEXT,
+                    directors_json TEXT,
+                    studios_json TEXT,
+                    countries_json TEXT,
                     
-                    last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (tmdb_id, item_type) -- ★ 优化: 使用复合主键
                 )
             """)
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_item_type ON media_metadata (item_type)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_release_year ON media_metadata (release_year)")
+
+            # ★★★ 新增：为老用户平滑升级 media_metadata 表的逻辑 ★★★
+            try:
+                cursor.execute("PRAGMA table_info(media_metadata)")
+                columns = {row[1] for row in cursor.fetchall()}
+                if 'release_date' not in columns:
+                    logger.info("    -> 检测到旧版 'media_metadata' 表，正在添加 'release_date' 字段...")
+                    cursor.execute("ALTER TABLE media_metadata ADD COLUMN release_date TEXT;")
+                if 'date_added' not in columns:
+                    logger.info("    -> 检测到旧版 'media_metadata' 表，正在添加 'date_added' 字段...")
+                    cursor.execute("ALTER TABLE media_metadata ADD COLUMN date_added TEXT;")
+            except Exception as e_alter_mm:
+                logger.error(f"  -> 为 'media_metadata' 表添加新字段时出错: {e_alter_mm}")
 
             # 剧集追踪 (追剧列表) 
             logger.trace("  -> 正在创建/更新 'watchlist' 表...")

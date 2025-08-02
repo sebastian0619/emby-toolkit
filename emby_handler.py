@@ -8,7 +8,7 @@ import json
 import time
 import utils
 import threading
-from typing import Optional, List, Dict, Any, Generator, Tuple, Set
+from typing import Optional, List, Dict, Any, Generator, Tuple, Set, Union
 import logging
 logger = logging.getLogger(__name__)
 # (SimpleLogger 和 logger 的导入保持不变)
@@ -1188,14 +1188,26 @@ def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, us
 
 def create_or_update_collection_with_tmdb_ids(
     collection_name: str, tmdb_ids: list, base_url: str, api_key: str, 
-    user_id: str, library_ids: list = None, item_type: str = 'Movie',
+    user_id: str, library_ids: list = None, 
+    item_types: Union[str, List[str]] = 'Movie', # ★ 1. 参数名修改，并接受列表
     prefetched_emby_items: Optional[list] = None,
     prefetched_collection_map: Optional[dict] = None
 ) -> Optional[Tuple[str, List[str]]]: 
     """
     通过精确计算差异，实现完美的合集同步。
     """
-    log_item_type = "电影" if item_type == "Movie" else "电视剧"
+    if isinstance(item_types, str):
+        item_types_list = [item_types]
+    else:
+        item_types_list = item_types
+
+    if len(item_types_list) == 1:
+        log_item_type = "电影" if item_types_list[0] == "Movie" else "电视剧"
+    else:
+        # 假设 item_types_list 包含 'Movie', 'Series' 等
+        type_map = {"Movie": "电影", "Series": "电视剧"}
+        translated_types = [type_map.get(t, t) for t in item_types_list]
+        log_item_type = "、".join(translated_types)
     logger.info(f"开始在Emby中处理名为 '{collection_name}' 的{log_item_type}合集...")
     
     try:
@@ -1204,13 +1216,13 @@ def create_or_update_collection_with_tmdb_ids(
             all_media_items = prefetched_emby_items
         else:
             if not library_ids: raise ValueError("非预加载模式下必须提供 library_ids。")
-            all_media_items = get_emby_library_items(base_url=base_url, api_key=api_key, user_id=user_id, media_type_filter=item_type, library_ids=library_ids)
+            all_media_items = get_emby_library_items(base_url=base_url, api_key=api_key, user_id=user_id, media_type_filter=",".join(item_types_list), library_ids=library_ids)
         if all_media_items is None: return None
             
         tmdb_to_emby_id_map = {
             item['ProviderIds']['Tmdb']: item['Id']
             for item in all_media_items
-            if item.get('Type') == item_type and 'ProviderIds' in item and 'Tmdb' in item['ProviderIds']
+            if item.get('Type') in item_types_list and 'ProviderIds' in item and 'Tmdb' in item['ProviderIds']
         }
         tmdb_ids_in_library = [str(tid) for tid in tmdb_ids if str(tid) in tmdb_to_emby_id_map]
         desired_emby_ids = [tmdb_to_emby_id_map[tid] for tid in tmdb_ids_in_library]

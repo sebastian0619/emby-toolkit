@@ -7,6 +7,7 @@ import os
 from typing import List, Dict, Any, Optional, Tuple
 import json
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import tmdb_handler
 import config_manager
@@ -112,9 +113,16 @@ class ListImporter:
             
         return None
 
-    def process(self, definition: Dict) -> List[str]:
+    def process(self, definition: Dict) -> List[Dict[str, str]]:
+        """
+        【V3 - 并发搜索版】
+        根据定义处理RSS源，并行搜索TMDb以提高效率。
+        """
         url = definition.get('url')
-        item_type = definition.get('item_type', 'Movie')
+        item_types = definition.get('item_type', ['Movie'])
+        if isinstance(item_types, str):
+            item_types = [item_types]
+
         if not url:
             return []
 
@@ -122,15 +130,37 @@ class ListImporter:
         if not titles:
             return []
 
-        tmdb_ids = []
-        for title in titles:
-            cleaned_title = re.sub(r'\s*\(\d{4}\)$', '', title).strip()
-            tmdb_id = self._match_title_to_tmdb(cleaned_title, item_type)
-            if tmdb_id:
-                tmdb_ids.append(tmdb_id)
+        tmdb_items = []
         
-        logger.info(f"RSS匹配完成，成功获得 {len(tmdb_ids)} 个TMDb ID。")
-        return list(dict.fromkeys(tmdb_ids))
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # ★★★ 核心修改：使用5个并发线程并行执行搜索任务 ★★★
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            
+            # 定义一个将在线程中执行的独立工作函数
+            def find_first_match(title_to_check, types_to_check):
+                cleaned_title = re.sub(r'\s*\(\d{4}\)$', '', title_to_check).strip()
+                for item_type in types_to_check:
+                    # _match_title_to_tmdb 内部会调用缓慢的网络请求
+                    tmdb_id = self._match_title_to_tmdb(cleaned_title, item_type)
+                    if tmdb_id:
+                        # 找到一个匹配就立刻返回结果
+                        return {'id': tmdb_id, 'type': item_type}
+                return None # 如果所有类型都试过还没找到，返回None
+
+            # 提交所有任务
+            future_to_title = {executor.submit(find_first_match, title, item_types): title for title in titles}
+
+            # 实时收集已完成的结果
+            for future in as_completed(future_to_title):
+                result = future.result()
+                if result:
+                    tmdb_items.append(result)
+
+        logger.info(f"RSS匹配完成，成功获得 {len(tmdb_items)} 个TMDb项目。")
+        # 去重逻辑保持不变
+        unique_items = list({f"{item['type']}-{item['id']}": item for item in tmdb_items}.values())
+        return unique_items
 
 class FilterEngine:
     """
@@ -184,17 +214,16 @@ class FilterEngine:
             # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             if field in ['release_date', 'date_added']:
                 item_date_str = item_metadata.get(field)
-                if item_date_str:
+                # ★ 核心修正：在调用 .isdigit() 前，先用 str() 将 value 转为字符串
+                if item_date_str and str(value).isdigit():
                     try:
                         item_date = datetime.strptime(item_date_str, '%Y-%m-%d').date()
                         today = datetime.now().date()
+                        days = int(value)
+                        cutoff_date = today - timedelta(days=days)
                         if op == 'in_last_days':
-                            days = int(value)
-                            cutoff_date = today - timedelta(days=days)
                             if item_date >= cutoff_date and item_date <= today: match = True
                         elif op == 'not_in_last_days':
-                            days = int(value)
-                            cutoff_date = today - timedelta(days=days)
                             if item_date < cutoff_date: match = True
                     except (ValueError, TypeError): pass
             
@@ -210,16 +239,20 @@ class FilterEngine:
                             match = True
                             break
             
-            elif op == 'gte': # 大于等于
-                if actual_values and actual_values[0] is not None:
+            elif op == 'gte': # 大于等于 (用于评分、年份)
+                item_value = item_metadata.get(field)
+                # ★ 核心修正：同样，在调用字符串方法前，先用 str() 转换
+                if item_value is not None and str(value).replace('.', '', 1).isdigit():
                     try:
-                        if float(actual_values[0]) >= float(value_to_compare): match = True
+                        if float(item_value) >= float(value): match = True
                     except (ValueError, TypeError): pass
             
-            elif op == 'lte': # 小于等于
-                if actual_values and actual_values[0] is not None:
+            elif op == 'lte': # 小于等于 (用于评分、年份)
+                item_value = item_metadata.get(field)
+                # ★ 核心修正：同样，在调用字符串方法前，先用 str() 转换
+                if item_value is not None and str(value).replace('.', '', 1).isdigit():
                     try:
-                        if float(actual_values[0]) <= float(value_to_compare): match = True
+                        if float(item_value) <= float(value): match = True
                     except (ValueError, TypeError): pass
 
             elif op == 'eq': # 等于 (主要用于年份)
@@ -233,7 +266,7 @@ class FilterEngine:
         if logic.upper() == 'AND': return all(results)
         else: return any(results)
 
-    def execute_filter(self, definition: Dict[str, Any]) -> List[str]:
+    def execute_filter(self, definition: Dict[str, Any]) -> List[Dict[str, str]]:
         """
         【拨乱反正最终版】根据规则，从整个媒体库中筛选出所有匹配的电影或剧集。
         此版本确保永远只返回一个纯粹的 TMDb ID 字符串列表。
@@ -242,31 +275,38 @@ class FilterEngine:
         
         rules = definition.get('rules', [])
         logic = definition.get('logic', 'AND')
-        item_type_to_process = definition.get('item_type', 'Movie')
+        item_types_to_process = definition.get('item_type', ['Movie'])
+        if isinstance(item_types_to_process, str): # 兼容旧格式
+            item_types_to_process = [item_types_to_process]
 
         if not rules:
             logger.warning("合集定义中没有任何规则，将返回空列表。")
             return []
 
-        all_media_metadata = db_handler.get_all_media_metadata(self.db_path, item_type=item_type_to_process)
-        
-        log_item_type_cn = "电影" if item_type_to_process == "Movie" else "电视剧"
-
-        if not all_media_metadata:
-            logger.warning(f"本地媒体元数据缓存中没有找到任何 {log_item_type_cn} 类型的项目。")
-            return []
+        matched_items = []
+        # ★ 核心修改: 循环处理每种类型
+        for item_type in item_types_to_process:
+            all_media_metadata = db_handler.get_all_media_metadata(self.db_path, item_type=item_type)
             
-        logger.info(f"已加载 {len(all_media_metadata)} 条{log_item_type_cn}元数据，开始应用筛选规则...")
+            log_item_type_cn = "电影" if item_type == "Movie" else "电视剧"
 
-        matched_tmdb_ids = []
-        for media_metadata in all_media_metadata:
-            if self._item_matches_rules(media_metadata, rules, logic):
-                tmdb_id = media_metadata.get('tmdb_id')
-                if tmdb_id:
-                    matched_tmdb_ids.append(str(tmdb_id))
+            if not all_media_metadata:
+                logger.warning(f"本地媒体元数据缓存中没有找到任何 {log_item_type_cn} 类型的项目。")
+                continue # 继续检查下一种类型
+            
+            logger.info(f"已加载 {len(all_media_metadata)} 条{log_item_type_cn}元数据，开始应用筛选规则...")
 
-        logger.info(f"筛选完成！共找到 {len(matched_tmdb_ids)} 部匹配的 {log_item_type_cn}。")
-        return matched_tmdb_ids
+            for media_metadata in all_media_metadata:
+                if self._item_matches_rules(media_metadata, rules, logic):
+                    tmdb_id = media_metadata.get('tmdb_id')
+                    if tmdb_id:
+                        # ★ 返回带类型信息的字典
+                        matched_items.append({'id': str(tmdb_id), 'type': item_type})
+
+        # 使用字典去重，确保 "Movie-123" 和 "Series-123" 可以共存
+        unique_items = list({f"{item['type']}-{item['id']}": item for item in matched_items}.values())
+        logger.info(f"筛选完成！共找到 {len(unique_items)} 部匹配的媒体项目。")
+        return unique_items
     
     def find_matching_collections(self, item_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         """

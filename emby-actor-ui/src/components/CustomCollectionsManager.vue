@@ -78,12 +78,12 @@
         </n-form-item>
 
         <n-form-item v-if="currentCollection.type" label="合集内容" path="definition.item_type">
-        <n-radio-group v-model:value="currentCollection.definition.item_type">
+          <n-checkbox-group v-model:value="currentCollection.definition.item_type">
             <n-space>
-            <n-radio value="Movie">电影</n-radio>
-            <n-radio value="Series">电视剧</n-radio>
+              <n-checkbox value="Movie">电影</n-checkbox>
+              <n-checkbox value="Series">电视剧</n-checkbox>
             </n-space>
-        </n-radio-group>
+          </n-checkbox-group>
         </n-form-item>
 
         <!-- 榜单导入 (List) 类型的表单 -->
@@ -112,6 +112,24 @@
               <n-space v-for="(rule, index) in currentCollection.definition.rules" :key="index" style="margin-bottom: 12px;" align="center">
                 <n-select v-model:value="rule.field" :options="fieldOptions" placeholder="字段" style="width: 150px;" clearable />
                 <n-select v-model:value="rule.operator" :options="getOperatorOptionsForRow(rule)" placeholder="操作" style="width: 120px;" :disabled="!rule.field" clearable />
+                <n-input-number
+                  v-if="['release_date', 'date_added'].includes(rule.field)"
+                  v-model:value="rule.value"
+                  placeholder="天数"
+                  :disabled="!rule.operator"
+                  style="width: 180px;"
+                >
+                  <template #suffix>天内</template>
+                </n-input-number>
+                
+                <n-input-number
+                  v-else-if="['rating', 'release_year'].includes(rule.field)"
+                  v-model:value="rule.value"
+                  placeholder="数值"
+                  :disabled="!rule.operator"
+                  :show-button="false"
+                  style="width: 180px;"
+                />
                 <n-select
                     v-if="rule.field === 'countries'"
                     v-model:value="rule.value"
@@ -292,7 +310,7 @@ const getInitialFormModel = () => ({
   type: 'list',
   status: 'active',
   definition: {
-    item_type: 'Movie',
+    item_type: ['Movie'], // ★ 改为数组
     url: '' 
   }
 });
@@ -378,13 +396,17 @@ const ruleConfig = {
   actors: { label: '演员', type: 'text', operators: ['contains'] },
   directors: { label: '导演', type: 'text', operators: ['contains'] },
   release_year: { label: '年份', type: 'number', operators: ['gte', 'lte', 'eq'] },
+  rating: { label: '评分', type: 'number', operators: ['gte', 'lte'] }, // ★ 新增
   genres: { label: '类型', type: 'select', operators: ['contains'] },
   countries: { label: '国家/地区', type: 'select', operators: ['contains'] },
   studios: { label: '工作室', type: 'select', operators: ['contains'] },
+  release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] }, // ★ 新增
+  date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] }, // ★ 新增
 };
 
 const operatorLabels = {
   contains: '包含', gte: '大于等于', lte: '小于等于', eq: '等于',
+  in_last_days: '最近N天内', not_in_last_days: 'N天以前' // ★ 新增
 };
 
 const fieldOptions = computed(() => 
@@ -413,7 +435,12 @@ const formRules = computed(() => {
   const baseRules = {
     name: { required: true, message: '请输入合集名称', trigger: 'blur' },
     type: { required: true, message: '请选择合集类型' },
-    'definition.item_type': { required: true, message: '请选择合集内容类型' }
+    // ★ 修改 item_type 验证
+    'definition.item_type': { 
+        type: 'array', 
+        required: true, 
+        message: '请至少选择一种合集内容类型' 
+    }
   };
   if (currentCollection.value.type === 'list') {
     baseRules['definition.url'] = { required: true, message: '请输入榜单的URL', trigger: 'blur' };

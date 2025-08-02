@@ -8,6 +8,8 @@ import sqlite3
 import logging
 import threading
 from datetime import datetime, date
+from concurrent.futures import ThreadPoolExecutor
+import concurrent.futures
 
 # 导入类型提示
 from typing import Optional
@@ -1344,14 +1346,18 @@ def task_process_all_custom_collections(processor: MediaProcessor):
 
             try:
                 # 3a. 生成目标TMDb ID列表
-                tmdb_ids = []
+                definition = json.loads(collection['definition_json'])
+                item_types_for_collection = definition.get('item_type', ['Movie'])
+                tmdb_items = []
                 if collection_type == 'list':
                     importer = ListImporter(processor.tmdb_api_key)
-                    tmdb_ids = importer.process(definition)
+                    tmdb_items = importer.process(definition)
                 elif collection_type == 'filter':
                     engine = FilterEngine(db_path=config_manager.DB_PATH)
-                    tmdb_ids = engine.execute_filter(definition)
+                    tmdb_items = engine.execute_filter(definition)
                 
+                tmdb_ids = [item['id'] for item in tmdb_items]
+
                 if not tmdb_ids:
                     logger.warning(f"合集 '{collection_name}' 未能生成任何媒体ID，跳过。")
                     db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, collection_id, {"emby_collection_id": None})
@@ -1359,10 +1365,14 @@ def task_process_all_custom_collections(processor: MediaProcessor):
 
                 # 3b. 在Emby中创建/更新合集
                 result_tuple = emby_handler.create_or_update_collection_with_tmdb_ids(
-                    collection_name=collection_name, tmdb_ids=tmdb_ids, base_url=processor.emby_url,
-                    api_key=processor.emby_api_key, user_id=processor.emby_user_id,
-                    prefetched_emby_items=all_emby_items, prefetched_collection_map=prefetched_collection_map,
-                    item_type=item_type_for_collection
+                    collection_name=collection_name, 
+                    tmdb_ids=tmdb_ids, 
+                    base_url=processor.emby_url,
+                    api_key=processor.emby_api_key, 
+                    user_id=processor.emby_user_id,
+                    prefetched_emby_items=all_emby_items, 
+                    prefetched_collection_map=prefetched_collection_map,
+                    item_types=item_types_for_collection # ★ 传递类型列表
                 )
                 
                 if not result_tuple:
@@ -1375,7 +1385,8 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                 update_data = {
                     "emby_collection_id": emby_collection_id,
-                    "item_type": item_type_for_collection,
+                    # ★ item_type 现在从 definition 中获取，并存为JSON字符串
+                    "item_type": json.dumps(definition.get('item_type', ['Movie'])),
                     "last_synced_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 }
 
@@ -1399,10 +1410,23 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                     image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
                     
                     all_media_details = []
-                    if item_type_for_collection == 'Series':
-                        all_media_details = [tmdb_handler.get_tv_details_tmdb(tid, processor.tmdb_api_key) for tid in tmdb_ids]
-                    else:
-                        all_media_details = [tmdb_handler.get_movie_details(tid, processor.tmdb_api_key) for tid in tmdb_ids]
+                    with ThreadPoolExecutor(max_workers=5) as executor:
+                        future_to_item = {}
+                        for item in tmdb_items:
+                            if item['type'] == 'Series':
+                                future = executor.submit(tmdb_handler.get_tv_details_tmdb, item['id'], processor.tmdb_api_key)
+                            else: # 默认为 Movie
+                                future = executor.submit(tmdb_handler.get_movie_details, item['id'], processor.tmdb_api_key)
+                            future_to_item[future] = item
+
+                        for future in concurrent.futures.as_completed(future_to_item):
+                            item_info = future_to_item[future]
+                            try:
+                                detail = future.result()
+                                if detail:
+                                    all_media_details.append(detail)
+                            except Exception as exc:
+                                logger.error(f"获取 TMDb 详情 (ID: {item_info['id']}, Type: {item_info['type']}) 时线程内发生错误: {exc}")
                     
                     all_media_with_status, has_missing, missing_count = [], False, 0
                     today_str = datetime.now().strftime('%Y-%m-%d')
@@ -1474,30 +1498,37 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         collection_name = collection['name']
         collection_type = collection['type']
         definition = json.loads(collection['definition_json'])
-        item_type_for_collection = definition.get('item_type', 'Movie')
         
-        tmdb_ids = []
+        item_types_for_collection = definition.get('item_type', ['Movie'])
+        
+        tmdb_items = []
         if collection_type == 'list':
             importer = ListImporter(processor.tmdb_api_key)
-            tmdb_ids = importer.process(definition)
+            # importer.process 现在返回 [{'id': '123', 'type': 'Movie'}, ...]
+            tmdb_items = importer.process(definition)
         elif collection_type == 'filter':
             engine = FilterEngine(db_path=config_manager.DB_PATH)
-            tmdb_ids = engine.execute_filter(definition)
+            # engine.execute_filter 现在也返回相同的结构
+            tmdb_items = engine.execute_filter(definition)
+        
+        tmdb_ids = [item['id'] for item in tmdb_items]
         
         if not tmdb_ids:
             logger.warning(f"合集 '{collection_name}' 未能生成任何媒体ID，任务结束。")
-            task_manager.update_status_from_thread(100, "处理完成，未生成任何媒体。")
-            db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, custom_collection_id, {"emby_collection_id": None})
             return
 
         # --- 步骤 2: 在Emby中创建/更新合集 ---
-        task_manager.update_status_from_thread(70, f"已生成 {len(tmdb_ids)} 个ID，正在Emby中创建/更新合集...")
+        task_manager.update_status_from_thread(70, f"已生成 {len(tmdb_items)} 个ID，正在Emby中创建/更新合集...")
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
 
         result_tuple = emby_handler.create_or_update_collection_with_tmdb_ids(
-            collection_name=collection_name, tmdb_ids=tmdb_ids, base_url=processor.emby_url,
-            api_key=processor.emby_api_key, user_id=processor.emby_user_id,
-            library_ids=libs_to_process_ids, item_type=item_type_for_collection
+            collection_name=collection_name, 
+            tmdb_ids=tmdb_ids, 
+            base_url=processor.emby_url,
+            api_key=processor.emby_api_key, 
+            user_id=processor.emby_user_id,
+            library_ids=libs_to_process_ids, 
+            item_types=item_types_for_collection # ★ 传递类型列表
         )
 
         if not result_tuple:
@@ -1517,13 +1548,14 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         
         update_data = {
             "emby_collection_id": emby_collection_id,
-            "item_type": item_type_for_collection,
+            # ★ item_type 现在从 definition 中获取，因为它可能是个列表
+            "item_type": json.dumps(definition.get('item_type', ['Movie'])),
             "last_synced_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
 
         # 只有 'list' 类型的合集才需要进行详细的缺失分析
         if collection_type == 'list':
-            task_manager.update_status_from_thread(90, "榜单合集已生成/更新，正在分析缺失内容...")
+            task_manager.update_status_from_thread(90, "榜单合集已生成/更新，正在并行获取详情...")
             
             # ▼▼▼ 核心修正点 ▼▼▼
             # 在分析前，加载当前已存在的媒体状态信息
@@ -1541,10 +1573,23 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
             image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
             
             all_media_details = []
-            if item_type_for_collection == 'Series':
-                all_media_details = [tmdb_handler.get_tv_details_tmdb(tid, processor.tmdb_api_key) for tid in tmdb_ids]
-            else:
-                all_media_details = [tmdb_handler.get_movie_details(tid, processor.tmdb_api_key) for tid in tmdb_ids]
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_item = {}
+                for item in tmdb_items:
+                    if item['type'] == 'Series':
+                        future = executor.submit(tmdb_handler.get_tv_details_tmdb, item['id'], processor.tmdb_api_key)
+                    else: # 默认为 Movie
+                        future = executor.submit(tmdb_handler.get_movie_details, item['id'], processor.tmdb_api_key)
+                    future_to_item[future] = item
+
+                for future in concurrent.futures.as_completed(future_to_item):
+                    item_info = future_to_item[future]
+                    try:
+                        detail = future.result()
+                        if detail:
+                            all_media_details.append(detail)
+                    except Exception as exc:
+                        logger.error(f"获取 TMDb 详情 (ID: {item_info['id']}, Type: {item_info['type']}) 时线程内发生错误: {exc}")
             
             all_media_with_status, has_missing, missing_count = [], False, 0
             today_str = datetime.now().strftime('%Y-%m-%d')
@@ -1650,6 +1695,22 @@ def task_populate_metadata_cache(processor: MediaProcessor):
             if not tmdb_id or not item_type:
                 continue
 
+            # 辅助函数，用于将Emby的完整时间戳转换为 'YYYY-MM-DD' 格式
+            def format_date(date_str: Optional[str]) -> Optional[str]:
+                if not date_str:
+                    return None
+                try:
+                    # Emby 的日期格式通常是 "2024-01-15T08:00:00.000Z"
+                    return date_str.split('T')[0]
+                except Exception:
+                    return None
+
+            # 提取上映日期 (PremiereDate)
+            release_date = format_date(item.get("PremiereDate"))
+            # 提取媒体的入库日期 (DateCreated)
+            date_added = format_date(item.get("DateCreated"))
+            # 提取社区评分 (CommunityRating)
+            rating = item.get("CommunityRating")
             # --- ★★★ 核心修改：读取本地TMDB JSON文件来获取国家信息 ★★★ ---
             countries = []
             local_data_path = processor.config.get("local_data_path", "")
@@ -1680,12 +1741,14 @@ def task_populate_metadata_cache(processor: MediaProcessor):
                 "title": item.get("Name"),
                 "original_title": item.get("OriginalTitle"),
                 "release_year": item.get("ProductionYear"),
-                "rating": item.get("CommunityRating"),
+                "rating": rating, # ★ 填充评分
+                "release_date": release_date, # ★ 填充上映日期
+                "date_added": date_added, # ★ 填充入库日期
                 "genres_json": json.dumps(item.get("Genres", [])),
                 "actors_json": json.dumps([{"id": p.get("ProviderIds", {}).get("Tmdb"), "name": p.get("Name")} for p in item.get("People", []) if p.get("Type") == "Actor"]),
                 "directors_json": json.dumps(directors),
                 "studios_json": json.dumps([s.get("Name") for s in item.get("Studios", [])]),
-                "countries_json": json.dumps(countries), # 使用我们新获取的数据
+                "countries_json": json.dumps(countries),
             })
 
         # 3. 批量写入数据库 (这部分不变)
