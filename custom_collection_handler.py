@@ -267,5 +267,49 @@ class FilterEngine:
 
         logger.info(f"筛选完成！共找到 {len(matched_tmdb_ids)} 部匹配的 {log_item_type_cn}。")
         return matched_tmdb_ids
+    
+    def find_matching_collections(self, item_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        为单个媒体项查找所有匹配的自定义合集。
+        """
+        media_item_type = item_metadata.get('item_type')
+        media_type_cn = "剧集" if media_item_type == "Series" else "影片"
+        
+        logger.info(f"正在为{media_type_cn}《{item_metadata.get('title')}》实时匹配自定义合集...")
+        matched_collections = []
+        
+        all_filter_collections = [
+            c for c in db_handler.get_all_custom_collections(self.db_path) 
+            if c['type'] == 'filter' and c['status'] == 'active' and c['emby_collection_id']
+        ]
+
+        if not all_filter_collections:
+            logger.debug("没有发现任何已启用的筛选类合集，跳过匹配。")
+            return []
+
+        for collection_def in all_filter_collections:
+            try:
+                definition = json.loads(collection_def['definition_json'])
+                
+                collection_item_type = definition.get('item_type', 'Movie')
+                if media_item_type != collection_item_type:
+                    logger.trace(f"  -> 跳过合集《{collection_def['name']}》，因为内容类型不匹配 (需要: {collection_item_type}, 实际: {media_item_type})。")
+                    continue
+
+                rules = definition.get('rules', [])
+                logic = definition.get('logic', 'AND')
+
+                if self._item_matches_rules(item_metadata, rules, logic):
+                    logger.info(f"  -> 匹配成功！{media_type_cn}《{item_metadata.get('title')}》属于合集《{collection_def['name']}》。")
+                    matched_collections.append({
+                        'id': collection_def['id'],
+                        'name': collection_def['name'],
+                        'emby_collection_id': collection_def['emby_collection_id']
+                    })
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(f"解析合集《{collection_def['name']}》的定义时出错: {e}，跳过。")
+                continue
+        
+        return matched_collections
 
 
