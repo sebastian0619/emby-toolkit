@@ -85,7 +85,12 @@
             </n-space>
         </n-radio-group>
         </n-form-item>
-
+        <n-form-item label="虚拟库工作室" path="definition.studio_for_filter">
+          <n-input v-model:value="currentCollection.definition.studio_for_filter" placeholder="可选，用于创建虚拟库" />
+          <template #feedback>
+            输入一个独特的名称（如“豆瓣Top250精选”），工具会自动为合集成员打上此工作室。
+          </template>
+        </n-form-item>
         <!-- 榜单导入 (List) 类型的表单 -->
         <div v-if="currentCollection.type === 'list'">
           <n-form-item label="榜单URL" path="definition.url">
@@ -293,7 +298,8 @@ const getInitialFormModel = () => ({
   status: 'active',
   definition: {
     item_type: 'Movie',
-    url: '' 
+    url: '',
+    studio_for_filter: '' // <-- 新增这一行
   }
 });
 const currentCollection = ref(getInitialFormModel());
@@ -304,12 +310,14 @@ watch(() => currentCollection.value.type, (newType) => {
     currentCollection.value.definition = {
       item_type: 'Movie', 
       logic: 'AND',
-      rules: [{ field: null, operator: null, value: '' }]
+      rules: [{ field: null, operator: null, value: '' }],
+      studio_for_filter: '' // <-- 新增这一行
     };
   } else if (newType === 'list') {
     currentCollection.value.definition = { 
       item_type: 'Movie',
-      url: '' 
+      url: '',
+      studio_for_filter: '' // <-- 新增这一行
     };
   }
 });

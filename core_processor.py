@@ -46,6 +46,87 @@ def _read_local_json(file_path: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"读取本地JSON文件失败: {file_path}, 错误: {e}")
         return None
+# --- 添加自定义工作室 ---
+def prepend_studio_in_metadata_files(tmdb_id: str, item_type: str, studio_name_to_prepend: str, config: Dict[str, Any]):
+    """
+    【真正极简版-前追加工具】只修改顶层元数据文件，将虚拟工作室添加到列表最前。
+    """
+    local_data_path = config.get("local_data_path", "")
+    if not all([tmdb_id, item_type, studio_name_to_prepend, local_data_path]): return
+
+    logger.info(f"[追加工作室] 开始为 TMDb ID: {tmdb_id} 的主文件添加工作室: '{studio_name_to_prepend}'")
+    
+    cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+    base_override_dir = os.path.join(local_data_path, "override", cache_folder_name, tmdb_id)
+    os.makedirs(base_override_dir, exist_ok=True)
+
+    # ★★★ 核心修正：彻底移除循环，只操作顶层文件 ★★★
+    main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+    override_path = os.path.join(base_override_dir, main_json_filename)
+    base_cache_path = os.path.join(local_data_path, "cache", cache_folder_name, tmdb_id, main_json_filename)
+
+    field_to_update = "production_companies" if item_type == "Movie" else "networks"
+
+    try:
+        # 以override文件为基础进行修改，如果不存在则以cache文件为基础
+        override_data = _read_local_json(override_path) or _read_local_json(base_cache_path)
+
+        if override_data:
+            original_studios = override_data.get(field_to_update, [])
+            studio_exists = any(s.get("name", "").lower() == studio_name_to_prepend.lower() for s in original_studios)
+            
+            if not studio_exists:
+                new_studio_object = {"name": studio_name_to_prepend, "id": 99999, "logo_path": None, "origin_country": ""}
+                override_data[field_to_update] = [new_studio_object] + original_studios
+                
+                temp_path = f"{override_path}.tmp"
+                with open(temp_path, 'w', encoding='utf-8') as f:
+                    json.dump(override_data, f, ensure_ascii=False, indent=4)
+                os.replace(temp_path, override_path)
+                logger.info(f"  -> 成功为文件追加工作室: {override_path}")
+            else:
+                logger.debug(f"  -> 工作室已存在，无需追加: {override_path}")
+
+    except Exception as e:
+        logger.error(f"[追加工作室] 处理 TMDb ID: {tmdb_id} 时出错: {e}", exc_info=True)
+
+
+def remove_studio_from_metadata_files(tmdb_id: str, item_type: str, studio_name_to_remove: str, config: Dict[str, Any]):
+    """
+    【真正极简版-移除工具】只修改顶层元数据文件，精准移除指定的虚拟工作室。
+    """
+    local_data_path = config.get("local_data_path", "")
+    if not all([tmdb_id, item_type, studio_name_to_remove, local_data_path]): return
+
+    logger.info(f"[移除工作室] 开始为 TMDb ID: {tmdb_id} 的主文件移除工作室: '{studio_name_to_remove}'")
+    
+    cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+    base_override_dir = os.path.join(local_data_path, "override", cache_folder_name, tmdb_id)
+    
+    # ★★★ 核心修正：彻底移除循环，只操作顶层文件 ★★★
+    main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+    override_path = os.path.join(base_override_dir, main_json_filename)
+
+    field_to_update = "production_companies" if item_type == "Movie" else "networks"
+
+    try:
+        if not os.path.exists(override_path): return
+
+        override_data = _read_local_json(override_path)
+        if override_data and field_to_update in override_data:
+            original_studios = override_data[field_to_update]
+            filtered_studios = [s for s in original_studios if s.get("name", "").lower() != studio_name_to_remove.lower()]
+            
+            if len(filtered_studios) < len(original_studios):
+                override_data[field_to_update] = filtered_studios
+                
+                temp_path = f"{override_path}.tmp"
+                with open(temp_path, 'w', encoding='utf-8') as f:
+                    json.dump(override_data, f, ensure_ascii=False, indent=4)
+                os.replace(temp_path, override_path)
+                logger.info(f"  -> 成功从文件移除工作室: {override_path}")
+    except Exception as e:
+        logger.error(f"[移除工作室] 处理 TMDb ID: {tmdb_id} 时出错: {e}", exc_info=True)
 def _save_metadata_to_cache(
     cursor: sqlite3.Cursor,
     tmdb_id: str,
@@ -2167,5 +2248,6 @@ class MediaProcessor:
         logger.info(f"【演员聚合】完成。共为 '{item_name_for_log}' 聚合了 {len(full_aggregated_cast)} 位独立演员。")
         
         return full_aggregated_cast
+    
     def close(self):
         if self.douban_api: self.douban_api.close()
