@@ -1106,7 +1106,7 @@ def search_unique_studios(db_path: str, search_term: str, limit: int = 20) -> Li
     # ★★★ 核心升级：将两个列表合并，高优先级的在前 ★★★
     final_matches = starts_with_matches + contains_matches
     
-    logger.debug(f"智能搜索 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
+    logger.trace(f"智能搜索 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
     
     # 只返回限定数量的结果
     return final_matches[:limit]
@@ -1157,7 +1157,7 @@ def search_unique_actors(db_path: str, search_term: str, limit: int = 20) -> Lis
                 contains_matches.append(actor)
         
         final_matches = starts_with_matches + contains_matches
-        logger.debug(f"直接在元数据中搜索演员 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
+        logger.trace(f"直接在元数据中搜索演员 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
         
         return final_matches[:limit]
         
