@@ -794,11 +794,40 @@ const columns = [
     render: (row) => h(NTag, { type: row.type === 'list' ? 'info' : 'default', bordered: false }, { default: () => row.type === 'list' ? '榜单导入' : '筛选生成' })
   },
   {
-    title: '内容', key: 'item_type', width: 100,
+    title: '内容', key: 'item_type', width: 120, // ★★★ 核心修复区域 START ★★★
     render: (row) => {
-        const itemType = row.item_type || JSON.parse(row.definition_json)?.item_type || 'Movie';
-        return h(NTag, { bordered: false }, { default: () => itemType === 'Series' ? '电视剧' : '电影' });
-    }
+        let itemTypes = [];
+        try {
+            // 优先从 item_type 字段解析，这是同步后存储的
+            if (row.item_type) {
+                itemTypes = JSON.parse(row.item_type);
+            } 
+            // 如果没有，则尝试从 definition_json 解析，这是创建时存储的
+            else if (row.definition_json) {
+                const definition = JSON.parse(row.definition_json);
+                itemTypes = definition.item_type || ['Movie'];
+            }
+        } catch (e) {
+            itemTypes = ['Movie']; // 解析失败则默认为电影
+        }
+
+        // 确保 itemTypes 是一个数组
+        if (!Array.isArray(itemTypes)) {
+            itemTypes = [itemTypes];
+        }
+
+        let label = '电影'; // 默认值
+        const hasMovie = itemTypes.includes('Movie');
+        const hasSeries = itemTypes.includes('Series');
+
+        if (hasMovie && hasSeries) {
+            label = '电影、电视剧';
+        } else if (hasSeries) {
+            label = '电视剧';
+        }
+        
+        return h(NTag, { bordered: false }, { default: () => label });
+    } // ★★★ 核心修复区域 END ★★★
   },
   {
     title: '健康检查', key: 'health_check', width: 150,
