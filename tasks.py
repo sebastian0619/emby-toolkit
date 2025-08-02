@@ -1653,12 +1653,12 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def task_populate_metadata_cache(processor: 'MediaProcessor'):
     """
-    【V10 - 最终单文件修复版】
-    严格按照用户提供的 all.json 和 series.json 文件结构进行数据提取。
-    已完全移除对不存在的 credits.json 文件的依赖。
+    【V11 - 中英双语兼容修复版】
+    修复了演员信息提取逻辑，现在会同时提取 name 和 original_name，
+    为双语演员搜索提供完整的数据支持。
     """
     task_name = "快速同步媒体元数据"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (单文件修复模式) ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 (双语兼容修复模式) ---")
     task_manager.update_status_from_thread(0, "正在准备从Emby获取媒体索引...")
 
     try:
@@ -1711,21 +1711,19 @@ def task_populate_metadata_cache(processor: 'MediaProcessor'):
             item_cache_path = os.path.join(local_data_path, "cache", cache_folder_name, tmdb_id)
 
             if item_type == 'Movie':
-                # --- 电影处理逻辑 (核心修正) ---
                 details_file = os.path.join(item_cache_path, "all.json")
                 details_data = _read_local_json(details_file)
 
                 if details_data:
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    # ★★★ 核心修正：直接从 all.json 提取所有信息，不再读取 credits.json ★★★
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                     studios = [s['name'] for s in details_data.get('production_companies', []) if s.get('name')]
                     countries = [c['name'] for c in details_data.get('production_countries', []) if c.get('name')]
                     
-                    # 从 all.json 内嵌的 'casts' 对象中提取演职员
                     casts_container = details_data.get('casts', {})
-                    actors = [{'id': p.get('id'), 'name': p.get('name')} for p in casts_container.get('cast', [])]
-                    # 注意：根据您的示例，all.json中的crew可能为空，此代码会正确处理这种情况
+                    # ★★★ 核心修复 1: 同时提取 name 和 original_name ★★★
+                    actors = [
+                        {'id': p.get('id'), 'name': p.get('name'), 'original_name': p.get('original_name')} 
+                        for p in casts_container.get('cast', [])
+                    ]
                     directors = [{'id': p.get('id'), 'name': p.get('name')} for p in casts_container.get('crew', []) if p.get('job') == 'Director']
 
                     metadata_to_save = {
@@ -1738,7 +1736,6 @@ def task_populate_metadata_cache(processor: 'MediaProcessor'):
                     }
 
             elif item_type == 'Series':
-                # --- 电视剧处理逻辑 (此部分逻辑已正确，无需修改) ---
                 series_file = os.path.join(item_cache_path, "series.json")
                 series_data = _read_local_json(series_file)
 
@@ -1748,7 +1745,11 @@ def task_populate_metadata_cache(processor: 'MediaProcessor'):
                     countries = [country_map.get(code, code) for code in origin_codes]
 
                     credits_container = series_data.get('credits', {})
-                    actors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_container.get('cast', [])]
+                    # ★★★ 核心修复 2: 同时提取 name 和 original_name ★★★
+                    actors = [
+                        {'id': p.get('id'), 'name': p.get('name'), 'original_name': p.get('original_name')} 
+                        for p in credits_container.get('cast', [])
+                    ]
                     directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_container.get('crew', []) if p.get('job') == 'Director']
 
                     metadata_to_save = {

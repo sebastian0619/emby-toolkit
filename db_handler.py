@@ -1113,18 +1113,18 @@ def search_unique_studios(db_path: str, search_term: str, limit: int = 20) -> Li
 # --- 搜索演员 ---
 def search_unique_actors(db_path: str, search_term: str, limit: int = 20) -> List[str]:
     """
-    (V5 - 回归本源、绝对可靠版)
-    直接从 media_metadata 表中提取所有演员名进行搜索。
-    这个方案不依赖任何其他表，只要媒体库元数据被缓存，就一定能提供搜索建议。
+    (V6 - 中英双语兼容搜索版)
+    直接从 media_metadata 表中提取演员的 name 和 original_name 进行搜索。
+    用户可以用中文译名或原始外文名进行搜索。
     """
     if not search_term:
         return []
     
-    unique_actors = set()
+    # ★★★ 核心修改 1: 使用字典来存储 unique_name -> original_name 的映射 ★★★
+    unique_actors_map = {}
     try:
         with get_db_connection(db_path) as conn:
             cursor = conn.cursor()
-            # 步骤 1: 直接从元数据缓存中提取所有演员的名字
             cursor.execute("SELECT actors_json FROM media_metadata")
             rows = cursor.fetchall()
             
@@ -1134,30 +1134,38 @@ def search_unique_actors(db_path: str, search_term: str, limit: int = 20) -> Lis
                         actors = json.loads(row['actors_json'])
                         for actor in actors:
                             actor_name = actor.get('name')
-                            # ★★★ 核心：只关心名字，不管ID是否存在或是什么 ★★★
-                            if actor_name:
-                                unique_actors.add(actor_name.strip())
+                            original_name = actor.get('original_name')
+                            
+                            if actor_name and actor_name.strip():
+                                # 使用 actor_name 作为键确保唯一性
+                                if actor_name not in unique_actors_map:
+                                    unique_actors_map[actor_name.strip()] = (original_name or '').strip()
+
                     except (json.JSONDecodeError, TypeError):
                         continue
         
-        if not unique_actors:
+        if not unique_actors_map:
             return []
 
-        # 步骤 2: 在提取出的名字集合中进行搜索
+        # 步骤 2: 在提取出的名字集合中进行双语搜索
         search_term_lower = search_term.lower()
         starts_with_matches = []
         contains_matches = []
         
-        # 智能排序
-        for actor in sorted(list(unique_actors)):
-            actor_lower = actor.lower()
-            if actor_lower.startswith(search_term_lower):
-                starts_with_matches.append(actor)
-            elif search_term_lower in actor_lower:
-                contains_matches.append(actor)
+        # ★★★ 核心修改 2: 遍历字典，同时检查 name 和 original_name ★★★
+        for name, original_name in sorted(unique_actors_map.items()):
+            name_lower = name.lower()
+            original_name_lower = original_name.lower()
+
+            # 智能排序：优先匹配开头
+            if name_lower.startswith(search_term_lower) or (original_name_lower and original_name_lower.startswith(search_term_lower)):
+                starts_with_matches.append(name) # 无论哪个匹配，都返回最终的 name
+            # 其次匹配包含
+            elif search_term_lower in name_lower or (original_name_lower and search_term_lower in original_name_lower):
+                contains_matches.append(name)
         
         final_matches = starts_with_matches + contains_matches
-        logger.trace(f"直接在元数据中搜索演员 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
+        logger.debug(f"双语搜索演员 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
         
         return final_matches[:limit]
         
