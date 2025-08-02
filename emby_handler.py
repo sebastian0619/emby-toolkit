@@ -521,7 +521,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
     try:
         response = requests.post(refresh_url, params=params, timeout=30)
         if response.status_code == 204:
-            logger.info(f"  - 刷新请求已成功发送，Emby将在后台处理。")
+            logger.trace(f"  - 刷新请求已成功发送，Emby将在后台处理。")
             return True
         else:
             logger.error(f"  - 刷新请求失败: HTTP状态码 {response.status_code}")

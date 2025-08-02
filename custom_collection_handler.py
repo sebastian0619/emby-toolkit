@@ -311,5 +311,3 @@ class FilterEngine:
                 continue
         
         return matched_collections
-
-
