@@ -1368,7 +1368,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                     tmdb_ids_to_remove = old_tmdb_ids - set(new_tmdb_ids)
 
                     if tmdb_ids_to_remove:
-                        logger.info(f"合集《{collection_name}》: 发现 {len(tmdb_ids_to_remove)} 个媒体项已移除，将清理工作室...")
+                        logger.info(f"合集《{collection_name}》: 发现 {len(tmdb_ids_to_remove)} 个媒体项已移除，将清理虚拟工作室...")
                         for tmdb_id in tmdb_ids_to_remove:
                             remove_studio_from_metadata_files(
                                 tmdb_id=tmdb_id, item_type=item_type_for_collection,
@@ -1389,7 +1389,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
 
                 # 3d. “注入”逻辑
                 if studio_for_filter and tmdb_ids_in_library:
-                    logger.info(f"合集《{collection_name}》: 开始为 {len(tmdb_ids_in_library)} 个媒体项前追加工作室...")
+                    logger.info(f"合集《{collection_name}》: 开始为 {len(tmdb_ids_in_library)} 个媒体项追加虚拟工作室...")
                     for tmdb_id in tmdb_ids_in_library:
                         prepend_studio_in_metadata_files(
                             tmdb_id=tmdb_id, item_type=item_type_for_collection,
@@ -1572,7 +1572,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
 
         # --- 步骤 5: “注入”逻辑 - 为当前榜单上的媒体项添加工作室 ---
         if studio_for_filter and tmdb_ids_in_library:
-            logger.info(f"检测到虚拟库工作室 '{studio_for_filter}'，开始为 {len(tmdb_ids_in_library)} 个媒体项前追加工作室...")
+            logger.info(f"检测到虚拟库工作室 '{studio_for_filter}'，开始为 {len(tmdb_ids_in_library)} 个媒体项追加虚拟工作室...")
             for tmdb_id in tmdb_ids_in_library:
                 prepend_studio_in_metadata_files(
                     tmdb_id=tmdb_id, item_type=item_type_for_collection,
