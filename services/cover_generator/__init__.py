@@ -67,7 +67,7 @@ class CoverGeneratorService:
         """
         logger.info(f"开始为媒体库 '{library['Name']}' (服务器: {emby_server_id}) 生成封面...")
         
-        # 1. 确保字体文件已准备好
+        # 1. 确保字体文件已准备好 (已修改为自动下载)
         self.__get_fonts()
 
         # 2. 生成封面图片数据
@@ -106,7 +106,7 @@ class CoverGeneratorService:
         """从媒体服务器获取项目并生成封面"""
         required_items_count = 1 if self._cover_style.startswith('single') else 9
         
-        # 获取媒体库中的有效媒体项
+        # 获取媒体库中的有效媒体项 (已修改为支持随机)
         items = self.__get_valid_items_from_library(server_id, library, required_items_count)
         if not items:
             logger.warning(f"在媒体库 '{library['Name']}' 中找不到任何带有可用图片的媒体项。")
@@ -136,18 +136,17 @@ class CoverGeneratorService:
             
             return self.__generate_image_from_path(library['Name'], title, image_paths)
 
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★ 核心修复 1: 修复封面始终相同的问题 ★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     def __get_valid_items_from_library(self, server_id: str, library: Dict[str, Any], limit: int) -> List[Dict]:
-        """从媒体库中获取足够数量的、包含有效图片的媒体项"""
+        """从媒体库中获取足够数量的、包含有效图片的媒体项 (已修复随机逻辑)"""
         library_id = library.get("Id") or library.get("ItemId")
         
-        # ▼▼▼ 核心修复区域 START ▼▼▼
-        
-        # 同样，先获取服务器连接信息
         base_url = config_manager.APP_CONFIG.get('emby_server_url')
         api_key = config_manager.APP_CONFIG.get('emby_api_key')
         user_id = config_manager.APP_CONFIG.get('emby_user_id')
 
-        # 1. 调用 get_emby_library_items 函数，它直接返回一个列表
         all_items = emby_handler.get_emby_library_items(
             base_url=base_url,
             api_key=api_key,
@@ -156,19 +155,29 @@ class CoverGeneratorService:
             media_type_filter="Movie,Series,MusicAlbum"
         )
         
-        # 2. 直接检查返回的列表是否为空
         if not all_items:
             return []
             
-        # 3. 筛选有图片的
+        # 1. 先收集所有带图片的有效项目
         valid_items = []
-        # 4. 直接遍历 all_items 列表
         for item in all_items:
             if self.__get_image_url(item):
                 valid_items.append(item)
-                if len(valid_items) >= limit:
-                    break
-        return valid_items
+        
+        if not valid_items:
+            return []
+
+        # 2. 现在，对所有有效的项目应用排序逻辑
+        if self._sort_by == "Random":
+            logger.debug(f"正在对 {len(valid_items)} 个有效项目进行随机排序...")
+            random.shuffle(valid_items)
+        # else:
+        #     # 在这里可以添加其他排序逻辑，例如按添加日期或发布日期
+        #     # valid_items.sort(key=lambda x: x.get('DateCreated'), reverse=True)
+        #     pass
+
+        # 3. 最后，返回所需数量的项目
+        return valid_items[:limit]
 
     def __generate_image_from_path(self, library_name: str, title: Tuple[str, str], image_paths: List[str]) -> bytes:
         """使用本地图片路径列表生成封面"""
@@ -214,20 +223,12 @@ class CoverGeneratorService:
         """上传封面到媒体库"""
         library_id = library.get("Id") or library.get("ItemId")
         
-        # ▼▼▼ 核心修复：调用您项目中实际存在的函数 ▼▼▼
-        
-        # 1. 准备上传所需的参数
-        # 同样，先获取服务器连接信息
         base_url = config_manager.APP_CONFIG.get('emby_server_url')
         api_key = config_manager.APP_CONFIG.get('emby_api_key')
         
-        # 构造完整的上传URL
         upload_url = f"{base_url.rstrip('/')}/Items/{library_id}/Images/Primary?api_key={api_key}"
-        
-        # 设置请求头，这对于图片上传至关重要
         headers = {"Content-Type": "image/jpeg"}
 
-        # 2. 如果另存，先执行另存逻辑 (这部分保持不变)
         if self._covers_output:
             try:
                 save_path = Path(self._covers_output) / f"{library['Name']}.jpg"
@@ -238,22 +239,18 @@ class CoverGeneratorService:
             except Exception as e:
                 logger.error(f"另存封面失败: {e}")
 
-        # 3. 使用标准的 requests.post 方法来执行上传
         try:
             response = requests.post(upload_url, data=image_data, headers=headers, timeout=30)
-            response.raise_for_status() # 如果状态码不是 2xx，则抛出异常
-            
-            # Emby 成功后通常返回 204 No Content
+            response.raise_for_status()
             logger.info(f"成功上传封面到媒体库 '{library['Name']}'。")
             return True
-            
         except requests.exceptions.RequestException as e:
             logger.error(f"上传封面到媒体库 '{library['Name']}' 时发生网络错误: {e}")
             if e.response is not None:
                 logger.error(f"  -> 响应状态: {e.response.status_code}, 响应内容: {e.response.text[:200]}")
             return False
 
-    # --- 以下是辅助函数，大部分可以直接从原插件移植 ---
+    # --- 以下是辅助函数 ---
 
     def __get_library_title_from_yaml(self, library_name: str) -> Tuple[str, str]:
         zh_title, en_title = library_name, ''
@@ -270,17 +267,12 @@ class CoverGeneratorService:
         return zh_title, en_title
 
     def __get_image_url(self, item: Dict[str, Any]) -> str:
-        # 这个函数逻辑复杂，但可以基本照搬，因为它只处理字典
-        # 简化版本：
         item_id = item.get("Id")
         if self._cover_style.startswith('single') and not self._single_use_primary:
-            # 优先背景图
             if item.get("BackdropImageTags"):
                 return f'/emby/Items/{item_id}/Images/Backdrop/0?tag={item["BackdropImageTags"][0]}'
-        # 默认或其他情况，优先海报图
         if item.get("ImageTags", {}).get("Primary"):
             return f'/emby/Items/{item_id}/Images/Primary?tag={item["ImageTags"]["Primary"]}'
-        # 再次尝试背景图作为备用
         if item.get("BackdropImageTags"):
             return f'/emby/Items/{item_id}/Images/Backdrop/0?tag={item["BackdropImageTags"][0]}'
         return None
@@ -291,23 +283,18 @@ class CoverGeneratorService:
         filepath = subdir / f"{count}.jpg"
         
         try:
-            # ▼▼▼ Core Fix: Call the actual existing function in your project ▼▼▼
-            # First, get the server connection info
             base_url = config_manager.APP_CONFIG.get('emby_server_url')
             api_key = config_manager.APP_CONFIG.get('emby_api_key')
 
-            # The api_path from __get_image_url is a relative path like '/emby/Items/{item_id}/Images/{image_type}'
-            # We need to parse it to get the item_id and image_type for the download_emby_image function.
             path_parts = api_path.strip('/').split('/')
             if len(path_parts) >= 4 and path_parts[1] == 'Items' and path_parts[3] == 'Images':
                 item_id = path_parts[2]
-                image_type = path_parts[4].split('?')[0] # Get 'Primary' or 'Backdrop' and remove query params
+                image_type = path_parts[4].split('?')[0]
 
-                # Call the download_emby_image function
                 success = emby_handler.download_emby_image(
                     item_id=item_id,
                     image_type=image_type,
-                    save_path=str(filepath), # Ensure the path is a string
+                    save_path=str(filepath),
                     emby_server_url=base_url,
                     emby_api_key=api_key
                 )
@@ -315,10 +302,10 @@ class CoverGeneratorService:
                 if success:
                     return filepath
             else:
-                logger.error(f"Could not parse a valid item_id and image_type from api_path: {api_path}")
+                logger.error(f"无法从API路径解析有效的项目ID和图片类型: {api_path}")
 
         except Exception as e:
-            logger.error(f"Failed to download image ({api_path}): {e}", exc_info=True)
+            logger.error(f"下载图片失败 ({api_path}): {e}", exc_info=True)
             
         return None
         
@@ -328,7 +315,6 @@ class CoverGeneratorService:
         for i in range(1, 10):
             target_path = library_dir / f"{i}.jpg"
             if not target_path.exists():
-                # 从源图中随机选一张来填充
                 source_to_copy = random.choice(source_paths)
                 shutil.copy(source_to_copy, target_path)
 
@@ -342,14 +328,49 @@ class CoverGeneratorService:
         ])
         return images
 
+    def __download_file(self, url: str, dest_path: Path):
+        """下载文件到指定路径，如果文件已存在则跳过。"""
+        if dest_path.exists():
+            logger.debug(f"字体文件已存在，跳过下载: {dest_path.name}")
+            return
+        
+        logger.info(f"字体文件不存在，正在从URL下载: {dest_path.name}...")
+        try:
+            response = requests.get(url, stream=True, timeout=60)
+            response.raise_for_status()
+            with open(dest_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            logger.info(f"字体 '{dest_path.name}' 下载成功。")
+        except requests.RequestException as e:
+            logger.error(f"下载字体 '{dest_path.name}' 失败: {e}")
+            # 如果下载失败，可以考虑删除不完整的文件
+            if dest_path.exists():
+                dest_path.unlink()
+
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★ 核心修复 2: 实现自动字体下载 ★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     def __get_fonts(self):
-        # 这是一个简化的字体下载逻辑，您可以根据原插件的复杂逻辑进行扩展
-        # 为了简单，我们假设字体已手动放置
+        """检查并自动下载所需的字体文件。"""
+        # 定义字体源URL (请根据实际情况替换为可靠的URL)
+        font_sources = {
+            "zh_font.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC-Bold.otf",
+            "en_font.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/Roboto-Bold.ttf",
+            "zh_font_multi_1.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC-Regular.otf",
+            "en_font_multi_1.otf": "https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/Roboto-Regular.ttf"
+        }
+
+        # 遍历并下载所有需要的字体
+        for filename, url in font_sources.items():
+            dest_path = self.font_path / filename
+            self.__download_file(url, dest_path)
+
+        # 设置字体路径属性
         self.zh_font_path = self.font_path / "zh_font.ttf"
         self.en_font_path = self.font_path / "en_font.ttf"
         self.zh_font_path_multi_1 = self.font_path / "zh_font_multi_1.ttf"
         self.en_font_path_multi_1 = self.font_path / "en_font_multi_1.otf"
         
         if not self.zh_font_path.exists() or not self.en_font_path.exists():
-             logger.warning("核心字体文件不存在，请手动下载并放置到 data/cover_generator/fonts/ 目录下，并命名为 zh_font.ttf 和 en_font.ttf")
-             # 在这里可以添加从URL下载的逻辑
+             logger.warning("一个或多个核心字体文件下载失败或不存在，封面生成可能会失败或缺少文字。")
