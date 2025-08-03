@@ -180,7 +180,11 @@ class CoverGeneratorService:
         return valid_items[:limit]
 
     def __generate_image_from_path(self, library_name: str, title: Tuple[str, str], image_paths: List[str]) -> bytes:
-        """使用本地图片路径列表生成封面"""
+        """
+        【字体回退修复版】使用本地图片路径列表生成封面。
+        - 确保传递给底层函数的是字符串路径。
+        - 在多图模式下，如果专用字体不存在，则优雅地回退到使用单图字体，并记录日志。
+        """
         logger.info(f"正在为 '{library_name}' 从本地路径生成封面...")
         
         # 字体和尺寸配置
@@ -191,15 +195,34 @@ class CoverGeneratorService:
         font_size = (float(zh_font_size), float(en_font_size))
 
         if self._cover_style == 'single_1':
-            return create_style_single_1(image_paths[0], title, (self.zh_font_path, self.en_font_path), 
+            return create_style_single_1(str(image_paths[0]), title, (str(self.zh_font_path), str(self.en_font_path)), 
                                          font_size=font_size, blur_size=blur_size, color_ratio=color_ratio)
+        
         elif self._cover_style == 'single_2':
-            return create_style_single_2(image_paths[0], title, (self.zh_font_path, self.en_font_path), 
+            return create_style_single_2(str(image_paths[0]), title, (str(self.zh_font_path), str(self.en_font_path)), 
                                          font_size=font_size, blur_size=blur_size, color_ratio=color_ratio)
+        
         elif self._cover_style == 'multi_1':
-            zh_font_path_multi = self.zh_font_path_multi_1 or self.zh_font_path
-            en_font_path_multi = self.en_font_path_multi_1 or self.en_font_path
-            font_path_multi = (zh_font_path_multi, en_font_path_multi)
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # ★ 核心修复：实现健壮的字体检查与回退逻辑 ★
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            
+            # 检查多图专用中文字体是否存在
+            if self.zh_font_path_multi_1 and self.zh_font_path_multi_1.exists():
+                zh_font_path_multi = self.zh_font_path_multi_1
+            else:
+                logger.warning(f"未找到多图专用中文字体 ({self.zh_font_path_multi_1})，将回退使用单图字体。")
+                zh_font_path_multi = self.zh_font_path
+
+            # 检查多图专用英文字体是否存在
+            if self.en_font_path_multi_1 and self.en_font_path_multi_1.exists():
+                en_font_path_multi = self.en_font_path_multi_1
+            else:
+                logger.warning(f"未找到多图专用英文字体 ({self.en_font_path_multi_1})，将回退使用单图字体。")
+                en_font_path_multi = self.en_font_path
+
+            # 最终组合要使用的字体路径
+            font_path_multi = (str(zh_font_path_multi), str(en_font_path_multi))
             
             zh_font_size_multi = self.config.get("zh_font_size_multi_1", 1)
             en_font_size_multi = self.config.get("en_font_size_multi_1", 1)
@@ -208,11 +231,10 @@ class CoverGeneratorService:
             blur_size_multi = self.config.get("blur_size_multi_1", 50)
             color_ratio_multi = self.config.get("color_ratio_multi_1", 0.8)
 
-            # 准备9张图
             library_dir = self.covers_path / library_name
             self.__prepare_multi_images(library_dir, image_paths)
             
-            return create_style_multi_1(library_dir, title, font_path_multi, 
+            return create_style_multi_1(str(library_dir), title, font_path_multi, 
                                       font_size=font_size_multi, 
                                       is_blur=self._multi_1_blur, 
                                       blur_size=blur_size_multi, 
