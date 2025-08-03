@@ -59,17 +59,30 @@ def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_typ
         return None
 # ✨✨✨ 获取Emby项目详情 ✨✨✨
 def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str, fields: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    【ParentId 修复版】获取Emby项目详情。
+    - 确保请求的字段中包含 ParentId，以便可靠地确定其所属媒体库。
+    """
     if not all([item_id, emby_server_url, emby_api_key, user_id]):
         logger.error("获取Emby项目详情参数不足：缺少ItemID、服务器URL、API Key或UserID。")
         return None
 
     url = f"{emby_server_url.rstrip('/')}/Users/{user_id}/Items/{item_id}"
 
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★ 核心修复：在请求的字段中明确加入 ParentId ★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    
     # 2. 动态决定 Fields 参数的值
     if fields:
-        fields_to_request = fields
+        # 如果调用者自定义了字段，我们确保 ParentId 也在其中
+        if "ParentId" not in fields:
+            fields_to_request = fields + ",ParentId"
+        else:
+            fields_to_request = fields
     else:
-        fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines"
+        # 默认请求的字段列表
+        fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,ParentId"
 
     params = {
         "api_key": emby_api_key,
@@ -77,7 +90,6 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
     }
     
     # ✨✨✨ 新增：告诉 Emby 返回的 People 对象里要包含哪些字段 ✨✨✨
-    # 这是一个更可靠的方法
     params["PersonFields"] = "ImageTags,ProviderIds"
     
     # --- 函数的其余部分保持不变 ---
