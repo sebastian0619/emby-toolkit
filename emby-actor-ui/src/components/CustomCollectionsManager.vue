@@ -616,16 +616,43 @@ const formRules = computed(() => {
   return baseRules;
 });
 
+// 1. 新增一个权威的、健壮的类型判断计算属性
+const authoritativeCollectionType = computed(() => {
+    const collection = selectedCollectionDetails.value;
+    if (!collection || !collection.item_type) {
+        return 'Movie'; // 提供一个安全默认值
+    }
+
+    try {
+        // 后端返回的 item_type 是一个 JSON 字符串, e.g., '["Series"]'
+        // 我们需要先将它解析成一个真正的数组
+        const parsedTypes = JSON.parse(collection.item_type);
+        
+        // 检查解析后的数组是否包含 'Series'
+        if (Array.isArray(parsedTypes) && parsedTypes.includes('Series')) {
+            return 'Series';
+        }
+        return 'Movie';
+    } catch (e) {
+        // 如果 JSON 解析失败，说明它可能是一个普通的字符串 (作为兜底逻辑)
+        if (collection.item_type === 'Series') {
+            return 'Series';
+        }
+        return 'Movie';
+    }
+});
 
 const detailsModalTitle = computed(() => {
   if (!selectedCollectionDetails.value) return '';
-  const typeLabel = selectedCollectionDetails.value.item_type === 'Series' ? '电视剧合集' : '电影合集';
+  // 使用新的 authoritativeCollectionType 来决定标签
+  const typeLabel = authoritativeCollectionType.value === 'Series' ? '电视剧合集' : '电影合集';
   return `${typeLabel}详情 - ${selectedCollectionDetails.value.name}`;
 });
 
 const mediaTypeName = computed(() => {
   if (!selectedCollectionDetails.value) return '媒体';
-  return selectedCollectionDetails.value.item_type === 'Series' ? '剧集' : '影片';
+  // 使用新的 authoritativeCollectionType 来决定是“剧集”还是“影片”
+  return authoritativeCollectionType.value === 'Series' ? '剧集' : '影片';
 });
 
 const filterMediaByStatus = (status) => {
@@ -674,18 +701,17 @@ const subscribeMedia = async (media) => {
 
   subscribing.value[media.tmdb_id] = true;
   try {
-    // ▼▼▼【核心修复】▼▼▼
-    await axios.post('/api/custom_collections/subscribe', { // 1. 修正API路径
-      collection_id: selectedCollectionDetails.value.id, // 2. 新增 collection_id
+    await axios.post('/api/custom_collections/subscribe', {
+      collection_id: selectedCollectionDetails.value.id,
       tmdb_id: media.tmdb_id,
       title: media.title,
-      item_type: selectedCollectionDetails.value.item_type
+      // ▼▼▼ 核心修复：发送当前媒体项自己的类型，而不是整个合集的类型 ▼▼▼
+      item_type: media.type 
+      // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
     });
-    // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
     message.success(`《${media.title}》已成功提交订阅并更新状态！`);
     
-    // 现在这行代码的行为和后端是一致的了
     media.status = 'subscribed'; 
 
   } catch (err) {
