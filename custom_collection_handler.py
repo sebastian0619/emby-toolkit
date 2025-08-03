@@ -177,47 +177,55 @@ class FilterEngine:
         for rule in rules:
             field, op, value = rule.get("field"), rule.get("operator"), rule.get("value")
             
-            # ▼▼▼ 核心重构区域 START ▼▼▼
-
-            # 1. 从 item_metadata 中获取要被比较的真实值
-            actual_item_value = item_metadata.get(field) # 用于 gte, lte, release_date 等
-            actual_item_list_json = item_metadata.get(f"{field}_json") # 用于 contains, is_one_of 等
-
             match = False
             
-            # 2. 将列表检查的逻辑封装得更健壮
-            def check_if_value_is_in_json_list(value_to_find, target_json_string: Optional[str]) -> bool:
-                if not target_json_string:
-                    return False
-                try:
-                    target_list = json.loads(target_json_string)
-                    return value_to_find in target_list
-                except (json.JSONDecodeError, TypeError):
-                    return False
-
-            if op == 'contains':
-                if check_if_value_is_in_json_list(value, actual_item_list_json):
-                    match = True
-
-            # 3. 重新编写所有操作符的判断逻辑，使其更清晰
-            if op == 'is_one_of':
-                # value 是一个列表, e.g., ['中国大陆', '香港']
-                # 检查这个列表中的任何一个元素，是否存在于数据库的JSON列表中
-                if isinstance(value, list) and any(check_if_value_is_in_json_list(v, actual_item_list_json) for v in value):
-                    match = True
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # ★ 核心修正：为不同类型的字段应用不同的列表检查逻辑 ★
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             
-            elif op == 'is_none_of':
-                if isinstance(value, list) and not any(check_if_value_is_in_json_list(v, actual_item_list_json) for v in value):
-                    match = True
+            # 1. 检查字段是否为“对象列表”（演员/导演）
+            if field in ['actors', 'directors']:
+                json_str = item_metadata.get(f"{field}_json")
+                if json_str:
+                    try:
+                        # 从 '[{"id": 123, "name": "A"},...]' 中提取出所有名字
+                        item_name_list = [p['name'] for p in json.loads(json_str) if 'name' in p]
+                        
+                        if op == 'is_one_of':
+                            # 检查规则中的任何一个名字是否存在于项目的名字列表中
+                            if isinstance(value, list) and any(v in item_name_list for v in value):
+                                match = True
+                        elif op == 'is_none_of':
+                            # 检查规则中的所有名字都不存在于项目的名字列表中
+                            if isinstance(value, list) and not any(v in item_name_list for v in value):
+                                match = True
+                        elif op == 'contains':
+                            # 检查规则中的单个名字是否存在于项目的名字列表中
+                            if value in item_name_list:
+                                match = True
+                    except (json.JSONDecodeError, TypeError):
+                        pass # JSON解析失败则不匹配
 
-            elif op == 'contains':
-                # value 是单个字符串, e.g., '中国台湾'
-                # 检查这个字符串是否存在于数据库的JSON列表中
-                if check_if_value_is_in_json_list(value, actual_item_list_json):
-                    match = True
+            # 2. 检查字段是否为“字符串列表”（类型/国家/工作室）
+            elif field in ['genres', 'countries', 'studios']:
+                json_str = item_metadata.get(f"{field}_json")
+                if json_str:
+                    try:
+                        item_value_list = json.loads(json_str)
+                        if op == 'is_one_of':
+                            if isinstance(value, list) and any(v in item_value_list for v in value):
+                                match = True
+                        elif op == 'is_none_of':
+                            if isinstance(value, list) and not any(v in item_value_list for v in value):
+                                match = True
+                        elif op == 'contains':
+                            if value in item_value_list:
+                                match = True
+                    except (json.JSONDecodeError, TypeError):
+                        pass
 
+            # 3. 处理其他所有非列表字段（日期、数字等）
             elif field in ['release_date', 'date_added']:
-                # (这部分逻辑保持不变)
                 item_date_str = item_metadata.get(field)
                 if item_date_str and str(value).isdigit():
                     try:
@@ -231,28 +239,19 @@ class FilterEngine:
                             if item_date < cutoff_date: match = True
                     except (ValueError, TypeError): pass
             
-            elif op == 'gte':
-                if actual_item_value is not None and str(value).replace('.', '', 1).isdigit():
-                    try:
-                        if float(actual_item_value) >= float(value): match = True
-                    except (ValueError, TypeError): pass
-            
-            elif op == 'lte':
-                if actual_item_value is not None and str(value).replace('.', '', 1).isdigit():
-                    try:
-                        if float(actual_item_value) <= float(value): match = True
-                    except (ValueError, TypeError): pass
-
-            elif op == 'eq':
-                # eq 通常用于单值字段，如年份
+            else: # 处理 gte, lte, eq
+                actual_item_value = item_metadata.get(field)
                 if actual_item_value is not None:
                     try:
-                        if str(actual_item_value) == str(value): match = True
+                        if op == 'gte' and float(actual_item_value) >= float(value): match = True
+                        elif op == 'lte' and float(actual_item_value) <= float(value): match = True
+                        elif op == 'eq' and str(actual_item_value) == str(value): match = True
                     except (ValueError, TypeError): pass
-            
+
             results.append(match)
-            if logic.upper() == 'AND': return all(results)
-            else: return any(results)
+
+        if logic.upper() == 'AND': return all(results)
+        else: return any(results)
 
     def execute_filter(self, definition: Dict[str, Any]) -> List[Dict[str, str]]:
         """
