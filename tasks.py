@@ -439,9 +439,9 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
             # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             
             # 3. 直接从项目详情中获取其所属的媒体库ID
-            parent_library_id = item_details.get("LibraryId")
+            parent_library_id = item_details.get("ParentId") or item_details.get("LibraryId")
             if not parent_library_id:
-                raise ValueError("项目详情中缺少 LibraryId 字段，无法确定所属媒体库。")
+                raise ValueError("项目详情中缺少 ParentId 或 LibraryId 字段，无法确定所属媒体库。")
 
             # 4. 获取所有媒体库的列表，以便找到该ID对应的完整库信息
             all_libraries = emby_handler.get_emby_libraries(
