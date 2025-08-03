@@ -23,3 +23,8 @@ google-generativeai # 用于Gemini
  
 # --- 一键更新 ---
 docker
+
+# --- 封面生成 ---
+numpy
+Pillow
+PyYAML

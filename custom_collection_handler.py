@@ -169,52 +169,6 @@ class FilterEngine:
     """
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self.country_map = self._load_country_map()
-
-    def _load_country_map(self) -> Dict[str, List[str]]:
-        """
-        【V4 - 健壮版】加载国家/地区映射文件。
-        增加了详细的错误日志，能准确报告文件路径问题或JSON解析问题。
-        返回一个字典，键为中文名，值为一个包含[英文全称, 英文简写]的列表。
-        """
-        # 尝试从持久化数据路径加载
-        persistent_map_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'countries.json')
-        # 备用路径，从源代码资源路径加载
-        fallback_map_path = os.path.join(os.path.dirname(__file__), '..', 'src', 'assets', 'countries.json')
-        
-        map_path_to_use = None
-        if os.path.exists(persistent_map_path):
-            map_path_to_use = persistent_map_path
-            logger.debug(f"发现国家/地区映射文件于持久化路径: {map_path_to_use}")
-        elif os.path.exists(fallback_map_path):
-            map_path_to_use = fallback_map_path
-            logger.debug(f"发现国家/地区映射文件于备用路径: {map_path_to_use}")
-        else:
-            # 两个预设路径都找不到文件，这是最常见的错误原因
-            logger.error(f"加载国家/地区映射文件失败：在以下两个路径均未找到 countries.json 文件。")
-            logger.error(f" - 检查路径1: {persistent_map_path}")
-            logger.error(f" - 检查路径2: {fallback_map_path}")
-            logger.error("国家/地区筛选功能将无法正常工作。")
-            return {}
-
-        try:
-            chinese_to_matches_map = {}
-            with open(map_path_to_use, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                for english_name, details in data.items():
-                    chinese_name = details.get('chinese_name')
-                    abbr = details.get('abbr')
-                    if chinese_name and abbr:
-                        chinese_to_matches_map[chinese_name] = [english_name, abbr]
-            
-            logger.info(f"成功从 {map_path_to_use} 加载了 {len(chinese_to_matches_map)} 个国家/地区映射。")
-            return chinese_to_matches_map
-        except json.JSONDecodeError as e:
-            logger.error(f"加载国家/地区映射文件失败：文件 {map_path_to_use} 不是一个有效的JSON文件。错误: {e}")
-            return {}
-        except Exception as e:
-            logger.error(f"加载国家/地区映射文件时发生未知错误: {e}。路径: {map_path_to_use}")
-            return {}
 
     def _item_matches_rules(self, item_metadata: Dict[str, Any], rules: List[Dict[str, Any]], logic: str) -> bool:
         if not rules: return True
@@ -223,44 +177,47 @@ class FilterEngine:
         for rule in rules:
             field, op, value = rule.get("field"), rule.get("operator"), rule.get("value")
             
-            value_to_compare = value
-            # 国家/地区映射逻辑保持不变，它工作正常
-            if field == 'countries' and op not in ['is_one_of', 'is_none_of']:
-                if value in self.country_map:
-                    value_to_compare = self.country_map[value]
-                    logger.trace(f"国家/地区反向映射: '{value}' -> '{value_to_compare}'")
+            # ▼▼▼ 核心重构区域 START ▼▼▼
 
-            # 统一获取元数据
-            if field == 'release_year':
-                item_value_raw = item_metadata.get('release_year')
-                actual_values = [item_value_raw] if item_value_raw is not None else []
-            else:
-                item_value_raw = item_metadata.get(f"{field}_json")
-                try:
-                    actual_values = json.loads(item_value_raw) if item_value_raw else []
-                except (json.JSONDecodeError, TypeError):
-                    actual_values = []
+            # 1. 从 item_metadata 中获取要被比较的真实值
+            actual_item_value = item_metadata.get(field) # 用于 gte, lte, release_date 等
+            actual_item_list_json = item_metadata.get(f"{field}_json") # 用于 contains, is_one_of 等
 
             match = False
             
-            def check_list_contains(values_to_check, target_list):
-                target_set = set()
-                for item in target_list:
-                    if isinstance(item, dict):
-                        target_set.add(item.get("name", ""))
-                    elif isinstance(item, str):
-                        target_set.add(item)
-                return values_to_check in target_set
+            # 2. 将列表检查的逻辑封装得更健壮
+            def check_if_value_is_in_json_list(value_to_find, target_json_string: Optional[str]) -> bool:
+                if not target_json_string:
+                    return False
+                try:
+                    target_list = json.loads(target_json_string)
+                    return value_to_find in target_list
+                except (json.JSONDecodeError, TypeError):
+                    return False
 
+            if op == 'contains':
+                if check_if_value_is_in_json_list(value, actual_item_list_json):
+                    match = True
+
+            # 3. 重新编写所有操作符的判断逻辑，使其更清晰
             if op == 'is_one_of':
-                if isinstance(value, list) and any(check_list_contains(v, actual_values) for v in value):
+                # value 是一个列表, e.g., ['中国大陆', '香港']
+                # 检查这个列表中的任何一个元素，是否存在于数据库的JSON列表中
+                if isinstance(value, list) and any(check_if_value_is_in_json_list(v, actual_item_list_json) for v in value):
                     match = True
             
             elif op == 'is_none_of':
-                if isinstance(value, list) and not any(check_list_contains(v, actual_values) for v in value):
+                if isinstance(value, list) and not any(check_if_value_is_in_json_list(v, actual_item_list_json) for v in value):
+                    match = True
+
+            elif op == 'contains':
+                # value 是单个字符串, e.g., '中国台湾'
+                # 检查这个字符串是否存在于数据库的JSON列表中
+                if check_if_value_is_in_json_list(value, actual_item_list_json):
                     match = True
 
             elif field in ['release_date', 'date_added']:
+                # (这部分逻辑保持不变)
                 item_date_str = item_metadata.get(field)
                 if item_date_str and str(value).isdigit():
                     try:
@@ -274,52 +231,28 @@ class FilterEngine:
                             if item_date < cutoff_date: match = True
                     except (ValueError, TypeError): pass
             
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★★★ 核心修复：修正 'contains' 操作符对国家/地区字段的处理逻辑 ★★★
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            elif op == 'contains':
-                if isinstance(actual_values, list):
-                    for item in actual_values:
-                        item_name = item.get("name") if isinstance(item, dict) else item
-                        if not item_name:
-                            continue
-
-                        # 如果 value_to_compare 是一个列表 (说明是经过映射的国家/地区)
-                        # 则检查 item_name 是否是列表的成员之一
-                        if isinstance(value_to_compare, list):
-                            if item_name in value_to_compare:
-                                match = True
-                                break
-                        # 否则 (适用于所有其他字段)，执行原始的子字符串包含检查
-                        else:
-                            if str(value_to_compare) in str(item_name):
-                                match = True
-                                break
-            
             elif op == 'gte':
-                item_value = item_metadata.get(field)
-                if item_value is not None and str(value).replace('.', '', 1).isdigit():
+                if actual_item_value is not None and str(value).replace('.', '', 1).isdigit():
                     try:
-                        if float(item_value) >= float(value): match = True
+                        if float(actual_item_value) >= float(value): match = True
                     except (ValueError, TypeError): pass
             
             elif op == 'lte':
-                item_value = item_metadata.get(field)
-                if item_value is not None and str(value).replace('.', '', 1).isdigit():
+                if actual_item_value is not None and str(value).replace('.', '', 1).isdigit():
                     try:
-                        if float(item_value) <= float(value): match = True
+                        if float(actual_item_value) <= float(value): match = True
                     except (ValueError, TypeError): pass
 
             elif op == 'eq':
-                if actual_values and actual_values[0] is not None:
+                # eq 通常用于单值字段，如年份
+                if actual_item_value is not None:
                     try:
-                        if str(actual_values[0]) == str(value_to_compare): match = True
+                        if str(actual_item_value) == str(value): match = True
                     except (ValueError, TypeError): pass
             
             results.append(match)
-
-        if logic.upper() == 'AND': return all(results)
-        else: return any(results)
+            if logic.upper() == 'AND': return all(results)
+            else: return any(results)
 
     def execute_filter(self, definition: Dict[str, Any]) -> List[Dict[str, str]]:
         """

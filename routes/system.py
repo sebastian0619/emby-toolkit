@@ -310,28 +310,7 @@ def stream_update_progress():
             yield from send_event({"status": error_message, "event": "ERROR"})
 
     return Response(stream_with_context(generate_progress()), mimetype='text/event-stream')
-# ★★★ 提供国家/地区映射的API ★★★
-@system_bp.route('/config/countries', methods=['GET'])
-@login_required
-def api_get_countries_config():
-    """
-    读取并返回国家/地区的中英文映射JSON文件。
-    """
-    try:
-        # 从持久化数据目录读取文件
-        countries_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'countries.json')
-        
-        if not os.path.exists(countries_path):
-            logger.warning("请求国家/地区配置失败，因为 countries.json 文件不存在。")
-            return jsonify({"error": "配置文件 'countries.json' 未找到"}), 404
 
-        with open(countries_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            return jsonify(data)
-
-    except Exception as e:
-        logger.error(f"读取 countries.json 时发生错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器内部错误"}), 500
 # ★★★ 提供电影类型映射的API ★★★
 @system_bp.route('/config/genres', methods=['GET'])
 @login_required

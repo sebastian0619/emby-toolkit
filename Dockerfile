@@ -69,6 +69,7 @@ COPY requirements.txt \
      custom_collection_handler.py \
      ./
 
+COPY services/ ./services/
 COPY assets/ ./assets/
 COPY routes/ ./routes/
 COPY templates/ ./templates/

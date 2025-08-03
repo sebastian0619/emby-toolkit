@@ -51,6 +51,7 @@ from routes.system import system_bp
 from routes.media import media_api_bp, media_proxy_bp
 from routes.auth import auth_bp, init_auth as init_auth_from_blueprint
 from routes.actions import actions_bp
+from routes.cover_generator_config import cover_generator_config_bp
 # --- 核心模块导入 ---
 import constants # 你的常量定义\
 import logging
@@ -97,19 +98,6 @@ def init_db():
         if not os.path.exists(config_manager.PERSISTENT_DATA_PATH):
             os.makedirs(config_manager.PERSISTENT_DATA_PATH, exist_ok=True)
 
-        # 定义源文件（模板）和目标文件的路径
-        source_countries_path = os.path.join(os.path.dirname(__file__), 'assets', 'countries.json')
-        dest_countries_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'countries.json')
-
-        # 用模板覆盖字典
-        try:
-            if os.path.exists(source_countries_path):
-                shutil.copy2(source_countries_path, dest_countries_path)
-                logger.info(f"已用模板覆盖 'countries.json' 到: {dest_countries_path}")
-            else:
-                logger.error(f"无法覆盖 'countries.json'，因为源模板文件未找到: {source_countries_path}")
-        except Exception as e_copy:
-            logger.error(f"复制 'countries.json' 模板时发生错误: {e_copy}", exc_info=True)
 
         with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()
@@ -849,6 +837,7 @@ app.register_blueprint(media_api_bp)
 app.register_blueprint(media_proxy_bp)
 app.register_blueprint(auth_bp)
 app.register_blueprint(actions_bp)
+app.register_blueprint(cover_generator_config_bp)
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}")
     

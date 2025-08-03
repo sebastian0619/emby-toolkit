@@ -32,8 +32,96 @@ from actor_sync_handler import UnifiedSyncHandler
 from extensions import TASK_REGISTRY
 from custom_collection_handler import ListImporter, FilterEngine
 from core_processor import _read_local_json
+from services.cover_generator import CoverGeneratorService
 
 logger = logging.getLogger(__name__)
+
+# ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+# --- 新增：国家/地区名称映射功能 ---
+# ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+
+_country_map_cache = None
+
+def get_country_translation_map() -> dict:
+    """
+    【V-Hardcoded - 硬编码最终版】
+    直接在代码中定义并缓存一个权威的国家/地区反向映射表。
+    """
+    global _country_map_cache
+    if _country_map_cache is not None:
+        return _country_map_cache
+
+    try:
+        # 直接在代码中定义数据源
+        source_data = {
+        "Hong Kong": {"chinese_name": "香港", "abbr": "HK"},
+        "United States of America": {"chinese_name": "美国", "abbr": "US"},
+        "Japan": {"chinese_name": "日本", "abbr": "JP"},
+        "United Kingdom": {"chinese_name": "英国", "abbr": "GB"},
+        "France": {"chinese_name": "法国", "abbr": "FR"},
+        "South Korea": {"chinese_name": "韩国", "abbr": "KR"},
+        "Germany": {"chinese_name": "德国", "abbr": "DE"},
+        "Canada": {"chinese_name": "加拿大", "abbr": "CA"},
+        "India": {"chinese_name": "印度", "abbr": "IN"},
+        "Italy": {"chinese_name": "意大利", "abbr": "IT"},
+        "Spain": {"chinese_name": "西班牙", "abbr": "ES"},
+        "Australia": {"chinese_name": "澳大利亚", "abbr": "AU"},
+        "China": {"chinese_name": "中国大陆", "abbr": "CN"},
+        "Taiwan": {"chinese_name": "中国台湾", "abbr": "TW"},
+        "Russia": {"chinese_name": "俄罗斯", "abbr": "RU"},
+        "Thailand": {"chinese_name": "泰国", "abbr": "TH"},
+        "Sweden": {"chinese_name": "瑞典", "abbr": "SE"},
+        "Denmark": {"chinese_name": "丹麦", "abbr": "DK"},
+        "Mexico": {"chinese_name": "墨西哥", "abbr": "MX"},
+        "Brazil": {"chinese_name": "巴西", "abbr": "BR"},
+        "Argentina": {"chinese_name": "阿根廷", "abbr": "AR"},
+        "Ireland": {"chinese_name": "爱尔兰", "abbr": "IE"},
+        "New Zealand": {"chinese_name": "新西兰", "abbr": "NZ"},
+        "Netherlands": {"chinese_name": "荷兰", "abbr": "NL"},
+        "Belgium": {"chinese_name": "比利时", "abbr": "BE"}
+        }
+
+        reverse_map = {}
+        for english_name, details in source_data.items():
+            chinese_name = details.get('chinese_name')
+            abbr = details.get('abbr')
+            if chinese_name:
+                reverse_map[english_name] = chinese_name
+                if abbr:
+                    reverse_map[abbr.lower()] = chinese_name
+        
+        _country_map_cache = reverse_map
+        logger.info(f"成功从代码中加载并缓存了 {len(reverse_map)} 条国家/地区映射。")
+        return _country_map_cache
+
+    except Exception as e:
+        logger.error(f"从硬编码数据构建国家映射时出错: {e}。")
+        _country_map_cache = {}
+        return {}
+
+def translate_country_list(country_names_or_codes: list) -> list:
+    """
+    接收一个包含国家英文名或代码的列表，返回一个翻译后的中文名列表。
+    """
+    if not country_names_or_codes:
+        return []
+    
+    # ▼▼▼ 核心修复：确保函数调用是明确的 ▼▼▼
+    # 理论上直接调用 get_country_translation_map() 就可以，
+    # 但为了确保 Pylance 能理解，我们可以保持现状，因为它逻辑上是正确的。
+    # 这个错误很可能是 Pylance 的一个误报，因为函数定义就在同一个文件里。
+    # 我们可以先忽略这个 utils.py 的错误，因为它在运行时应该不会有问题。
+    translation_map = get_country_translation_map()
+    
+    if not translation_map:
+        return country_names_or_codes
+
+    translated_list = []
+    for item in country_names_or_codes:
+        translated = translation_map.get(item.lower(), translation_map.get(item, item))
+        translated_list.append(translated)
+        
+    return list(dict.fromkeys(translated_list))
 
 # --- 一键重构演员数据 ---
 def run_full_rebuild_task(self, update_status_callback: Optional[callable] = None, stop_event: Optional[threading.Event] = None):
@@ -331,7 +419,68 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
     except Exception as e:
         logger.error(f"为新入库项目 {item_id} 匹配自定义合集时发生意外错误: {e}", exc_info=True)
 
-    logger.debug(f"Webhook 任务完成: {item_id}")
+    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+    # --- 新增：步骤 E - 为所属的常规媒体库生成封面 ---
+    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+    try:
+        # 1. 读取封面生成器的配置
+        cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, "cover_generator.json")
+        cover_config = {}
+        if os.path.exists(cover_config_path):
+            with open(cover_config_path, 'r', encoding='utf-8') as f:
+                cover_config = json.load(f)
+
+        # 2. 检查“监控新入库”开关是否开启
+        if cover_config.get("enabled") and cover_config.get("transfer_monitor"):
+            logger.info(f"检测到入库监控已启用，将为项目 '{item_details.get('Name')}' 所在的媒体库生成封面...")
+            
+            # 3. 获取该项目所属的媒体库信息
+            # item_details 中通常没有直接的库ID，我们需要通过它的路径来反查
+            item_path = item_details.get("Path")
+            if not item_path:
+                raise ValueError("项目详情中缺少 Path 字段，无法确定所属媒体库。")
+
+            all_libraries = emby_handler.get_emby_libraries(
+                processor.emby_url, processor.emby_api_key, processor.emby_user_id
+            )
+            if not all_libraries:
+                raise ValueError("无法从 Emby 获取媒体库列表。")
+
+            parent_library = None
+            for lib in all_libraries:
+                # Locations 是一个路径列表
+                locations = lib.get("Locations", [])
+                if any(item_path.startswith(loc) for loc in locations):
+                    parent_library = lib
+                    break
+            
+            if not parent_library:
+                raise ValueError(f"无法根据路径 '{item_path}' 找到其所属的媒体库。")
+
+            library_id = parent_library.get("Id")
+            library_name = parent_library.get("Name")
+            
+            # 4. 检查该媒体库是否在“忽略列表”中
+            # 您需要根据您项目的实际情况来确定 server_id
+            server_id = 'main_emby' # 占位符
+            library_unique_id = f"{server_id}-{library_id}"
+            if library_unique_id in cover_config.get("exclude_libraries", []):
+                logger.info(f"媒体库 '{library_name}' 在忽略列表中，跳过封面生成。")
+            else:
+                # 5. 实例化服务并执行封面生成
+                logger.info(f"将为媒体库 '{library_name}' (ID: {library_id}) 生成新封面...")
+                cover_service = CoverGeneratorService(config=cover_config)
+                cover_service.generate_for_library(
+                    emby_server_id=server_id,
+                    library=parent_library
+                )
+        else:
+            logger.debug("封面生成器或入库监控未启用，跳过为常规媒体库生成封面。")
+
+    except Exception as e:
+        logger.error(f"为新入库项目 {item_id} 所在的媒体库生成封面时发生错误: {e}", exc_info=True)
+
+    logger.info(f"Webhook 任务及所有后续流程完成: {item_id}")
 # --- 追剧 ---    
 def task_process_watchlist(processor: WatchlistProcessor, item_id: Optional[str] = None):
     """
@@ -1469,6 +1618,57 @@ def task_process_all_custom_collections(processor: MediaProcessor):
             except Exception as e_coll:
                 logger.error(f"处理合集 '{collection_name}' (ID: {collection_id}) 时发生错误: {e_coll}", exc_info=True)
                 continue
+
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+        # --- 新增：封面生成逻辑 ---
+        # 在所有合集都处理完毕后，统一开始生成封面
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+        try:
+            cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, "cover_generator.json")
+            cover_config = {}
+            if os.path.exists(cover_config_path):
+                with open(cover_config_path, 'r', encoding='utf-8') as f:
+                    cover_config = json.load(f)
+
+            if cover_config.get("enabled"):
+                logger.info("检测到封面生成器已启用，将为所有已处理的合集生成封面...")
+                task_manager.update_status_from_thread(95, "合集同步完成，开始生成封面...")
+                
+                cover_service = CoverGeneratorService(config=cover_config)
+                
+                # ★★★ 核心逻辑：再次查询数据库，获取所有刚刚被更新了 Emby ID 的合集 ★★★
+                # 这样做比在循环中传递变量更健壮
+                updated_collections = db_handler.get_all_active_custom_collections(config_manager.DB_PATH)
+
+                for collection in updated_collections:
+                    collection_name = collection.get('name')
+                    emby_collection_id = collection.get('emby_collection_id')
+                    
+                    if emby_collection_id:
+                        logger.info(f"--- 正在为合集 '{collection_name}' 生成封面 ---")
+                        # 同样，您需要有方法确定服务器ID
+                        server_id = 'main_emby' 
+                        
+                        library_info = emby_handler.get_emby_item_details(
+                            emby_collection_id, 
+                            processor.emby_url, 
+                            processor.emby_api_key, 
+                            processor.emby_user_id
+                        )
+                        
+                        if library_info:
+                            cover_service.generate_for_library(
+                                emby_server_id=server_id,
+                                library=library_info
+                            )
+                        else:
+                            logger.warning(f"无法获取 Emby 合集 {emby_collection_id} 的详情，跳过封面生成。")
+                    else:
+                        logger.debug(f"合集 '{collection_name}' 没有关联的 Emby ID，跳过封面生成。")
+
+        except Exception as e:
+            logger.error(f"在任务末尾执行批量封面生成时失败: {e}", exc_info=True)
+        # --- 封面生成逻辑结束 ---
         
         final_message = "所有启用的自定义合集均已处理完毕！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
@@ -1643,6 +1843,48 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, custom_collection_id, update_data)
         logger.info(f"已更新自定义合集 '{collection_name}' (ID: {custom_collection_id}) 的同步状态和健康信息。")
 
+
+        # --- 封面生成逻辑 ---
+        try:
+            cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, "cover_generator.json")
+            cover_config = {}
+            if os.path.exists(cover_config_path):
+                with open(cover_config_path, 'r', encoding='utf-8') as f:
+                    cover_config = json.load(f)
+
+            # 检查插件是否在配置中启用
+            if cover_config.get("enabled"):
+                logger.info(f"检测到封面生成器已启用，将为合集 '{collection_name}' 生成封面...")
+                
+                # 实例化服务
+                cover_service = CoverGeneratorService(config=cover_config)
+                
+                # emby_collection_id 变量在上面已经获取到了
+                if emby_collection_id:
+                    # 您需要有一种方式来确定当前操作的服务器ID
+                    # 这里我们先用一个占位符，您需要根据项目结构替换它
+                    server_id = 'main_emby' 
+                    
+                    # 获取合集的详细信息，作为 library_info 传递
+                    library_info = emby_handler.get_emby_item_details(
+                        emby_collection_id, 
+                        processor.emby_url, 
+                        processor.emby_api_key, 
+                        processor.emby_user_id
+                    )
+                    
+                    if library_info:
+                        cover_service.generate_for_library(
+                            emby_server_id=server_id,
+                            library=library_info
+                        )
+                    else:
+                        logger.warning(f"无法获取 Emby 合集 {emby_collection_id} 的详情，跳过封面生成。")
+
+        except Exception as e:
+            logger.error(f"为合集 '{collection_name}' 生成封面时发生错误: {e}", exc_info=True)
+        # --- 封面生成逻辑结束 ---
+
         task_manager.update_status_from_thread(100, "自定义合集同步并分析完成！")
 
     except Exception as e:
@@ -1653,24 +1895,15 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def task_populate_metadata_cache(processor: 'MediaProcessor'):
     """
-    【V11 - 中英双语兼容修复版】
-    修复了演员信息提取逻辑，现在会同时提取 name 和 original_name，
-    为双语演员搜索提供完整的数据支持。
+    【V12 - 国家/地区中文映射最终版】
+    - 统一使用 get_country_translation_map() 和 translate_country_list() 将国家/地区信息转换为中文后再写入数据库。
+    - 保留了对演员名(name/original_name)的双语兼容修复。
     """
     task_name = "快速同步媒体元数据"
-    logger.trace(f"--- 开始执行 '{task_name}' 任务 (双语兼容修复模式) ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 (国家中文映射最终版) ---")
     task_manager.update_status_from_thread(0, "正在准备从Emby获取媒体索引...")
 
     try:
-        # 预加载国家代码到名称的映射表 (电视剧将使用此表)
-        country_map = {}
-        try:
-            map_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'countries.json')
-            with open(map_path, 'r', encoding='utf-8') as f:
-                country_map = json.load(f)
-        except Exception as e:
-            logger.warning(f"加载国家映射文件失败: {e}，电视剧国家信息可能不完整。")
-
         # 步骤 1: 从Emby获取基础索引
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
         if not libs_to_process_ids:
@@ -1716,10 +1949,12 @@ def task_populate_metadata_cache(processor: 'MediaProcessor'):
 
                 if details_data:
                     studios = [s['name'] for s in details_data.get('production_companies', []) if s.get('name')]
-                    countries = [c['name'] for c in details_data.get('production_countries', []) if c.get('name')]
+                    
+                    # ★★★ 核心修改 1: 提取英文国家名列表，并调用翻译函数 ★★★
+                    original_countries = [c['name'] for c in details_data.get('production_countries', []) if c.get('name')]
+                    countries = translate_country_list(original_countries)
                     
                     casts_container = details_data.get('casts', {})
-                    # ★★★ 核心修复 1: 同时提取 name 和 original_name ★★★
                     actors = [
                         {'id': p.get('id'), 'name': p.get('name'), 'original_name': p.get('original_name')} 
                         for p in casts_container.get('cast', [])
@@ -1741,11 +1976,12 @@ def task_populate_metadata_cache(processor: 'MediaProcessor'):
 
                 if series_data:
                     studios = [s['name'] for s in series_data.get('networks', []) if s.get('name')]
+
+                    # ★★★ 核心修改 2: 提取国家代码列表，并调用翻译函数 ★★★
                     origin_codes = series_data.get('origin_country', [])
-                    countries = [country_map.get(code, code) for code in origin_codes]
+                    countries = translate_country_list(origin_codes)
 
                     credits_container = series_data.get('credits', {})
-                    # ★★★ 核心修复 2: 同时提取 name 和 original_name ★★★
                     actors = [
                         {'id': p.get('id'), 'name': p.get('name'), 'original_name': p.get('original_name')} 
                         for p in credits_container.get('cast', [])
@@ -1769,6 +2005,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor'):
                     "actors_json": json.dumps(actors, ensure_ascii=False),
                     "directors_json": json.dumps(directors, ensure_ascii=False),
                     "studios_json": json.dumps(studios, ensure_ascii=False),
+                    # ★★★ 核心修改 3: 写入数据库的将是翻译后的中文国家名列表 ★★★
                     "countries_json": json.dumps(countries, ensure_ascii=False),
                 })
                 

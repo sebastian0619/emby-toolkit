@@ -433,25 +433,18 @@ watch(() => currentCollection.value.type, (newType) => {
 
 const fetchCountryOptions = async () => {
   try {
-    const response = await axios.get('/api/config/countries');
-    const countryMap = response.data; // 后端返回的数据: {'香港': [...], '美国': [...]}
+    const response = await axios.get('/api/custom_collections/config/countries');
+    // 后端现在直接返回一个中文名数组: ['中国大陆', '中国台湾', '美国', ...]
+    const countryList = response.data; 
     
-    // ★★★ 核心修复 ★★★
-    // 我们需要的是中文名列表，它们是 countryMap 的键 (keys)
-    // 而不是值 (values)，值是给后端匹配用的 ['English Name', 'Abbr']
-    countryOptions.value = Object.keys(countryMap).map(chineseName => ({
-      label: chineseName,
-      value: chineseName // 在下拉菜单中，标签和值都使用中文名
-    })).sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
+    // ★ 直接将数组转换为选项
+    countryOptions.value = countryList.map(name => ({
+      label: name,
+      value: name
+    }));
     
-    if (countryOptions.value.length === 0) {
-        message.warning('获取到的国家/地区列表为空，请检查后端配置。');
-    }
-
   } catch (error) {
-    // 这个错误提示现在只会在网络真正中断或服务器500错误时出现
-    message.error('获取国家/地区列表失败。请检查后端服务是否正常以及相关日志。');
-    console.error("获取国家/地区列表失败:", error);
+    message.error('获取国家/地区列表失败。');
   }
 };
 

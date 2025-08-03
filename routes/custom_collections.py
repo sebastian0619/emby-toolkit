@@ -11,7 +11,8 @@ import task_manager
 import moviepilot_handler
 import emby_handler
 from extensions import login_required
-
+from custom_collection_handler import FilterEngine
+from tasks import get_country_translation_map
 # 1. 创建自定义合集蓝图
 custom_collections_bp = Blueprint('custom_collections', __name__, url_prefix='/api/custom_collections')
 
@@ -345,3 +346,19 @@ def api_search_actors():
     except Exception as e:
         logger.error(f"搜索演员API出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
+    
+# ▼▼▼ 提取国家列表 ▼▼▼
+@custom_collections_bp.route('/config/countries', methods=['GET'])
+@login_required
+def api_get_countries_for_filter():
+    """【重构版】为筛选器提供一个纯中文的国家/地区列表。"""
+    try:
+        # get_country_translation_map 返回 {'英文': '中文', ...}
+        # 我们需要的是所有的中文值
+        full_map = get_country_translation_map()
+        # 使用 set 去重，然后排序
+        chinese_names = sorted(list(set(full_map.values())))
+        return jsonify(chinese_names)
+    except Exception as e:
+        logger.error(f"获取国家/地区列表时出错: {e}", exc_info=True)
+        return jsonify([]), 500

@@ -13,6 +13,7 @@ import CollectionsPage from '../components/CollectionsPage.vue';
 import ActorSubscriptionPage from '../components/ActorSubscriptionPage.vue';
 import ReleasesPage from '../components/ReleasesPage.vue';
 import Login from '../components/Login.vue'; 
+import CoverGeneratorConfig from '../components/CoverGeneratorConfig.vue';
 
 // --- 2. 定义路由规则 (修改版) ---
 const routes = [
@@ -94,6 +95,12 @@ const routes = [
     path: '/releases',
     name: 'Releases',
     component: ReleasesPage
+  },
+  {
+    path: '/settings/cover-generator', // 定义一个路径
+    name: 'CoverGeneratorConfig',
+    component: CoverGeneratorConfig,
+    meta: { title: '封面生成设置' } // 用于浏览器标签页标题
   },
 ];
 

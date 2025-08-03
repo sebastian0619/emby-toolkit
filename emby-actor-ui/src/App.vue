@@ -134,6 +134,7 @@ import {
   PeopleOutline as ActorSubIcon,
   InformationCircleOutline as AboutIcon,
   CreateOutline as CustomCollectionsIcon,
+  ColorPaletteOutline as PaletteIcon,
 } from '@vicons/ionicons5';
 import { Password24Regular as PasswordIcon } from '@vicons/fluent'
 import { watchEffect } from 'vue'
@@ -195,6 +196,11 @@ const menuOptions = computed(() => [
   { label: '任务中心', key: 'actions-status', icon: renderIcon(ActionsIcon) },
   { label: '合集检查', key: 'Collections', icon: renderIcon(CollectionsIcon) },
   { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) },
+  { 
+    label: '封面生成', 
+    key: 'CoverGeneratorConfig', // 这个 key 必须与您在路由中定义的 name 完全一致
+    icon: renderIcon(PaletteIcon) // 使用我们新导入的调色板图标
+  },
   { label: '智能追剧', key: 'Watchlist', icon: renderIcon(WatchlistIcon) },
   { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) },
   { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
