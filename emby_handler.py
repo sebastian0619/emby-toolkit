@@ -73,26 +73,23 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
     # ★ 核心修复：在请求的字段中明确加入 ParentId ★
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     
-    # 2. 动态决定 Fields 参数的值
+    default_fields = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,ParentId,LibraryId,LibraryName"
+
     if fields:
-        # 如果调用者自定义了字段，我们确保 ParentId 也在其中
-        if "ParentId" not in fields:
-            fields_to_request = fields + ",ParentId"
-        else:
-            fields_to_request = fields
+        # 如果调用者自定义了字段，我们确保 LibraryId 也在其中
+        field_set = set(fields.split(','))
+        field_set.add("LibraryId")
+        field_set.add("LibraryName")
+        fields_to_request = ",".join(field_set)
     else:
-        # 默认请求的字段列表
-        fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,ParentId"
+        fields_to_request = default_fields
 
     params = {
         "api_key": emby_api_key,
         "Fields": fields_to_request
     }
     
-    # ✨✨✨ 新增：告诉 Emby 返回的 People 对象里要包含哪些字段 ✨✨✨
     params["PersonFields"] = "ImageTags,ProviderIds"
-    
-    # --- 函数的其余部分保持不变 ---
 
     try:
         response = requests.get(url, params=params, timeout=15)
