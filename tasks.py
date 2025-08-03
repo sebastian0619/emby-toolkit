@@ -432,66 +432,50 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
 
         # 2. 检查“监控新入库”开关是否开启
         if cover_config.get("enabled") and cover_config.get("transfer_monitor"):
-            logger.info(f"检测到入库监控已启用，将为项目 '{item_details.get('Name')}' 所在的媒体库生成封面...")
+            logger.info(f"检测到新项目 '{item_details.get('Name')}' 入库，将为所有相关媒体库生成新封面...")
             
-            # 3. 获取新入库项目的路径
-            item_path = item_details.get("Path")
-            if not item_path:
-                raise ValueError("项目详情中缺少 Path 字段，无法进行路径匹配。")
-
-            # 4. 从配置中获取用户定义的路径映射表
-            path_mappings = cover_config.get("library_path_mappings", {})
-            if not path_mappings:
-                logger.warning("封面配置中未定义 'library_path_mappings'，跳过封面生成。")
-                return
-
-            # 5. 遍历映射表，查找第一个匹配的媒体库
-            found_library_id_with_prefix = None
-            for lib_id, mapped_path in path_mappings.items():
-                if mapped_path and item_path.startswith(mapped_path):
-                    found_library_id_with_prefix = lib_id
-                    logger.info(f"路径 '{item_path}' 成功匹配到规则 '{mapped_path}'，对应媒体库ID: {found_library_id_with_prefix}")
-                    break
-            
-            if not found_library_id_with_prefix:
-                raise ValueError(f"无法根据路径 '{item_path}' 在您定义的路径映射表中找到任何匹配的媒体库。")
-
-            # 6. 获取所有媒体库的列表
+            # 3. 获取所有媒体库
             all_libraries = emby_handler.get_emby_libraries(
                 processor.emby_url, processor.emby_api_key, processor.emby_user_id
             )
             if not all_libraries:
-                raise ValueError("无法从 Emby 获取媒体库列表。")
+                logger.warning("无法从 Emby 获取媒体库列表，跳过封面生成。")
+                return
 
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★ 终极修复：在比较前，从带前缀的ID中提取出纯数字ID ★
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            pure_library_id = found_library_id_with_prefix.split('-')[-1]
-            
-            parent_library = next((lib for lib in all_libraries if lib.get("Id") == pure_library_id), None)
-            
-            if not parent_library:
-                raise ValueError(f"在 Emby 的媒体库列表中未找到 ID 为 '{pure_library_id}' (源ID: '{found_library_id_with_prefix}') 的库。")
-
-            # 7. 后续逻辑保持不变 (检查忽略列表、调用服务等)
-            library_id = parent_library.get("Id")
-            library_name = parent_library.get("Name")
+            # 4. 实例化服务
+            cover_service = CoverGeneratorService(config=cover_config)
             server_id = 'main_emby' # 占位符
-            library_unique_id = f"{server_id}-{library_id}"
-            if library_unique_id in cover_config.get("exclude_libraries", []):
-                logger.info(f"媒体库 '{library_name}' 在忽略列表中，跳过封面生成。")
-            else:
-                logger.info(f"将为媒体库 '{library_name}' (ID: {library_id}) 生成新封面...")
-                cover_service = CoverGeneratorService(config=cover_config)
+
+            # 5. 遍历所有媒体库，为每一个符合条件的库生成封面
+            for library in all_libraries:
+                library_id = library.get("Id")
+                library_name = library.get("Name")
+                
+                # 跳过非媒体类型的库，避免不必要的操作
+                if library.get('CollectionType') not in ['movies', 'tvshows', 'boxsets', 'mixed']:
+                    logger.debug(f"跳过非媒体类型的库: '{library_name}'")
+                    continue
+
+                # 检查该媒体库是否在“忽略列表”中
+                library_unique_id = f"{server_id}-{library_id}"
+                if library_unique_id in cover_config.get("exclude_libraries", []):
+                    logger.info(f"媒体库 '{library_name}' 在忽略列表中，跳过。")
+                    continue
+                
+                # 为当前库生成封面
+                logger.info(f"--- 正在为媒体库 '{library_name}' (ID: {library_id}) 生成封面 ---")
                 cover_service.generate_for_library(
                     emby_server_id=server_id,
-                    library=parent_library
+                    library=library
                 )
+                # 每个库之间稍作停顿
+                time.sleep(1)
+
         else:
-            logger.debug("封面生成器或入库监控未启用，跳过为常规媒体库生成封面。")
+            logger.debug("封面生成器或入库监控未启用，跳过封面生成。")
 
     except Exception as e:
-        logger.error(f"为新入库项目 {item_id} 所在的媒体库生成封面时发生错误: {e}", exc_info=True)
+        logger.error(f"在新入库后执行全量封面生成时发生错误: {e}", exc_info=True)
 
     logger.info(f"Webhook 任务及所有后续流程完成: {item_id}")
 # --- 追剧 ---    
