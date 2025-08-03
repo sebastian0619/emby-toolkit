@@ -352,25 +352,39 @@ class CoverGeneratorService:
     # ★ 核心修复 2: 实现自动字体下载 ★
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     def __get_fonts(self):
-        """检查并自动下载所需的字体文件。"""
-        # 定义字体源URL (请根据实际情况替换为可靠的URL)
-        font_sources = {
-            "zh_font.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC-Bold.otf",
-            "en_font.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/Roboto-Bold.ttf",
-            "zh_font_multi_1.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC-Regular.otf",
-            "en_font_multi_1.otf": "https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/Roboto-Regular.ttf"
+        """检查并使用配置中提供的URL自动下载所需的字体文件。"""
+        
+        # 1. 定义本地文件名与配置项key的映射关系
+        #    这里的key (如 'zh_font_url') 必须与您UI保存到 cover_generator.json 中的字段名完全一致
+        font_config_map = {
+            "zh_font.ttf": "zh_font_url",
+            "en_font.ttf": "en_font_url",
+            "zh_font_multi_1.ttf": "zh_font_multi_1_url",
+            "en_font_multi_1.otf": "en_font_multi_1_url"
         }
 
-        # 遍历并下载所有需要的字体
-        for filename, url in font_sources.items():
+        # 2. 遍历映射，根据用户配置执行下载
+        for filename, config_key in font_config_map.items():
+            # 从传入的 self.config 字典中获取用户填写的URL
+            url = self.config.get(config_key)
+
+            # 如果用户没有填写该URL，则记录日志并跳过
+            if not url:
+                logger.debug(f"未在配置中找到 '{config_key}' 的URL，将跳过下载 {filename}。")
+                continue
+
+            # 定义本地保存路径
             dest_path = self.font_path / filename
+            
+            # 调用下载辅助函数
             self.__download_file(url, dest_path)
 
-        # 设置字体路径属性
+        # 3. 在尝试下载后，设置实例的字体路径属性，供后续方法使用
         self.zh_font_path = self.font_path / "zh_font.ttf"
         self.en_font_path = self.font_path / "en_font.ttf"
         self.zh_font_path_multi_1 = self.font_path / "zh_font_multi_1.ttf"
         self.en_font_path_multi_1 = self.font_path / "en_font_multi_1.otf"
         
+        # 4. 最后检查核心字体是否存在，并给出统一警告
         if not self.zh_font_path.exists() or not self.en_font_path.exists():
-             logger.warning("一个或多个核心字体文件下载失败或不存在，封面生成可能会失败或缺少文字。")
+             logger.warning("一个或多个核心字体文件缺失。请检查UI中的下载链接是否正确填写，并确保网络通畅。")
