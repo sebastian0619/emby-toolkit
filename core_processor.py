@@ -521,7 +521,7 @@ class MediaProcessor:
                     is_match, match_reason = True, "精确匹配 (豆瓣外文名)"
 
                 if is_match:
-                    logger.info(f"  匹配成功 (对号入座): 豆瓣演员 '{d_actor.get('Name')}' -> 本地演员 '{l_actor.get('name')}' (ID: {l_actor.get('id')})")
+                    logger.debug(f"  匹配成功 (对号入座): 豆瓣演员 '{d_actor.get('Name')}' -> 本地演员 '{l_actor.get('name')}' (ID: {l_actor.get('id')})")
                     
                     # 合并信息
                     l_actor["name"] = d_actor.get("Name")
@@ -579,7 +579,7 @@ class MediaProcessor:
                     if entry and entry["tmdb_person_id"]:
                         tmdb_id_from_map = entry["tmdb_person_id"]
                         if tmdb_id_from_map not in final_cast_map:
-                            logger.info(f"  匹配成功 (通过 豆瓣ID映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
+                            logger.debug(f"  匹配成功 (通过 豆瓣ID映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
                             # ★★★ 1. 查询预先缓存的元数据 ★★★
                             cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_map, cursor) or {}
 
@@ -649,7 +649,7 @@ class MediaProcessor:
                             tmdb_id_from_map = str(entry_from_map["tmdb_person_id"])
                             
                             if tmdb_id_from_map not in final_cast_map:
-                                logger.info(f"  匹配成功 (通过 IMDb映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
+                                logger.debug(f"  匹配成功 (通过 IMDb映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
                                 # ★★★ 查询预先缓存的元数据 ★★★
                                 cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_map, cursor) or {}
 
@@ -697,7 +697,7 @@ class MediaProcessor:
                                 tmdb_id_from_find = str(person_from_tmdb.get("id"))
                                 
                                 if tmdb_id_from_find not in final_cast_map:
-                                    logger.info(f"  匹配成功 (通过 TMDb反查): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
+                                    logger.debug(f"  匹配成功 (通过 TMDb反查): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
                                     # ★★★ 1. 再次查询预先缓存的元数据 ★★★
                                     cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_find, cursor) or {}
 
