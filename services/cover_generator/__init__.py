@@ -370,43 +370,71 @@ class CoverGeneratorService:
             if dest_path.exists():
                 dest_path.unlink()
 
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # ★ 核心修复 2: 实现自动字体下载 ★
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     def __get_fonts(self):
-        """检查并使用配置中提供的URL自动下载所需的字体文件。"""
+        """
+        检查并准备字体文件。
+        此函数严格遵循配置逻辑：
+        1. 优先检查并使用用户指定的本地字体路径。
+        2. 如果本地路径未指定或文件不存在，则尝试从用户指定的URL下载。
+        """
         
-        # 1. 定义本地文件名与配置项key的映射关系
-        #    这里的key (如 'zh_font_url') 必须与您UI保存到 cover_generator.json 中的字段名完全一致
-        font_config_map = {
-            "zh_font.ttf": "zh_font_url",
-            "en_font.ttf": "en_font_url",
-            "zh_font_multi_1.ttf": "zh_font_multi_1_url",
-            "en_font_multi_1.otf": "en_font_multi_1_url"
-        }
+        # 1. 定义一个包含所有字体配置信息的列表，完全对应您的JSON结构
+        font_definitions = [
+            {
+                "target_attr": "zh_font_path",          # 要设置的实例属性名
+                "filename": "zh_font.ttf",              # 下载后保存的文件名
+                "local_key": "zh_font_path_local",      # JSON中的本地路径键
+                "url_key": "zh_font_url"                # JSON中的URL键
+            },
+            {
+                "target_attr": "en_font_path",
+                "filename": "en_font.ttf",
+                "local_key": "en_font_path_local",
+                "url_key": "en_font_url"
+            },
+            {
+                "target_attr": "zh_font_path_multi_1",
+                "filename": "zh_font_multi_1.ttf",
+                "local_key": "zh_font_path_multi_1_local",
+                "url_key": "zh_font_url_multi_1"
+            },
+            {
+                "target_attr": "en_font_path_multi_1",
+                "filename": "en_font_multi_1.otf",
+                "local_key": "en_font_path_multi_1_local",
+                "url_key": "en_font_url_multi_1"
+            }
+        ]
 
-        # 2. 遍历映射，根据用户配置执行下载
-        for filename, config_key in font_config_map.items():
-            # 从传入的 self.config 字典中获取用户填写的URL
-            url = self.config.get(config_key)
-
-            # 如果用户没有填写该URL，则记录日志并跳过
-            if not url:
-                logger.debug(f"未在配置中找到 '{config_key}' 的URL，将跳过下载 {filename}。")
-                continue
-
-            # 定义本地保存路径
-            dest_path = self.font_path / filename
+        # 2. 遍历所有字体定义，并应用精确逻辑
+        for font_def in font_definitions:
+            font_path = None
             
-            # 调用下载辅助函数
-            self.__download_file(url, dest_path)
+            # 步骤 A: 优先检查本地路径
+            local_path_str = self.config.get(font_def["local_key"])
+            if local_path_str:
+                local_path = Path(local_path_str)
+                if local_path.exists():
+                    logger.info(f"发现并使用本地字体: {local_path_str}")
+                    font_path = local_path
+                else:
+                    logger.warning(f"配置的本地字体路径不存在: {local_path_str}，将尝试从URL下载。")
 
-        # 3. 在尝试下载后，设置实例的字体路径属性，供后续方法使用
-        self.zh_font_path = self.font_path / "zh_font.ttf"
-        self.en_font_path = self.font_path / "en_font.ttf"
-        self.zh_font_path_multi_1 = self.font_path / "zh_font_multi_1.ttf"
-        self.en_font_path_multi_1 = self.font_path / "en_font_multi_1.otf"
-        
-        # 4. 最后检查核心字体是否存在，并给出统一警告
-        if not self.zh_font_path.exists() or not self.en_font_path.exists():
-             logger.warning("一个或多个核心字体文件缺失。请检查UI中的下载链接是否正确填写，并确保网络通畅。")
+            # 步骤 B: 如果本地路径无效，则尝试从URL下载
+            if not font_path:
+                url = self.config.get(font_def["url_key"])
+                if url:
+                    dest_path = self.font_path / font_def["filename"]
+                    self.__download_file(url, dest_path)
+                    if dest_path.exists():
+                        font_path = dest_path
+                else:
+                    logger.debug(f"未配置 '{font_def['url_key']}'，无法下载 {font_def['filename']}。")
+
+            # 步骤 C: 将最终确定的有效路径设置到实例属性上
+            setattr(self, font_def["target_attr"], font_path)
+
+        # 3. 最后统一检查核心字体是否存在，并给出警告
+        #    这里的 self.zh_font_path 等属性已经被上面的循环精确设置
+        if not getattr(self, 'zh_font_path', None) or not getattr(self, 'en_font_path', None):
+             logger.warning("一个或多个核心字体文件缺失。请检查UI中的本地路径或下载链接是否有效。")
