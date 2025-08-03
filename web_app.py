@@ -101,18 +101,15 @@ def init_db():
         source_countries_path = os.path.join(os.path.dirname(__file__), 'assets', 'countries.json')
         dest_countries_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'countries.json')
 
-        # 检查目标文件是否存在
-        if not os.path.exists(dest_countries_path):
-            logger.info(f"检测到 'countries.json' 不存在，将从模板创建...")
-            try:
-                # 如果源模板存在，则复制
-                if os.path.exists(source_countries_path):
-                    shutil.copy2(source_countries_path, dest_countries_path)
-                    logger.info(f"成功创建 'countries.json' 到: {dest_countries_path}")
-                else:
-                    logger.error(f"无法创建 'countries.json'，因为源模板文件未找到: {source_countries_path}")
-            except Exception as e_copy:
-                logger.error(f"复制 'countries.json' 模板时发生错误: {e_copy}", exc_info=True)
+        # 用模板覆盖字典
+        try:
+            if os.path.exists(source_countries_path):
+                shutil.copy2(source_countries_path, dest_countries_path)
+                logger.info(f"已用模板覆盖 'countries.json' 到: {dest_countries_path}")
+            else:
+                logger.error(f"无法覆盖 'countries.json'，因为源模板文件未找到: {source_countries_path}")
+        except Exception as e_copy:
+            logger.error(f"复制 'countries.json' 模板时发生错误: {e_copy}", exc_info=True)
 
         with get_central_db_connection(config_manager.DB_PATH) as conn:
             cursor = conn.cursor()

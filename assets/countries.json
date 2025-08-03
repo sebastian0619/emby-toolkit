@@ -1,23 +1,102 @@
 {
-  "Hong Kong": "香港",
-  "United States of America": "美国",
-  "Japan": "日本",
-  "United Kingdom": "英国",
-  "France": "法国",
-  "South Korea": "韩国",
-  "Germany": "德国",
-  "Canada": "加拿大",
-  "India": "印度",
-  "Italy": "意大利",
-  "Spain": "西班牙",
-  "Australia": "澳大利亚",
-  "China": "中国大陆",
-  "Taiwan": "中国台湾",
-  "Russia": "俄罗斯",
-  "Thailand": "泰国",
-  "Sweden": "瑞典",
-  "Denmark": "丹麦",
-  "Mexico": "墨西哥",
-  "Brazil": "巴西",
-  "Argentina": "阿根廷"
+  "Hong Kong": {
+    "chinese_name": "香港",
+    "abbr": "HK"
+  },
+  "United States of America": {
+    "chinese_name": "美国",
+    "abbr": "US"
+  },
+  "Japan": {
+    "chinese_name": "日本",
+    "abbr": "JP"
+  },
+  "United Kingdom": {
+    "chinese_name": "英国",
+    "abbr": "GB"
+  },
+  "France": {
+    "chinese_name": "法国",
+    "abbr": "FR"
+  },
+  "South Korea": {
+    "chinese_name": "韩国",
+    "abbr": "KR"
+  },
+  "Germany": {
+    "chinese_name": "德国",
+    "abbr": "DE"
+  },
+  "Canada": {
+    "chinese_name": "加拿大",
+    "abbr": "CA"
+  },
+  "India": {
+    "chinese_name": "印度",
+    "abbr": "IN"
+  },
+  "Italy": {
+    "chinese_name": "意大利",
+    "abbr": "IT"
+  },
+  "Spain": {
+    "chinese_name": "西班牙",
+    "abbr": "ES"
+  },
+  "Australia": {
+    "chinese_name": "澳大利亚",
+    "abbr": "AU"
+  },
+  "China": {
+    "chinese_name": "中国大陆",
+    "abbr": "CN"
+  },
+  "Taiwan": {
+    "chinese_name": "中国台湾",
+    "abbr": "TW"
+  },
+  "Russia": {
+    "chinese_name": "俄罗斯",
+    "abbr": "RU"
+  },
+  "Thailand": {
+    "chinese_name": "泰国",
+    "abbr": "TH"
+  },
+  "Sweden": {
+    "chinese_name": "瑞典",
+    "abbr": "SE"
+  },
+  "Denmark": {
+    "chinese_name": "丹麦",
+    "abbr": "DK"
+  },
+  "Mexico": {
+    "chinese_name": "墨西哥",
+    "abbr": "MX"
+  },
+  "Brazil": {
+    "chinese_name": "巴西",
+    "abbr": "BR"
+  },
+  "Argentina": {
+    "chinese_name": "阿根廷",
+    "abbr": "AR"
+  },
+  "Ireland": {
+    "chinese_name": "爱尔兰",
+    "abbr": "IE"
+  },
+  "New Zealand": {
+    "chinese_name": "新西兰",
+    "abbr": "NZ"
+  },
+  "Netherlands": {
+    "chinese_name": "荷兰",
+    "abbr": "NL"
+  },
+  "Belgium": {
+    "chinese_name": "比利时",
+    "abbr": "BE"
+  }
 }

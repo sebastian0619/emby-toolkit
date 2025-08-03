@@ -171,17 +171,49 @@ class FilterEngine:
         self.db_path = db_path
         self.country_map = self._load_country_map()
 
-    def _load_country_map(self) -> Dict[str, str]:
-        try:
-            map_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'countries.json')
-            if not os.path.exists(map_path):
-                 map_path = os.path.join(os.path.dirname(__file__), '..', 'src', 'assets', 'countries.json')
+    def _load_country_map(self) -> Dict[str, List[str]]:
+        """
+        【V4 - 健壮版】加载国家/地区映射文件。
+        增加了详细的错误日志，能准确报告文件路径问题或JSON解析问题。
+        返回一个字典，键为中文名，值为一个包含[英文全称, 英文简写]的列表。
+        """
+        # 尝试从持久化数据路径加载
+        persistent_map_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'countries.json')
+        # 备用路径，从源代码资源路径加载
+        fallback_map_path = os.path.join(os.path.dirname(__file__), '..', 'src', 'assets', 'countries.json')
+        
+        map_path_to_use = None
+        if os.path.exists(persistent_map_path):
+            map_path_to_use = persistent_map_path
+            logger.debug(f"发现国家/地区映射文件于持久化路径: {map_path_to_use}")
+        elif os.path.exists(fallback_map_path):
+            map_path_to_use = fallback_map_path
+            logger.debug(f"发现国家/地区映射文件于备用路径: {map_path_to_use}")
+        else:
+            # 两个预设路径都找不到文件，这是最常见的错误原因
+            logger.error(f"加载国家/地区映射文件失败：在以下两个路径均未找到 countries.json 文件。")
+            logger.error(f" - 检查路径1: {persistent_map_path}")
+            logger.error(f" - 检查路径2: {fallback_map_path}")
+            logger.error("国家/地区筛选功能将无法正常工作。")
+            return {}
 
-            with open(map_path, 'r', encoding='utf-8') as f:
+        try:
+            chinese_to_matches_map = {}
+            with open(map_path_to_use, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                return {v: k for k, v in data.items()}
+                for english_name, details in data.items():
+                    chinese_name = details.get('chinese_name')
+                    abbr = details.get('abbr')
+                    if chinese_name and abbr:
+                        chinese_to_matches_map[chinese_name] = [english_name, abbr]
+            
+            logger.info(f"成功从 {map_path_to_use} 加载了 {len(chinese_to_matches_map)} 个国家/地区映射。")
+            return chinese_to_matches_map
+        except json.JSONDecodeError as e:
+            logger.error(f"加载国家/地区映射文件失败：文件 {map_path_to_use} 不是一个有效的JSON文件。错误: {e}")
+            return {}
         except Exception as e:
-            logger.error(f"加载国家/地区映射文件失败: {e}。国家/地区筛选可能无法正常工作。")
+            logger.error(f"加载国家/地区映射文件时发生未知错误: {e}。路径: {map_path_to_use}")
             return {}
 
     def _item_matches_rules(self, item_metadata: Dict[str, Any], rules: List[Dict[str, Any]], logic: str) -> bool:
@@ -191,18 +223,12 @@ class FilterEngine:
         for rule in rules:
             field, op, value = rule.get("field"), rule.get("operator"), rule.get("value")
             
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★★★ 核心修复：仅在单值比较时执行国家/地区映射，避免对列表操作 ★★★
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             value_to_compare = value
-            # 只有当字段是'countries'且操作符不是多选类型时，才尝试进行名称到代码的映射
+            # 国家/地区映射逻辑保持不变，它工作正常
             if field == 'countries' and op not in ['is_one_of', 'is_none_of']:
-                # 此时我们知道 value 应该是一个字符串
                 if value in self.country_map:
-                    # 注意：此处的逻辑可能仍需完善（比较代码与名称），但它已不会导致程序崩溃
                     value_to_compare = self.country_map[value]
                     logger.trace(f"国家/地区反向映射: '{value}' -> '{value_to_compare}'")
-            # --- 修复结束 ---
 
             # 统一获取元数据
             if field == 'release_year':
@@ -218,7 +244,6 @@ class FilterEngine:
             match = False
             
             def check_list_contains(values_to_check, target_list):
-                # 使用精确匹配而不是'in'，避免"国"匹配到"中国"的问题
                 target_set = set()
                 for item in target_list:
                     if isinstance(item, dict):
@@ -228,12 +253,10 @@ class FilterEngine:
                 return values_to_check in target_set
 
             if op == 'is_one_of':
-                # value 是一个列表, e.g., ['张国立', '王刚']
                 if isinstance(value, list) and any(check_list_contains(v, actual_values) for v in value):
                     match = True
             
             elif op == 'is_none_of':
-                # value 是一个列表
                 if isinstance(value, list) and not any(check_list_contains(v, actual_values) for v in value):
                     match = True
 
@@ -251,14 +274,27 @@ class FilterEngine:
                             if item_date < cutoff_date: match = True
                     except (ValueError, TypeError): pass
             
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # ★★★ 核心修复：修正 'contains' 操作符对国家/地区字段的处理逻辑 ★★★
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             elif op == 'contains':
-                # 此时 value_to_compare 是单个值
                 if isinstance(actual_values, list):
                     for item in actual_values:
                         item_name = item.get("name") if isinstance(item, dict) else item
-                        if item_name and str(value_to_compare) in str(item_name):
-                            match = True
-                            break
+                        if not item_name:
+                            continue
+
+                        # 如果 value_to_compare 是一个列表 (说明是经过映射的国家/地区)
+                        # 则检查 item_name 是否是列表的成员之一
+                        if isinstance(value_to_compare, list):
+                            if item_name in value_to_compare:
+                                match = True
+                                break
+                        # 否则 (适用于所有其他字段)，执行原始的子字符串包含检查
+                        else:
+                            if str(value_to_compare) in str(item_name):
+                                match = True
+                                break
             
             elif op == 'gte':
                 item_value = item_metadata.get(field)
