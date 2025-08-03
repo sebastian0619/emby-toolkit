@@ -55,10 +55,13 @@ def _save_metadata_to_cache(
     raw_tmdb_json: Dict[str, Any]
 ):
     """
-    将媒体项的关键元数据保存到 media_metadata 表中，用于后续的筛选。
+    【V2 - 数据标准化最终修复版】
+    将媒体项的关键元数据保存到 media_metadata 表中。
+    - 确保演员信息包含 name 和 original_name。
+    - 国家信息保持原文，不做翻译处理。
     """
     try:
-        # 提取导演信息
+        # --- 提取导演信息 (逻辑不变) ---
         directors = []
         crew = []
         if item_type == "Movie":
@@ -69,13 +72,11 @@ def _save_metadata_to_cache(
         for member in crew:
             if member.get("job") == "Director":
                 directors.append({"id": member.get("id"), "name": member.get("name")})
-
-        # ★★★ 新增：从原始TMDb JSON中提取国家/地区信息 ★★★
-        countries = [
-            country.get("name") 
-            for country in raw_tmdb_json.get("production_countries", []) 
-            if country.get("name")
-        ]
+        
+        # 直接使用 TMDB 原始国家名，无翻译
+        raw_countries_list = raw_tmdb_json.get("production_countries", [])
+        countries = [c.get('name') for c in raw_countries_list if c.get('name')]
+        
         # 准备要存入数据库的数据
         metadata = {
             "tmdb_id": tmdb_id,
@@ -85,20 +86,25 @@ def _save_metadata_to_cache(
             "release_year": item_details.get("ProductionYear"),
             "rating": item_details.get("CommunityRating"),
             "genres_json": json.dumps(item_details.get("Genres", [])),
-            "actors_json": json.dumps([{"id": p.get("id"), "name": p.get("name")} for p in processed_cast]),
+            # 确保 actors_json 包含 name 和 original_name
+            "actors_json": json.dumps([
+                {"id": p.get("id"), "name": p.get("name"), "original_name": p.get("original_name")} 
+                for p in processed_cast
+            ]),
             "directors_json": json.dumps(directors),
             "studios_json": json.dumps([s.get("Name") for s in item_details.get("Studios", [])]),
-            "countries_json": json.dumps(countries),
+            "countries_json": json.dumps(countries),  # 保留原始国家名称
+            "date_added": item_details.get("DateCreated", "").split("T")[0] if item_details.get("DateCreated") else None,
+            "release_date": item_details.get("PremiereDate", "").split("T")[0] if item_details.get("PremiereDate") else None,
         }
-
+        
         # 使用 INSERT OR REPLACE 插入或更新数据
         columns = ', '.join(metadata.keys())
         placeholders = ', '.join('?' for _ in metadata)
         sql = f"INSERT OR REPLACE INTO media_metadata ({columns}) VALUES ({placeholders})"
         
         cursor.execute(sql, tuple(metadata.values()))
-        logger.debug(f"成功将《{metadata['title']}》的元数据缓存到数据库。")
-
+        logger.debug(f"成功将《{metadata['title']}》的元数据缓存到数据库 (实时处理模式)。")
     except Exception as e:
         logger.error(f"保存元数据到缓存表时失败: {e}", exc_info=True)
 # ==========================================================================================
