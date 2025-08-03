@@ -434,40 +434,38 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
         if cover_config.get("enabled") and cover_config.get("transfer_monitor"):
             logger.info(f"检测到入库监控已启用，将为项目 '{item_details.get('Name')}' 所在的媒体库生成封面...")
             
-            # 3. 获取该项目所属的媒体库信息
-            # item_details 中通常没有直接的库ID，我们需要通过它的路径来反查
-            item_path = item_details.get("Path")
-            if not item_path:
-                raise ValueError("项目详情中缺少 Path 字段，无法确定所属媒体库。")
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # ★ 核心修复：放弃脆弱的路径匹配，使用可靠的 LibraryId ★
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            
+            # 3. 直接从项目详情中获取其所属的媒体库ID
+            parent_library_id = item_details.get("LibraryId")
+            if not parent_library_id:
+                raise ValueError("项目详情中缺少 LibraryId 字段，无法确定所属媒体库。")
 
+            # 4. 获取所有媒体库的列表，以便找到该ID对应的完整库信息
             all_libraries = emby_handler.get_emby_libraries(
                 processor.emby_url, processor.emby_api_key, processor.emby_user_id
             )
             if not all_libraries:
                 raise ValueError("无法从 Emby 获取媒体库列表。")
 
-            parent_library = None
-            for lib in all_libraries:
-                # Locations 是一个路径列表
-                locations = lib.get("Locations", [])
-                if any(item_path.startswith(loc) for loc in locations):
-                    parent_library = lib
-                    break
+            # 5. 在列表中查找ID匹配的那个库
+            parent_library = next((lib for lib in all_libraries if lib.get("Id") == parent_library_id), None)
             
             if not parent_library:
-                raise ValueError(f"无法根据路径 '{item_path}' 找到其所属的媒体库。")
+                raise ValueError(f"在媒体库列表中未找到 ID 为 '{parent_library_id}' 的库。")
 
             library_id = parent_library.get("Id")
             library_name = parent_library.get("Name")
             
-            # 4. 检查该媒体库是否在“忽略列表”中
-            # 您需要根据您项目的实际情况来确定 server_id
+            # 6. 检查该媒体库是否在“忽略列表”中
             server_id = 'main_emby' # 占位符
             library_unique_id = f"{server_id}-{library_id}"
             if library_unique_id in cover_config.get("exclude_libraries", []):
                 logger.info(f"媒体库 '{library_name}' 在忽略列表中，跳过封面生成。")
             else:
-                # 5. 实例化服务并执行封面生成
+                # 7. 实例化服务并执行封面生成
                 logger.info(f"将为媒体库 '{library_name}' (ID: {library_id}) 生成新封面...")
                 cover_service = CoverGeneratorService(config=cover_config)
                 cover_service.generate_for_library(
