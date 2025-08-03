@@ -221,6 +221,24 @@
             </n-tab-pane>
             
             <n-tab-pane name="others-tab" tab="其他设置">
+              <n-card title="媒体库路径映射" style="margin-bottom: 24px;">
+                <template #header-extra>
+                  用于“监控新入库”功能，根据文件路径识别媒体库
+                </template>
+                <n-alert type="info" :bordered="false" style="margin-bottom: 20px;">
+                  请为需要自动生成封面的媒体库填写其在系统中的**绝对路径**。例如，如果 Emby 中的“电影”库对应您服务器上的 `/data/movies` 目录，就在这里填写该路径。
+                </n-alert>
+                <n-space vertical>
+                  <!-- 动态遍历所有媒体库，生成输入框 -->
+                  <n-form-item v-for="library in allLibraries" :key="library.value" :label="library.label">
+                    <n-input 
+                      v-model:value="configData.library_path_mappings[library.value]" 
+                      :placeholder="`例如: /data/media/${library.label}`"
+                      clearable
+                    />
+                  </n-form-item>
+                </n-space>
+              </n-card>
               <n-grid :cols="2" :x-gap="24">
                 <n-gi>
                   <n-form-item label="自定义图片目录（可选）">
@@ -254,11 +272,16 @@ import { single_1, single_2, multi_1 } from '../assets/cover_styles/images.js';
 const message = useMessage();
 const isLoading = ref(true);
 const isSaving = ref(false);
-const configData = ref({});
+const configData = ref({
+  // ★★★ 核心修改 1: 初始化 library_path_mappings 为空对象 ★★★
+  library_path_mappings: {}
+});
 
 // 模拟服务器和媒体库选项，您需要从API获取真实数据
 const serverOptions = ref([]);
 const libraryOptions = ref([]);
+const allLibraries = ref([]);
+
 
 const sortOptions = [
   { label: "随机", value: "Random" },
@@ -276,8 +299,14 @@ const fetchConfig = async () => {
   isLoading.value = true;
   try {
     const response = await axios.get('/api/config/cover_generator');
-    configData.value = response.data;
-  } catch (error) {
+    // ★★★ 核心修改 3: 确保 library_path_mappings 字段存在且为对象 ★★★
+    const fetchedConfig = response.data;
+    if (!fetchedConfig.library_path_mappings) {
+      fetchedConfig.library_path_mappings = {};
+    }
+    configData.value = fetchedConfig;
+  } catch (error)
+{
     message.error('加载封面生成器配置失败。');
   } finally {
     isLoading.value = false;
@@ -286,13 +315,15 @@ const fetchConfig = async () => {
 
 const fetchSelectOptions = async () => {
   try {
-    // 并发请求服务器和媒体库列表
     const [serverRes, libraryRes] = await Promise.all([
       axios.get('/api/config/cover_generator/servers'),
       axios.get('/api/config/cover_generator/libraries')
     ]);
     serverOptions.value = serverRes.data;
     libraryOptions.value = libraryRes.data;
+    // ★★★ 核心修改 4: 将获取到的媒体库列表也存入 allLibraries ★★★
+    // 我们需要的是所有库，而不仅仅是用于“忽略列表”的库
+    allLibraries.value = libraryRes.data;
   } catch (error) {
     message.error('获取服务器或媒体库列表失败，请检查后端。');
   }

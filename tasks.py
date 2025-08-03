@@ -435,39 +435,53 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
             logger.info(f"检测到入库监控已启用，将为项目 '{item_details.get('Name')}' 所在的媒体库生成封面...")
             
             # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★ 核心修复：放弃脆弱的路径匹配，使用可靠的 LibraryId ★
+            # ★ 核心改造：使用路径映射识别媒体库 ★
             # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             
-            # 3. 直接从项目详情中获取其所属的媒体库ID
-            #    优先使用 LibraryId，因为它直接指向根媒体库，比 ParentId 更可靠
-            parent_library_id = item_details.get("LibraryId") or item_details.get("ParentId")
-            if not parent_library_id:
-                raise ValueError("项目详情中缺少 LibraryId 或 ParentId 字段，无法确定所属媒体库。")
+            # 3. 获取新入库项目的路径
+            item_path = item_details.get("Path")
+            if not item_path:
+                raise ValueError("项目详情中缺少 Path 字段，无法进行路径匹配。")
 
-            # 4. 获取所有媒体库的列表，以便找到该ID对应的完整库信息
+            # 4. 从配置中获取用户定义的路径映射表
+            #    期望的格式: {"library_id_1": "/path/to/movies", "library_id_2": "/path/to/tv", ...}
+            path_mappings = cover_config.get("library_path_mappings", {})
+            if not path_mappings:
+                logger.warning("封面配置中未定义 'library_path_mappings'，跳过封面生成。")
+                return
+
+            # 5. 遍历映射表，查找第一个匹配的媒体库
+            found_library_id = None
+            for lib_id, mapped_path in path_mappings.items():
+                # 确保用户填写的路径不为空，且项目路径以该路径开头
+                if mapped_path and item_path.startswith(mapped_path):
+                    found_library_id = lib_id
+                    logger.info(f"路径 '{item_path}' 成功匹配到规则 '{mapped_path}'，对应媒体库ID: {found_library_id}")
+                    break
+            
+            if not found_library_id:
+                raise ValueError(f"无法根据路径 '{item_path}' 在您定义的路径映射表中找到任何匹配的媒体库。")
+
+            # 6. 获取所有媒体库的列表，以便找到该ID对应的完整库信息
             all_libraries = emby_handler.get_emby_libraries(
                 processor.emby_url, processor.emby_api_key, processor.emby_user_id
             )
             if not all_libraries:
                 raise ValueError("无法从 Emby 获取媒体库列表。")
 
-            # 5. 在列表中查找ID匹配的那个库
-            parent_library = next((lib for lib in all_libraries if lib.get("Id") == parent_library_id), None)
+            parent_library = next((lib for lib in all_libraries if lib.get("Id") == found_library_id), None)
             
             if not parent_library:
-                # 错误信息现在更准确
-                raise ValueError(f"在媒体库列表中未找到 ID 为 '{parent_library_id}' 的库。请检查该项目是否位于一个未被识别为媒体库的文件夹中。")
+                raise ValueError(f"在 Emby 的媒体库列表中未找到 ID 为 '{found_library_id}' 的库。")
 
+            # 7. 后续逻辑保持不变 (检查忽略列表、调用服务等)
             library_id = parent_library.get("Id")
             library_name = parent_library.get("Name")
-            
-            # 6. 检查该媒体库是否在“忽略列表”中
             server_id = 'main_emby' # 占位符
             library_unique_id = f"{server_id}-{library_id}"
             if library_unique_id in cover_config.get("exclude_libraries", []):
                 logger.info(f"媒体库 '{library_name}' 在忽略列表中，跳过封面生成。")
             else:
-                # 7. 实例化服务并执行封面生成
                 logger.info(f"将为媒体库 '{library_name}' (ID: {library_id}) 生成新封面...")
                 cover_service = CoverGeneratorService(config=cover_config)
                 cover_service.generate_for_library(

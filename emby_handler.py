@@ -8,7 +8,7 @@ import json
 import time
 import utils
 import threading
-from typing import Optional, List, Dict, Any, Generator, Tuple, Set, Union
+from typing import Optional, List, Dict, Any, Generator, Tuple, Set
 import logging
 logger = logging.getLogger(__name__)
 # (SimpleLogger 和 logger 的导入保持不变)
@@ -59,37 +59,28 @@ def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_typ
         return None
 # ✨✨✨ 获取Emby项目详情 ✨✨✨
 def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str, fields: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """
-    【ParentId 修复版】获取Emby项目详情。
-    - 确保请求的字段中包含 ParentId，以便可靠地确定其所属媒体库。
-    """
     if not all([item_id, emby_server_url, emby_api_key, user_id]):
         logger.error("获取Emby项目详情参数不足：缺少ItemID、服务器URL、API Key或UserID。")
         return None
 
     url = f"{emby_server_url.rstrip('/')}/Users/{user_id}/Items/{item_id}"
 
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # ★ 核心修复：在请求的字段中明确加入 ParentId ★
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    
-    default_fields = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,ParentId,LibraryId,LibraryName"
-
+    # 2. 动态决定 Fields 参数的值
     if fields:
-        # 如果调用者自定义了字段，我们确保 LibraryId 也在其中
-        field_set = set(fields.split(','))
-        field_set.add("LibraryId")
-        field_set.add("LibraryName")
-        fields_to_request = ",".join(field_set)
+        fields_to_request = fields
     else:
-        fields_to_request = default_fields
+        fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines"
 
     params = {
         "api_key": emby_api_key,
         "Fields": fields_to_request
     }
     
+    # ✨✨✨ 新增：告诉 Emby 返回的 People 对象里要包含哪些字段 ✨✨✨
+    # 这是一个更可靠的方法
     params["PersonFields"] = "ImageTags,ProviderIds"
+    
+    # --- 函数的其余部分保持不变 ---
 
     try:
         response = requests.get(url, params=params, timeout=15)
@@ -372,13 +363,11 @@ def get_emby_library_items(
     user_id: Optional[str] = None,
     library_ids: Optional[List[str]] = None,
     search_term: Optional[str] = None,
-    library_name_map: Optional[Dict[str, str]] = None,
-    fields: Optional[str] = None  # ★ 1. 添加新的 'fields' 参数，让函数能接收它
+    library_name_map: Optional[Dict[str, str]] = None
 ) -> Optional[List[Dict[str, Any]]]:
     """
-    【V4 - fields 参数修复版】
-    获取项目，并为每个项目添加来源库ID。
-    此版本可以接受一个 'fields' 参数来定制请求的字段，以提高效率。
+    【V3 - 安静且信息补充版】
+    获取项目，并为每个项目添加来源库ID，不再打印每个库的日志。
     """
     if not base_url or not api_key:
         logger.error("get_emby_library_items: base_url 或 api_key 未提供。")
@@ -419,13 +408,10 @@ def get_emby_library_items(
         
         try:
             api_url = f"{base_url.rstrip('/')}/Items"
-            fields_to_request = fields if fields else "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,People,ProductionLocations"
             params = {
                 "api_key": api_key, "Recursive": "true", "ParentId": lib_id,
-                "Fields": fields_to_request, # ★ 3. 使用我们决定的字段列表
-                "PersonFields": "ProviderIds" # ★ 4. 确保无论如何都请求演员的ID，这是关键！
+                "Fields": "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,People,ProductionLocations",
             }
-            
             if media_type_filter:
                 params["IncludeItemTypes"] = media_type_filter
             else:
@@ -535,7 +521,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
     try:
         response = requests.post(refresh_url, params=params, timeout=30)
         if response.status_code == 204:
-            logger.trace(f"  - 刷新请求已成功发送，Emby将在后台处理。")
+            logger.info(f"  - 刷新请求已成功发送，Emby将在后台处理。")
             return True
         else:
             logger.error(f"  - 刷新请求失败: HTTP状态码 {response.status_code}")
@@ -1202,26 +1188,14 @@ def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, us
 
 def create_or_update_collection_with_tmdb_ids(
     collection_name: str, tmdb_ids: list, base_url: str, api_key: str, 
-    user_id: str, library_ids: list = None, 
-    item_types: Union[str, List[str]] = 'Movie', # ★ 1. 参数名修改，并接受列表
+    user_id: str, library_ids: list = None, item_type: str = 'Movie',
     prefetched_emby_items: Optional[list] = None,
     prefetched_collection_map: Optional[dict] = None
 ) -> Optional[Tuple[str, List[str]]]: 
     """
     通过精确计算差异，实现完美的合集同步。
     """
-    if isinstance(item_types, str):
-        item_types_list = [item_types]
-    else:
-        item_types_list = item_types
-
-    if len(item_types_list) == 1:
-        log_item_type = "电影" if item_types_list[0] == "Movie" else "电视剧"
-    else:
-        # 假设 item_types_list 包含 'Movie', 'Series' 等
-        type_map = {"Movie": "电影", "Series": "电视剧"}
-        translated_types = [type_map.get(t, t) for t in item_types_list]
-        log_item_type = "、".join(translated_types)
+    log_item_type = "电影" if item_type == "Movie" else "电视剧"
     logger.info(f"开始在Emby中处理名为 '{collection_name}' 的{log_item_type}合集...")
     
     try:
@@ -1230,13 +1204,13 @@ def create_or_update_collection_with_tmdb_ids(
             all_media_items = prefetched_emby_items
         else:
             if not library_ids: raise ValueError("非预加载模式下必须提供 library_ids。")
-            all_media_items = get_emby_library_items(base_url=base_url, api_key=api_key, user_id=user_id, media_type_filter=",".join(item_types_list), library_ids=library_ids)
+            all_media_items = get_emby_library_items(base_url=base_url, api_key=api_key, user_id=user_id, media_type_filter=item_type, library_ids=library_ids)
         if all_media_items is None: return None
             
         tmdb_to_emby_id_map = {
             item['ProviderIds']['Tmdb']: item['Id']
             for item in all_media_items
-            if item.get('Type') in item_types_list and 'ProviderIds' in item and 'Tmdb' in item['ProviderIds']
+            if item.get('Type') == item_type and 'ProviderIds' in item and 'Tmdb' in item['ProviderIds']
         }
         tmdb_ids_in_library = [str(tid) for tid in tmdb_ids if str(tid) in tmdb_to_emby_id_map]
         desired_emby_ids = [tmdb_to_emby_id_map[tid] for tid in tmdb_ids_in_library]
