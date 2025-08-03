@@ -318,9 +318,15 @@ class FilterEngine:
             try:
                 definition = json.loads(collection_def['definition_json'])
                 
-                collection_item_type = definition.get('item_type', 'Movie')
-                if media_item_type != collection_item_type:
-                    logger.trace(f"  -> 跳过合集《{collection_def['name']}》，因为内容类型不匹配 (需要: {collection_item_type}, 实际: {media_item_type})。")
+                collection_item_types = definition.get('item_type', ['Movie'])
+                
+                # 2. 为兼容旧数据，如果获取到的是字符串，将其转换为列表
+                if isinstance(collection_item_types, str):
+                    collection_item_types = [collection_item_types]
+
+                # 3. 使用 'in' 来判断新入库媒体的类型是否被合集所支持
+                if media_item_type not in collection_item_types:
+                    logger.trace(f"  -> 跳过合集《{collection_def['name']}》，因为内容类型不匹配 (合集需要: {collection_item_types}, 实际是: '{media_item_type}')。")
                     continue
 
                 rules = definition.get('rules', [])
