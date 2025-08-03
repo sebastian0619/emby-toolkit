@@ -70,7 +70,6 @@ COPY requirements.txt \
      ./
 
 COPY services/ ./services/
-COPY assets/ ./assets/
 COPY routes/ ./routes/
 COPY templates/ ./templates/
 COPY docker/entrypoint.sh /entrypoint.sh
