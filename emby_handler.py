@@ -1317,88 +1317,87 @@ def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: s
         logger.error(f"向合集 {collection_id} 追加项目时发生未知错误: {e}", exc_info=True)
         return False
     
-# ★★★ 新增：一个专门用于构建媒体库路径缓存的、更可靠的辅助函数 ★★★
-def _get_and_cache_library_paths_v7(base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
+# ★★★ V8 核心辅助函数：使用用户级API来获取媒体库的顶层文件夹路径 ★★★
+def _get_and_cache_library_paths_v8(base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
     """
-    【V7 核心辅助函数】使用最可靠的 /Library/MediaFolders API 来构建路径缓存。
-    这个函数只在缓存为空时被调用一次。
+    【V8 核心辅助函数】完全使用用户级API来构建路径缓存。
+    它通过查询每个媒体库的顶层子项目来获取源文件夹路径。
     """
     global _library_paths_cache
     with _library_paths_cache_lock:
-        # 双重检查锁定，确保线程安全且高效
         if _library_paths_cache is not None:
             return _library_paths_cache
 
-        logger.info("首次运行或缓存失效，正在使用专用API重新构建媒体库路径缓存...")
+        logger.info("首次运行，正在使用【用户级API】重新构建媒体库路径缓存...")
         
         try:
-            # 步骤 1: 获取所有对用户可见的逻辑媒体库（用于映射名称和类型）
+            # 步骤 1: 获取所有对用户可见的逻辑媒体库
             all_libraries = get_emby_libraries(base_url, api_key, user_id)
             if not all_libraries:
                 logger.error("无法获取任何媒体库，路径缓存构建失败。")
-                # 设置为空字典以防无限重试
-                _library_paths_cache = {}
-                return _library_paths_cache
-            library_map = {lib['Id']: lib for lib in all_libraries}
-
-            # 步骤 2: ★★★ 调用最可靠的专用API，获取所有物理源文件夹 ★★★
-            # 这个API端点是全局的，不需要 user_id
-            folders_url = f"{base_url.rstrip('/')}/Library/MediaFolders"
-            params = {"api_key": api_key}
-            response = requests.get(folders_url, params=params, timeout=20)
-            response.raise_for_status()
-            media_folders_data = response.json()
-            
-            all_source_folders = media_folders_data.get("Items", [])
-            if not all_source_folders:
-                logger.warning("Emby 服务器未返回任何媒体源文件夹信息。")
                 _library_paths_cache = {}
                 return _library_paths_cache
 
-            # 步骤 3: 构建缓存
             temp_cache = {}
-            for source_folder in all_source_folders:
-                path = source_folder.get("Path")
-                # 每个源文件夹都有一个 ParentId，指向它所属的逻辑媒体库
-                parent_lib_id = source_folder.get("ParentId")
+            
+            # 步骤 2: ★★★ 遍历每一个媒体库，查询其顶层内容 ★★★
+            for library in all_libraries:
+                lib_id = library.get("Id")
+                if not lib_id:
+                    continue
 
-                # 确保这个源文件夹属于一个我们可见的媒体库
-                if path and parent_lib_id and parent_lib_id in library_map:
-                    # 如果这个媒体库是第一次出现，先初始化它
-                    if parent_lib_id not in temp_cache:
-                        temp_cache[parent_lib_id] = {
-                            "info": library_map[parent_lib_id],
-                            "paths": []
+                # 查询该媒体库的直接子项目（通常就是那些源文件夹）
+                # 这个API调用是标准的用户级操作
+                api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+                params = {
+                    "api_key": api_key,
+                    "ParentId": lib_id,
+                    "Recursive": "false", # 只获取顶层，不深入
+                    "IncludeItemTypes": "Folder", # 我们只关心文件夹
+                    "Fields": "Path" # 我们只需要路径信息
+                }
+                
+                try:
+                    response = requests.get(api_url, params=params, timeout=20)
+                    response.raise_for_status()
+                    top_level_folders = response.json().get("Items", [])
+
+                    source_paths = [folder.get("Path") for folder in top_level_folders if folder.get("Path")]
+                    
+                    if source_paths:
+                        temp_cache[lib_id] = {
+                            "info": library,
+                            "paths": source_paths
                         }
-                    # 将当前源文件夹路径添加到对应的媒体库条目中
-                    temp_cache[parent_lib_id]["paths"].append(path)
+                        logger.debug(f"  - 成功为媒体库 '{library.get('Name')}' 获取到 {len(source_paths)} 个源文件夹路径。")
+
+                except requests.exceptions.RequestException as e:
+                    logger.warning(f"查询媒体库 '{library.get('Name')}' 的顶层文件夹时失败: {e}")
+                    continue
             
             _library_paths_cache = temp_cache
             logger.info(f"媒体库路径缓存构建完成，成功缓存 {len(_library_paths_cache)} 个媒体库的 {sum(len(v['paths']) for v in _library_paths_cache.values())} 个源文件夹路径。")
 
         except Exception as e:
             logger.error(f"构建媒体库路径缓存时发生严重错误: {e}", exc_info=True)
-            # 发生错误时也设置为空字典，避免下次再次尝试失败
             _library_paths_cache = {}
             
         return _library_paths_cache
 
-# ✨✨✨ 【V7 - 终极可靠版】根据项目ID向上追溯，找到其所属的媒体库根 ✨✨✨
+# ✨✨✨ 【V8 - 用户级API终极版】根据项目ID向上追溯，找到其所属的媒体库根 ✨✨✨
 def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
     """
-    【V7 - 终极可靠版】
-    给定一个项目ID，向上追溯找到其所属的顶层媒体库。
-    此版本使用最可靠的 /Library/MediaFolders API 来进行路径匹配，
-    专门解决“多文件夹”媒体库的识别问题。
+    【V8 - 用户级API终极版】
+    给定一个项目ID，找到其所属的顶层媒体库。
+    此版本完全放弃对管理员API的依赖，Plan C 使用纯用户级API来获取
+    媒体库的源文件夹路径，从而完美兼容“多文件夹”媒体库和非管理员Key。
     """
     if not all([item_id, base_url, api_key, user_id]):
         logger.error("get_library_root_for_item: 缺少必要的参数。")
         return None
 
-    # --- Plan A & B (快速通道) ---
-    # 仍然先尝试快速方法，因为它们开销小
+    # --- Plan A & B (快速通道，保持不变) ---
     try:
-        # Plan A: Ancestors API
         api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items/{item_id}/Ancestors"
         response = requests.get(api_url, params={"api_key": api_key}, timeout=15)
         if response.status_code == 200:
@@ -1406,8 +1405,9 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
                 if ancestor.get("CollectionType"):
                     logger.info(f"Plan A (Ancestors) 成功！定位到媒体库: '{ancestor.get('Name')}'")
                     return ancestor
-        
-        # Plan B: ParentId 遍历
+    except Exception: pass
+
+    try:
         all_libraries = get_emby_libraries(base_url, api_key, user_id)
         if all_libraries:
             library_map = {lib['Id']: lib for lib in all_libraries}
@@ -1420,33 +1420,28 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
                 item_details = get_emby_item_details(current_id, base_url, api_key, user_id, fields="ParentId")
                 if not item_details: break
                 current_id = item_details.get("ParentId")
-    except Exception:
-        # 任何快速通道的异常都直接忽略，进入终极方案
-        pass
+    except Exception: pass
 
-    # --- Plan C: 终极后备方案 - 基于文件路径匹配 ---
-    logger.warning("快速通道失败，启用终极后备方案 (Plan C: 专用API路径匹配)...")
+    # --- Plan C: 终极后备方案 - 基于用户级API的路径匹配 ---
+    logger.warning("快速通道失败，启用终极后备方案 (Plan C: 用户级API路径匹配)...")
     try:
-        # 1. 获取当前项目的文件路径
         item_details = get_emby_item_details(item_id, base_url, api_key, user_id, fields="Path")
         if not item_details or not item_details.get("Path"):
             logger.error(f"Plan C 失败：无法获取项目 {item_id} 的文件路径。")
             return None
         item_path = item_details["Path"]
 
-        # 2. ★★★ 调用新的、可靠的函数来获取并缓存所有媒体库的源文件夹路径 ★★★
-        library_paths_data = _get_and_cache_library_paths_v7(base_url, api_key, user_id)
+        # ★★★ 调用全新的、基于用户级API的缓存构建函数 ★★★
+        library_paths_data = _get_and_cache_library_paths_v8(base_url, api_key, user_id)
         if not library_paths_data:
             logger.error("Plan C 失败：媒体库路径缓存为空或构建失败。")
             return None
 
-        # 3. 遍历缓存，进行最长路径匹配
         best_match_library = None
         longest_match_length = 0
-
         for lib_id, lib_data in library_paths_data.items():
             for library_source_path in lib_data["paths"]:
-                # 确保路径末尾有斜杠，以避免错误匹配 (例如 /a/b 匹配 /a/bc)
+                # 使用 os.path.join 确保路径分隔符正确
                 source_path_with_slash = os.path.join(library_source_path, "")
                 if item_path.startswith(source_path_with_slash):
                     if len(source_path_with_slash) > longest_match_length:
