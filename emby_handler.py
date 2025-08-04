@@ -1312,3 +1312,52 @@ def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: s
     except Exception as e:
         logger.error(f"向合集 {collection_id} 追加项目时发生未知错误: {e}", exc_info=True)
         return False
+    
+# ✨✨✨ 【新】根据项目ID向上追溯，找到其所属的媒体库根 ✨✨✨
+def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """
+    给定一个项目ID，通过调用其祖先API，向上追溯找到其所属的顶层媒体库。
+    
+    :param item_id: Emby中任何媒体项或文件夹的ID。
+    :param base_url: Emby服务器地址。
+    :param api_key: Emby API Key。
+    :param user_id: Emby用户ID。
+    :return: 如果找到，返回该媒体库的完整信息字典；否则返回None。
+    """
+    if not all([item_id, base_url, api_key, user_id]):
+        logger.error("get_library_root_for_item: 缺少必要的参数。")
+        return None
+
+    # 1. 调用 Emby 的 Ancestors API
+    # 这个API会返回一个从直接父级到最顶层根的有序列表
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items/{item_id}/Ancestors"
+    params = {"api_key": api_key}
+    
+    logger.debug(f"正在为项目 {item_id} 获取祖先路径以定位媒体库根...")
+    
+    try:
+        response = requests.get(api_url, params=params, timeout=15)
+        response.raise_for_status()
+        ancestors = response.json()
+        
+        # 2. 遍历祖先列表，寻找真正的媒体库
+        # 真正的媒体库项目有一个关键特征：它拥有 'CollectionType' 字段 (例如 'movies', 'tvshows')
+        # 而普通的文件夹 (Type: 'Folder') 则没有这个字段。
+        for ancestor in ancestors:
+            if ancestor.get("CollectionType"):
+                library_name = ancestor.get("Name", "未知媒体库")
+                library_id = ancestor.get("Id")
+                logger.info(f"成功为项目 {item_id} 定位到媒体库根: '{library_name}' (ID: {library_id})")
+                # 找到了！这个祖先就是我们要的媒体库根。
+                return ancestor
+        
+        # 3. 如果循环结束都没找到，说明此项目可能不在一个标准的媒体库中
+        logger.warning(f"未能为项目 {item_id} 在其祖先路径中找到任何有效的媒体库根。")
+        return None
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"通过API获取项目 {item_id} 的祖先时失败: {e}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"处理项目 {item_id} 的祖先数据时发生未知错误: {e}", exc_info=True)
+        return None
