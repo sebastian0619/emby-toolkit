@@ -5,70 +5,52 @@
         <n-page-header>
           <template #title>媒体库封面生成</template>
           <template #extra>
-            <!-- ★★★ 新增：刷新缓存按钮 ★★★ -->
-            <n-button @click="runCacheTask" :loading="isCaching" style="margin-right: 12px;">
-              <template #icon><n-icon :component="SyncIcon" /></template>
-              刷新路径缓存
-            </n-button>
-            <n-button type="primary" @click="saveConfig" :loading="isSaving">
-              <template #icon><n-icon :component="SaveIcon" /></template>
-              保存设置
-            </n-button>
+            <n-space>
+              <n-button @click="runGenerateAllTask" :loading="isGenerating">
+                <template #icon><n-icon :component="ImagesIcon" /></template>
+                立即生成所有媒体库封面
+              </n-button>
+              <n-button type="primary" @click="saveConfig" :loading="isSaving">
+                <template #icon><n-icon :component="SaveIcon" /></template>
+                保存设置
+              </n-button>
+            </n-space>
           </template>
         </n-page-header>
 
+        <!-- ★★★ 核心修改：使用 n-grid 重新排版 ★★★ -->
         <n-card title="基础设置" style="margin-top: 24px;">
-          <n-grid :cols="4" :x-gap="24" responsive="screen">
+          <n-grid :cols="3" :x-gap="24" responsive="screen">
+            <!-- 第一列 -->
             <n-gi>
               <n-form-item label="启用插件">
                 <n-switch v-model:value="configData.enabled" />
               </n-form-item>
             </n-gi>
-            <n-gi>
-              <n-form-item label="立即运行一次">
-                <n-switch v-model:value="configData.onlyonce" />
-                <template #feedback>保存后将立即为所有媒体库更新封面</template>
-              </n-form-item>
-            </n-gi>
+            <!-- 第二列 -->
             <n-gi>
               <n-form-item label="监控新入库">
                 <n-switch v-model:value="configData.transfer_monitor" />
                 <template #feedback>新媒体入库后自动更新所在库封面</template>
               </n-form-item>
             </n-gi>
+            <!-- 第三列 -->
             <n-gi>
-              <n-form-item label="入库延迟（秒）">
-                <n-input-number v-model:value="configData.delay" />
-              </n-form-item>
-            </n-gi>
-            <n-gi :span="2">
-              <n-form-item label="媒体服务器">
-                <n-select
-                  v-model:value="configData.selected_servers"
-                  multiple filterable placeholder="选择要生成封面的服务器"
-                  :options="serverOptions"
-                />
-              </n-form-item>
-            </n-gi>
-            <n-gi>
-              <!-- ★★★ 修改：更新排序选项 ★★★ -->
               <n-form-item label="封面图片来源排序">
                 <n-select v-model:value="configData.sort_by" :options="sortOptions" />
               </n-form-item>
             </n-gi>
-            <n-gi>
-              <n-form-item label="定时更新（Cron）">
-                <n-input v-model:value="configData.cron" placeholder="例如: 0 3 * * *" />
-              </n-form-item>
-            </n-gi>
-            <n-gi :span="4">
-               <n-form-item label="忽略的媒体库">
-                <n-select
-                  v-model:value="configData.exclude_libraries"
-                  multiple filterable placeholder="选择后将不为这些库生成封面"
-                  :options="libraryOptions"
-                  :disabled="!configData.selected_servers || configData.selected_servers.length === 0"
-                />
+            <!-- 另起一行，占据所有列 -->
+            <n-gi :span="3">
+              <n-form-item label="选择要【忽略】的媒体库">
+                <n-checkbox-group v-model:value="configData.exclude_libraries" class="exclude-group">
+                  <n-grid :y-gap="8" :cols="6" responsive="screen">
+                    <n-gi v-for="lib in libraryOptions" :key="lib.value">
+                      <n-checkbox :value="lib.value" :label="lib.label" />
+                    </n-gi>
+                  </n-grid>
+                </n-checkbox-group>
+                <template #feedback>勾选的媒体库将【不会】被处理</template>
               </n-form-item>
             </n-gi>
           </n-grid>
@@ -251,31 +233,23 @@
 <script setup>
 import { ref, onMounted } from 'vue';
 import axios from 'axios';
-import { useMessage, NLayout, NPageHeader, NButton, NIcon, NCard, NGrid, NGi, NFormItem, NSwitch, NInputNumber, NSelect, NInput, NTabs, NTabPane, NRadioGroup, NRadio, NSpin, NSpace } from 'naive-ui';
-// ★★★ 新增：导入新图标 ★★★
-import { SaveOutline as SaveIcon, SyncOutline as SyncIcon } from '@vicons/ionicons5';
+import { useMessage, NLayout, NPageHeader, NButton, NIcon, NCard, NGrid, NGi, NFormItem, NSwitch, NSelect, NTabs, NCheckboxGroup, NCheckbox, NSpin, NSpace } from 'naive-ui';
+import { SaveOutline as SaveIcon, ImagesOutline as ImagesIcon } from '@vicons/ionicons5';
 
 // 导入静态图片数据
 import { single_1, single_2, multi_1 } from '../assets/cover_styles/images.js';
 
-
 const message = useMessage();
 const isLoading = ref(true);
 const isSaving = ref(false);
-// ★★★ 新增：缓存按钮的加载状态 ★★★
-const isCaching = ref(false);
+const isGenerating = ref(false);
 const configData = ref({});
 
-const serverOptions = ref([]);
 const libraryOptions = ref([]);
 
-// ★★★ 修改：提供更完整、更准确的排序选项 ★★★
-// 注意：这里的 value 需要和后端 __get_valid_items_from_library 函数中的 self._sort_by 判断条件完全一致
 const sortOptions = [
-  { label: "随机", value: "Random" },
   { label: "最新添加", value: "Latest" },
-  // 如果您未来在后端实现了按发行日期排序，可以取消下面的注释
-  // { label: "最新发行", value: "PremiereDate" }
+  { label: "随机", value: "Random" },
 ];
 
 const styles = [
@@ -296,16 +270,12 @@ const fetchConfig = async () => {
   }
 };
 
-const fetchSelectOptions = async () => {
+const fetchLibraryOptions = async () => {
   try {
-    const [serverRes, libraryRes] = await Promise.all([
-      axios.get('/api/config/cover_generator/servers'),
-      axios.get('/api/config/cover_generator/libraries')
-    ]);
-    serverOptions.value = serverRes.data;
-    libraryOptions.value = libraryRes.data;
+    const response = await axios.get('/api/config/cover_generator/libraries');
+    libraryOptions.value = response.data;
   } catch (error) {
-    message.error('获取服务器或媒体库列表失败，请检查后端。');
+    message.error('获取媒体库列表失败，请检查后端。');
   }
 };
 
@@ -321,25 +291,21 @@ const saveConfig = async () => {
   }
 };
 
-// ★★★ 新增：执行刷新缓存任务的函数 ★★★
-const runCacheTask = async () => {
-  isCaching.value = true;
+const runGenerateAllTask = async () => {
+  isGenerating.value = true;
   try {
-    // ★★★ 核心修复：在 post 请求中添加一个空的 JSON 对象作为第二个参数 ★★★
-    await axios.post('/api/config/cover_generator/run-cache-task', { task_name: 'update-library-cache' });
-    message.success('已成功触发“刷新路径缓存”任务，请稍后在任务队列中查看结果。');
+    await axios.post('/api/tasks/run', { task_name: 'generate-all-covers' });
+    message.success('已成功触发“立即生成所有媒体库封面”任务，请在任务队列中查看进度。');
   } catch (error) {
-    // 现在如果还报错，可以更详细地提示
-    const errorMsg = error.response?.data?.error || '触发缓存任务失败，请检查后端日志。';
-    message.error(errorMsg);
+    message.error('触发任务失败，请检查后端日志。');
   } finally {
-    isCaching.value = false;
+    isGenerating.value = false;
   }
 };
 
 onMounted(() => {
   fetchConfig();
-  fetchSelectOptions();
+  fetchLibraryOptions();
 });
 </script>
 

@@ -1482,7 +1482,7 @@ def get_task_registry():
         'auto-subscribe': (task_auto_subscribe, "立即执行智能订阅"),
         'actor-tracking': (task_process_actor_subscriptions, "立即执行演员订阅"),
         'custom-collections': (task_process_all_custom_collections, "立即执行自建合集刷新"),
-        'update-library-cache': (task_update_library_cache, "刷新封面生成器路径缓存"),
+        'generate-all-covers': (task_generate_all_covers, "立即生成所有媒体库封面"),
     }
 
 # ★★★ 一键生成所有合集的后台任务，核心优化在于只获取一次Emby媒体库 ★★★
@@ -2104,6 +2104,84 @@ def task_update_library_cache(processor: MediaProcessor):
             task_manager.update_status_from_thread(-1, message)
         
         logger.info(f"--- '{task_name}' 任务完成 ---")
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★★★ 新增：立即生成所有媒体库封面的后台任务 ★★★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+def task_generate_all_covers(processor: MediaProcessor):
+    """
+    后台任务：为所有（未被忽略的）媒体库生成封面。
+    【V17 修复版】修正了 cover_config 变量未定义的错误。
+    """
+    task_name = "一键生成所有媒体库封面"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    
+    try:
+        # 1. 读取封面生成器的配置
+        cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, "cover_generator.json")
+        if not os.path.exists(cover_config_path):
+            task_manager.update_status_from_thread(-1, "错误：找不到封面生成器配置文件。")
+            return
+
+        # ★★★ 核心修复：在这里定义 cover_config 变量 ★★★
+        with open(cover_config_path, 'r', encoding='utf-8') as f:
+            cover_config = json.load(f)
+
+        if not cover_config.get("enabled"):
+            task_manager.update_status_from_thread(100, "任务跳过：封面生成器未启用。")
+            return
+
+        # 2. 获取所有媒体库
+        task_manager.update_status_from_thread(5, "正在获取所有媒体库列表...")
+        all_libraries = emby_handler.get_emby_libraries(
+            base_url=processor.emby_url,
+            api_key=processor.emby_api_key,
+            user_id=processor.emby_user_id
+        )
+        if not all_libraries:
+            task_manager.update_status_from_thread(-1, "错误：未能从Emby获取到任何媒体库。")
+            return
+
+        # 3. 筛选出需要处理的媒体库
+        # ★★★ 现在这里的 cover_config 是已定义的，不再会报错 ★★★
+        exclude_ids = set(cover_config.get("exclude_libraries", []))
+        libraries_to_process = [
+            lib for lib in all_libraries 
+            if lib.get("Id") not in exclude_ids and lib.get('CollectionType') in ['movies', 'tvshows', 'boxsets', 'mixed', 'music']
+        ]
+        
+        total = len(libraries_to_process)
+        if total == 0:
+            task_manager.update_status_from_thread(100, "任务完成：没有需要处理的媒体库。")
+            return
+            
+        logger.info(f"将为 {total} 个媒体库生成封面: {[lib['Name'] for lib in libraries_to_process]}")
+        
+        # 4. 实例化服务并循环处理
+        # ★★★ 这里的 cover_config 也是已定义的 ★★★
+        cover_service = CoverGeneratorService(config=cover_config)
+        
+        for i, library in enumerate(libraries_to_process):
+            if processor.is_stop_requested():
+                logger.info("任务被用户中止。")
+                break
+            
+            progress = 10 + int((i / total) * 90)
+            task_manager.update_status_from_thread(progress, f"({i+1}/{total}) 正在处理: {library.get('Name')}")
+            
+            try:
+                cover_service.generate_for_library(emby_server_id='main_emby', library=library)
+            except Exception as e_gen:
+                logger.error(f"为媒体库 '{library.get('Name')}' 生成封面时发生错误: {e_gen}", exc_info=True)
+                continue
+        
+        final_message = "所有媒体库封面已处理完毕！"
+        if processor.is_stop_requested(): final_message = "任务已中止。"
+        task_manager.update_status_from_thread(100, final_message)
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)

@@ -35,7 +35,6 @@ from core_processor import MediaProcessor
 from actor_subscription_processor import ActorSubscriptionProcessor
 from werkzeug.security import generate_password_hash, check_password_hash
 from actor_utils import enrich_all_actor_aliases_task
-from emby_handler import load_library_paths_cache_from_file
 import db_handler
 from db_handler import get_db_connection as get_central_db_connection
 from flask import session
@@ -53,6 +52,7 @@ from routes.media import media_api_bp, media_proxy_bp
 from routes.auth import auth_bp, init_auth as init_auth_from_blueprint
 from routes.actions import actions_bp
 from routes.cover_generator_config import cover_generator_config_bp
+from routes.tasks import tasks_bp
 # --- 核心模块导入 ---
 import constants # 你的常量定义\
 import logging
@@ -839,6 +839,7 @@ app.register_blueprint(media_proxy_bp)
 app.register_blueprint(auth_bp)
 app.register_blueprint(actions_bp)
 app.register_blueprint(cover_generator_config_bp)
+app.register_blueprint(tasks_bp)
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}")
     
@@ -877,9 +878,6 @@ if __name__ == '__main__':
     
     # 3. 初始化数据库
     init_db()
-    
-    # ★★★ 新增：在初始化数据库之后，加载路径缓存 ★★★
-    load_library_paths_cache_from_file()
 
     # 4. 初始化认证系统 (它会依赖全局配置)
     init_auth_from_blueprint()
