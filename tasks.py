@@ -1150,7 +1150,81 @@ def task_auto_subscribe(processor: MediaProcessor):
                         new_status = 'ok' if not any(m.get('status') == 'missing' for m in movies_to_keep) else 'has_missing'
                         cursor.execute("UPDATE collections_info SET missing_movies_json = ?, status = ? WHERE emby_collection_id = ?", (new_missing_json, new_status, collection['emby_collection_id']))
 
-            # ★★★ 2. 处理自定义电影合集 (custom_collections, item_type='Movie') ★★★
+            # --- 2. 处理智能追剧 ---
+            if not processor.is_stop_requested():
+                task_manager.update_status_from_thread(60, "正在检查缺失的剧集...")
+                
+                sql_query = "SELECT * FROM watchlist WHERE status IN ('Watching', 'Paused') AND missing_info_json IS NOT NULL AND missing_info_json != '[]'"
+                logger.debug(f"【智能订阅-剧集】执行查询: {sql_query}")
+                cursor.execute(sql_query)
+                series_to_check = cursor.fetchall()
+                
+                logger.info(f"【智能订阅-剧集】从数据库找到 {len(series_to_check)} 部状态为'在追'或'暂停'且有缺失信息的剧集需要检查。")
+
+                for series in series_to_check:
+                    if processor.is_stop_requested(): break
+                    
+                    series_name = series['item_name']
+                    logger.info(f"【智能订阅-剧集】>>> 正在检查: 《{series_name}》")
+                    
+                    try:
+                        missing_info = json.loads(series['missing_info_json'])
+                        missing_seasons = missing_info.get('missing_seasons', [])
+                        
+                        if not missing_seasons:
+                            logger.info(f"【智能订阅-剧集】   -> 《{series_name}》没有记录在案的缺失季(missing_seasons为空)，跳过。")
+                            continue
+
+                        seasons_to_keep = []
+                        seasons_changed = False
+                        for season in missing_seasons:
+                            if processor.is_stop_requested(): break
+                            
+                            season_num = season.get('season_number')
+                            air_date_str = season.get('air_date')
+                            if air_date_str:
+                                air_date_str = air_date_str.strip()
+                            
+                            if not air_date_str:
+                                logger.warning(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季缺少播出日期(air_date)，无法判断，跳过。")
+                                seasons_to_keep.append(season)
+                                continue
+                            
+                            try:
+                                season_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                            except (ValueError, TypeError):
+                                logger.warning(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季的播出日期 '{air_date_str}' 格式无效，跳过。")
+                                seasons_to_keep.append(season)
+                                continue
+
+                            if season_date <= today:
+                                logger.info(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 已播出，符合订阅条件，正在提交...")
+                                try:
+                                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                                    # ★★★  核心修复：剧集订阅也需要传递 config_manager.APP_CONFIG！ ★★★
+                                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                                    success = moviepilot_handler.subscribe_series_to_moviepilot(dict(series), season['season_number'], config_manager.APP_CONFIG)
+                                    if success:
+                                        logger.info(f"【智能订阅-剧集】      -> 订阅成功！")
+                                        successfully_subscribed_items.append(f"《{series['item_name']}》第 {season['season_number']} 季")
+                                        seasons_changed = True
+                                    else:
+                                        logger.error(f"【智能订阅-剧集】      -> MoviePilot报告订阅失败！将保留在缺失列表中。")
+                                        seasons_to_keep.append(season)
+                                except Exception as e:
+                                    logger.error(f"【智能订阅-剧集】      -> 提交订阅到MoviePilot时发生内部错误: {e}", exc_info=True)
+                                    seasons_to_keep.append(season)
+                            else:
+                                logger.info(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 尚未播出，跳过订阅。")
+                                seasons_to_keep.append(season)
+                        
+                        if seasons_changed:
+                            missing_info['missing_seasons'] = seasons_to_keep
+                            cursor.execute("UPDATE watchlist SET missing_info_json = ? WHERE item_id = ?", (json.dumps(missing_info), series['item_id']))
+                    except Exception as e_series:
+                        logger.error(f"【智能订阅-剧集】处理剧集 '{series['item_name']}' 时出错: {e_series}")
+
+            # ★★★ 3. 处理自定义合集 (custom_collections, item_type='Movie') ★★★
             if not processor.is_stop_requested():
                 task_manager.update_status_from_thread(45, "正在检查自定义电影合集...")
                 sql_query_custom_movies = """
