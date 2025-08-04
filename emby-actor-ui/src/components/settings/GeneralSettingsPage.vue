@@ -55,10 +55,6 @@
             <n-form-item-grid-item label="更新后刷新 Emby 媒体项">
               <n-switch v-model:value="configModel.refresh_emby_after_update" />
             </n-form-item-grid-item>
-            <n-form-item label="处理分集" path="process_episodes">
-              <n-switch v-model:value="configModel.process_episodes" />
-              <template #feedback>开启后，处理电视剧时会为每一季/每一集生成单独的元数据文件。</template>
-            </n-form-item>
             <n-form-item label="同步图片" path="sync_images">
               <n-switch v-model:value="configModel.sync_images" />
               <template #feedback>开启后，处理媒体时会下载海报、横幅图等图片文件。</template>
@@ -93,7 +89,6 @@
                 </n-text>
               </template>
             </n-form-item>
-            <!-- ★★★ 新增结束 ★★★ -->
             <n-form-item label="豆瓣登录 Cookie" path="douban_cookie">
               <n-input
                 type="password"
@@ -139,33 +134,46 @@
       <!-- ########## 右侧列 ########## -->
       <n-gi>
         <n-space vertical :size="24">
-          <!-- 卡片: 传统翻译引擎 -->
-          <n-card title="传统翻译引擎" size="small" class="glass-section">
-            <n-form-item label="翻译引擎顺序" path="translator_engines_order">
-              <template #feedback>可拖动调整顺序，点击添加新的翻译引擎。</template>
-              <draggable
-                v-model="configModel.translator_engines_order"
-                item-key="value"
-                tag="div"
-                class="engine-list"
-                handle=".drag-handle"
-                animation="300"
-              >
-                <template #item="{ element: engineValue, index }">
-                  <n-tag :key="engineValue" type="primary" closable class="engine-tag" @close="removeEngine(index)">
-                    <n-icon :component="DragHandleIcon" class="drag-handle" />
-                    {{ getEngineLabel(engineValue) }}
-                  </n-tag>
-                </template>
-              </draggable>
-              <n-select
-                v-if="unselectedEngines.length > 0"
-                placeholder="点击添加新的翻译引擎..."
-                :options="unselectedEngines"
-                @update:value="addEngine"
-                style="margin-top: 12px;"
-              />
-            </n-form-item>
+          <!-- ★★★ Emby 连接设置卡片 ★★★ -->
+          <n-card title="Emby 设置" size="small" class="glass-section">
+            <!-- Part 1: Emby 连接设置 -->
+            <n-form-item-grid-item label="Emby 服务器 URL" path="emby_server_url">
+              <n-input v-model:value="configModel.emby_server_url" placeholder="例如: http://localhost:8096" />
+            </n-form-item-grid-item>
+            <n-form-item-grid-item label="Emby API Key" path="emby_api_key">
+              <n-input v-model:value="configModel.emby_api_key" type="password" show-password-on="click" placeholder="输入你的 Emby API Key" />
+            </n-form-item-grid-item>
+            <n-form-item-grid-item label="Emby 用户 ID" :rule="embyUserIdRule" path="emby_user_id">
+              <n-input v-model:value="configModel.emby_user_id" placeholder="请输入32位的用户ID" />
+              <template #feedback>
+                <div v-if="isInvalidUserId" style="color: #e88080; font-size: 12px;">
+                  格式错误！ID应为32位字母和数字。
+                </div>
+                <div v-else style="font-size: 12px; color: #888;">
+                  提示：请从 Emby 后台用户管理页的地址栏复制 userId。
+                </div>
+              </template>
+            </n-form-item-grid-item>
+
+            <!-- 分割线 -->
+            <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">
+              选择要处理的媒体库
+            </n-divider>
+
+            <!-- Part 2: 媒体库选择 -->
+            <n-form-item-grid-item :span="24" label-placement="top" style="margin-top: -10px;">
+              <n-spin :show="loadingLibraries">
+                <n-checkbox-group v-model:value="configModel.libraries_to_process">
+                  <n-space item-style="display: flex;">
+                    <n-checkbox v-for="lib in availableLibraries" :key="lib.Id" :value="lib.Id" :label="lib.Name" />
+                  </n-space>
+                </n-checkbox-group>
+                <n-text depth="3" v-if="!loadingLibraries && availableLibraries.length === 0 && (configModel.emby_server_url && configModel.emby_api_key)">
+                  未找到媒体库。请检查 Emby URL 和 API Key。
+                </n-text>
+                <div v-if="libraryError" style="color: red; margin-top: 5px;">{{ libraryError }}</div>
+              </n-spin>
+            </n-form-item-grid-item>
           </n-card>
 
           <!-- 卡片: AI 翻译设置 -->
@@ -287,35 +295,66 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, watch, computed, onMounted, onUnmounted } from 'vue'; 
 import draggable from 'vuedraggable';
 import { 
   NCard, NForm, NFormItem, NInputNumber, NSwitch, NButton, NGrid, NGi, 
-  NSpin, NAlert, NInput, NSelect, NSpace, NTag, NIcon, useMessage,
-  NFormItemGridItem
+  NSpin, NAlert, NInput, NSelect, NSpace, useMessage,
+  NFormItemGridItem, NCheckboxGroup, NCheckbox, NText, NRadioGroup, NRadio,
+  NTag, NIcon
 } from 'naive-ui';
 import { MoveOutline as DragHandleIcon } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
-import { useAuthStore } from '../../stores/auth';
-const formRef = ref(null); // 1. 创建一个表单引用
-const formRules = {      // 2. 定义验证规则
+import axios from 'axios';
+
+const formRef = ref(null);
+const formRules = {
   local_data_path: {
     required: true,
-    message: '本地数据源路径是必填项，不能为空！',
-    trigger: ['input', 'blur'] // 当输入或失去焦点时触发验证
+    message: '本地数据源路径是必填项！',
+    trigger: ['input', 'blur']
   }
 };
 const { configModel, loadingConfig, savingConfig, configError, handleSaveConfig } = useConfig();
-const authStore = useAuthStore();
 const message = useMessage();
 
-// --- 保存逻辑 ---
-async function save() {
-  try {
-    // 在这里调用验证！
-    await formRef.value?.validate();
+// --- Emby 相关的 Refs ---
+const availableLibraries = ref([]);
+const loadingLibraries = ref(false);
+const libraryError = ref(null);
+const componentIsMounted = ref(false);
 
-    // 如果验证通过 (没有抛出错误)，则继续执行保存逻辑
+// ★★★ 核心修复：确保 unwatch 变量只在这里声明一次 ★★★
+let unwatchGlobal = null;
+let unwatchEmbyConfig = null;
+
+// --- Emby 用户ID 校验逻辑 ---
+const embyUserIdRegex = /^[a-f0-9]{32}$/i;
+const isInvalidUserId = computed(() => {
+  if (!configModel.value || !configModel.value.emby_user_id) return false;
+  return configModel.value.emby_user_id.trim() !== '' && !embyUserIdRegex.test(configModel.value.emby_user_id);
+});
+const embyUserIdRule = {
+  trigger: ['input', 'blur'],
+  validator(rule, value) {
+    if (value && !embyUserIdRegex.test(value)) {
+      return new Error('ID格式不正确，应为32位。');
+    }
+    return true;
+  }
+};
+
+// --- AI 服务商逻辑 ---
+const aiProviderOptions = ref([
+  { label: 'OpenAI (及兼容服务)', value: 'openai' },
+  { label: '智谱AI (ZhipuAI)', value: 'zhipuai' },
+  { label: 'Google Gemini', value: 'gemini' },
+]);
+
+// --- 函数定义 ---
+const save = async () => {
+  try {
+    await formRef.value?.validate();
     const success = await handleSaveConfig();
     if (success) {
       message.success('所有设置已成功保存！');
@@ -323,56 +362,63 @@ async function save() {
       message.error(configError.value || '配置保存失败，请检查后端日志。');
     }
   } catch (errors) {
-    // 如果验证失败，Naive UI 会自动在表单项下显示错误信息
-    // 我们可以在控制台打印错误，并提示用户
     console.log('表单验证失败:', errors);
     message.error('请检查表单中的必填项或错误项！');
   }
-}
-loadingConfig.value = false;
-// --- 翻译引擎逻辑 ---
-const availableTranslatorEngines = ref([
-  { label: '必应 (Bing)', value: 'bing' },
-  { label: '谷歌 (Google)', value: 'google' },
-  { label: '百度 (Baidu)', value: 'baidu' },
-  { label: '阿里 (Alibaba)', value: 'alibaba' },
-  { label: '有道 (Youdao)', value: 'youdao' },
-  { label: '腾讯 (Tencent)', value: 'tencent' },
-]);
-
-const getEngineLabel = (value) => {
-  const engine = availableTranslatorEngines.value.find(e => e.value === value);
-  return engine ? engine.label : value;
 };
 
-const unselectedEngines = computed(() => {
-  if (!configModel.value?.translator_engines_order) return availableTranslatorEngines.value;
-  const selectedValues = new Set(configModel.value.translator_engines_order);
-  return availableTranslatorEngines.value.filter(engine => !selectedValues.has(engine.value));
+const fetchEmbyLibrariesInternal = async () => {
+  if (!configModel.value.emby_server_url || !configModel.value.emby_api_key) {
+    availableLibraries.value = [];
+    return;
+  }
+  if (loadingLibraries.value) return;
+  loadingLibraries.value = true;
+  libraryError.value = null;
+  try {
+    const response = await axios.get(`/api/emby_libraries`);
+    availableLibraries.value = response.data || [];
+    if (availableLibraries.value.length === 0) libraryError.value = "获取到的媒体库列表为空。";
+  } catch (err) {
+    availableLibraries.value = [];
+    libraryError.value = `获取 Emby 媒体库失败: ${err.response?.data?.error || err.message}`;
+  } finally {
+    loadingLibraries.value = false;
+  }
+};
+
+// --- 生命周期钩子 ---
+onMounted(() => {
+  componentIsMounted.value = true;
+
+  unwatchGlobal = watch(loadingConfig, (isLoading) => {
+    if (!isLoading && componentIsMounted.value) {
+      if (configModel.value && configModel.value.emby_server_url && configModel.value.emby_api_key) {
+        fetchEmbyLibrariesInternal();
+      }
+      if (unwatchGlobal) {
+        unwatchGlobal();
+      }
+    }
+  }, { immediate: true });
+
+  unwatchEmbyConfig = watch(
+    () => [configModel.value?.emby_server_url, configModel.value?.emby_api_key],
+    (newValues, oldValues) => {
+      if (componentIsMounted.value && oldValues) {
+        if (newValues[0] !== oldValues[0] || newValues[1] !== oldValues[1]) {
+          fetchEmbyLibrariesInternal();
+        }
+      }
+    }
+  );
 });
 
-const addEngine = (value) => {
-  if (!configModel.value.translator_engines_order) {
-    configModel.value.translator_engines_order = [];
-  }
-  if (value && !configModel.value.translator_engines_order.includes(value)) {
-    configModel.value.translator_engines_order.push(value);
-  }
-};
-
-const removeEngine = (index) => {
-  configModel.value.translator_engines_order.splice(index, 1);
-};
-
-// --- AI 服务商逻辑 ---
-// ✨✨✨ 核心修改在这里 ✨✨✨
-const aiProviderOptions = ref([
-  { label: 'OpenAI (及兼容服务)', value: 'openai' },
-  { label: '智谱AI (ZhipuAI)', value: 'zhipuai' },
-  { label: 'Google Gemini', value: 'gemini' }, // <-- 新增这一行
-]);
-// ✨✨✨ 修改结束 ✨✨✨
-
+onUnmounted(() => {
+  componentIsMounted.value = false;
+  if (unwatchGlobal) unwatchGlobal();
+  if (unwatchEmbyConfig) unwatchEmbyConfig();
+});
 </script>
 
 <style scoped>

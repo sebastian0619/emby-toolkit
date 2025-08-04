@@ -18,47 +18,28 @@
               建议等待当前任务完成后再进行其他操作。
             </n-alert>
 
-            <!-- 卡片 1: 全量媒体库扫描 -->
-            <n-card title="全量媒体库扫描" class="glass-section" :bordered="false">
+            <!-- 卡片 1: 全量处理媒体 -->
+            <n-card title="全量处理媒体" class="glass-section" :bordered="false">
               <n-space vertical size="large">
                 <n-checkbox v-model:checked="forceReprocessAll" :disabled="taskStatus.is_running">
-                  强制重新处理所有项目 (将清空已处理记录)
+                  强制重新处理所有项目
                 </n-checkbox>
                 <p class="description-text">
-                  <b>强制重处理：</b>会忽略已处理记录，对媒体库所有项目重新执行核心逻辑。<br>
-                  <b>清除TMDb缓存：</b>用于解决数据循环污染问题，非必要不要操作此选项。
+                  <b>强制重处理：</b>会忽略已处理记录，对媒体库所有项目重新执行核心逻辑，并强制从Tmdb重新获取最新元数据。
                 </p>
                 <n-divider style="margin: 0;" />
-                <n-space align="center" justify="space-between" style="width: 100%;">
-                  <n-space>
-                    <n-button
-                      type="primary"
-                      @click="triggerFullScan"
-                      :loading="taskStatus.is_running && currentActionIncludesScan"
-                      :disabled="taskStatus.is_running && !currentActionIncludesScan"
-                    >
-                      启动全量扫描
-                    </n-button>
-                    <n-button type="error" @click="triggerStopTask" :disabled="!taskStatus.is_running" ghost>
-                      停止当前任务
-                    </n-button>
-                  </n-space>
-                  <n-popconfirm
-                    @positive-click="handleClearCaches"
-                    positive-text="我确定，清空！"
-                    negative-text="算了"
-                    :positive-button-props="{ type: 'error' }"
+                <n-space align="center" justify="start" style="width: 100%;">
+                  <n-button
+                    type="primary"
+                    @click="triggerFullScan"
+                    :loading="taskStatus.is_running && currentActionIncludesScan"
+                    :disabled="taskStatus.is_running && !currentActionIncludesScan"
                   >
-                    <template #trigger>
-                      <n-button type="error" text :loading="isClearing" :disabled="taskStatus.is_running" style="font-size: 13px;">
-                        <template #icon><n-icon :component="TrashIcon" /></template>
-                        清除TMDb缓存
-                      </n-button>
-                    </template>
-                    你确定要删除所有TMDb相关的缓存和覆盖文件吗？<br>
-                    这将强制下次处理时从网络重新获取所有数据。<br>
-                    <strong>此操作不可恢复！</strong>
-                  </n-popconfirm>
+                    启动全量扫描
+                  </n-button>
+                  <n-button type="error" @click="triggerStopTask" :disabled="!taskStatus.is_running" ghost>
+                    停止当前任务
+                  </n-button>
                 </n-space>
               </n-space>
             </n-card>
@@ -258,7 +239,6 @@ const tableInfo = {
 
 // --- Refs and Props ---
 const logRef = ref(null);
-const isClearing = ref(false);
 const message = useMessage();
 const dialog = useDialog();
 const props = defineProps({
@@ -318,15 +298,14 @@ watch(() => importOptions.value.mode, (newMode) => {
   }
 });
 
-// --- Methods for Existing Actions (mostly unchanged) ---
 const triggerFullScan = async () => {
   try {
-    const formData = new FormData();
-    if (forceReprocessAll.value) {
-        formData.append('force_reprocess_all', 'on');
-    }
-    await axios.post('/api/trigger_full_scan', formData);
-    message.success('全量扫描任务已启动！');
+    const payload = {
+      task_name: 'full-scan',
+      force_reprocess: forceReprocessAll.value 
+    };
+    await axios.post('/api/tasks/run', payload);
+    message.success('全量处理任务已提交！');
   } catch (error) {
     message.error(error.response?.data?.error || '启动全量扫描失败，请查看日志。');
   }
@@ -375,21 +354,6 @@ const triggerRebuildActors = () => {
     },
   });
 };
-
-const handleClearCaches = async () => {
-  isClearing.value = true;
-  message.info("正在发送清除TMDb缓存指令...");
-  try {
-    const response = await axios.post('/api/actions/clear_tmdb_caches');
-    message.success(response.data.message || "TMDb缓存已成功清除！");
-  } catch (error) {
-    message.error(error.response?.data?.message || "清除缓存失败，请检查后端日志。");
-  } finally {
-    isClearing.value = false;
-  }
-};
-
-// --- Methods for Data Management ---
 
 // --- Export Logic ---
 const showExportModal = async () => {

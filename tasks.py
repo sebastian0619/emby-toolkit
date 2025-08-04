@@ -33,95 +33,9 @@ from extensions import TASK_REGISTRY
 from custom_collection_handler import ListImporter, FilterEngine
 from core_processor import _read_local_json
 from services.cover_generator import CoverGeneratorService
+from utils import get_country_translation_map, translate_country_list
 
 logger = logging.getLogger(__name__)
-
-# ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-# --- 新增：国家/地区名称映射功能 ---
-# ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-
-_country_map_cache = None
-
-def get_country_translation_map() -> dict:
-    """
-    【V-Hardcoded - 硬编码最终版】
-    直接在代码中定义并缓存一个权威的国家/地区反向映射表。
-    """
-    global _country_map_cache
-    if _country_map_cache is not None:
-        return _country_map_cache
-
-    try:
-        # 直接在代码中定义数据源
-        source_data = {
-        "Hong Kong": {"chinese_name": "香港", "abbr": "HK"},
-        "United States of America": {"chinese_name": "美国", "abbr": "US"},
-        "Japan": {"chinese_name": "日本", "abbr": "JP"},
-        "United Kingdom": {"chinese_name": "英国", "abbr": "GB"},
-        "France": {"chinese_name": "法国", "abbr": "FR"},
-        "South Korea": {"chinese_name": "韩国", "abbr": "KR"},
-        "Germany": {"chinese_name": "德国", "abbr": "DE"},
-        "Canada": {"chinese_name": "加拿大", "abbr": "CA"},
-        "India": {"chinese_name": "印度", "abbr": "IN"},
-        "Italy": {"chinese_name": "意大利", "abbr": "IT"},
-        "Spain": {"chinese_name": "西班牙", "abbr": "ES"},
-        "Australia": {"chinese_name": "澳大利亚", "abbr": "AU"},
-        "China": {"chinese_name": "中国大陆", "abbr": "CN"},
-        "Taiwan": {"chinese_name": "中国台湾", "abbr": "TW"},
-        "Russia": {"chinese_name": "俄罗斯", "abbr": "RU"},
-        "Thailand": {"chinese_name": "泰国", "abbr": "TH"},
-        "Sweden": {"chinese_name": "瑞典", "abbr": "SE"},
-        "Denmark": {"chinese_name": "丹麦", "abbr": "DK"},
-        "Mexico": {"chinese_name": "墨西哥", "abbr": "MX"},
-        "Brazil": {"chinese_name": "巴西", "abbr": "BR"},
-        "Argentina": {"chinese_name": "阿根廷", "abbr": "AR"},
-        "Ireland": {"chinese_name": "爱尔兰", "abbr": "IE"},
-        "New Zealand": {"chinese_name": "新西兰", "abbr": "NZ"},
-        "Netherlands": {"chinese_name": "荷兰", "abbr": "NL"},
-        "Belgium": {"chinese_name": "比利时", "abbr": "BE"}
-        }
-
-        reverse_map = {}
-        for english_name, details in source_data.items():
-            chinese_name = details.get('chinese_name')
-            abbr = details.get('abbr')
-            if chinese_name:
-                reverse_map[english_name] = chinese_name
-                if abbr:
-                    reverse_map[abbr.lower()] = chinese_name
-        
-        _country_map_cache = reverse_map
-        logger.trace(f"成功从代码中加载并缓存了 {len(reverse_map)} 条国家/地区映射。")
-        return _country_map_cache
-
-    except Exception as e:
-        logger.error(f"从硬编码数据构建国家映射时出错: {e}。")
-        _country_map_cache = {}
-        return {}
-
-def translate_country_list(country_names_or_codes: list) -> list:
-    """
-    接收一个包含国家英文名或代码的列表，返回一个翻译后的中文名列表。
-    """
-    if not country_names_or_codes:
-        return []
-    
-    # ▼▼▼ 核心修复：确保函数调用是明确的 ▼▼▼
-    # 理论上直接调用 get_country_translation_map() 就可以，
-    # 但为了确保 Pylance 能理解，我们可以保持现状，因为它逻辑上是正确的。
-    # 这个错误很可能是 Pylance 的一个误报，因为函数定义就在同一个文件里。
-    # 我们可以先忽略这个 utils.py 的错误，因为它在运行时应该不会有问题。
-    translation_map = get_country_translation_map()
-    
-    if not translation_map:
-        return country_names_or_codes
-
-    translated_list = []
-    for item in country_names_or_codes:
-        translated = translation_map.get(item.lower(), translation_map.get(item, item))
-        translated_list.append(translated)
-        
-    return list(dict.fromkeys(translated_list))
 
 # --- 一键重构演员数据 ---
 def run_full_rebuild_task(self, update_status_callback: Optional[callable] = None, stop_event: Optional[threading.Event] = None):
@@ -199,32 +113,26 @@ def run_full_rebuild_task(self, update_status_callback: Optional[callable] = Non
             update_status_callback(-1, f"任务失败: {e}")
         raise
 
-# --- 常规全量媒体库扫描 ---
-def task_process_full_library(processor: MediaProcessor, process_episodes: bool):
+# ★★★ 全量扫描任务 ★★★
+def task_run_full_scan(processor: MediaProcessor, force_reprocess: bool = False):
     """
-    【标准版】执行常规的全量媒体库扫描。
-    这个任务会智能跳过已经成功处理过的项目。
+    根据传入的 force_reprocess 参数，决定是执行标准扫描还是强制扫描。
     """
-    logger.info("即将执行【标准】全量扫描，将跳过已处理项...")
-    processor.process_full_library(
-        update_status_callback=task_manager.update_status_from_thread,
-        process_episodes=process_episodes,
-        force_reprocess_all=False,  # ★★★ 核心：明确传递 False，确保跳过逻辑生效 ★★★
-        force_fetch_from_tmdb=False # 标准扫描使用本地缓存优先
-    )
+    # 1. 根据参数决定日志信息
+    if force_reprocess:
+        logger.warning("即将执行【强制】全量扫描，将处理所有媒体项...")
+    else:
+        logger.info("即将执行【标准】全量扫描，将跳过已处理项...")
 
-# --- 强制全量媒体库扫描 ---
-def task_force_reprocess_full_library(processor: MediaProcessor, process_episodes: bool):
-    """
-    【强制版】执行强制全量扫描。
-    这个任务会清空处理记录，并从零开始处理媒体库中的每一个项目。
-    """
-    logger.warning("即将执行【强制】全量扫描，将处理所有媒体项...")
+    # 2. 从配置中获取通用参数
+    process_episodes = config_manager.APP_CONFIG.get('process_episodes', True)
+
+    # 3. 调用核心处理函数，并将 force_reprocess 参数透传下去
     processor.process_full_library(
         update_status_callback=task_manager.update_status_from_thread,
-        process_episodes=process_episodes,
-        force_reprocess_all=True,   # ★★★ 核心：明确传递 True，触发清空日志和全量处理 ★★★
-        force_fetch_from_tmdb=True  # 强制扫描通常也意味着强制从在线获取最新数据
+        force_reprocess_all=force_reprocess,
+        force_fetch_from_tmdb=force_reprocess,
+        process_episodes=True 
     )
 
 # --- 同步演员映射表 ---
@@ -379,7 +287,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
     processed_successfully = processor.process_single_item(
         item_id, 
         force_reprocess_this_item=force_reprocess, 
-        process_episodes=process_episodes
+        process_episodes=True
     )
     
     # --- ★★★ 步骤 D: 新增的实时合集匹配逻辑 ★★★ ---
@@ -1474,7 +1382,7 @@ def get_task_registry():
     """返回一个包含所有可执行任务的字典。"""
     # 在函数内部，所有 task_... 函数都已经是已定义的
     return {
-        'full-scan': (task_process_full_library, "全量处理媒体"),
+        'full-scan': (task_run_full_scan, "全量处理媒体"),
         'populate-metadata': (task_populate_metadata_cache, "同步媒体数据"),
         'sync-person-map': (task_sync_person_map, "同步演员映射"),
         'sync-images-map': (task_full_image_sync, "全量同步图片"),
@@ -2074,41 +1982,6 @@ def task_populate_metadata_cache(processor: 'MediaProcessor'):
 
         task_manager.update_status_from_thread(100, f"元数据同步完成！共处理 {len(metadata_batch)} 条。")
         logger.info(f"--- '{task_name}' 任务成功完成 ---")
-
-    except Exception as e:
-        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
-        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
-
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★★★ 新增：手动刷新媒体库路径缓存的后台任务 ★★★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-def task_update_library_cache(processor: MediaProcessor):
-    """
-    后台任务：手动触发，用于刷新封面生成器所需的媒体库路径缓存。
-    """
-    task_name = "刷新媒体库路径缓存"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
-    task_manager.update_status_from_thread(0, "正在准备刷新缓存...")
-
-    try:
-        # 从 processor 获取必要的 Emby 连接信息
-        emby_url = processor.emby_url
-        emby_api_key = processor.emby_api_key
-        emby_user_id = processor.emby_user_id
-
-        # 调用 emby_handler 中新的独立函数
-        success, message = emby_handler.update_library_paths_cache(
-            base_url=emby_url,
-            api_key=emby_api_key,
-            user_id=emby_user_id
-        )
-
-        if success:
-            task_manager.update_status_from_thread(100, message)
-        else:
-            task_manager.update_status_from_thread(-1, message)
-        
-        logger.info(f"--- '{task_name}' 任务完成 ---")
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)

@@ -518,7 +518,7 @@ def setup_scheduled_tasks():
     """
     config = config_manager.APP_CONFIG
     
-    # --- 任务 1: 全量扫描 ---
+    # --- 任务 1: 全量处理 ---
     JOB_ID_FULL_SCAN = "scheduled_full_scan"
     if scheduler.get_job(JOB_ID_FULL_SCAN): scheduler.remove_job(JOB_ID_FULL_SCAN)
     if config.get(constants.CONFIG_OPTION_SCHEDULE_ENABLED, False):
@@ -528,11 +528,14 @@ def setup_scheduled_tasks():
             
             def scheduled_scan_task():
                 logger.info(f"定时任务触发：全量扫描 (强制={force})。")
-                if force: media_processor_instance.clear_processed_log()
-                task_manager.submit_task(task_process_full_library, "定时全量扫描", process_episodes=config_manager.APP_CONFIG.get('process_episodes', True))
+                task_manager.submit_task(
+                    task_run_full_scan, 
+                    "定时全量处理媒体", 
+                    force_reprocess=force 
+                )
             
             scheduler.add_job(func=scheduled_scan_task, trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_FULL_SCAN, name="定时全量扫描", replace_existing=True)
-            logger.info(f"已设置定时任务：全量处理媒体->  将{_get_next_run_time_str(cron)}{' (强制重处理)' if force else ''}")
+            logger.info(f"已设置定时任务：全量扫描，将{_get_next_run_time_str(cron)}{' (强制重处理)' if force else ''}")
         except Exception as e:
             logger.error(f"设置定时全量扫描任务失败: {e}", exc_info=True)
     else:
@@ -544,7 +547,7 @@ def setup_scheduled_tasks():
     if config.get(constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_ENABLED, False):
         try:
             cron = config.get(constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_CRON)
-            scheduler.add_job(func=lambda: task_manager.submit_task(task_sync_person_map, "定时同步演员映射表"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_SYNC_PERSON_MAP, name="定时同步演员映射表", replace_existing=True)
+            scheduler.add_job(func=lambda: task_manager.submit_task(task_sync_person_map, "定时同步演员映射"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_SYNC_PERSON_MAP, name="定时同步演员映射表", replace_existing=True)
             logger.info(f"已设置定时任务：同步演员映射->  将{_get_next_run_time_str(cron)}")
         except Exception as e:
             logger.error(f"设置定时同步演员映射表任务失败: {e}", exc_info=True)
@@ -605,7 +608,7 @@ def setup_scheduled_tasks():
     if config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED, False):
         try:
             cron = config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON)
-            scheduler.add_job(func=lambda: task_manager.submit_task(task_enrich_aliases, "定时演员元数据增强"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_ENRICH_ALIASES, name="定时演员元数据增强", replace_existing=True)
+            scheduler.add_job(func=lambda: task_manager.submit_task(task_enrich_aliases, "定时演员数据补充"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_ENRICH_ALIASES, name="定时演员元数据增强", replace_existing=True)
             logger.info(f"已设置定时任务：演员数据补充->  将{_get_next_run_time_str(cron)}")
         except Exception as e:
             logger.error(f"设置定时演员元数据补充任务失败: {e}", exc_info=True)
@@ -618,7 +621,7 @@ def setup_scheduled_tasks():
     if config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED, True):
         try:
             cron = config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_CRON)
-            scheduler.add_job(func=lambda: task_manager.submit_task(task_actor_translation_cleanup, "定时演员名查漏补缺"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_ACTOR_CLEANUP, name="定时演员名查漏补缺", replace_existing=True)
+            scheduler.add_job(func=lambda: task_manager.submit_task(task_actor_translation_cleanup, "定时演员翻译"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_ACTOR_CLEANUP, name="定时演员名查漏补缺", replace_existing=True)
             logger.info(f"已设置定时任务：演员姓名翻译->  将{_get_next_run_time_str(cron)}")
         except Exception as e:
             logger.error(f"设置定时演员名翻译任务失败: {e}", exc_info=True)
@@ -631,7 +634,7 @@ def setup_scheduled_tasks():
     if config.get(constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_ENABLED, False):
         try:
             cron = config.get(constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_CRON)
-            scheduler.add_job(func=lambda: task_manager.submit_task(task_auto_subscribe, "定时智能订阅"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_AUTO_SUBSCRIBE, name="定时智能订阅", replace_existing=True)
+            scheduler.add_job(func=lambda: task_manager.submit_task(task_auto_subscribe, "定时智能订阅缺失"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_AUTO_SUBSCRIBE, name="定时智能订阅", replace_existing=True)
             logger.info(f"已设置定时任务：智能订阅缺失->  将{_get_next_run_time_str(cron)}")
         except Exception as e:
             logger.error(f"设置定时智能订阅任务失败: {e}", exc_info=True)
@@ -790,8 +793,7 @@ def emby_webhook():
             webhook_processing_task,
             f"Webhook处理: {final_item_name}",
             id_to_process,
-            force_reprocess=True, 
-            process_episodes=True
+            force_reprocess=True 
         )
         
         return jsonify({"status": "metadata_task_queued", "item_id": id_to_process}), 202

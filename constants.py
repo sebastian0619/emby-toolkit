@@ -30,8 +30,7 @@ CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS = "libraries_to_process" # 需要处理�
 # ==============================================================================
 CONFIG_SECTION_PROCESSING = "Processing"
 CONFIG_OPTION_REFRESH_AFTER_UPDATE = "refresh_emby_after_update" # 处理完成后是否自动刷新Emby项目
-CONFIG_OPTION_PROCESS_EPISODES = "process_episodes"             # 在神医模式下，是否处理剧集的子项目（如季、集）
-CONFIG_OPTION_SYNC_IMAGES = "sync_images"                       # 在神医模式下，是否同步封面、海报等图片
+CONFIG_OPTION_SYNC_IMAGES = "sync_images"                       # 是否同步封面、海报等图片
 CONFIG_OPTION_MAX_ACTORS_TO_PROCESS = "max_actors_to_process"   # 每个媒体项目处理的演员数量上限
 DEFAULT_MAX_ACTORS_TO_PROCESS = 50                              # 默认的演员数量上限
 CONFIG_OPTION_MIN_SCORE_FOR_REVIEW = "min_score_for_review"     # 低于此评分的项目将进入手动处理列表
@@ -64,16 +63,6 @@ CONFIG_OPTION_MOVIEPILOT_USERNAME = "moviepilot_username"
 CONFIG_OPTION_MOVIEPILOT_PASSWORD = "moviepilot_password"
 # --- 智能订阅相关配置 ---
 CONFIG_OPTION_AUTOSUB_ENABLED = "autosub_enabled" # 智能订阅总开关
-
-# ==============================================================================
-# ✨ 翻译功能配置 (Translation)
-# ==============================================================================
-CONFIG_SECTION_TRANSLATION = "Translation"
-CONFIG_OPTION_TRANSLATOR_ENGINES = "translator_engines_order" # 传统翻译引擎的使用顺序
-AVAILABLE_TRANSLATOR_ENGINES = ['bing', 'google', 'baidu', 'alibaba', 'youdao', 'tencent'] # 所有可选的翻译引擎
-DEFAULT_TRANSLATOR_ENGINES_ORDER = ['bing', 'google', 'baidu'] # 默认的翻译引擎顺序
-CONFIG_OPTION_TRANSLATION_FAILURE_RETRY_DAYS = "translation_failure_retry_days" # 翻译失败的词条，多少天后可以重试
-DEFAULT_TRANSLATION_FAILURE_RETRY_DAYS = 1 # 默认1天
 
 # --- AI 翻译 ---
 CONFIG_SECTION_AI_TRANSLATION = "AITranslation"

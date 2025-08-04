@@ -22,9 +22,10 @@ from cachetools import TTLCache
 from db_handler import ActorDBManager
 from db_handler import get_db_connection as get_central_db_connection
 from ai_translator import AITranslator
-from utils import LogDBManager, get_override_path_for_item
+from utils import LogDBManager, get_override_path_for_item, translate_country_list
 from watchlist_processor import WatchlistProcessor
 from douban import DoubanApi
+
 logger = logging.getLogger(__name__)
 try:
     from douban import DoubanApi
@@ -55,27 +56,25 @@ def _save_metadata_to_cache(
     raw_tmdb_json: Dict[str, Any]
 ):
     """
-    【V2 - 数据标准化最终修复版】
+    【V4 - 最终修复版】
     将媒体项的关键元数据保存到 media_metadata 表中。
-    - 确保演员信息包含 name 和 original_name。
-    - 国家信息保持原文，不做翻译处理。
+    - ★★★ 确保所有 json.dumps 都使用 ensure_ascii=False ★★★
     """
     try:
-        # --- 提取导演信息 (逻辑不变) ---
         directors = []
-        crew = []
-        if item_type == "Movie":
-            crew = raw_tmdb_json.get("casts", {}).get("crew", [])
-        elif item_type == "Series":
-            crew = raw_tmdb_json.get("credits", {}).get("crew", [])
+        
+        # ★★★ 核心修复：使用统一逻辑智能提取 crew 列表 ★★★
+        # 无论数据源是本地缓存("casts")还是在线API("credits")，都能正确找到职员列表
+        actor_data_container = raw_tmdb_json.get("casts") or raw_tmdb_json.get("credits", {})
+        crew = actor_data_container.get("crew", [])
         
         for member in crew:
             if member.get("job") == "Director":
                 directors.append({"id": member.get("id"), "name": member.get("name")})
         
-        # 直接使用 TMDB 原始国家名，无翻译
         raw_countries_list = raw_tmdb_json.get("production_countries", [])
-        countries = [c.get('name') for c in raw_countries_list if c.get('name')]
+        original_country_names = [c.get('name') for c in raw_countries_list if c.get('name')]
+        translated_countries = translate_country_list(original_country_names)
         
         # 准备要存入数据库的数据
         metadata = {
@@ -85,15 +84,18 @@ def _save_metadata_to_cache(
             "original_title": item_details.get("OriginalTitle"),
             "release_year": item_details.get("ProductionYear"),
             "rating": item_details.get("CommunityRating"),
-            "genres_json": json.dumps(item_details.get("Genres", [])),
-            # 确保 actors_json 包含 name 和 original_name
+            "genres_json": json.dumps(item_details.get("Genres", []), ensure_ascii=False),
             "actors_json": json.dumps([
-                {"id": p.get("id"), "name": p.get("name"), "original_name": p.get("original_name")} 
+                {
+                    "id": p.get("id"), 
+                    "name": p.get("name"), 
+                    "original_name": p.get("original_name") or p.get("name")
+                }
                 for p in processed_cast
-            ]),
-            "directors_json": json.dumps(directors),
-            "studios_json": json.dumps([s.get("Name") for s in item_details.get("Studios", [])]),
-            "countries_json": json.dumps(countries),  # 保留原始国家名称
+            ], ensure_ascii=False),
+            "directors_json": json.dumps(directors, ensure_ascii=False), # <--- 现在这里有数据了
+            "studios_json": json.dumps([s.get("Name") for s in item_details.get("Studios", [])], ensure_ascii=False),
+            "countries_json": json.dumps(translated_countries, ensure_ascii=False),
             "date_added": item_details.get("DateCreated", "").split("T")[0] if item_details.get("DateCreated") else None,
             "release_date": item_details.get("PremiereDate", "").split("T")[0] if item_details.get("PremiereDate") else None,
         }
@@ -107,35 +109,77 @@ def _save_metadata_to_cache(
         logger.debug(f"成功将《{metadata['title']}》的元数据缓存到数据库 (实时处理模式)。")
     except Exception as e:
         logger.error(f"保存元数据到缓存表时失败: {e}", exc_info=True)
+        
 # ==========================================================================================
 # +++ 新增：JSON 构建器函数 (JSON Builders) +++
 # 这些函数严格按照您提供的最小化模板来构建新的JSON对象，确保结构纯净。
 # ==========================================================================================
 
 def _build_movie_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """【已修复】根据模板更新电影 all.json。保留所有原始键，仅更新处理过的演职员表。"""
-    # 1. 创建源数据的深拷贝以安全修改
-    final_json = copy.deepcopy(source_data)
+    """
+    【V-Rebuild - 重建版】根据最小化模板构建电影 all.json。
+    无论输入数据结构如何，都强制输出干净、统一的格式。
+    """
+    # 1. 从原始数据中安全地提取所有必需的字段
+    #    使用 .get() 并提供默认值，确保即使原始数据缺少某些键也不会出错。
+    final_json = {
+      "id": source_data.get("id"),
+      "imdb_id": source_data.get("imdb_id"),
+      "title": source_data.get("title", ""),
+      "original_title": source_data.get("original_title", ""),
+      "overview": source_data.get("overview", ""),
+      "tagline": source_data.get("tagline", ""),
+      "release_date": source_data.get("release_date", ""),
+      "vote_average": source_data.get("vote_average", 0.0),
+      "production_countries": source_data.get("production_countries", []),
+      "production_companies": source_data.get("production_companies", []),
+      "genres": source_data.get("genres", []),
+      # 以下字段是为了兼容性，即使模板中没有也建议保留
+      "belongs_to_collection": source_data.get("belongs_to_collection"),
+      "videos": source_data.get("videos", {"results": []}),
+      "external_ids": source_data.get("external_ids", {})
+    }
+
+    # 2. ★★★ 核心：强制创建 "casts" 键，并填入处理好的演员和职员数据 ★★★
+    final_json["casts"] = {
+        "cast": processed_cast,
+        "crew": processed_crew
+    }
     
-    # 2. 确保 'casts' 结构存在
-    if "casts" not in final_json:
-        final_json["casts"] = {}
-    
-    # 3. 注入处理过的演员和职员列表
-    final_json["casts"]["cast"] = processed_cast
-    final_json["casts"]["crew"] = processed_crew
-    
+    # 3. (可选但推荐) 清理一下可能为空的ID
+    if not final_json.get("imdb_id"):
+        final_json["imdb_id"] = final_json.get("external_ids", {}).get("imdb_id", "")
+
     return final_json
 
 def _build_series_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """【已修复】根据模板更新电视剧 series.json。保留所有原始键，仅更新处理过的演职员表。"""
-    final_json = copy.deepcopy(source_data)
-    
-    if "credits" not in final_json:
-        final_json["credits"] = {}
-    
-    final_json["credits"]["cast"] = processed_cast
-    final_json["credits"]["crew"] = processed_crew # <-- 关键修复：将职员信息加回来
+    """
+    【V-Rebuild - 重建版】根据最小化模板构建电视剧 series.json。
+    """
+    final_json = {
+        "id": source_data.get("id"),
+        "name": source_data.get("name", ""),
+        "original_name": source_data.get("original_name", ""),
+        "overview": source_data.get("overview", ""),
+        "vote_average": source_data.get("vote_average", 0.0),
+        "episode_run_time": source_data.get("episode_run_time", []),
+        "first_air_date": source_data.get("first_air_date"),
+        "last_air_date": source_data.get("last_air_date"),
+        "status": source_data.get("status", ""),
+        "networks": source_data.get("networks", []),
+        "genres": source_data.get("genres", []),
+        "external_ids": source_data.get("external_ids", {}),
+        "videos": source_data.get("videos", {"results": []}),
+        "content_ratings": source_data.get("content_ratings", {"results": []}),
+        "production_companies": source_data.get("production_companies", []),
+        "production_countries": source_data.get("production_countries", [])
+    }
+
+    # ★★★ 核心：强制创建 "credits" 键，并填入处理好的演员和职员数据 ★★★
+    final_json["credits"] = {
+        "cast": processed_cast,
+        "crew": processed_crew
+    }
     
     return final_json
 
@@ -256,7 +300,6 @@ class MediaProcessor:
         self.tmdb_api_key = self.config.get("tmdb_api_key", "")
         self.local_data_path = self.config.get("local_data_path", "").strip()
         self.sync_images_enabled = self.config.get(constants.CONFIG_OPTION_SYNC_IMAGES, False)
-        self.translator_engines = self.config.get(constants.CONFIG_OPTION_TRANSLATOR_ENGINES, constants.DEFAULT_TRANSLATOR_ENGINES_ORDER)
         
         self.ai_enabled = self.config.get("ai_translation_enabled", False)
         self.ai_translator = AITranslator(self.config) if self.ai_enabled else None
@@ -880,42 +923,11 @@ class MediaProcessor:
                     
             logger.info("----------------------------------------------------")
         else:
-            # AI翻译未启用或执行失败，启动降级程序
+            # 当AI翻译失败或未启用时，现在会直接跳过翻译，保留原文
             if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False):
-                logger.warning("AI批量翻译失败，启动降级程序，将使用传统翻译引擎逐个翻译...")
+                logger.warning("AI批量翻译失败，将保留演员和角色名原文。")
             else:
-                logger.info("AI翻译未启用，使用传统翻译引擎（如果配置了）。")
-
-            translator_engines_order = self.config.get("translator_engines_order", [])
-            
-            for actor in cast_to_process:
-                if self.is_stop_requested():
-                    raise InterruptedError("任务在翻译演员列表时被中止")
-                
-                # 翻译演员名
-                cleaned_name = actor.get('name')
-                actor['name'] = actor_utils.translate_actor_field(
-                    text=cleaned_name,
-                    db_manager=self.actor_db_manager,
-                    db_cursor=cursor,
-                    translator_engines=translator_engines_order,
-                    # ★★★ 核心修正：在降级路径中，明确禁用AI ★★★
-                    ai_translator=None,  # 传递None来关闭AI
-                    ai_enabled=False     # 传递False来关闭AI
-                )
-                
-                # 翻译角色名
-                cleaned_character = utils.clean_character_name_static(actor.get('character'))
-                if cleaned_character:
-                    actor['character'] = actor_utils.translate_actor_field(
-                        text=cleaned_character,
-                        db_cursor=cursor,
-                        db_manager=self.actor_db_manager,
-                        translator_engines=translator_engines_order,
-                        # ★★★ 核心修正：同样在此处禁用AI ★★★
-                        ai_translator=None,
-                        ai_enabled=False
-                    )
+                logger.info("AI翻译未启用，将保留演员和角色名原文。")
 
         # 返回处理完的、已经截断和翻译的列表
         return cast_to_process
@@ -1066,10 +1078,27 @@ class MediaProcessor:
 
                 # --- 聚合原始演员表 ---
                 initial_cast_list = []
+                final_crew = []
+
                 if item_type == "Movie":
-                    initial_cast_list = main_tmdb_data.get("casts", {}).get("cast", [])
+                    # is_fetch_needed 变量在前面已经根据是否强制在线获取或本地缓存是否存在而正确设置
+                    if is_fetch_needed:
+                        # 【在线获取模式】数据源是TMDB API，其结构是 "credits"
+                        logger.trace("在线获取模式：从 'credits' 键提取演员/职员列表。")
+                        actor_data_object = main_tmdb_data.get("credits", {})
+                    else:
+                        # 【本地缓存模式】数据源是神医插件的结构，即 "casts"
+                        logger.trace("本地缓存模式：从 'casts' 键提取演员/职员列表。")
+                        actor_data_object = main_tmdb_data.get("casts", {})
+                    
+                    initial_cast_list = actor_data_object.get("cast", [])
+                    final_crew = actor_data_object.get("crew", []) # <--- 无论来源是哪，现在都能正确拿到职员列表
+
                 elif item_type == "Series":
+                    # 电视剧的结构是统一的 ("credits")，逻辑保持不变
+                    logger.trace("电视剧模式：从 'credits' 键提取演员/职员列表。")
                     initial_cast_list = _aggregate_series_cast_from_tmdb_data(main_tmdb_data, episodes_data)
+                    final_crew = main_tmdb_data.get("credits", {}).get("crew", [])
 
                 # --- 执行核心的演员处理、匹配和翻译逻辑 ---
                 intermediate_cast = self._process_cast_list_from_local(
@@ -1088,15 +1117,6 @@ class MediaProcessor:
                     intermediate_cast, is_animation, self.config, mode='auto'
                 )
                 
-                # 提取演职员表
-                final_crew = []
-                if item_type == "Movie":
-                    final_crew = main_tmdb_data.get("casts", {}).get("crew", [])
-                elif item_type == "Series":
-                    # 剧集的crew通常在主文件里，分集文件里的crew意义不大
-                    final_crew = main_tmdb_data.get("credits", {}).get("crew", [])
-
-
                 # ======================================================================
                 # 阶段 3: JSON 构建与写入 (Build & Write)
                 # ======================================================================
@@ -1210,35 +1230,28 @@ class MediaProcessor:
                 logger.error(f"写入失败日志时再次发生错误: {log_e}")
             return False
 
-    def process_single_item(self, emby_item_id: str, force_reprocess_this_item: bool = False, process_episodes: Optional[bool] = None, force_fetch_from_tmdb: bool = False):
+    def process_single_item(self, emby_item_id: str, 
+                            force_reprocess_this_item: bool = False, 
+                            # ★★★ 步骤 1: 从函数定义中移除 process_episodes 参数 ★★★
+                            # 它不再需要由外部传入
+                            force_fetch_from_tmdb: bool = False):
         """
-        【已升级】此函数现在能接收 force_fetch_from_tmdb 标志。
-        它负责准备所有信息，并传递给核心处理函数。
+        此版本彻底移除了对 process_episodes 配置的依赖，
+        并简化了函数签名。
         """
         if self.is_stop_requested(): 
             return False
 
         item_details = emby_handler.get_emby_item_details(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
         if not item_details:
-            # 注意：这里不能直接调用 self.save_to_failed_log，因为它需要一个 cursor
-            # 更好的做法是在调用者那里处理这个失败
             logger.error(f"process_single_item: 无法获取 Emby 项目 {emby_item_id} 的详情。")
             return False
         
-        # 1. 决定本次运行是否应该处理分集
-        if process_episodes is None:
-            # 如果调用者没有明确指定，则遵循全局配置
-            should_process_episodes_this_run = self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False)
-        else:
-            # 如果调用者明确指定了，就听从本次调用的指令
-            should_process_episodes_this_run = process_episodes
-
-        # 2. 将所有信息和决策，作为参数传递给核心处理函数
         return self._process_item_core_logic(
             item_details, 
             force_reprocess_this_item,
-            should_process_episodes_this_run,
-            force_fetch_from_tmdb=force_fetch_from_tmdb  # <--- 把新命令传递下去
+            should_process_episodes_this_run=True, # <-- 直接硬编码为 True
+            force_fetch_from_tmdb=force_fetch_from_tmdb
         )
 
     def process_full_library(self, update_status_callback: Optional[callable] = None, process_episodes: bool = True, force_reprocess_all: bool = False, force_fetch_from_tmdb: bool = False):
@@ -1619,9 +1632,8 @@ class MediaProcessor:
                     os.replace(temp_json_path, override_json_path)
                     logger.debug(f"手动处理：成功生成覆盖元数据文件: {override_json_path}")
 
-                    #---深度处理剧集
-                    process_episodes_config = self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False)
-                    if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False):
+                    #---处理剧集
+                    if item_type == "Series":
                         logger.info(f"手动处理：开始为所有分集注入手动编辑后的演员表...")
                         # (这部分逻辑已经很精简了，直接复用即可)
                         for filename in os.listdir(base_cache_dir):
@@ -1886,89 +1898,6 @@ class MediaProcessor:
             time.sleep(0.2)
 
         logger.info("--- 全量海报同步任务结束 ---")
-    # --- 一键删除本地TMDB缓存 ---
-    def clear_tmdb_caches(self) -> Dict[str, Any]:
-        """
-        【V2 - 精准清除版】一键清除所有TMDb相关的 .json 缓存和覆盖文件。
-        此操作会强制所有项目在下次处理时重新从在线获取元数据，但会保留图片等非JSON文件。
-        """
-        if not self.local_data_path:
-            msg = "未配置本地数据路径 (local_data_path)，无法执行清除操作。"
-            logger.error(msg)
-            return {"success": False, "message": msg, "details": {}}
-
-        # 定义需要被扫描的目标目录
-        target_subdirs = {
-            "cache": ["tmdb-movies2", "tmdb-tv"],
-            "override": ["tmdb-movies2", "tmdb-tv"]
-        }
-
-        report = {"success": True, "message": "TMDb .json 缓存清除成功！", "details": {}}
-        base_path = self.local_data_path
-        
-        logger.warning("!!! 开始执行操作：清除所有TMDb .json缓存文件 !!!")
-
-        for dir_type, subdirs in target_subdirs.items():
-            report["details"][dir_type] = []
-            for subdir_name in subdirs:
-                full_path = os.path.join(base_path, dir_type, subdir_name)
-                
-                if os.path.isdir(full_path):
-                    # ★★★ 核心修改：不再直接删除，而是遍历并筛选 .json 文件 ★★★
-                    files_deleted_count = 0
-                    errors_encountered = False
-                    
-                    try:
-                        # 使用 os.walk 遍历目标目录及其所有子目录
-                        for dirpath, _, filenames in os.walk(full_path):
-                            if self.is_stop_requested():
-                                logger.warning("缓存清除任务被中止 (遍历目录时)。")
-                                break # 跳出 for dirpath... 循环
-                            for filename in filenames:
-                                if self.is_stop_requested():
-                                    logger.warning("缓存清除任务被中止 (处理文件时)。")
-                                    break # 跳出 for filename... 循环
-                                # 检查文件是否以 .json 结尾 (不区分大小写)
-                                if filename.lower().endswith('.json'):
-                                    file_to_delete = os.path.join(dirpath, filename)
-                                    try:
-                                        os.remove(file_to_delete)
-                                        files_deleted_count += 1
-                                    except OSError as e_remove:
-                                        # 如果单个文件删除失败，记录错误并继续
-                                        msg = f"删除文件 {file_to_delete} 时失败: {e_remove}"
-                                        logger.error(msg)
-                                        report["details"][dir_type].append(msg)
-                                        errors_encountered = True
-                        
-                        # 根据遍历结果生成报告信息
-                        if errors_encountered:
-                            msg = f"从 {full_path} 清理 .json 文件时遇到错误。共删除了 {files_deleted_count} 个文件。"
-                            report["success"] = False
-                            report["message"] = "清除过程中发生错误，部分缓存可能未被清除。"
-                        else:
-                            msg = f"成功从 {full_path} 及其子目录中删除了 {files_deleted_count} 个 .json 文件。"
-                        
-                        logger.info(msg)
-                        report["details"][dir_type].append(msg)
-
-                    except Exception as e_walk:
-                        msg = f"遍历目录 {full_path} 时发生严重错误: {e_walk}"
-                        logger.error(msg, exc_info=True)
-                        report["details"][dir_type].append(msg)
-                        report["success"] = False
-                        report["message"] = "清除过程中发生错误，部分缓存可能未被清除。"
-                else:
-                    msg = f"目录不存在，跳过: {full_path}"
-                    logger.info(msg)
-                    report["details"][dir_type].append(msg)
-        
-        if report["success"]:
-            logger.info("✅ 所有指定的TMDb .json 缓存文件已成功清除。")
-        else:
-            logger.error("❌ 清除TMDb .json 缓存操作未完全成功，请检查日志。")
-            
-        return report
     # --- 图片同步 ---
     def sync_item_images(self, item_details: Dict[str, Any], update_description: Optional[str] = None) -> bool:
         """
@@ -2048,23 +1977,20 @@ class MediaProcessor:
             # --- 分集图片逻辑 (只有在完全同步时才考虑执行) ---
             if images_to_sync == full_image_map and item_type == "Series":
             
-                # 决定是否处理分集图片，这里可以根据全局配置
-                should_process_episodes_this_run = self.config.get(constants.CONFIG_OPTION_PROCESS_EPISODES, False)
-                if should_process_episodes_this_run:
-                    children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name_for_log) or []
-                    for child in children:
-                        if self.is_stop_requested():
-                            logger.warning(f"{log_prefix} 收到停止信号，中止子项目图片下载。")
-                            return False
-                        child_type, child_id = child.get("Type"), child.get("Id")
-                        if child_type == "Season":
-                            season_number = child.get("IndexNumber")
-                            if season_number is not None:
-                                emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}.jpg"), self.emby_url, self.emby_api_key)
-                        elif child_type == "Episode":
-                            season_number, episode_number = child.get("ParentIndexNumber"), child.get("IndexNumber")
-                            if season_number is not None and episode_number is not None:
-                                emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
+                children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name_for_log) or []
+                for child in children:
+                    if self.is_stop_requested():
+                        logger.warning(f"{log_prefix} 收到停止信号，中止子项目图片下载。")
+                        return False
+                    child_type, child_id = child.get("Type"), child.get("Id")
+                    if child_type == "Season":
+                        season_number = child.get("IndexNumber")
+                        if season_number is not None:
+                            emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}.jpg"), self.emby_url, self.emby_api_key)
+                    elif child_type == "Episode":
+                        season_number, episode_number = child.get("ParentIndexNumber"), child.get("IndexNumber")
+                        if season_number is not None and episode_number is not None:
+                            emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
             
             logger.info(f"{log_prefix} ✅ 成功完成 '{item_name_for_log}' 的图片同步。")
             return True

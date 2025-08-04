@@ -5,7 +5,6 @@ import { createRouter, createWebHistory } from 'vue-router';
 // --- 1. 导入你的页面组件 (这部分保持不变) ---
 import ReviewList from '../components/ReviewList.vue';
 import ActionsPage from '../components/ActionsPage.vue';
-import EmbySettingsPage from '../components/settings/EmbySettingsPage.vue';
 import SchedulerSettingsPage from '../components/settings/SchedulerSettingsPage.vue';
 import GeneralSettingsPage from '../components/settings/GeneralSettingsPage.vue';
 import WatchlistPage from '../components/WatchlistPage.vue';
@@ -39,12 +38,6 @@ const routes = [
     path: '/actions',
     name: 'actions-status',
     component: ActionsPage,
-    meta: { requiresAuth: true },
-  },
-  {
-    path: '/settings/emby',
-    name: 'settings-emby',
-    component: EmbySettingsPage,
     meta: { requiresAuth: true },
   },
   {

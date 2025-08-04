@@ -201,11 +201,3 @@ def api_clear_review_items():
     except Exception as e:
         logger.error("API调用api_clear_review_items时发生错误", exc_info=True)
         return jsonify({"error": "服务器在处理时发生内部错误"}), 500
-
-# ✨✨✨ 一键删除TMDb缓存 ✨✨✨
-@db_admin_bp.route('/actions/clear_tmdb_caches', methods=['POST'])
-@login_required
-@processor_ready_required
-def api_clear_tmdb_caches():
-    result = extensions.media_processor_instance.clear_tmdb_caches()
-    return jsonify(result), 200 if result.get("success") else 500

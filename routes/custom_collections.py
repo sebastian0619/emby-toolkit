@@ -12,7 +12,7 @@ import moviepilot_handler
 import emby_handler
 from extensions import login_required
 from custom_collection_handler import FilterEngine
-from tasks import get_country_translation_map
+from utils import get_country_translation_map
 # 1. 创建自定义合集蓝图
 custom_collections_bp = Blueprint('custom_collections', __name__, url_prefix='/api/custom_collections')
 

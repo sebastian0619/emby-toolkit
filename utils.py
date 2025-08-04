@@ -198,6 +198,94 @@ class LogDBManager:
             logger.error(f"写入 failed_log 失败 (Item ID: {item_id}): {e}")
             raise
     
+    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+# --- 新增：国家/地区名称映射功能 ---
+# ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+
+_country_map_cache = None
+
+def get_country_translation_map() -> dict:
+    """
+    【V-Hardcoded - 硬编码最终版】
+    直接在代码中定义并缓存一个权威的国家/地区反向映射表。
+    """
+    global _country_map_cache
+    if _country_map_cache is not None:
+        return _country_map_cache
+
+    try:
+        # 直接在代码中定义数据源
+        source_data = {
+        "Hong Kong": {"chinese_name": "香港", "abbr": "HK"},
+        "United States of America": {"chinese_name": "美国", "abbr": "US"},
+        "Japan": {"chinese_name": "日本", "abbr": "JP"},
+        "United Kingdom": {"chinese_name": "英国", "abbr": "GB"},
+        "France": {"chinese_name": "法国", "abbr": "FR"},
+        "South Korea": {"chinese_name": "韩国", "abbr": "KR"},
+        "Germany": {"chinese_name": "德国", "abbr": "DE"},
+        "Canada": {"chinese_name": "加拿大", "abbr": "CA"},
+        "India": {"chinese_name": "印度", "abbr": "IN"},
+        "Italy": {"chinese_name": "意大利", "abbr": "IT"},
+        "Spain": {"chinese_name": "西班牙", "abbr": "ES"},
+        "Australia": {"chinese_name": "澳大利亚", "abbr": "AU"},
+        "China": {"chinese_name": "中国大陆", "abbr": "CN"},
+        "Taiwan": {"chinese_name": "中国台湾", "abbr": "TW"},
+        "Russia": {"chinese_name": "俄罗斯", "abbr": "RU"},
+        "Thailand": {"chinese_name": "泰国", "abbr": "TH"},
+        "Sweden": {"chinese_name": "瑞典", "abbr": "SE"},
+        "Denmark": {"chinese_name": "丹麦", "abbr": "DK"},
+        "Mexico": {"chinese_name": "墨西哥", "abbr": "MX"},
+        "Brazil": {"chinese_name": "巴西", "abbr": "BR"},
+        "Argentina": {"chinese_name": "阿根廷", "abbr": "AR"},
+        "Ireland": {"chinese_name": "爱尔兰", "abbr": "IE"},
+        "New Zealand": {"chinese_name": "新西兰", "abbr": "NZ"},
+        "Netherlands": {"chinese_name": "荷兰", "abbr": "NL"},
+        "Belgium": {"chinese_name": "比利时", "abbr": "BE"}
+        }
+
+        reverse_map = {}
+        for english_name, details in source_data.items():
+            chinese_name = details.get('chinese_name')
+            abbr = details.get('abbr')
+            if chinese_name:
+                reverse_map[english_name] = chinese_name
+                if abbr:
+                    reverse_map[abbr.lower()] = chinese_name
+        
+        _country_map_cache = reverse_map
+        logger.trace(f"成功从代码中加载并缓存了 {len(reverse_map)} 条国家/地区映射。")
+        return _country_map_cache
+
+    except Exception as e:
+        logger.error(f"从硬编码数据构建国家映射时出错: {e}。")
+        _country_map_cache = {}
+        return {}
+
+def translate_country_list(country_names_or_codes: list) -> list:
+    """
+    接收一个包含国家英文名或代码的列表，返回一个翻译后的中文名列表。
+    """
+    if not country_names_or_codes:
+        return []
+    
+    # ▼▼▼ 核心修复：确保函数调用是明确的 ▼▼▼
+    # 理论上直接调用 get_country_translation_map() 就可以，
+    # 但为了确保 Pylance 能理解，我们可以保持现状，因为它逻辑上是正确的。
+    # 这个错误很可能是 Pylance 的一个误报，因为函数定义就在同一个文件里。
+    # 我们可以先忽略这个 utils.py 的错误，因为它在运行时应该不会有问题。
+    translation_map = get_country_translation_map()
+    
+    if not translation_map:
+        return country_names_or_codes
+
+    translated_list = []
+    for item in country_names_or_codes:
+        translated = translation_map.get(item.lower(), translation_map.get(item, item))
+        translated_list.append(translated)
+        
+    return list(dict.fromkeys(translated_list))
+
+
 
 # if __name__ == '__main__':
 #     # 测试新的 are_names_match

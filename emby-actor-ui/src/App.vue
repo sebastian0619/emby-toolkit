@@ -190,7 +190,6 @@ const handleUserSelect = async (key) => {
 
 // --- [修改] 侧边栏菜单的定义，使其动态化 ---
 const menuOptions = computed(() => [
-  { label: 'Emby 配置', key: 'settings-emby', icon: renderIcon(EmbyIcon) },
   { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
   { type: 'divider', key: 'd1' },
   { label: '任务中心', key: 'actions-status', icon: renderIcon(ActionsIcon) },
