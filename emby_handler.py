@@ -97,7 +97,7 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
 
         response.raise_for_status()
         item_data = response.json()
-        logger.debug(
+        logger.trace(
             f"成功获取Emby项目 '{item_data.get('Name', item_id)}' (ID: {item_id}) 的详情。")
 
         if not item_data.get('Name') or not item_data.get('Type'):
@@ -341,7 +341,7 @@ def get_emby_libraries(base_url: str, api_key: str, user_id: Optional[str] = Non
             # 真正的媒体库通常有 CollectionType 字段
             collection_type = item.get("CollectionType")
             if item.get("Name") and item.get("Id") and collection_type:
-                logger.debug(f"  发现媒体库: '{item.get('Name')}' (ID: {item.get('Id')}, 类型: {collection_type})")
+                logger.trace(f"  发现媒体库: '{item.get('Name')}' (ID: {item.get('Id')}, 类型: {collection_type})")
                 libraries.append({
                     "Name": item.get("Name"),
                     "Id": item.get("Id"),
@@ -1469,7 +1469,7 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
     except Exception: pass
 
     # --- Plan C: 只读缓存的路径匹配 ---
-    logger.warning("快速通道失败，启用后备方案 (Plan C: 路径匹配)...")
+    logger.warning("快速通道失败，启用后备方案 (路径匹配)...")
     global _library_paths_cache
     if _library_paths_cache is None:
         logger.error("Plan C 失败：媒体库路径缓存尚未构建。请按模板配置路径缓存文件library_paths.json。")
@@ -1492,12 +1492,12 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
                         best_match_library = lib_data["info"]
         
         if best_match_library:
-            logger.info(f"Plan C 成功！项目路径匹配到媒体库 '{best_match_library.get('Name')}'。")
+            logger.info(f"路径匹配 成功！项目路径匹配到媒体库 '{best_match_library.get('Name')}'。")
             return best_match_library
         else:
-            logger.error(f"Plan C 失败：项目路径 '{item_path}' 未能匹配任何已缓存的媒体库源文件夹。")
+            logger.error(f"路径匹配 失败：项目路径 '{item_path}' 未能匹配任何已缓存的媒体库源文件夹。")
             return None
 
     except Exception as e:
-        logger.error(f"Plan C 执行时发生未知严重错误: {e}", exc_info=True)
+        logger.error(f"路径匹配 执行时发生未知严重错误: {e}", exc_info=True)
         return None
