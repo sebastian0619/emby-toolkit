@@ -5,6 +5,11 @@
         <n-page-header>
           <template #title>媒体库封面生成</template>
           <template #extra>
+            <!-- ★★★ 新增：刷新缓存按钮 ★★★ -->
+            <!--<n-button @click="runCacheTask" :loading="isCaching" style="margin-right: 12px;">
+              <template #icon><n-icon :component="SyncIcon" /></template>
+              刷新路径缓存
+            </n-button>-->
             <n-button type="primary" @click="saveConfig" :loading="isSaving">
               <template #icon><n-icon :component="SaveIcon" /></template>
               保存设置
@@ -46,6 +51,7 @@
               </n-form-item>
             </n-gi>
             <n-gi>
+              <!-- ★★★ 修改：更新排序选项 ★★★ -->
               <n-form-item label="封面图片来源排序">
                 <n-select v-model:value="configData.sort_by" :options="sortOptions" />
               </n-form-item>
@@ -68,6 +74,7 @@
           </n-grid>
         </n-card>
 
+        <!-- ... 其余的 n-card 和 n-tabs 保持不变 ... -->
         <n-card style="margin-top: 24px;">
           <n-tabs v-model:value="configData.tab" type="line" animated>
             <n-tab-pane name="style-tab" tab="封面风格">
@@ -242,10 +249,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted } from 'vue';
 import axios from 'axios';
-import { useMessage, NLayout, NPageHeader, NButton, NIcon, NCard, NGrid, NGi, NFormItem, NSwitch, NInputNumber, NSelect, NInput, NTabs, NTabPane, NRadioGroup, NRadio, NSpin } from 'naive-ui';
-import { SaveOutline as SaveIcon } from '@vicons/ionicons5';
+import { useMessage, NLayout, NPageHeader, NButton, NIcon, NCard, NGrid, NGi, NFormItem, NSwitch, NInputNumber, NSelect, NInput, NTabs, NTabPane, NRadioGroup, NRadio, NSpin, NSpace } from 'naive-ui';
+// ★★★ 新增：导入新图标 ★★★
+import { SaveOutline as SaveIcon, SyncOutline as SyncIcon } from '@vicons/ionicons5';
 
 // 导入静态图片数据
 import { single_1, single_2, multi_1 } from '../assets/cover_styles/images.js';
@@ -254,16 +262,20 @@ import { single_1, single_2, multi_1 } from '../assets/cover_styles/images.js';
 const message = useMessage();
 const isLoading = ref(true);
 const isSaving = ref(false);
+// ★★★ 新增：缓存按钮的加载状态 ★★★
+const isCaching = ref(false);
 const configData = ref({});
 
-// 模拟服务器和媒体库选项，您需要从API获取真实数据
 const serverOptions = ref([]);
 const libraryOptions = ref([]);
 
+// ★★★ 修改：提供更完整、更准确的排序选项 ★★★
+// 注意：这里的 value 需要和后端 __get_valid_items_from_library 函数中的 self._sort_by 判断条件完全一致
 const sortOptions = [
   { label: "随机", value: "Random" },
-  { label: "最新入库", value: "DateCreated" },
-  { label: "最新发行", value: "PremiereDate" }
+  { label: "最新添加", value: "Latest" },
+  // 如果您未来在后端实现了按发行日期排序，可以取消下面的注释
+  // { label: "最新发行", value: "PremiereDate" }
 ];
 
 const styles = [
@@ -286,7 +298,6 @@ const fetchConfig = async () => {
 
 const fetchSelectOptions = async () => {
   try {
-    // 并发请求服务器和媒体库列表
     const [serverRes, libraryRes] = await Promise.all([
       axios.get('/api/config/cover_generator/servers'),
       axios.get('/api/config/cover_generator/libraries')
@@ -310,9 +321,24 @@ const saveConfig = async () => {
   }
 };
 
+// ★★★ 新增：执行刷新缓存任务的函数 ★★★
+const runCacheTask = async () => {
+  isCaching.value = true;
+  try {
+    // ★★★ 核心修复：在 post 请求中添加一个空的 JSON 对象作为第二个参数 ★★★
+    await axios.post('/api/config/cover_generator/run-cache-task', { task_name: 'update-library-cache' });
+    message.success('已成功触发“刷新路径缓存”任务，请稍后在任务队列中查看结果。');
+  } catch (error) {
+    // 现在如果还报错，可以更详细地提示
+    const errorMsg = error.response?.data?.error || '触发缓存任务失败，请检查后端日志。';
+    message.error(errorMsg);
+  } finally {
+    isCaching.value = false;
+  }
+};
+
 onMounted(() => {
   fetchConfig();
-  // 在组件挂载时，同时获取配置和下拉框选项
   fetchSelectOptions();
 });
 </script>

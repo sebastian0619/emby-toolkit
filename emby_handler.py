@@ -8,12 +8,14 @@ import json
 import time
 import utils
 import threading
+import config_manager
 from typing import Optional, List, Dict, Any, Generator, Tuple, Set
 import logging
 logger = logging.getLogger(__name__)
 # (SimpleLogger 和 logger 的导入保持不变)
 
 # ★★★ 新增一个全局缓存，用于存储媒体库的路径信息，避免重复请求 ★★★
+CACHE_FILE_PATH = os.path.join(config_manager.PERSISTENT_DATA_PATH, "library_paths.json")
 _library_paths_cache = None
 _library_paths_cache_lock = threading.Lock()
 class SimpleLogger:
@@ -1317,93 +1319,133 @@ def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: s
         logger.error(f"向合集 {collection_id} 追加项目时发生未知错误: {e}", exc_info=True)
         return False
     
-# ★★★ V8 核心辅助函数：使用用户级API来获取媒体库的顶层文件夹路径 ★★★
-def _get_and_cache_library_paths_v8(base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
+# ★★★ V11 核心修改：新增一个在程序启动时加载缓存的函数 ★★★
+def load_library_paths_cache_from_file():
     """
-    【V8 核心辅助函数】完全使用用户级API来构建路径缓存。
-    它通过查询每个媒体库的顶层子项目来获取源文件夹路径。
+    【V11 新增】从本地文件加载路径缓存到内存。
+    这个函数应该在应用启动时被调用一次。
     """
     global _library_paths_cache
     with _library_paths_cache_lock:
-        if _library_paths_cache is not None:
-            return _library_paths_cache
+        if not os.path.exists(CACHE_FILE_PATH):
+            logger.warning("媒体库路径缓存文件不存在，将在需要时首次生成。")
+            _library_paths_cache = None # 确保缓存是空的
+            return
 
-        logger.info("首次运行，正在使用【用户级API】重新构建媒体库路径缓存...")
+        try:
+            with open(CACHE_FILE_PATH, 'r', encoding='utf-8') as f:
+                _library_paths_cache = json.load(f)
+            logger.info(f"成功从文件加载了 {len(_library_paths_cache)} 个媒体库的路径缓存。")
+        except (json.JSONDecodeError, IOError) as e:
+            logger.error(f"从文件加载路径缓存失败: {e}，将重新生成。")
+            _library_paths_cache = None # 加载失败则清空
+
+
+# ★★★ V14 核心：完全复刻“标准答案”逻辑的缓存构建函数 ★★★
+def update_library_paths_cache(base_url: str, api_key: str, user_id: str) -> Tuple[bool, str]:
+    """
+    【V13 - 终极模拟版】
+    构建或更新媒体库路径缓存，并将其写入本地JSON文件。
+    此版本放弃从媒体库自身获取路径，而是通过查询其“顶层子文件夹”
+    来模拟用户界面的操作，这是最可靠的用户级方法。
+    """
+    global _library_paths_cache
+    with _library_paths_cache_lock:
+        logger.info("开始执行媒体库路径缓存刷新任务 (V13 - 终极模拟模式)...")
         
         try:
-            # 步骤 1: 获取所有对用户可见的逻辑媒体库
             all_libraries = get_emby_libraries(base_url, api_key, user_id)
             if not all_libraries:
-                logger.error("无法获取任何媒体库，路径缓存构建失败。")
-                _library_paths_cache = {}
-                return _library_paths_cache
+                return False, "无法获取任何媒体库，缓存构建失败。"
 
             temp_cache = {}
             
-            # 步骤 2: ★★★ 遍历每一个媒体库，查询其顶层内容 ★★★
             for library in all_libraries:
                 lib_id = library.get("Id")
-                if not lib_id:
-                    continue
+                lib_name = library.get("Name", "未知库")
+                if not lib_id: continue
 
-                # 查询该媒体库的直接子项目（通常就是那些源文件夹）
-                # 这个API调用是标准的用户级操作
-                api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+                # 使用集合来自动处理重复路径
+                source_paths = set()
+
+                # ★★★ 核心逻辑：我们不再问媒体库“你的路径是什么？” ★★★
+                # ★★★ 而是问：“你的下一层有哪些文件夹？” ★★★
+                
+                children_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
                 params = {
                     "api_key": api_key,
                     "ParentId": lib_id,
-                    "Recursive": "false", # 只获取顶层，不深入
+                    "Recursive": "false", # 只获取顶层
                     "IncludeItemTypes": "Folder", # 我们只关心文件夹
                     "Fields": "Path" # 我们只需要路径信息
                 }
                 
                 try:
-                    response = requests.get(api_url, params=params, timeout=20)
+                    response = requests.get(children_url, params=params, timeout=20)
                     response.raise_for_status()
                     top_level_folders = response.json().get("Items", [])
 
-                    source_paths = [folder.get("Path") for folder in top_level_folders if folder.get("Path")]
-                    
-                    if source_paths:
-                        temp_cache[lib_id] = {
-                            "info": library,
-                            "paths": source_paths
-                        }
-                        logger.debug(f"  - 成功为媒体库 '{library.get('Name')}' 获取到 {len(source_paths)} 个源文件夹路径。")
+                    for folder in top_level_folders:
+                        if folder.get("Path"):
+                            source_paths.add(folder.get("Path"))
 
                 except requests.exceptions.RequestException as e:
-                    logger.warning(f"查询媒体库 '{library.get('Name')}' 的顶层文件夹时失败: {e}")
+                    logger.warning(f"查询媒体库 '{lib_name}' 的顶层文件夹时失败: {e}")
+                    # 即使查询失败，也继续处理下一个库
                     continue
+
+                # ★★★ 最终检查 ★★★
+                # 如果查询子文件夹后仍然没有路径（这通常意味着它是一个单目录库，
+                # 且API没有将其作为子文件夹返回），我们就做一个最后的尝试：
+                # 获取媒体库自身的详情，只为了它的根`Path`属性。
+                if not source_paths:
+                    logger.debug(f"  - 未能为媒体库 '{lib_name}' 找到任何子文件夹，尝试获取其自身路径作为后备...")
+                    lib_details = get_emby_item_details(lib_id, base_url, api_key, user_id, fields="Path")
+                    if lib_details and lib_details.get("Path"):
+                        source_paths.add(lib_details.get("Path"))
+                        logger.debug(f"  - 后备方案成功：使用媒体库自身的路径。")
+
+                if source_paths:
+                    temp_cache[lib_id] = {
+                        "info": library,
+                        "paths": list(source_paths)
+                    }
+                    logger.debug(f"  - 成功为媒体库 '{lib_name}' 确定了 {len(source_paths)} 个源文件夹路径。")
+                else:
+                    logger.warning(f"  - 最终未能为媒体库 '{lib_name}' 找到任何源文件夹路径。")
             
+            # 更新内存缓存并写入文件
             _library_paths_cache = temp_cache
-            logger.info(f"媒体库路径缓存构建完成，成功缓存 {len(_library_paths_cache)} 个媒体库的 {sum(len(v['paths']) for v in _library_paths_cache.values())} 个源文件夹路径。")
+            try:
+                with open(CACHE_FILE_PATH, 'w', encoding='utf-8') as f:
+                    json.dump(_library_paths_cache, f, indent=4, ensure_ascii=False)
+                logger.info(f"路径缓存已成功写入到文件: {CACHE_FILE_PATH}")
+            except IOError as e:
+                logger.error(f"将路径缓存写入文件时失败: {e}")
+            
+            summary = f"缓存刷新成功！共缓存 {len(_library_paths_cache)} 个媒体库的 {sum(len(v['paths']) for v in _library_paths_cache.values())} 个源文件夹路径。"
+            logger.info(summary)
+            return True, summary
 
         except Exception as e:
             logger.error(f"构建媒体库路径缓存时发生严重错误: {e}", exc_info=True)
-            _library_paths_cache = {}
-            
-        return _library_paths_cache
+            _library_paths_cache = None
+            return False, f"缓存构建失败: {e}"
 
-# ✨✨✨ 【V8 - 用户级API终极版】根据项目ID向上追溯，找到其所属的媒体库根 ✨✨✨
+# ✨✨✨ 【V10 - 缓存解耦版】根据项目ID向上追溯，找到其所属的媒体库根 ✨✨✨
 def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
     """
-    【V8 - 用户级API终极版】
-    给定一个项目ID，找到其所属的顶层媒体库。
-    此版本完全放弃对管理员API的依赖，Plan C 使用纯用户级API来获取
-    媒体库的源文件夹路径，从而完美兼容“多文件夹”媒体库和非管理员Key。
+    【V10 - 缓存解耦版】
+    此版本不再构建缓存，而是依赖一个预先构建好的全局缓存。
+    如果缓存不存在，Plan C会失败并提示用户手动运行缓存任务。
     """
-    if not all([item_id, base_url, api_key, user_id]):
-        logger.error("get_library_root_for_item: 缺少必要的参数。")
-        return None
-
-    # --- Plan A & B (快速通道，保持不变) ---
+    # ... Plan A 和 Plan B 的代码完全保持不变，作为快速通道 ...
     try:
         api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items/{item_id}/Ancestors"
         response = requests.get(api_url, params={"api_key": api_key}, timeout=15)
         if response.status_code == 200:
             for ancestor in response.json():
                 if ancestor.get("CollectionType"):
-                    logger.info(f"Plan A (Ancestors) 成功！定位到媒体库: '{ancestor.get('Name')}'")
                     return ancestor
     except Exception: pass
 
@@ -1415,33 +1457,29 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
             for _ in range(15):
                 if not current_id: break
                 if current_id in library_map:
-                    logger.info(f"Plan B (ParentId) 成功！定位到媒体库: '{library_map[current_id].get('Name')}'")
                     return library_map[current_id]
                 item_details = get_emby_item_details(current_id, base_url, api_key, user_id, fields="ParentId")
                 if not item_details: break
                 current_id = item_details.get("ParentId")
     except Exception: pass
 
-    # --- Plan C: 终极后备方案 - 基于用户级API的路径匹配 ---
-    logger.warning("快速通道失败，启用终极后备方案 (Plan C: 用户级API路径匹配)...")
+    # --- Plan C: 只读缓存的路径匹配 ---
+    logger.warning("快速通道失败，启用后备方案 (Plan C: 路径匹配)...")
+    global _library_paths_cache
+    if _library_paths_cache is None:
+        logger.error("Plan C 失败：媒体库路径缓存尚未构建。请在UI上手动执行“刷新媒体库路径缓存”任务。")
+        return None
+
     try:
         item_details = get_emby_item_details(item_id, base_url, api_key, user_id, fields="Path")
         if not item_details or not item_details.get("Path"):
-            logger.error(f"Plan C 失败：无法获取项目 {item_id} 的文件路径。")
             return None
         item_path = item_details["Path"]
 
-        # ★★★ 调用全新的、基于用户级API的缓存构建函数 ★★★
-        library_paths_data = _get_and_cache_library_paths_v8(base_url, api_key, user_id)
-        if not library_paths_data:
-            logger.error("Plan C 失败：媒体库路径缓存为空或构建失败。")
-            return None
-
         best_match_library = None
         longest_match_length = 0
-        for lib_id, lib_data in library_paths_data.items():
+        for lib_id, lib_data in _library_paths_cache.items():
             for library_source_path in lib_data["paths"]:
-                # 使用 os.path.join 确保路径分隔符正确
                 source_path_with_slash = os.path.join(library_source_path, "")
                 if item_path.startswith(source_path_with_slash):
                     if len(source_path_with_slash) > longest_match_length:
@@ -1452,7 +1490,7 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
             logger.info(f"Plan C 成功！项目路径匹配到媒体库 '{best_match_library.get('Name')}'。")
             return best_match_library
         else:
-            logger.error(f"Plan C 失败：项目路径 '{item_path}' 未能匹配任何已知媒体库的源文件夹。")
+            logger.error(f"Plan C 失败：项目路径 '{item_path}' 未能匹配任何已缓存的媒体库源文件夹。")
             return None
 
     except Exception as e:

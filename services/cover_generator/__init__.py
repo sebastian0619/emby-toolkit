@@ -65,7 +65,8 @@ class CoverGeneratorService:
         为指定的媒体库生成并上传封面。
         这是从外部调用的主入口。
         """
-        logger.info(f"开始为媒体库 '{library['Name']}' (服务器: {emby_server_id}) 生成封面...")
+        # ★★★ 新增日志，明确当前使用的排序方式 ★★★
+        logger.info(f"开始为媒体库 '{library['Name']}' (服务器: {emby_server_id}, 排序方式: {self._sort_by}) 生成封面...")
         
         # 1. 确保字体文件已准备好 (已修改为自动下载)
         self.__get_fonts()
@@ -140,43 +141,43 @@ class CoverGeneratorService:
     # ★ 核心修复 1: 修复封面始终相同的问题 ★
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     def __get_valid_items_from_library(self, server_id: str, library: Dict[str, Any], limit: int) -> List[Dict]:
-        """从媒体库中获取足够数量的、包含有效图片的媒体项 (已修复随机逻辑)"""
+        """从媒体库中获取足够数量的、包含有效图片的媒体项 (已修复排序逻辑)"""
         library_id = library.get("Id") or library.get("ItemId")
         
         base_url = config_manager.APP_CONFIG.get('emby_server_url')
         api_key = config_manager.APP_CONFIG.get('emby_api_key')
         user_id = config_manager.APP_CONFIG.get('emby_user_id')
 
+        # ★★★ 核心修改：在请求中加入 DateCreated 字段，用于排序 ★★★
         all_items = emby_handler.get_emby_library_items(
             base_url=base_url,
             api_key=api_key,
             user_id=user_id,
             library_ids=[library_id],
-            media_type_filter="Movie,Series,MusicAlbum"
+            media_type_filter="Movie,Series,MusicAlbum",
+            fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated" # 确保请求了 DateCreated
         )
         
         if not all_items:
             return []
             
-        # 1. 先收集所有带图片的有效项目
-        valid_items = []
-        for item in all_items:
-            if self.__get_image_url(item):
-                valid_items.append(item)
+        valid_items = [item for item in all_items if self.__get_image_url(item)]
         
         if not valid_items:
             return []
 
-        # 2. 现在，对所有有效的项目应用排序逻辑
-        if self._sort_by == "Random":
-            logger.debug(f"正在对 {len(valid_items)} 个有效项目进行随机排序...")
+        # ★★★ 核心修改：实现更完善的排序逻辑 ★★★
+        if self._sort_by == "Latest":
+            logger.debug(f"正在对 {len(valid_items)} 个有效项目按'最新添加'进行排序...")
+            # 使用 get 获取 DateCreated，并提供一个很早的默认值以防数据缺失
+            valid_items.sort(key=lambda x: x.get('DateCreated', '1970-01-01T00:00:00.000Z'), reverse=True)
+        elif self._sort_by == "Random":
+            logger.debug(f"正在对 {len(valid_items)} 个有效项目进行'随机'排序...")
             random.shuffle(valid_items)
         # else:
-        #     # 在这里可以添加其他排序逻辑，例如按添加日期或发布日期
-        #     # valid_items.sort(key=lambda x: x.get('DateCreated'), reverse=True)
-        #     pass
+            # 可以在此添加其他排序方式，如 "PremiereDate"
+            # logger.debug(f"正在对 {len(valid_items)} 个有效项目按默认方式排序...")
 
-        # 3. 最后，返回所需数量的项目
         return valid_items[:limit]
 
     def __generate_image_from_path(self, library_name: str, title: Tuple[str, str], image_paths: List[str]) -> bytes:

@@ -4,9 +4,11 @@ import os
 import json
 import logging
 from flask import Blueprint, request, jsonify
-
+import task_manager
+from extensions import media_processor_instance
 import config_manager # 导入以获取数据路径
 from extensions import login_required
+from tasks import get_task_registry
 import emby_handler
 logger = logging.getLogger(__name__)
 
@@ -158,3 +160,45 @@ def get_all_libraries():
     except Exception as e:
         logger.error(f"获取媒体库列表失败: {e}", exc_info=True)
         return jsonify({"error": "获取媒体库列表失败"}), 500
+    
+# ★★★ 新增：专门用于执行缓存刷新任务的API接口 ★★★
+@cover_generator_config_bp.route('/run-cache-task', methods=['POST'])
+@login_required
+def run_cache_task():
+    """
+    专门用于触发“刷新媒体库路径缓存”任务的接口。
+    """
+    data = request.get_json()
+    if not data or 'task_name' not in data:
+        return jsonify({"error": "请求体中缺少 'task_name' 参数"}), 400
+
+    task_name_str = data['task_name'] # 这是字符串，例如 'update-library-cache'
+    logger.info(f"收到来自前端的任务执行请求: {task_name_str}")
+
+    try:
+        # ★★★ 核心适配逻辑：在这里将任务名（字符串）转换为任务函数（对象） ★★★
+        task_registry = get_task_registry()
+        task_info = task_registry.get(task_name_str)
+
+        if not task_info:
+            logger.error(f"错误：未在任务注册表中找到名为 '{task_name_str}' 的任务。")
+            return jsonify({"error": f"未知的任务名称: {task_name_str}"}), 404
+
+        # task_info 是一个元组 (task_function, description)
+        task_function_obj, task_description = task_info
+        
+        # ★★★ 现在，我们调用您现有的、稳定的 submit_task 函数 ★★★
+        # 我们传递的是【函数对象】和【任务描述】，完全匹配您系统的要求
+        success = task_manager.submit_task(
+            task_function=task_function_obj, 
+            task_name=task_description # 使用友好的描述作为任务名
+        )
+        
+        if success:
+            return jsonify({"message": f"任务 '{task_description}' 已成功提交到后台执行。"}), 202
+        else:
+            return jsonify({"error": "任务提交失败，可能有其他任务正在运行。"}), 409 # 409 Conflict
+
+    except Exception as e:
+        logger.error(f"提交任务 '{task_name_str}' 时发生未知错误: {e}", exc_info=True)
+        return jsonify({"error": f"提交任务时发生服务器内部错误: {e}"}), 500

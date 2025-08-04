@@ -1430,6 +1430,7 @@ def get_task_registry():
         'auto-subscribe': (task_auto_subscribe, "立即执行智能订阅"),
         'actor-tracking': (task_process_actor_subscriptions, "立即执行演员订阅"),
         'custom-collections': (task_process_all_custom_collections, "立即执行自建合集刷新"),
+        'update-library-cache': (task_update_library_cache, "刷新封面生成器路径缓存"),
     }
 
 # ★★★ 一键生成所有合集的后台任务，核心优化在于只获取一次Emby媒体库 ★★★
@@ -2016,6 +2017,41 @@ def task_populate_metadata_cache(processor: 'MediaProcessor'):
 
         task_manager.update_status_from_thread(100, f"元数据同步完成！共处理 {len(metadata_batch)} 条。")
         logger.info(f"--- '{task_name}' 任务成功完成 ---")
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★★★ 新增：手动刷新媒体库路径缓存的后台任务 ★★★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+def task_update_library_cache(processor: MediaProcessor):
+    """
+    后台任务：手动触发，用于刷新封面生成器所需的媒体库路径缓存。
+    """
+    task_name = "刷新媒体库路径缓存"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    task_manager.update_status_from_thread(0, "正在准备刷新缓存...")
+
+    try:
+        # 从 processor 获取必要的 Emby 连接信息
+        emby_url = processor.emby_url
+        emby_api_key = processor.emby_api_key
+        emby_user_id = processor.emby_user_id
+
+        # 调用 emby_handler 中新的独立函数
+        success, message = emby_handler.update_library_paths_cache(
+            base_url=emby_url,
+            api_key=emby_api_key,
+            user_id=emby_user_id
+        )
+
+        if success:
+            task_manager.update_status_from_thread(100, message)
+        else:
+            task_manager.update_status_from_thread(-1, message)
+        
+        logger.info(f"--- '{task_name}' 任务完成 ---")
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
