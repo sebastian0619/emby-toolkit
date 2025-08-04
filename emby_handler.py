@@ -369,7 +369,8 @@ def get_emby_library_items(
     user_id: Optional[str] = None,
     library_ids: Optional[List[str]] = None,
     search_term: Optional[str] = None,
-    library_name_map: Optional[Dict[str, str]] = None
+    library_name_map: Optional[Dict[str, str]] = None,
+    fields: Optional[str] = None
 ) -> Optional[List[Dict[str, Any]]]:
     """
     【V3 - 安静且信息补充版】
@@ -414,9 +415,14 @@ def get_emby_library_items(
         
         try:
             api_url = f"{base_url.rstrip('/')}/Items"
+            
+            # ★★★ 核心修复：在这里决定 Fields 参数的值 ★★★
+            # 如果调用者提供了 fields，就用它；否则，使用我们原来的默认值。
+            fields_to_request = fields if fields else "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,People,ProductionLocations"
+
             params = {
                 "api_key": api_key, "Recursive": "true", "ParentId": lib_id,
-                "Fields": "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,People,ProductionLocations",
+                "Fields": fields_to_request, # ★★★ 使用我们新决定的值 ★★★
             }
             if media_type_filter:
                 params["IncludeItemTypes"] = media_type_filter
@@ -1432,10 +1438,9 @@ def update_library_paths_cache(base_url: str, api_key: str, user_id: str) -> Tup
             _library_paths_cache = None
             return False, f"缓存构建失败: {e}"
 
-# ✨✨✨ 【V10 - 缓存解耦版】根据项目ID向上追溯，找到其所属的媒体库根 ✨✨✨
+# ✨✨✨ 根据项目ID向上追溯，找到其所属的媒体库根 ✨✨✨
 def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
     """
-    【V10 - 缓存解耦版】
     此版本不再构建缓存，而是依赖一个预先构建好的全局缓存。
     如果缓存不存在，Plan C会失败并提示用户手动运行缓存任务。
     """
@@ -1467,7 +1472,7 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
     logger.warning("快速通道失败，启用后备方案 (Plan C: 路径匹配)...")
     global _library_paths_cache
     if _library_paths_cache is None:
-        logger.error("Plan C 失败：媒体库路径缓存尚未构建。请在UI上手动执行“刷新媒体库路径缓存”任务。")
+        logger.error("Plan C 失败：媒体库路径缓存尚未构建。请按模板配置路径缓存文件library_paths.json。")
         return None
 
     try:
