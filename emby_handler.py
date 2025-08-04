@@ -1316,10 +1316,11 @@ def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: s
 # ✨✨✨ 【新】根据项目ID向上追溯，找到其所属的媒体库根 ✨✨✨
 def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
     """
-    【向下兼容版】
+    【V3 - 终极可靠版】
     给定一个项目ID，向上追溯找到其所属的顶层媒体库。
     优先尝试高效的 /Ancestors API。如果API不存在（返回404），则自动回退到
-    逐级获取 ParentId 的手动遍历模式，以兼容旧版 Emby 服务器。
+    一个更可靠的兼容模式：该模式首先获取所有媒体库的权威列表，然后在向上遍历时
+    进行比对，而不是依赖于在旧版Emby中不总是存在的 'CollectionType' 字段。
     
     :param item_id: Emby中任何媒体项或文件夹的ID。
     :param base_url: Emby服务器地址。
@@ -1342,48 +1343,69 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
         response.raise_for_status()
         ancestors = response.json()
         
+        # 在祖先列表中，第一个带有 CollectionType 的就是媒体库
         for ancestor in ancestors:
             if ancestor.get("CollectionType"):
                 library_name = ancestor.get("Name", "未知媒体库")
                 library_id = ancestor.get("Id")
-                logger.info(f"成功为项目 {item_id} 定位到媒体库根: '{library_name}' (ID: {library_id})")
-                return ancestor
+                logger.info(f"现代模式成功！为项目 {item_id} 定位到媒体库根: '{library_name}' (ID: {library_id})")
+                return ancestor # 返回找到的这个祖先（即媒体库）
         
-        logger.warning(f"未能为项目 {item_id} 在其祖先路径中找到任何有效的媒体库根。")
-        return None
+        logger.warning(f"现代模式：API调用成功，但未能为项目 {item_id} 在其祖先路径中找到任何有效的媒体库根。")
+        return None # 理论上不应发生，但作为安全措施
 
     except requests.exceptions.HTTPError as e:
         # ▼▼▼ 核心兼容性逻辑：如果API不存在（404），则启动 Plan B ▼▼▼
         if e.response is not None and e.response.status_code == 404:
-            logger.warning(f"Ancestors API 不存在 (404)，已切换到兼容模式，将为项目 {item_id} 手动向上遍历...")
+            logger.warning(f"Ancestors API 不存在 (404)，已切换到更可靠的兼容模式...")
             
-            # --- Plan B: 手动、逐级向上追溯 ---
-            current_id = item_id
-            # 设置一个安全限制，防止因意外的目录结构导致无限循环
-            for _ in range(10): # 向上查找10层，对于媒体库结构来说绰绰有余
-                if not current_id:
-                    break # 没有父ID了，遍历结束
-
-                # 获取当前层级的项目详情，只需要少量关键字段
-                item_details = get_emby_item_details(
-                    current_id, base_url, api_key, user_id, 
-                    fields="ParentId,CollectionType,Name,Id"
-                )
-
-                if not item_details:
-                    logger.error(f"在向上遍历过程中，获取项目 {current_id} 的详情失败。")
+            # --- Plan B: 可靠的向上遍历比对模式 ---
+            try:
+                # 步骤 B1: 获取一份权威的媒体库列表作为“答案”
+                all_libraries = get_emby_libraries(base_url, api_key, user_id)
+                if not all_libraries:
+                    logger.error(f"兼容模式失败：无法获取任何媒体库列表，无法为项目 {item_id} 定位根。")
                     return None
+                
+                library_map = {lib['Id']: lib for lib in all_libraries}
+                library_ids_set = set(library_map.keys())
 
-                # 检查当前项目是否就是媒体库根
-                if item_details.get("CollectionType"):
-                    logger.info(f"兼容模式成功！找到媒体库根: '{item_details.get('Name')}' (ID: {item_details.get('Id')})")
-                    return item_details # 找到了！
+                # 步骤 B2: 逐级向上遍历父项
+                current_id = item_id
+                # 增加遍历深度以防万一，并用于日志记录
+                final_depth = 0
+                for i in range(15): 
+                    final_depth = i + 1
+                    if not current_id: break
 
-                # 如果不是，则将父ID作为下一个要检查的目标
-                current_id = item_details.get("ParentId")
-            
-            logger.warning(f"兼容模式：为项目 {item_id} 向上遍历了10层仍未找到媒体库根。")
-            return None
+                    # 获取当前项的父ID (请求最少的字段以提高效率)
+                    item_details = get_emby_item_details(current_id, base_url, api_key, user_id, fields="ParentId,Name")
+                    if not item_details:
+                        logger.error(f"兼容模式：在向上遍历过程中，获取项目 {current_id} 的详情失败。查找中止。")
+                        return None
+
+                    # 检查当前ID本身是否就是媒体库
+                    if current_id in library_ids_set:
+                        found_library_info = library_map[current_id]
+                        logger.info(f"兼容模式成功！项目 {item_id} 的祖先 '{current_id}' 就是媒体库 '{found_library_info.get('Name')}'。")
+                        return get_emby_item_details(current_id, base_url, api_key, user_id)
+
+                    parent_id = item_details.get("ParentId")
+                    if not parent_id: break
+
+                    # 检查父ID是否是媒体库
+                    if parent_id in library_ids_set:
+                        found_library_info = library_map[parent_id]
+                        logger.info(f"兼容模式成功！项目 {item_id} 的父项 '{parent_id}' 是媒体库 '{found_library_info.get('Name')}'。")
+                        return get_emby_item_details(parent_id, base_url, api_key, user_id)
+
+                    current_id = parent_id
+                
+                logger.warning(f"兼容模式：为项目 {item_id} 向上遍历了 {final_depth} 层仍未找到媒体库根。")
+                return None
+            except Exception as plan_b_exc:
+                logger.error(f"在执行兼容模式查找时发生未知错误: {plan_b_exc}", exc_info=True)
+                return None
         else:
             # 如果是其他HTTP错误（如500, 401等），则正常报错
             logger.error(f"通过API获取项目 {item_id} 的祖先时发生非404的HTTP错误: {e}", exc_info=True)
