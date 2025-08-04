@@ -273,18 +273,29 @@ class CoverGeneratorService:
     # --- 以下是辅助函数 ---
 
     def __get_library_title_from_yaml(self, library_name: str) -> Tuple[str, str]:
+        """
+        【已修改】获取并清理媒体库标题，移除所有emoji。
+        """
         zh_title, en_title = library_name, ''
-        if not self._title_config_str:
-            return zh_title, en_title
-        try:
-            title_config = yaml.safe_load(self._title_config_str)
-            if isinstance(title_config, dict) and library_name in title_config:
-                titles = title_config[library_name]
-                if isinstance(titles, list) and len(titles) >= 2:
-                    zh_title, en_title = titles[0], titles[1]
-        except yaml.YAMLError as e:
-            logger.error(f"解析标题配置失败: {e}")
-        return zh_title, en_title
+        if self._title_config_str:
+            try:
+                title_config = yaml.safe_load(self._title_config_str)
+                if isinstance(title_config, dict) and library_name in title_config:
+                    titles = title_config[library_name]
+                    if isinstance(titles, list) and len(titles) >= 2:
+                        zh_title, en_title = titles[0], titles[1]
+            except yaml.YAMLError as e:
+                logger.error(f"解析标题配置失败: {e}")
+
+        # ★★★ 核心修改：在返回之前，调用新函数来清理标题文本 ★★★
+        cleaned_zh_title = self.__remove_emoji(zh_title)
+        cleaned_en_title = self.__remove_emoji(en_title)
+
+        # 如果发生了清理，记录一条调试日志，方便追踪
+        if zh_title != cleaned_zh_title:
+            logger.debug(f"已从媒体库标题中移除emoji: '{zh_title}' -> '{cleaned_zh_title}'")
+
+        return cleaned_zh_title, cleaned_en_title
 
     def __get_image_url(self, item: Dict[str, Any]) -> str:
         item_id = item.get("Id")
@@ -436,3 +447,32 @@ class CoverGeneratorService:
         #    这里的 self.zh_font_path 等属性已经被上面的循环精确设置
         if not getattr(self, 'zh_font_path', None) or not getattr(self, 'en_font_path', None):
              logger.warning("一个或多个核心字体文件缺失。请检查UI中的本地路径或下载链接是否有效。")
+
+    def __remove_emoji(self, text: str) -> str:
+        """
+        【新增】使用正则表达式移除字符串中的所有emoji字符。
+        """
+        if not text:
+            return ""
+        # 一个经过验证的、比较全面的emoji匹配正则表达式
+        emoji_pattern = re.compile(
+            "["
+            "\U0001F600-\U0001F64F"  # emoticons
+            "\U0001F300-\U0001F5FF"  # symbols & pictographs
+            "\U0001F680-\U0001F6FF"  # transport & map symbols
+            "\U0001F1E0-\U0001F1FF"  # flags (iOS)
+            "\U00002702-\U000027B0"
+            "\U000024C2-\U0001F251"
+            "\U0001f926-\U0001f937"
+            "\U00010000-\U0010ffff"
+            "\u2640-\u2642"
+            "\u2600-\u2B55"
+            "\u200d"
+            "\u23cf"
+            "\u23e9"
+            "\u231a"
+            "\ufe0f"  # dingbats
+            "\u3030"
+            "]+", flags=re.UNICODE)
+        # 替换找到的emoji为空字符串，并移除可能产生的首尾空格
+        return emoji_pattern.sub(r'', text).strip()
