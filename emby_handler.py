@@ -12,6 +12,10 @@ from typing import Optional, List, Dict, Any, Generator, Tuple, Set
 import logging
 logger = logging.getLogger(__name__)
 # (SimpleLogger 和 logger 的导入保持不变)
+
+# ★★★ 新增一个全局缓存，用于存储媒体库的路径信息，避免重复请求 ★★★
+_library_paths_cache = None
+_library_paths_cache_lock = threading.Lock()
 class SimpleLogger:
     def info(self, msg): print(f"[EMBY_INFO] {msg}")
     def error(self, msg): print(f"[EMBY_ERROR] {msg}")
@@ -1316,91 +1320,115 @@ def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: s
 # ✨✨✨ 【新】根据项目ID向上追溯，找到其所属的媒体库根 ✨✨✨
 def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
     """
-    【V4 - 终极修正版】
+    【V6 - 终极路径匹配版】
     给定一个项目ID，向上追溯找到其所属的顶层媒体库。
-    优先尝试高效的 /Ancestors API。如果API不存在（返回404），则自动回退到
-    一个经过优化的、更可靠的兼容模式：该模式首先获取所有媒体库的权威列表，
-    然后在向上遍历时，直接用当前项的ID与权威列表进行比对，从而避免了
-    因Emby复杂的父子ID结构导致的追溯失败问题。
-    
-    :param item_id: Emby中任何媒体项或文件夹的ID。
-    :param base_url: Emby服务器地址。
-    :param api_key: Emby API Key。
-    :param user_id: Emby用户ID。
-    :return: 如果找到，返回该媒体库的完整信息字典；否则返回None。
+    此版本包含多种回退策略，以应对各种复杂的Emby配置。
+    1. (Plan A) 尝试高效的 /Ancestors API。
+    2. (Plan B) 如果失败，回退到基于 ParentId 的向上遍历。
+    3. (Plan C) 如果仍然失败，则启用终极后备方案：基于文件路径匹配。
+       该方案会获取所有媒体库的源文件夹路径，并将当前项目的路径与之匹配。
+       这对于处理“多文件夹”模式的媒体库至关重要。
     """
     if not all([item_id, base_url, api_key, user_id]):
         logger.error("get_library_root_for_item: 缺少必要的参数。")
         return None
 
     # --- Plan A: 尝试现代、高效的 /Ancestors API ---
-    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items/{item_id}/Ancestors"
-    params = {"api_key": api_key}
-    
-    logger.debug(f"正在为项目 {item_id} 获取祖先路径以定位媒体库根 (现代模式)...")
-    
     try:
+        api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items/{item_id}/Ancestors"
+        params = {"api_key": api_key}
+        logger.debug(f"正在为项目 {item_id} 获取祖先路径 (Plan A: Ancestors API)...")
         response = requests.get(api_url, params=params, timeout=15)
-        response.raise_for_status()
-        ancestors = response.json()
         
-        for ancestor in ancestors:
-            if ancestor.get("CollectionType"):
-                library_name = ancestor.get("Name", "未知媒体库")
-                library_id = ancestor.get("Id")
-                logger.info(f"现代模式成功！为项目 {item_id} 定位到媒体库根: '{library_name}' (ID: {library_id})")
-                return ancestor
-        
-        logger.warning(f"现代模式：API调用成功，但未能为项目 {item_id} 在其祖先路径中找到任何有效的媒体库根。")
-        return None
-
-    except requests.exceptions.HTTPError as e:
-        if e.response is not None and e.response.status_code == 404:
-            logger.warning(f"Ancestors API 不存在 (404)，已切换到终极可靠的兼容模式...")
+        if response.status_code == 200:
+            ancestors = response.json()
+            for ancestor in ancestors:
+                if ancestor.get("CollectionType"):
+                    logger.info(f"Plan A 成功！为项目 {item_id} 定位到媒体库: '{ancestor.get('Name')}'")
+                    return ancestor
+        elif response.status_code == 404:
+            logger.warning("Ancestors API 不存在 (404)，将尝试 Plan B。")
+        else:
+            logger.warning(f"Ancestors API 返回错误 {response.status_code}，将尝试 Plan B。")
             
-            # --- Plan B: 终极可靠的向上遍历比对模式 ---
-            try:
-                # 步骤 B1: 获取一份权威的媒体库列表作为“答案”
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Plan A 请求失败: {e}，将尝试 Plan B。")
+
+    # --- Plan B: 基于 ParentId 的向上遍历 ---
+    try:
+        logger.debug(f"正在为项目 {item_id} 向上遍历父级 (Plan B: ParentId)...")
+        all_libraries = get_emby_libraries(base_url, api_key, user_id)
+        if all_libraries:
+            library_map = {lib['Id']: lib for lib in all_libraries}
+            current_id = item_id
+            for _ in range(15):
+                if not current_id: break
+                if current_id in library_map:
+                    logger.info(f"Plan B 成功！项目 {item_id} 的祖先 '{current_id}' 是媒体库。")
+                    return library_map[current_id]
+                
+                item_details = get_emby_item_details(current_id, base_url, api_key, user_id, fields="ParentId")
+                if not item_details: break
+                current_id = item_details.get("ParentId")
+        logger.warning(f"Plan B 未能通过 ParentId 链找到媒体库，将尝试终极 Plan C。")
+    except Exception as e:
+        logger.error(f"Plan B 执行时出错: {e}，将尝试终极 Plan C。")
+
+    # --- Plan C: 终极后备方案 - 基于文件路径匹配 ---
+    global _library_paths_cache
+    try:
+        logger.warning(f"正在为项目 {item_id} 启用终极后备方案 (Plan C: 路径匹配)...")
+        
+        # 1. 获取当前项目的详细信息，特别是文件路径
+        item_details = get_emby_item_details(item_id, base_url, api_key, user_id, fields="Path")
+        if not item_details or not item_details.get("Path"):
+            logger.error(f"Plan C 失败：无法获取项目 {item_id} 的文件路径。")
+            return None
+        item_path = item_details["Path"]
+
+        # 2. 获取并缓存所有媒体库的源文件夹路径
+        with _library_paths_cache_lock:
+            if _library_paths_cache is None:
+                logger.info("首次运行，正在构建媒体库路径缓存...")
+                _library_paths_cache = {}
                 all_libraries = get_emby_libraries(base_url, api_key, user_id)
                 if not all_libraries:
-                    logger.error(f"兼容模式失败：无法获取任何媒体库列表，无法为项目 {item_id} 定位根。")
+                    logger.error("Plan C 失败：无法获取媒体库列表。")
                     return None
                 
-                # ★★★ 核心逻辑：将权威列表存入Map，用于快速查找 ★★★
-                library_map = {lib['Id']: lib for lib in all_libraries}
+                for library in all_libraries:
+                    lib_id = library.get("Id")
+                    # 获取每个媒体库的详细信息以得到其路径
+                    lib_details = get_emby_item_details(lib_id, base_url, api_key, user_id, fields="PathInfos")
+                    if lib_details and lib_details.get("PathInfos"):
+                        # 一个媒体库可以有多个源文件夹
+                        source_paths = [p.get("Path") for p in lib_details.get("PathInfos", []) if p.get("Path")]
+                        _library_paths_cache[lib_id] = {
+                            "info": library,
+                            "paths": source_paths
+                        }
+                logger.info(f"媒体库路径缓存构建完成，共缓存 {len(_library_paths_cache)} 个媒体库。")
 
-                # 步骤 B2: 逐级向上遍历
-                current_id = item_id
-                final_depth = 0
-                for i in range(15): # 向上查找15层，足以覆盖任何合理的目录结构
-                    final_depth = i + 1
-                    if not current_id: break
+        # 3. 遍历缓存，进行路径匹配
+        # 我们希望匹配最长的路径，以处理嵌套文件夹的情况
+        best_match_library = None
+        longest_match_length = 0
 
-                    # ★★★ 核心修正：检查当前ID本身是否就是媒体库 ★★★
-                    # 不再检查父ID，因为父ID关系不可靠
-                    if current_id in library_map:
-                        found_library_info = library_map[current_id]
-                        logger.info(f"兼容模式成功！项目 {item_id} 的祖先 '{current_id}' 就是媒体库 '{found_library_info.get('Name')}'。")
-                        # 直接返回我们从权威列表中获取的、可信的媒体库信息
-                        return found_library_info
-
-                    # 如果当前项不是媒体库，则获取其父项ID，继续向上查找
-                    item_details = get_emby_item_details(current_id, base_url, api_key, user_id, fields="ParentId,Name")
-                    if not item_details:
-                        logger.error(f"兼容模式：在向上遍历过程中，获取项目 {current_id} 的详情失败。查找中止。")
-                        return None
-
-                    current_id = item_details.get("ParentId")
-                
-                logger.warning(f"兼容模式：为项目 {item_id} 向上遍历了 {final_depth} 层仍未找到媒体库根。")
-                return None
-            except Exception as plan_b_exc:
-                logger.error(f"在执行兼容模式查找时发生未知错误: {plan_b_exc}", exc_info=True)
-                return None
+        for lib_id, lib_data in _library_paths_cache.items():
+            for library_source_path in lib_data["paths"]:
+                # 检查项目路径是否以媒体库的某个源路径开头
+                if item_path.startswith(library_source_path):
+                    if len(library_source_path) > longest_match_length:
+                        longest_match_length = len(library_source_path)
+                        best_match_library = lib_data["info"]
+        
+        if best_match_library:
+            logger.info(f"Plan C 成功！项目路径 '{item_path}' 匹配到媒体库 '{best_match_library.get('Name')}'。")
+            return best_match_library
         else:
-            logger.error(f"通过API获取项目 {item_id} 的祖先时发生非404的HTTP错误: {e}", exc_info=True)
+            logger.error(f"Plan C 失败：项目路径 '{item_path}' 未能匹配任何已知媒体库的源文件夹。")
             return None
-            
+
     except Exception as e:
-        logger.error(f"处理项目 {item_id} 的祖先数据时发生未知错误: {e}", exc_info=True)
+        logger.error(f"Plan C 执行时发生未知严重错误: {e}", exc_info=True)
         return None
