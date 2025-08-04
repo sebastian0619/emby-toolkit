@@ -1316,7 +1316,10 @@ def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: s
 # ✨✨✨ 【新】根据项目ID向上追溯，找到其所属的媒体库根 ✨✨✨
 def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
     """
-    给定一个项目ID，通过调用其祖先API，向上追溯找到其所属的顶层媒体库。
+    【向下兼容版】
+    给定一个项目ID，向上追溯找到其所属的顶层媒体库。
+    优先尝试高效的 /Ancestors API。如果API不存在（返回404），则自动回退到
+    逐级获取 ParentId 的手动遍历模式，以兼容旧版 Emby 服务器。
     
     :param item_id: Emby中任何媒体项或文件夹的ID。
     :param base_url: Emby服务器地址。
@@ -1328,36 +1331,64 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
         logger.error("get_library_root_for_item: 缺少必要的参数。")
         return None
 
-    # 1. 调用 Emby 的 Ancestors API
-    # 这个API会返回一个从直接父级到最顶层根的有序列表
+    # --- Plan A: 尝试现代、高效的 /Ancestors API ---
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items/{item_id}/Ancestors"
     params = {"api_key": api_key}
     
-    logger.debug(f"正在为项目 {item_id} 获取祖先路径以定位媒体库根...")
+    logger.debug(f"正在为项目 {item_id} 获取祖先路径以定位媒体库根 (现代模式)...")
     
     try:
         response = requests.get(api_url, params=params, timeout=15)
         response.raise_for_status()
         ancestors = response.json()
         
-        # 2. 遍历祖先列表，寻找真正的媒体库
-        # 真正的媒体库项目有一个关键特征：它拥有 'CollectionType' 字段 (例如 'movies', 'tvshows')
-        # 而普通的文件夹 (Type: 'Folder') 则没有这个字段。
         for ancestor in ancestors:
             if ancestor.get("CollectionType"):
                 library_name = ancestor.get("Name", "未知媒体库")
                 library_id = ancestor.get("Id")
                 logger.info(f"成功为项目 {item_id} 定位到媒体库根: '{library_name}' (ID: {library_id})")
-                # 找到了！这个祖先就是我们要的媒体库根。
                 return ancestor
         
-        # 3. 如果循环结束都没找到，说明此项目可能不在一个标准的媒体库中
         logger.warning(f"未能为项目 {item_id} 在其祖先路径中找到任何有效的媒体库根。")
         return None
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"通过API获取项目 {item_id} 的祖先时失败: {e}", exc_info=True)
-        return None
+    except requests.exceptions.HTTPError as e:
+        # ▼▼▼ 核心兼容性逻辑：如果API不存在（404），则启动 Plan B ▼▼▼
+        if e.response is not None and e.response.status_code == 404:
+            logger.warning(f"Ancestors API 不存在 (404)，已切换到兼容模式，将为项目 {item_id} 手动向上遍历...")
+            
+            # --- Plan B: 手动、逐级向上追溯 ---
+            current_id = item_id
+            # 设置一个安全限制，防止因意外的目录结构导致无限循环
+            for _ in range(10): # 向上查找10层，对于媒体库结构来说绰绰有余
+                if not current_id:
+                    break # 没有父ID了，遍历结束
+
+                # 获取当前层级的项目详情，只需要少量关键字段
+                item_details = get_emby_item_details(
+                    current_id, base_url, api_key, user_id, 
+                    fields="ParentId,CollectionType,Name,Id"
+                )
+
+                if not item_details:
+                    logger.error(f"在向上遍历过程中，获取项目 {current_id} 的详情失败。")
+                    return None
+
+                # 检查当前项目是否就是媒体库根
+                if item_details.get("CollectionType"):
+                    logger.info(f"兼容模式成功！找到媒体库根: '{item_details.get('Name')}' (ID: {item_details.get('Id')})")
+                    return item_details # 找到了！
+
+                # 如果不是，则将父ID作为下一个要检查的目标
+                current_id = item_details.get("ParentId")
+            
+            logger.warning(f"兼容模式：为项目 {item_id} 向上遍历了10层仍未找到媒体库根。")
+            return None
+        else:
+            # 如果是其他HTTP错误（如500, 401等），则正常报错
+            logger.error(f"通过API获取项目 {item_id} 的祖先时发生非404的HTTP错误: {e}", exc_info=True)
+            return None
+            
     except Exception as e:
         logger.error(f"处理项目 {item_id} 的祖先数据时发生未知错误: {e}", exc_info=True)
         return None
