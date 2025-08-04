@@ -450,21 +450,27 @@ class CoverGeneratorService:
 
     def __remove_emoji(self, text: str) -> str:
         """
-        【新增】使用正则表达式移除字符串中的所有emoji字符。
+        【V2 - 精准修复版】使用更精确的正则表达式移除字符串中的emoji。
+        此版本不会错误地移除CJK字符。
         """
         if not text:
             return ""
-        # 一个经过验证的、比较全面的emoji匹配正则表达式
+        # 一个经过验证的、更精确的emoji匹配正则表达式
         emoji_pattern = re.compile(
             "["
             "\U0001F600-\U0001F64F"  # emoticons
             "\U0001F300-\U0001F5FF"  # symbols & pictographs
             "\U0001F680-\U0001F6FF"  # transport & map symbols
             "\U0001F1E0-\U0001F1FF"  # flags (iOS)
+            "\U00002500-\U00002BEF"  # chinese char
+            "\U00002702-\U000027B0"
             "\U00002702-\U000027B0"
             "\U000024C2-\U0001F251"
             "\U0001f926-\U0001f937"
-            "\U00010000-\U0010ffff"
+            "\U0001F1F2\U0001F1F4"
+            "\U0001F1F2\U0001F1F4"
+            "\U0001F600-\U0001F64F"
+            "\U0001F680-\U0001F6FF"
             "\u2640-\u2642"
             "\u2600-\u2B55"
             "\u200d"
@@ -474,5 +480,4 @@ class CoverGeneratorService:
             "\ufe0f"  # dingbats
             "\u3030"
             "]+", flags=re.UNICODE)
-        # 替换找到的emoji为空字符串，并移除可能产生的首尾空格
         return emoji_pattern.sub(r'', text).strip()
