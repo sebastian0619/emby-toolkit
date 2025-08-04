@@ -100,7 +100,7 @@ class CoverGeneratorService:
             return self.__generate_image_from_path(library_name, title, custom_image_paths)
 
         # 如果没有自定义图片，则从服务器获取
-        logger.info(f"未发现自定义图片，将从服务器 '{server_id}' 获取媒体项作为封面来源。")
+        logger.trace(f"未发现自定义图片，将从服务器 '{server_id}' 获取媒体项作为封面来源。")
         return self.__generate_from_server(server_id, library, title)
 
     def __generate_from_server(self, server_id: str, library: Dict[str, Any], title: Tuple[str, str]) -> bytes:
@@ -351,7 +351,7 @@ class CoverGeneratorService:
     def __download_file(self, url: str, dest_path: Path):
         """下载文件到指定路径，如果文件已存在则跳过。"""
         if dest_path.exists():
-            logger.debug(f"字体文件已存在，跳过下载: {dest_path.name}")
+            logger.trace(f"字体文件已存在，跳过下载: {dest_path.name}")
             return
         
         logger.info(f"字体文件不存在，正在从URL下载: {dest_path.name}...")

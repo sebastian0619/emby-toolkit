@@ -1357,7 +1357,7 @@ def update_library_paths_cache(base_url: str, api_key: str, user_id: str) -> Tup
     """
     global _library_paths_cache
     with _library_paths_cache_lock:
-        logger.info("开始执行媒体库路径缓存刷新任务 (V15 - 终极标准答案模式)...")
+        logger.info("开始执行媒体库路径缓存刷新任务 ...")
         
         try:
             # ★★★ 步骤 1: 调用您找到的、正确的API ★★★
@@ -1447,7 +1447,7 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
     logger.warning("快速通道失败，启用后备方案 (路径匹配)...")
     global _library_paths_cache
     if _library_paths_cache is None:
-        logger.error("Plan C 失败：媒体库路径缓存尚未构建。请按模板配置路径缓存文件library_paths.json。")
+        logger.error("Plan C 失败：媒体库路径缓存尚未构建。请在封面生成配置页面点【刷新路径缓存】。")
         return None
 
     try:
@@ -1467,10 +1467,10 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
                         best_match_library = lib_data["info"]
         
         if best_match_library:
-            logger.info(f"路径匹配 成功！项目路径匹配到媒体库 '{best_match_library.get('Name')}'。")
+            logger.info(f"匹配成功！匹配到媒体库 '{best_match_library.get('Name')}'。")
             return best_match_library
         else:
-            logger.error(f"路径匹配 失败：项目路径 '{item_path}' 未能匹配任何已缓存的媒体库源文件夹。")
+            logger.error(f"匹配失败：项目路径 '{item_path}' 未能匹配任何已缓存的媒体库源文件夹。")
             return None
 
     except Exception as e:
