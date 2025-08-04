@@ -252,6 +252,8 @@ const tableInfo = {
   'processed_log': { cn: '已处理日志', isSharable: false },
   'failed_log': { cn: '待复核日志', isSharable: false },
   'users': { cn: '用户账户', isSharable: false },
+  'custom_collections': { cn: '自建合集', isSharable: false },
+  'media_metadata': { cn: '媒体元数据', isSharable: false },
 };
 
 // --- Refs and Props ---

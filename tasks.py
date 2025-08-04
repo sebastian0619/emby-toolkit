@@ -540,6 +540,8 @@ def task_import_database(processor, file_content: str, tables_to_import: list, i
         'processed_log': '已处理列表',
         'failed_log': '待复核列表',
         'users': '用户账户',
+        'custom_collections': '自建合集',
+        'media_metadata': '媒体元数据',
     }
 
     try:
