@@ -47,16 +47,6 @@ def api_handle_trigger_full_scan():
     else:
         return jsonify({"error": "提交任务失败，已有任务在运行。"}), 409
 
-# --- 同步演员映射表 ---
-@actions_bp.route('/trigger_sync_person_map', methods=['POST'])
-@login_required
-def api_handle_trigger_sync_map():
-    from tasks import task_sync_person_map # 延迟导入
-    success = task_manager.submit_task(task_sync_person_map, "同步演员映射表")
-    if success:
-        return jsonify({"message": "'同步演员映射表' 任务已提交启动。"}), 202
-    else:
-        return jsonify({"error": "提交任务失败，已有任务在运行。"}), 409
 
 # ★★★ 重新处理单个项目 ★★★
 @actions_bp.route('/actions/reprocess_item/<item_id>', methods=['POST'])
@@ -98,18 +88,6 @@ def api_reprocess_all_review_items():
     else:
         return jsonify({"error": "提交任务失败，已有任务在运行。"}), 409
 
-# ★★★ 全量图片同步的 API 接口 ★★★
-@actions_bp.route('/actions/trigger_full_image_sync', methods=['POST'])
-@login_required
-@task_lock_required
-@processor_ready_required
-def api_trigger_full_image_sync():
-    from tasks import task_full_image_sync # 延迟导入
-    success = task_manager.submit_task(task_full_image_sync, "全量同步媒体库海报")
-    if success:
-        return jsonify({"message": "全量海报同步任务已成功提交。"}), 202
-    else:
-        return jsonify({"error": "提交任务失败，已有任务在运行。"}), 409
 
 # --- 一键重构演员数据端点 ---
 @actions_bp.route('/tasks/rebuild-actors', methods=['POST'])

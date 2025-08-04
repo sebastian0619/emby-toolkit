@@ -332,7 +332,7 @@ const triggerFullScan = async () => {
 
 const triggerSyncMap = async () => {
   try {
-    await axios.post('/api/trigger_sync_person_map', {});
+    await axios.post('/api/tasks/run', { task_name: 'sync-person-map' });
     message.success('同步任务已启动！');
   } catch (error) {
     message.error(error.response?.data?.error || '启动同步映射表失败，请查看日志。');
@@ -350,7 +350,7 @@ const triggerStopTask = async () => {
 
 const triggerFullImageSync = async () => {
   try {
-    const response = await axios.post('/api/actions/trigger_full_image_sync');
+    const response = await axios.post('/api/tasks/run', { task_name: 'sync-images-map' });
     message.success(response.data.message || '全量海报同步任务已启动！');
   } catch (error) {
     message.error(error.response?.data?.error || '启动任务失败，请查看日志。');

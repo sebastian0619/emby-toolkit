@@ -714,10 +714,37 @@ const subscribeMedia = async (media) => {
   }
 };
 
+const handleSync = async (row) => {
+  syncLoading.value[row.id] = true;
+  try {
+    // ★★★ 核心修改 ★★★
+
+    // 1. 定义我们要发送的“行李”（数据体）
+    const payload = {
+      // a. 告诉调度中心，我们要执行哪个任务
+      task_name: 'process-single-custom-collection', 
+      
+      // b. 告诉任务函数，具体要处理哪个合集
+      //    这里的键名 'custom_collection_id' 必须和后端 tasks.py 中
+      //    task_process_custom_collection 函数的参数名完全一致
+      custom_collection_id: row.id 
+    };
+
+    // 2. 将请求发送到唯一的、通用的“任务调度中心”
+    const response = await axios.post('/api/tasks/run', payload);
+    
+    message.success(response.data.message || `已提交同步任务: ${row.name}`);
+  } catch (error) {
+    message.error(error.response?.data?.error || '提交同步任务失败。');
+  } finally {
+    syncLoading.value[row.id] = false;
+  }
+};
+
 const handleSyncAll = async () => {
   isSyncingAll.value = true;
   try {
-    const response = await axios.post('/api/custom_collections/sync_all');
+    const response = await axios.post('/api/tasks/run', { task_name: 'process_all_custom_collections' });
     message.success(response.data.message || '已提交一键生成任务！');
   } catch (error) {
     message.error(error.response?.data?.error || '提交任务失败。');
@@ -779,18 +806,6 @@ const handleDelete = async (row) => {
     fetchCollections();
   } catch (error) {
     message.error('删除失败。');
-  }
-};
-
-const handleSync = async (row) => {
-  syncLoading.value[row.id] = true;
-  try {
-    const response = await axios.post(`/api/custom_collections/${row.id}/sync`);
-    message.success(response.data.message || `已提交同步任务: ${row.name}`);
-  } catch (error) {
-    message.error(error.response?.data?.error || '提交同步任务失败。');
-  } finally {
-    syncLoading.value[row.id] = false;
   }
 };
 

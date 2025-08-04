@@ -1467,22 +1467,25 @@ def task_add_all_series_to_watchlist(processor: MediaProcessor):
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
-# --- 立即执行 ---
+# --- 任务注册表 ---
 def get_task_registry():
     """返回一个包含所有可执行任务的字典。"""
     # 在函数内部，所有 task_... 函数都已经是已定义的
     return {
-        'full-scan': (task_process_full_library, "立即执行全量扫描"),
-        'populate-metadata': (task_populate_metadata_cache, "快速同步媒体元数据"),
-        'sync-person-map': (task_sync_person_map, "立即执行同步演员映射表"),
-        'process-watchlist': (task_process_watchlist, "立即执行智能追剧刷新"),
-        'enrich-aliases': (task_enrich_aliases, "立即执行演员元数据补充"),
-        'actor-cleanup': (task_actor_translation_cleanup, "立即执行演员名翻译"),
-        'refresh-collections': (task_refresh_collections, "立即执行电影合集刷新"),
-        'auto-subscribe': (task_auto_subscribe, "立即执行智能订阅"),
-        'actor-tracking': (task_process_actor_subscriptions, "立即执行演员订阅"),
-        'custom-collections': (task_process_all_custom_collections, "立即执行自建合集刷新"),
-        'generate-all-covers': (task_generate_all_covers, "立即生成所有媒体库封面"),
+        'full-scan': (task_process_full_library, "全量扫描"),
+        'populate-metadata': (task_populate_metadata_cache, "同步媒体元数据"),
+        'sync-person-map': (task_sync_person_map, "同步演员映射表"),
+        'sync-images-map': (task_full_image_sync, "全量同步图片"),
+        'process-watchlist': (task_process_watchlist, "智能追剧刷新"),
+        'enrich-aliases': (task_enrich_aliases, "演员元数据补充"),
+        'actor-cleanup': (task_actor_translation_cleanup, "演员名翻译"),
+        'refresh-collections': (task_refresh_collections, "电影合集刷新"),
+        'process-single-custom-collection': (task_process_custom_collection, "生成单个自定义合集"),
+        'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自定义合集"),
+        'auto-subscribe': (task_auto_subscribe, "智能订阅"),
+        'actor-tracking': (task_process_actor_subscriptions, "演员订阅"),
+        'custom-collections': (task_process_all_custom_collections, "自建合集刷新"),
+        'generate-all-covers': (task_generate_all_covers, "生成所有媒体库封面"),
     }
 
 # ★★★ 一键生成所有合集的后台任务，核心优化在于只获取一次Emby媒体库 ★★★

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 # 2. 定义API路由
 
+# --- 获取所有自定义合集定义 ---
 @custom_collections_bp.route('', methods=['GET']) # 原为 '/'
 @login_required
 def api_get_all_custom_collections():
@@ -32,10 +33,11 @@ def api_get_all_custom_collections():
         logger.error(f"获取所有自定义合集时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
 
+# --- 创建一个新的自定义合集定义 ---
 @custom_collections_bp.route('', methods=['POST']) # 原为 '/'
 @login_required
 def api_create_custom_collection():
-    """创建一个新的自定义合集定义 (V3 - 加固版)"""
+    """创建一个新的自定义合集定义"""
     try:
         data = request.json
         name = data.get('name')
@@ -69,6 +71,7 @@ def api_create_custom_collection():
         logger.error(f"创建自定义合集时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误，请检查后端日志"}), 500
 
+# --- 更新一个自定义合集定义 ---
 @custom_collections_bp.route('/<int:collection_id>', methods=['PUT'])
 @login_required
 def api_update_custom_collection(collection_id):
@@ -105,6 +108,7 @@ def api_update_custom_collection(collection_id):
         logger.error(f"更新自定义合集 {collection_id} 时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误，请检查后端日志"}), 500
 
+# --- 联动删除Emby合集 ---
 @custom_collections_bp.route('/<int:collection_id>', methods=['DELETE'])
 @login_required
 def api_delete_custom_collection(collection_id):
@@ -145,41 +149,7 @@ def api_delete_custom_collection(collection_id):
         logger.error(f"删除自定义合集 {collection_id} 时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
 
-@custom_collections_bp.route('/<int:collection_id>/sync', methods=['POST'])
-@login_required
-def api_sync_custom_collection(collection_id):
-    """触发对单个自定义合集的后台同步任务"""
-    from tasks import task_process_custom_collection
-
-    collection = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, collection_id)
-    if not collection:
-        return jsonify({"error": "未找到指定的自定义合集"}), 404
-
-    task_name = f"生成自定义合集: {collection['name']}"
-    task_manager.submit_task(
-        task_process_custom_collection,
-        task_name,
-        custom_collection_id=collection_id
-    )
-    
-    return jsonify({"message": f"'{task_name}' 任务已提交到后台处理。"}), 202
-
-# --- 一键生成所有自定义合集 ---
-@custom_collections_bp.route('/sync_all', methods=['POST'])
-@login_required
-def api_sync_all_custom_collections():
-    """触发对所有已启用的自定义合集进行后台同步的任务"""
-    from tasks import task_process_all_custom_collections
-
-    task_name = "一键生成所有自建合集"
-    task_manager.submit_task(
-        task_process_all_custom_collections,
-        task_name
-    )
-    
-    return jsonify({"message": f"'{task_name}' 任务已提交到后台处理。"}), 202
-
-# ★★★ 获取单个自定义合集健康状态的API (升级版) ★★★
+# --- 获取单个自定义合集健康状态 ---
 @custom_collections_bp.route('/<int:collection_id>/status', methods=['GET'])
 @login_required
 def api_get_custom_collection_status(collection_id):
@@ -210,7 +180,7 @@ def api_get_custom_collection_status(collection_id):
         logger.error(f"读取单个自定义合集状态 {collection_id} 时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
 
-# ★★★ 新增：更新自定义合集中单个媒体项状态的API ★★★
+# --- 更新自定义合集中单个媒体项状态 ---
 @custom_collections_bp.route('/<int:collection_id>/media_status', methods=['POST'])
 @login_required
 def api_update_custom_collection_media_status(collection_id):
@@ -331,7 +301,7 @@ def api_subscribe_media_from_custom_collection():
         logger.error(f"处理订阅请求时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "处理订阅时发生服务器内部错误。"}), 500
     
-# ★★★ 根据关键词搜索演员的API ★★★
+# --- 根据关键词搜索演员 ---
 @custom_collections_bp.route('/search_actors') # 或者 @media_api_bp.route('/search_actors')
 @login_required
 def api_search_actors():
@@ -347,7 +317,7 @@ def api_search_actors():
         logger.error(f"搜索演员API出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
     
-# ▼▼▼ 提取国家列表 ▼▼▼
+# --- 提取国家列表 ---
 @custom_collections_bp.route('/config/countries', methods=['GET'])
 @login_required
 def api_get_countries_for_filter():

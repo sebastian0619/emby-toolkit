@@ -23,7 +23,7 @@
           <n-grid :cols="3" :x-gap="24" responsive="screen">
             <!-- 第一列 -->
             <n-gi>
-              <n-form-item label="启用插件">
+              <n-form-item label="启用">
                 <n-switch v-model:value="configData.enabled" />
               </n-form-item>
             </n-gi>
