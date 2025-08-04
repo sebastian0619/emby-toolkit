@@ -1199,16 +1199,27 @@ def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, us
     return success
 
 def create_or_update_collection_with_tmdb_ids(
-    collection_name: str, tmdb_ids: list, base_url: str, api_key: str, 
-    user_id: str, library_ids: list = None, item_type: str = 'Movie',
+    collection_name: str, 
+    tmdb_ids: list, 
+    base_url: str, 
+    api_key: str, 
+    user_id: str, 
+    library_ids: list = None,
+    # ★★★ 核心修复 1: 在函数定义中添加 item_types 参数 ★★★
+    # 默认为只处理电影，以兼容旧的调用方式
+    item_types: list = ['Movie'],
     prefetched_emby_items: Optional[list] = None,
     prefetched_collection_map: Optional[dict] = None
 ) -> Optional[Tuple[str, List[str]]]: 
     """
+    【V2 - 多类型兼容版】
     通过精确计算差异，实现完美的合集同步。
+    现在可以处理包含多种媒体类型（如 Movie, Series）的合集。
     """
-    log_item_type = "电影" if item_type == "Movie" else "电视剧"
-    logger.info(f"开始在Emby中处理名为 '{collection_name}' 的{log_item_type}合集...")
+    # ★★★ 核心修复 2: 根据 item_types 列表生成日志信息 ★★★
+    type_map = {'Movie': '电影', 'Series': '电视剧'}
+    log_item_types = "、".join([type_map.get(t, t) for t in item_types])
+    logger.info(f"开始在Emby中处理名为 '{collection_name}' 的{log_item_types}合集...")
     
     try:
         # 1. & 2. 获取媒体项并计算出“应该有”的成员列表 (desired_emby_ids)
@@ -1216,13 +1227,20 @@ def create_or_update_collection_with_tmdb_ids(
             all_media_items = prefetched_emby_items
         else:
             if not library_ids: raise ValueError("非预加载模式下必须提供 library_ids。")
-            all_media_items = get_emby_library_items(base_url=base_url, api_key=api_key, user_id=user_id, media_type_filter=item_type, library_ids=library_ids)
+            # ★★★ 核心修复 3: media_type_filter 现在使用 item_types 列表 ★★★
+            media_type_filter_str = ",".join(item_types)
+            all_media_items = get_emby_library_items(
+                base_url=base_url, api_key=api_key, user_id=user_id, 
+                media_type_filter=media_type_filter_str, 
+                library_ids=library_ids
+            )
         if all_media_items is None: return None
             
         tmdb_to_emby_id_map = {
             item['ProviderIds']['Tmdb']: item['Id']
             for item in all_media_items
-            if item.get('Type') == item_type and 'ProviderIds' in item and 'Tmdb' in item['ProviderIds']
+            # ★★★ 核心修复 4: 确保只匹配指定类型的媒体 ★★★
+            if item.get('Type') in item_types and 'ProviderIds' in item and 'Tmdb' in item['ProviderIds']
         }
         tmdb_ids_in_library = [str(tid) for tid in tmdb_ids if str(tid) in tmdb_to_emby_id_map]
         desired_emby_ids = [tmdb_to_emby_id_map[tid] for tid in tmdb_ids_in_library]
@@ -1233,23 +1251,20 @@ def create_or_update_collection_with_tmdb_ids(
         emby_collection_id = None
 
         if collection:
-            # --- 更新逻辑：会计对账 ---
+            # --- 更新逻辑 (保持不变) ---
             emby_collection_id = collection['Id']
             logger.info(f"发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，开始同步...")
             
-            # 步骤 1: 盘点库存 (获取当前成员)
             current_emby_ids = get_collection_members(emby_collection_id, base_url, api_key, user_id)
             if current_emby_ids is None:
                 raise Exception("无法获取当前合集成员，同步中止。")
 
-            # 步骤 2: 核对清单 (计算差异)
             set_current = set(current_emby_ids)
             set_desired = set(desired_emby_ids)
             
             ids_to_remove = list(set_current - set_desired)
             ids_to_add = list(set_desired - set_current)
 
-            # 步骤 3: 调整差异
             if ids_to_remove:
                 logger.info(f"  - 发现 {len(ids_to_remove)} 个项目需要移除...")
                 remove_items_from_collection(emby_collection_id, ids_to_remove, base_url, api_key)
@@ -1263,9 +1278,10 @@ def create_or_update_collection_with_tmdb_ids(
 
             return (emby_collection_id, tmdb_ids_in_library)
         else:
-            # --- 创建逻辑 (不变) ---
+            # --- 创建逻辑 (保持不变) ---
             logger.info(f"未找到合集 '{collection_name}'，将开始创建...")
             if not desired_emby_ids:
+                logger.warning(f"合集 '{collection_name}' 在媒体库中没有任何匹配项，跳过创建。")
                 return (None, [])
 
             api_url = f"{base_url.rstrip('/')}/Collections"
