@@ -1350,77 +1350,46 @@ def load_library_paths_cache_from_file():
 # ★★★ V14 核心：完全复刻“标准答案”逻辑的缓存构建函数 ★★★
 def update_library_paths_cache(base_url: str, api_key: str, user_id: str) -> Tuple[bool, str]:
     """
-    【V13 - 终极模拟版】
-    构建或更新媒体库路径缓存，并将其写入本地JSON文件。
-    此版本放弃从媒体库自身获取路径，而是通过查询其“顶层子文件夹”
-    来模拟用户界面的操作，这是最可靠的用户级方法。
+    【V15 - 终极标准答案版】
+    使用最可靠的 /Library/VirtualFolders API 来构建路径缓存。
+    这个API直接返回每个媒体库及其对应的源文件夹列表(Locations)，
+    与经过验证的插件逻辑完全一致。
     """
     global _library_paths_cache
     with _library_paths_cache_lock:
-        logger.info("开始执行媒体库路径缓存刷新任务 (V13 - 终极模拟模式)...")
+        logger.info("开始执行媒体库路径缓存刷新任务 (V15 - 终极标准答案模式)...")
         
         try:
-            all_libraries = get_emby_libraries(base_url, api_key, user_id)
-            if not all_libraries:
-                return False, "无法获取任何媒体库，缓存构建失败。"
+            # ★★★ 步骤 1: 调用您找到的、正确的API ★★★
+            folders_url = f"{base_url.rstrip('/')}/Library/VirtualFolders"
+            params = {"api_key": api_key}
+            response = requests.get(folders_url, params=params, timeout=20)
+            response.raise_for_status()
+            virtual_folders_data = response.json()
 
+            # ★★★ 步骤 2: 直接解析返回的数据，无需任何猜测 ★★★
             temp_cache = {}
-            
-            for library in all_libraries:
-                lib_id = library.get("Id")
-                lib_name = library.get("Name", "未知库")
-                if not lib_id: continue
-
-                # 使用集合来自动处理重复路径
-                source_paths = set()
-
-                # ★★★ 核心逻辑：我们不再问媒体库“你的路径是什么？” ★★★
-                # ★★★ 而是问：“你的下一层有哪些文件夹？” ★★★
-                
-                children_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
-                params = {
-                    "api_key": api_key,
-                    "ParentId": lib_id,
-                    "Recursive": "false", # 只获取顶层
-                    "IncludeItemTypes": "Folder", # 我们只关心文件夹
-                    "Fields": "Path" # 我们只需要路径信息
-                }
-                
-                try:
-                    response = requests.get(children_url, params=params, timeout=20)
-                    response.raise_for_status()
-                    top_level_folders = response.json().get("Items", [])
-
-                    for folder in top_level_folders:
-                        if folder.get("Path"):
-                            source_paths.add(folder.get("Path"))
-
-                except requests.exceptions.RequestException as e:
-                    logger.warning(f"查询媒体库 '{lib_name}' 的顶层文件夹时失败: {e}")
-                    # 即使查询失败，也继续处理下一个库
+            # 这个API返回的直接就是媒体库列表
+            for folder in virtual_folders_data:
+                # 真正的媒体库通常有 CollectionType 字段
+                if not folder.get("CollectionType"):
                     continue
 
-                # ★★★ 最终检查 ★★★
-                # 如果查询子文件夹后仍然没有路径（这通常意味着它是一个单目录库，
-                # 且API没有将其作为子文件夹返回），我们就做一个最后的尝试：
-                # 获取媒体库自身的详情，只为了它的根`Path`属性。
-                if not source_paths:
-                    logger.debug(f"  - 未能为媒体库 '{lib_name}' 找到任何子文件夹，尝试获取其自身路径作为后备...")
-                    lib_details = get_emby_item_details(lib_id, base_url, api_key, user_id, fields="Path")
-                    if lib_details and lib_details.get("Path"):
-                        source_paths.add(lib_details.get("Path"))
-                        logger.debug(f"  - 后备方案成功：使用媒体库自身的路径。")
+                lib_id = folder.get("ItemId")
+                lib_name = folder.get("Name")
+                # Locations 字段直接包含了所有源文件夹路径
+                locations = folder.get("Locations", [])
 
-                if source_paths:
+                if lib_id and lib_name and locations:
                     temp_cache[lib_id] = {
-                        "info": library,
-                        "paths": list(source_paths)
+                        "info": {
+                            "Name": lib_name,
+                            "Id": lib_id,
+                            "CollectionType": folder.get("CollectionType")
+                        },
+                        "paths": locations
                     }
-                    logger.debug(f"  - 成功为媒体库 '{lib_name}' 确定了 {len(source_paths)} 个源文件夹路径。")
-                else:
-                    logger.warning(f"  - 最终未能为媒体库 '{lib_name}' 找到任何源文件夹路径。")
             
-            # 更新内存缓存并写入文件
             _library_paths_cache = temp_cache
             try:
                 with open(CACHE_FILE_PATH, 'w', encoding='utf-8') as f:
@@ -1433,6 +1402,12 @@ def update_library_paths_cache(base_url: str, api_key: str, user_id: str) -> Tup
             logger.info(summary)
             return True, summary
 
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code in [401, 403]:
+                error_msg = f"访问 /Library/VirtualFolders API 时被拒绝 ({e.response.status_code})。请确认您的API密钥拥有管理员权限。"
+                logger.error(error_msg)
+                return False, error_msg
+            raise
         except Exception as e:
             logger.error(f"构建媒体库路径缓存时发生严重错误: {e}", exc_info=True)
             _library_paths_cache = None

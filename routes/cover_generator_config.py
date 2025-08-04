@@ -67,6 +67,7 @@ def get_default_config():
         "covers_input": ""
     }
 
+# --- 获取封面生成器的配置 ---
 @cover_generator_config_bp.route('', methods=['GET'])
 @login_required
 def get_cover_generator_config():
@@ -87,6 +88,7 @@ def get_cover_generator_config():
         logger.error(f"读取封面生成器配置失败: {e}", exc_info=True)
         return jsonify({"error": "读取配置失败"}), 500
 
+# --- 保存封面生成器的配置 ---
 @cover_generator_config_bp.route('', methods=['POST'])
 @login_required
 def save_cover_generator_config():
@@ -101,6 +103,7 @@ def save_cover_generator_config():
         logger.error(f"保存封面生成器配置失败: {e}", exc_info=True)
         return jsonify({"error": "保存配置失败"}), 500
     
+# --- 获取所有已配置的 Emby/Jellyfin 服务器列表 ---
 @cover_generator_config_bp.route('/servers', methods=['GET'])
 @login_required
 def get_available_servers():
@@ -129,6 +132,7 @@ def get_available_servers():
         return jsonify({"error": "获取服务器列表失败"}), 500
 
 
+# --- 获取所有已选服务器下的所有媒体库 ---
 @cover_generator_config_bp.route('/libraries', methods=['GET'])
 @login_required
 def get_all_libraries():

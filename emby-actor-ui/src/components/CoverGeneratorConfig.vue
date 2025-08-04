@@ -6,10 +6,10 @@
           <template #title>媒体库封面生成</template>
           <template #extra>
             <!-- ★★★ 新增：刷新缓存按钮 ★★★ -->
-            <!--<n-button @click="runCacheTask" :loading="isCaching" style="margin-right: 12px;">
+            <n-button @click="runCacheTask" :loading="isCaching" style="margin-right: 12px;">
               <template #icon><n-icon :component="SyncIcon" /></template>
               刷新路径缓存
-            </n-button>-->
+            </n-button>
             <n-button type="primary" @click="saveConfig" :loading="isSaving">
               <template #icon><n-icon :component="SaveIcon" /></template>
               保存设置

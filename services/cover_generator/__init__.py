@@ -137,9 +137,6 @@ class CoverGeneratorService:
             
             return self.__generate_image_from_path(library['Name'], title, image_paths)
 
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # ★ 核心修复 1: 修复封面始终相同的问题 ★
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     def __get_valid_items_from_library(self, server_id: str, library: Dict[str, Any], limit: int) -> List[Dict]:
         """从媒体库中获取足够数量的、包含有效图片的媒体项 (已修复排序逻辑)"""
         library_id = library.get("Id") or library.get("ItemId")
