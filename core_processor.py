@@ -1199,32 +1199,7 @@ class MediaProcessor:
                     expected_final_count=final_actor_count,
                     is_animation=is_animation
                 )
-                min_score_for_review = float(self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW))
-                # 1. 从配置中获取评分阈值
-            min_score_for_review = float(self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW))
-
-            # 2. 核心判断逻辑
-            if processing_score < min_score_for_review:
-                # 分数过低，移入待复核列表
-                reason = f"处理评分 ({processing_score:.2f}) 低于阈值 ({min_score_for_review})。"
-                logger.warning(f"'{item_name_for_log}' 的{reason} 将移至待复核列表，本次不刷新Emby。")
                 
-                # 写入失败日志，并记录原因和分数
-                self.log_db_manager.save_to_failed_log(
-                    cursor,
-                    item_id,
-                    item_name_for_log,
-                    reason,
-                    item_type,
-                    score=processing_score
-                )
-                conn.commit()
-
-            else:
-                # 分数达标，正常处理
-                if self.is_stop_requested(): raise InterruptedError("任务被中止")
-
-                logger.info(f"处理评分 ({processing_score:.2f}) 正常，开始刷新 Emby...")
                 refresh_success = emby_handler.refresh_emby_item_metadata(
                     item_emby_id=item_id,
                     emby_server_url=self.emby_url,
@@ -1236,12 +1211,27 @@ class MediaProcessor:
                 if not refresh_success:
                     raise RuntimeError("触发Emby刷新失败")
                 
-                # 写入成功日志，并从失败日志中移除
-                self.log_db_manager.save_to_processed_log(cursor, item_id, item_name_for_log, score=processing_score)
-                self.log_db_manager.remove_from_failed_log(cursor, item_id)
-                conn.commit()
-                logger.info(f"✨✨✨处理完成 '{item_name_for_log}'✨✨✨")
-                return True
+                min_score_for_review = float(self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW))
+                if processing_score < min_score_for_review:
+                    # 分数过低，移入待复核列表
+                    reason = f"处理评分 ({processing_score:.2f}) 低于阈值 ({min_score_for_review})。"
+                    logger.warning(f"  - '{item_name_for_log}' 的{reason} 将移至待复核列表。")
+                    # 写入失败日志
+                    self.log_db_manager.save_to_failed_log(
+                        cursor,
+                        item_id,
+                        item_name_for_log,
+                        reason,
+                        item_type,
+                        score=processing_score
+                    )
+                else:
+                    # 写入成功日志
+                    self.log_db_manager.save_to_processed_log(cursor, item_id, item_name_for_log, score=processing_score)
+                    # 从失败日志中移除
+                    self.log_db_manager.remove_from_failed_log(cursor, item_id)
+                    logger.info(f"✨✨✨处理完成 '{item_name_for_log}'✨✨✨")
+                    return True
 
         except (ValueError, InterruptedError) as e:
             logger.warning(f"处理 '{item_name_for_log}' 的过程中断: {e}")
