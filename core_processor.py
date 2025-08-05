@@ -932,7 +932,7 @@ class MediaProcessor:
         # 返回处理完的、已经截断和翻译的列表
         return cast_to_process
         
-    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool, should_process_episodes_this_run: bool, force_fetch_from_tmdb: bool):
+    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool, force_fetch_from_tmdb: bool):
         """
         【V-Rebuild - 重建版】
         在一个统一的数据库事务中，执行所有处理。
@@ -1157,15 +1157,14 @@ class MediaProcessor:
                         safe_write_json(season_override_json, override_path)
 
                     # 写入分集文件 (同样需要传递 crew)
-                    if should_process_episodes_this_run:
-                        for episode_data in episodes_data:
-                            season_number = episode_data.get("season_number")
-                            episode_number = episode_data.get("episode_number")
-                            # 从集的原始数据中提取其独立的crew
-                            episode_crew = episode_data.get("credits", {}).get("crew", [])
-                            episode_override_json = _build_episode_json(episode_data, final_cast_perfect, episode_crew)
-                            override_path = os.path.join(base_override_dir, f"season-{season_number}-episode-{episode_number}.json")
-                            safe_write_json(episode_override_json, override_path)
+                    for episode_data in episodes_data:
+                        season_number = episode_data.get("season_number")
+                        episode_number = episode_data.get("episode_number")
+                        # 从集的原始数据中提取其独立的crew
+                        episode_crew = episode_data.get("credits", {}).get("crew", [])
+                        episode_override_json = _build_episode_json(episode_data, final_cast_perfect, episode_crew)
+                        override_path = os.path.join(base_override_dir, f"season-{season_number}-episode-{episode_number}.json")
+                        safe_write_json(episode_override_json, override_path)
 
                 # ======================================================================
                 # 阶段 4: 后续处理 (Post-processing)
@@ -1232,8 +1231,6 @@ class MediaProcessor:
 
     def process_single_item(self, emby_item_id: str, 
                             force_reprocess_this_item: bool = False, 
-                            # ★★★ 步骤 1: 从函数定义中移除 process_episodes 参数 ★★★
-                            # 它不再需要由外部传入
                             force_fetch_from_tmdb: bool = False):
         """
         此版本彻底移除了对 process_episodes 配置的依赖，
@@ -1250,11 +1247,10 @@ class MediaProcessor:
         return self._process_item_core_logic(
             item_details, 
             force_reprocess_this_item,
-            should_process_episodes_this_run=True, # <-- 直接硬编码为 True
             force_fetch_from_tmdb=force_fetch_from_tmdb
         )
 
-    def process_full_library(self, update_status_callback: Optional[callable] = None, process_episodes: bool = True, force_reprocess_all: bool = False, force_fetch_from_tmdb: bool = False):
+    def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False, force_fetch_from_tmdb: bool = False):
         """
         【V3 - 最终完整版】
         这是所有全量扫描的唯一入口，它自己处理所有与“强制”相关的逻辑。
@@ -1319,7 +1315,6 @@ class MediaProcessor:
             
             self.process_single_item(
                 item_id, 
-                process_episodes=process_episodes,
                 force_reprocess_this_item=force_reprocess_all,
                 force_fetch_from_tmdb=force_fetch_from_tmdb
             )

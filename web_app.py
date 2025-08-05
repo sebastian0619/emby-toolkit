@@ -84,9 +84,9 @@ JOB_ID_PROCESS_WATCHLIST = "scheduled_process_watchlist"
 JOB_ID_REVIVAL_CHECK = "scheduled_revival_check"
 
 # --- 数据库辅助函数 ---
-def task_process_single_item(processor: MediaProcessor, item_id: str, force_reprocess: bool, process_episodes: bool):
+def task_process_single_item(processor: MediaProcessor, item_id: str, force_reprocess: bool):
     """任务：处理单个媒体项"""
-    processor.process_single_item(item_id, force_reprocess, process_episodes)
+    processor.process_single_item(item_id, force_reprocess)
 # --- 初始化数据库 ---
 def init_db():
     """

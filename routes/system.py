@@ -62,10 +62,7 @@ def api_trigger_task_now(task_identifier: str):
 
     task_function, task_name = task_info
     kwargs = {}
-    if task_identifier == 'full-scan':
-        data = request.get_json(silent=True) or {}
-        kwargs['process_episodes'] = data.get('process_episodes', True)
-    
+        
     success = task_manager.submit_task(task_function, task_name, **kwargs)
     
     if success:

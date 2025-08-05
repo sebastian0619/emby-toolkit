@@ -124,15 +124,12 @@ def task_run_full_scan(processor: MediaProcessor, force_reprocess: bool = False)
     else:
         logger.info("即将执行【标准】全量扫描，将跳过已处理项...")
 
-    # 2. 从配置中获取通用参数
-    process_episodes = config_manager.APP_CONFIG.get('process_episodes', True)
 
     # 3. 调用核心处理函数，并将 force_reprocess 参数透传下去
     processor.process_full_library(
         update_status_callback=task_manager.update_status_from_thread,
         force_reprocess_all=force_reprocess,
-        force_fetch_from_tmdb=force_reprocess,
-        process_episodes=True 
+        force_fetch_from_tmdb=force_reprocess
     )
 
 # --- 同步演员映射表 ---
@@ -259,7 +256,7 @@ def task_process_actor_subscriptions(processor: ActorSubscriptionProcessor):
     """【新】后台任务：执行所有启用的演员订阅扫描。"""
     processor.run_scheduled_task(update_status_callback=task_manager.update_status_from_thread)
 # ★★★ 处理webhook、用于编排任务的函数 ★★★
-def webhook_processing_task(processor: MediaProcessor, item_id: str, force_reprocess: bool, process_episodes: bool):
+def webhook_processing_task(processor: MediaProcessor, item_id: str, force_reprocess: bool):
     """
     【修复版】这个函数编排了处理新入库项目的完整流程。
     它的第一个参数现在是 MediaProcessor 实例，以匹配任务执行器的调用方式。
@@ -286,8 +283,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
     # ★★★ 修复：使用传入的 processor ★★★
     processed_successfully = processor.process_single_item(
         item_id, 
-        force_reprocess_this_item=force_reprocess, 
-        process_episodes=True
+        force_reprocess_this_item=force_reprocess 
     )
     
     # --- ★★★ 步骤 D: 新增的实时合集匹配逻辑 ★★★ ---
