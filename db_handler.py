@@ -304,16 +304,17 @@ def mark_review_item_as_processed(db_path: str, item_id: str) -> bool:
 def clear_all_review_items(db_path: str) -> int:
     """
     【V3 - 健壮版】清空所有待复核项目，并将它们全部标记为已处理。
-    采用“先查询，后操作”的模式，避免依赖不可靠的 rowcount。
+    采用“先查询，后操作”的模式，保证“写入”与“删除”的原子性。
     返回被成功处理的项目数量。
     出现错误时抛出异常。
     """
     try:
-        # 1. 使用 with 语句确保连接的正确管理
         with get_db_connection(db_path) as conn:
             cursor = conn.cursor()
 
-            # 2. 【核心修改】先将所有需要处理的项目ID、名称和分数查询到内存中
+            # 1. 第一步：锁定目标
+            # 将所有需要移动的项目完整地查询到内存中。
+            # `items_to_move` 现在是我们唯一信任的“操作清单”。
             cursor.execute("SELECT item_id, item_name, score FROM failed_log")
             items_to_move = cursor.fetchall()
             
@@ -324,52 +325,53 @@ def clear_all_review_items(db_path: str) -> int:
 
             logger.info(f"查询到 {initial_count} 条待复核记录，准备开始移动...")
 
-            # 3. 准备要插入到 processed_log 的数据
-            #    使用 COALESCE 逻辑，如果分数为 NULL，则默认为 10.0
+            # 2. 第二步：准备“写入”的数据
+            # 根据我们的“操作清单”，创建准备写入 `processed_log` 的精确数据。
             data_for_processed_log = [
                 (row['item_id'], row['item_name'], row.get('score') or 10.0)
                 for row in items_to_move
             ]
 
-            # 4. 在一个事务中执行所有数据库写入操作
+            # 3. 第三步：在“保险箱”（事务）中执行所有操作
             try:
-                # 4.1 使用 executemany 高效地将所有记录插入或替换到 processed_log
-                #     注意：processed_log 的主键必须是 item_id
+                # 3.1 执行写入：将我们准备好的数据写入 `processed_log`
+                # 这一步如果失败（比如表结构不对、约束冲突等），会立刻抛出异常，
+                # 然后被下面的 `except` 捕获，直接进入回滚流程。
                 copy_sql = """
                     REPLACE INTO processed_log (item_id, item_name, score, processed_at)
                     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
                 """
                 cursor.executemany(copy_sql, data_for_processed_log)
                 
-                # 4.2 清空 failed_log 表
+                # 3.2 执行删除：清空 `failed_log` 表
+                # 只有在写入成功后，才会执行到这一步。
                 cursor.execute("DELETE FROM failed_log")
                 deleted_count = cursor.rowcount # 对于简单的 DELETE，rowcount 是可靠的
 
-                # 5. 【新的、更可靠的验证】
-                #    我们只验证删除的行数是否等于我们最初从表中读出的行数。
+                # 4. 第四步：进行最终的、可靠的验证
+                # 我们只验证一件事：删除的行数，是否等于我们一开始想要处理的行数？
                 if deleted_count == initial_count:
-                    conn.commit() # 验证通过，提交事务
+                    # 如果相等，说明从我们查询到删除的这段时间里，没有其他程序干扰 `failed_log` 表。
+                    # 同时，因为写入操作没有抛出异常，所以我们可以确信写入也成功了。
+                    # 万无一失，提交事务！
+                    conn.commit() 
                     logger.info(f"成功移动 {deleted_count} 条记录，事务已提交。")
                     return deleted_count
                 else:
-                    # 如果删除的行数不匹配，说明在我们的事务进行中，有其他进程修改了 failed_log 表
-                    # 这是一个严重的数据不一致问题，必须回滚。
+                    # 如果不相等，说明发生了并发问题，必须回滚以保证数据安全。
                     conn.rollback()
-                    logger.error(
-                        f"数据不一致，事务回滚！"
-                        f"初始查询到 {initial_count} 条，但最终删除了 {deleted_count} 条。"
-                    )
-                    raise Exception("数据不一致，操作回滚！可能是并发操作导致。")
+                    logger.error(f"数据不一致，事务回滚！初始查询到 {initial_count} 条，但最终删除了 {deleted_count} 条。")
+                    raise Exception("数据不一致，操作回滚！")
 
             except Exception as e_inner:
-                # 如果事务内部出错，确保回滚
+                # 捕获事务中的任何失败，回滚并报告错误。
                 logger.error(f"事务执行失败，正在回滚: {e_inner}", exc_info=True)
                 conn.rollback()
-                raise # 将内部异常重新抛出
+                raise
 
     except Exception as e_outer:
         logger.error(f"清空并标记待复核列表时发生顶层异常：{e_outer}", exc_info=True)
-        raise # 将异常继续向上抛出给调用者处理
+        raise
 # ======================================================================
 # 模块 4: 智能追剧列表数据访问 (Watchlist Data Access)
 # ======================================================================
