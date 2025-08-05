@@ -362,14 +362,23 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
                 logger.info(f"媒体库 '{library_name}' 在忽略列表中，跳过。")
                 return
             
-            # 5. 实例化服务并为这一个媒体库生成封面
-            logger.info(f"--- 正在为媒体库 '{library_name}' (ID: {library_id}) 生成封面 ---")
+            # 5. 为了获取 ItemCount，我们需要完整的媒体库列表
+            all_libraries = emby_handler.get_emby_libraries(
+                processor.emby_url, processor.emby_api_key, processor.emby_user_id
+            ) or []
+            # 从列表中找到我们当前这个媒体库的完整信息
+            full_library_info = next((lib for lib in all_libraries if lib.get("Id") == library_id), None)
+            # 从完整信息中安全地提取 ItemCount
+            item_count = full_library_info.get('ItemCount', 0) if full_library_info else 0
+            
+            # 6. 实例化服务并为这一个媒体库生成封面
+            logger.info(f"--- 正在为媒体库 '{library_name}' (ID: {library_id}) 生成封面 (当前数量: {item_count}) ---")
             cover_service = CoverGeneratorService(config=cover_config)
             cover_service.generate_for_library(
                 emby_server_id=server_id,
-                library=library_info # 直接把获取到的媒体库信息传进去
+                library=library_info,
+                item_count=item_count 
             )
-            # ▲▲▲ 核心修改结束 ▲▲▲
 
         else:
             logger.debug("封面生成器或入库监控未启用，跳过封面生成。")
@@ -1612,9 +1621,12 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                         )
                         
                         if library_info:
+                            # 从数据库记录中获取已入库和缺失的数量
+                            item_count_to_pass = collection.get('in_library_count', 0)
                             cover_service.generate_for_library(
                                 emby_server_id=server_id,
-                                library=library_info
+                                library=library_info,
+                                item_count=item_count_to_pass
                             )
                         else:
                             logger.warning(f"无法获取 Emby 合集 {emby_collection_id} 的详情，跳过封面生成。")
@@ -1829,9 +1841,16 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                     )
                     
                     if library_info:
+                        # update_data 字典里包含了我们刚刚计算好的数量信息
+                        in_library_count = update_data.get('in_library_count', 0)
+                        
+                        # 同样，我们只关心已入库的数量
+                        item_count_to_pass = in_library_count
+
                         cover_service.generate_for_library(
                             emby_server_id=server_id,
-                            library=library_info
+                            library=library_info,
+                            item_count=item_count_to_pass # <--- 传递修正后的值
                         )
                     else:
                         logger.warning(f"无法获取 Emby 合集 {emby_collection_id} 的详情，跳过封面生成。")
@@ -2048,7 +2067,15 @@ def task_generate_all_covers(processor: MediaProcessor):
             task_manager.update_status_from_thread(progress, f"({i+1}/{total}) 正在处理: {library.get('Name')}")
             
             try:
-                cover_service.generate_for_library(emby_server_id='main_emby', library=library)
+                # 1. 从 Emby 返回的 library 信息中，安全地获取 ItemCount
+                item_count = library.get('ItemCount', 0)
+
+                # 2. 将获取到的数量，通过 item_count 参数传递给服务
+                cover_service.generate_for_library(
+                    emby_server_id='main_emby', 
+                    library=library,
+                    item_count=item_count
+                )
             except Exception as e_gen:
                 logger.error(f"为媒体库 '{library.get('Name')}' 生成封面时发生错误: {e_gen}", exc_info=True)
                 continue

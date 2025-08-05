@@ -540,21 +540,26 @@ watch(() => currentCollection.value.definition.rules, (newRules) => {
 }, { deep: true });
 
 const ruleConfig = {
-  actors: { label: '演员', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, // ★ 修改
-  directors: { label: '导演', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, // ★ 修改
+  title: { label: '标题', type: 'text', operators: ['contains', 'does_not_contain', 'starts_with', 'ends_with'] },
+  actors: { label: '演员', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
+  directors: { label: '导演', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
   release_year: { label: '年份', type: 'number', operators: ['gte', 'lte', 'eq'] },
   rating: { label: '评分', type: 'number', operators: ['gte', 'lte'] },
-  genres: { label: '类型', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, // ★ 修改
-  countries: { label: '国家/地区', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, // ★ 修改
-  studios: { label: '工作室', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, // ★ 修改
+  genres: { label: '类型', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
+  countries: { label: '国家/地区', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
+  studios: { label: '工作室', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
   release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
   date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
 };
 
 const operatorLabels = {
-  contains: '包含', gte: '大于等于', lte: '小于等于', eq: '等于',
+  contains: '包含', 
+  does_not_contain: '不包含', 
+  starts_with: '开头是',   
+  ends_with: '结尾是',    
+  gte: '大于等于', lte: '小于等于', eq: '等于',
   in_last_days: '最近N天内', not_in_last_days: 'N天以前',
-  is_one_of: '是其中之一', is_none_of: '不是任何一个' // ★ 新增
+  is_one_of: '是其中之一', is_none_of: '不是任何一个'
 };
 
 const fieldOptions = computed(() => 

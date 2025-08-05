@@ -10,7 +10,7 @@ import random
 import re
 import requests # 使用标准的 requests 库
 from pathlib import Path
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 from collections import defaultdict
 
 # 从您的项目中导入您确认存在的模块
@@ -60,7 +60,7 @@ class CoverGeneratorService:
         self.en_font_path_multi_1 = None
 
     # --- 核心公开方法 ---
-    def generate_for_library(self, emby_server_id: str, library: Dict[str, Any]):
+    def generate_for_library(self, emby_server_id: str, library: Dict[str, Any], item_count: Optional[int] = None):
         """
         为指定的媒体库生成并上传封面。
         这是从外部调用的主入口。
@@ -72,7 +72,7 @@ class CoverGeneratorService:
         self.__get_fonts()
 
         # 2. 生成封面图片数据
-        image_data = self.__generate_image_data(emby_server_id, library)
+        image_data = self.__generate_image_data(emby_server_id, library, item_count)
         if not image_data:
             logger.error(f"为媒体库 '{library['Name']}' 生成封面图片失败。")
             return False
@@ -88,7 +88,7 @@ class CoverGeneratorService:
 
     # --- 私有逻辑方法 (从原插件移植和修改) ---
 
-    def __generate_image_data(self, server_id: str, library: Dict[str, Any]) -> bytes:
+    def __generate_image_data(self, server_id: str, library: Dict[str, Any], item_count: Optional[int] = None) -> bytes:
         """根据配置和媒体库内容，生成最终的封面图片二进制数据"""
         library_name = library['Name']
         title = self.__get_library_title_from_yaml(library_name)
@@ -97,13 +97,13 @@ class CoverGeneratorService:
         custom_image_paths = self.__check_custom_image(library_name)
         if custom_image_paths:
             logger.info(f"发现媒体库 '{library_name}' 的自定义图片，将使用路径模式生成。")
-            return self.__generate_image_from_path(library_name, title, custom_image_paths)
+            return self.__generate_image_from_path(library_name, title, custom_image_paths, item_count)
 
         # 如果没有自定义图片，则从服务器获取
         logger.trace(f"未发现自定义图片，将从服务器 '{server_id}' 获取媒体项作为封面来源。")
-        return self.__generate_from_server(server_id, library, title)
+        return self.__generate_from_server(server_id, library, title, item_count)
 
-    def __generate_from_server(self, server_id: str, library: Dict[str, Any], title: Tuple[str, str]) -> bytes:
+    def __generate_from_server(self, server_id: str, library: Dict[str, Any], title: Tuple[str, str], item_count: Optional[int] = None) -> bytes:
         """从媒体服务器获取项目并生成封面"""
         required_items_count = 1 if self._cover_style.startswith('single') else 9
         
@@ -121,7 +121,7 @@ class CoverGeneratorService:
             image_path = self.__download_image(server_id, image_url, library['Name'], 1)
             if not image_path: return None
             
-            return self.__generate_image_from_path(library['Name'], title, [image_path])
+            return self.__generate_image_from_path(library['Name'], title, [image_path], item_count)
         else: # multi style
             image_paths = []
             for i, item in enumerate(items[:9]):
@@ -135,7 +135,7 @@ class CoverGeneratorService:
                 logger.warning(f"为多图模式下载图片失败。")
                 return None
             
-            return self.__generate_image_from_path(library['Name'], title, image_paths)
+            return self.__generate_image_from_path(library['Name'], title, image_paths, item_count)
 
     def __get_valid_items_from_library(self, server_id: str, library: Dict[str, Any], limit: int) -> List[Dict]:
         """从媒体库中获取足够数量的、包含有效图片的媒体项 (已修复排序逻辑)"""
@@ -177,7 +177,7 @@ class CoverGeneratorService:
 
         return valid_items[:limit]
 
-    def __generate_image_from_path(self, library_name: str, title: Tuple[str, str], image_paths: List[str]) -> bytes:
+    def __generate_image_from_path(self, library_name: str, title: Tuple[str, str], image_paths: List[str], item_count: Optional[int] = None) -> bytes:
         """
         【字体回退修复版】使用本地图片路径列表生成封面。
         - 确保传递给底层函数的是字符串路径。
@@ -194,11 +194,13 @@ class CoverGeneratorService:
 
         if self._cover_style == 'single_1':
             return create_style_single_1(str(image_paths[0]), title, (str(self.zh_font_path), str(self.en_font_path)), 
-                                         font_size=font_size, blur_size=blur_size, color_ratio=color_ratio)
+                                         font_size=font_size, blur_size=blur_size, color_ratio=color_ratio,
+                                         item_count=item_count, config=self.config)
         
         elif self._cover_style == 'single_2':
             return create_style_single_2(str(image_paths[0]), title, (str(self.zh_font_path), str(self.en_font_path)), 
-                                         font_size=font_size, blur_size=blur_size, color_ratio=color_ratio)
+                                         font_size=font_size, blur_size=blur_size, color_ratio=color_ratio,
+                                         item_count=item_count, config=self.config)
         
         elif self._cover_style == 'multi_1':
             # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
@@ -236,7 +238,8 @@ class CoverGeneratorService:
                                       font_size=font_size_multi, 
                                       is_blur=self._multi_1_blur, 
                                       blur_size=blur_size_multi, 
-                                      color_ratio=color_ratio_multi)
+                                      color_ratio=color_ratio_multi,
+                                      item_count=item_count, config=self.config)
         return None
 
     def __set_library_image(self, server_id: str, library: Dict[str, Any], image_data: bytes) -> bool:

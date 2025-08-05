@@ -26,6 +26,9 @@ def get_default_config():
         "transfer_monitor": True,
         "exclude_libraries": [], # 现在是勾选框
         "sort_by": "Latest", # 默认改为最新添加
+
+        # 媒体数量开关
+        "show_item_count": False, # 默认为关闭
         
         # 封面风格
         "cover_style": "single_1",

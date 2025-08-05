@@ -313,7 +313,7 @@ def rotate_image(img, angle, bg_color=(0, 0, 0, 0)):
     return img.rotate(angle, Image.BICUBIC, expand=True, fillcolor=bg_color)
 
 
-def create_style_single_1(image_path, title, font_path, font_size=(1,1), blur_size=50, color_ratio=0.8):
+def create_style_single_1(image_path, title, font_path, font_size=(1,1), blur_size=50, color_ratio=0.8, item_count=None, config=None):
     try:
         zh_font_path, en_font_path = font_path
         title_zh, title_en = title
@@ -521,6 +521,65 @@ def create_style_single_1(image_path, title, font_path, font_size=(1,1), blur_si
         combined = Image.alpha_composite(canvas, blurred_shadow)
         # 合并所有图层
         combined = Image.alpha_composite(combined, text_layer)
+
+        # 【【【绘制媒体项数量徽章】】】
+        if config and config.get("show_item_count", False) and item_count is not None:
+            logger.debug(f"准备在左上角绘制数量徽章，数量为 {item_count}")
+            
+            zh_font_path, en_font_path = font_path
+            
+            # --- 1. 动态计算所有尺寸 (这部分不变) ---
+            canvas_height = combined.height
+            # 您可以继续微调这个比例，0.12 是一个不错的起点
+            badge_font_size = int(canvas_height * 0.12) 
+            badge_padding_h = int(badge_font_size * 0.4)
+            badge_padding_v = int(badge_font_size * 0.2)
+            margin = int(canvas_height * 0.04)
+
+            try:
+                badge_font = ImageFont.truetype(en_font_path, size=badge_font_size)
+            except Exception:
+                badge_font = ImageFont.load_default(size=badge_font_size)
+
+            count_text = str(item_count)
+            
+            # --- 2. 计算徽章尺寸 (这部分不变) ---
+            temp_draw = ImageDraw.Draw(Image.new('RGB', (1,1)))
+            text_bbox = temp_draw.textbbox((0,0), count_text, font=badge_font)
+            text_width = text_bbox[2] - text_bbox[0]
+            text_height = text_bbox[3] - text_bbox[1]
+            badge_width = int(text_width + badge_padding_h * 2)
+            badge_height = int(text_height + badge_padding_v * 2)
+            
+            # --- 3. 【核心修改】计算徽章在左上角的位置 ---
+            badge_pos = (
+                margin,  # X 坐标 = 左边距
+                margin   # Y 坐标 = 上边距
+            )
+            
+            # --- 4. 绘制背景 (这部分不变) ---
+            badge_rect = (badge_pos[0], badge_pos[1], badge_pos[0] + badge_width, badge_pos[1] + badge_height)
+            badge_layer = Image.new('RGBA', combined.size, (0, 0, 0, 0))
+            badge_draw = ImageDraw.Draw(badge_layer)
+            badge_draw.rounded_rectangle(badge_rect, radius=int(badge_height * 0.3), fill=(0, 0, 0, 180))
+            combined = Image.alpha_composite(combined.convert('RGBA'), badge_layer)
+            
+            # --- 5. 居中绘制文字 (这部分不变，因为它会自动适应新位置) ---
+            draw = ImageDraw.Draw(combined)
+            badge_center_x = badge_pos[0] + badge_width / 2
+            badge_center_y = badge_pos[1] + badge_height / 2
+            
+            shadow_offset = 2
+            draw.text(
+                (badge_center_x + shadow_offset, badge_center_y + shadow_offset), 
+                count_text, font=badge_font, fill=(0, 0, 0, 100), anchor="mm"
+            )
+            draw.text(
+                (badge_center_x, badge_center_y), 
+                count_text, font=badge_font, fill=(255, 255, 255, 240), anchor="mm"
+            )
+
+            
         
         # 转为 RGB
         # rgb_image = combined.convert("RGB")

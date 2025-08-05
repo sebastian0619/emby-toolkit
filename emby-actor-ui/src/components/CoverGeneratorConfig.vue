@@ -20,7 +20,7 @@
 
         <!-- ★★★ 核心修改：使用 n-grid 重新排版 ★★★ -->
         <n-card title="基础设置" style="margin-top: 24px;">
-          <n-grid :cols="3" :x-gap="24" responsive="screen">
+          <n-grid :cols="4" :x-gap="24" responsive="screen">
             <!-- 第一列 -->
             <n-gi>
               <n-form-item label="启用">
@@ -35,6 +35,13 @@
               </n-form-item>
             </n-gi>
             <!-- 第三列 -->
+            <n-gi>
+              <n-form-item label="在封面上显示数量">
+                <n-switch v-model:value="configData.show_item_count" />
+                <template #feedback>在封面右下角显示媒体项总数</template>
+              </n-form-item>
+            </n-gi>
+            <!-- 第四列 -->
             <n-gi>
               <n-form-item label="封面图片来源排序">
                 <n-select v-model:value="configData.sort_by" :options="sortOptions" />

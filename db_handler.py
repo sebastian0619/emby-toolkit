@@ -1078,13 +1078,18 @@ def get_unique_genres(db_path: str) -> List[str]:
 # ★★★ 从元数据表中提取所有唯一的工作室 ★★★
 def get_unique_studios(db_path: str) -> List[str]:
     """
-    从 media_metadata 表中扫描所有电影，提取出所有不重复的工作室(studios)。
+    【V2 - 视野扩展版】
+    从 media_metadata 表中扫描所有媒体项（电影和电视剧），
+    提取出所有不重复的工作室(studios)。
     """
     unique_studios = set()
     try:
         with get_db_connection(db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT studios_json FROM media_metadata WHERE item_type = 'Movie'")
+            
+            # 【【【手术点：移除 WHERE item_type = 'Movie' 子句】】】
+            # 让查询覆盖整个表，不再局限于电影
+            cursor.execute("SELECT studios_json FROM media_metadata")
             rows = cursor.fetchall()
             
             for row in rows:
@@ -1098,7 +1103,7 @@ def get_unique_studios(db_path: str) -> List[str]:
                         continue
                         
         sorted_studios = sorted(list(unique_studios))
-        logger.trace(f"从数据库中成功提取出 {len(sorted_studios)} 个唯一的工作室。")
+        logger.trace(f"从数据库中成功提取出 {len(sorted_studios)} 个跨电影和电视剧的唯一工作室。")
         return sorted_studios
         
     except sqlite3.Error as e:

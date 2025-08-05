@@ -238,6 +238,23 @@ class FilterEngine:
                         elif op == 'not_in_last_days':
                             if item_date < cutoff_date: match = True
                     except (ValueError, TypeError): pass
+
+            # 4：处理标题字段
+            elif field == 'title':
+                item_title = item_metadata.get('title')
+                if item_title and isinstance(value, str):
+                    # 为了不区分大小写，统一转为小写比较
+                    item_title_lower = item_title.lower()
+                    value_lower = value.lower()
+                    
+                    if op == 'contains':
+                        if value_lower in item_title_lower: match = True
+                    elif op == 'does_not_contain':
+                        if value_lower not in item_title_lower: match = True
+                    elif op == 'starts_with':
+                        if item_title_lower.startswith(value_lower): match = True
+                    elif op == 'ends_with':
+                        if item_title_lower.endswith(value_lower): match = True
             
             else: # 处理 gte, lte, eq
                 actual_item_value = item_metadata.get(field)
