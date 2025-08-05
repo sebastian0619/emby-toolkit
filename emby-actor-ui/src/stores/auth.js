@@ -7,9 +7,11 @@ import axios from 'axios';
 export const useAuthStore = defineStore('auth', () => {
   // --- State ---
   const isLoggedIn = ref(false);
-  const isAuthEnabled = ref(true); // 默认假设认证是开启的
+  const isAuthEnabled = ref(true);
   const username = ref(null);
   const initializationError = ref(null);
+  // 【【【新增1】】】: 在 state 中定义强制修改密码的标志
+  const forceChangePassword = ref(false);
 
   // --- Actions ---
   async function checkAuthStatus() {
@@ -19,38 +21,59 @@ export const useAuthStore = defineStore('auth', () => {
       isLoggedIn.value = response.data.logged_in;
       username.value = response.data.username;
       initializationError.value = null;
+      
+      // 如果检查后发现未登录，确保重置强制修改密码的标志
+      if (!isLoggedIn.value) {
+        forceChangePassword.value = false;
+      }
+
       return response.data;
     } catch (error) {
       console.error('检查认证状态失败:', error);
       initializationError.value = '无法连接到后端服务，请检查服务是否运行。';
-      // 发生错误时，重置为未登录状态
-      isAuthEnabled.value = true; // 无法确定时，保守起见，要求登录
+      isAuthEnabled.value = true;
       isLoggedIn.value = false;
       username.value = null;
-      throw error; // 抛出错误让调用者知道
+      forceChangePassword.value = false; // 出错时也要重置
+      throw error;
     }
   }
 
+  // 【【【修改】】】: 重写 login 函数，使其直接处理登录响应
   async function login(credentials) {
+    // 发送登录请求
     const response = await axios.post('/api/auth/login', credentials);
-    // 登录成功后，立即更新状态
-    if (response.status === 200) {
-      await checkAuthStatus();
-    }
-    return response;
+    
+    // 直接使用 /login 接口的返回数据来更新状态
+    isLoggedIn.value = true;
+    username.value = response.data.username;
+    forceChangePassword.value = response.data.force_change_password; // <--- 保存关键标志
+
+    return response; // 将原始响应返回，以防万一
   }
 
+  // 【【【修改】】】: 重写 logout 函数，使其更直接
   async function logout() {
-    await axios.post('/api/auth/logout');
-    // 登出后，也立即更新状态
-    await checkAuthStatus();
+    try {
+        await axios.post('/api/auth/logout');
+    } catch (error) {
+        console.error("登出时后端发生错误:", error);
+    } finally {
+        // 无论后端是否成功，前端都必须清理状态
+        isLoggedIn.value = false;
+        username.value = null;
+        forceChangePassword.value = false; // <--- 重置标志
+    }
   }
 
+  // --- Return ---
+  // 【【【新增2】】】: 确保将新状态和修改后的 action 导出
   return {
     isLoggedIn,
     isAuthEnabled,
     username,
     initializationError,
+    forceChangePassword, // <--- 导出新状态
     checkAuthStatus,
     login,
     logout,

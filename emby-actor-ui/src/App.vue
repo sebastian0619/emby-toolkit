@@ -113,7 +113,7 @@ import {
   NConfigProvider, NLayout, NLayoutHeader, NLayoutSider, NLayoutContent,
   NMenu, NSwitch, NIcon, NCard, NText, NProgress,
   darkTheme, zhCN, dateZhCN, useMessage, NMessageProvider,
-  NModal, NDropdown
+  NModal, NDropdown, NDialogProvider
 } from 'naive-ui';
 import axios from 'axios';
 import { useAuthStore } from './stores/auth';
@@ -184,7 +184,6 @@ const handleUserSelect = async (key) => {
     showPasswordModal.value = true;
   } else if (key === 'logout') {
     await authStore.logout();
-    router.push({ name: 'Login' });
   }
 };
 
@@ -193,17 +192,25 @@ const menuOptions = computed(() => [
   { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
   { type: 'divider', key: 'd1' },
   { label: '任务中心', key: 'actions-status', icon: renderIcon(ActionsIcon) },
+  { type: 'divider', key: 'd1' },
   { label: '合集检查', key: 'Collections', icon: renderIcon(CollectionsIcon) },
+  { type: 'divider', key: 'd1' },
   { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) },
+  { type: 'divider', key: 'd1' },
   { 
     label: '封面生成', 
     key: 'CoverGeneratorConfig', // 这个 key 必须与您在路由中定义的 name 完全一致
     icon: renderIcon(PaletteIcon) // 使用我们新导入的调色板图标
   },
+  { type: 'divider', key: 'd1' },
   { label: '智能追剧', key: 'Watchlist', icon: renderIcon(WatchlistIcon) },
+  { type: 'divider', key: 'd1' },
   { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) },
+  { type: 'divider', key: 'd1' },
   { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
+  { type: 'divider', key: 'd1' },
   { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
+  { type: 'divider', key: 'd1' },
   { label: '查看更新', key: 'Releases', icon: renderIcon(AboutIcon) },
 ]);
 
@@ -264,29 +271,40 @@ const themeOverridesComputed = computed(() => {
 let statusIntervalId = null;
 
 onMounted(() => {
-  if (authStore.isLoggedIn) {
-    fetchStatus();
-    statusIntervalId = setInterval(fetchStatus, 1000);
-  }
 });
 
 onBeforeUnmount(() => {
   if (statusIntervalId) clearInterval(statusIntervalId);
 });
 
-watch(() => authStore.isLoggedIn, (newIsLoggedIn) => {
+watch(() => authStore.isLoggedIn, (newIsLoggedIn, oldIsLoggedIn) => {
   if (newIsLoggedIn) {
+    // 用户刚刚登录成功 (从 false -> true)
+    if (!oldIsLoggedIn) {
+      // 检查 Pinia store 中由后端设置的标志
+      if (authStore.forceChangePassword) {
+        console.log("检测到需要强制修改密码，正在弹出模态框...");
+        showPasswordModal.value = true;
+      }
+    }
+    
+    // 只要是登录状态，就启动状态轮询
     if (!statusIntervalId) {
       fetchStatus();
       statusIntervalId = setInterval(fetchStatus, 1000);
     }
   } else {
+    // 用户已登出
     if (statusIntervalId) {
       clearInterval(statusIntervalId);
       statusIntervalId = null;
     }
+    // 如果当前不在登录页，则跳转到登录页
+    if (route.name !== 'Login') {
+      router.push({ name: 'Login' });
+    }
   }
-});
+}, { immediate: true });
 </script>
 
 <style>

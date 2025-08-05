@@ -4,7 +4,6 @@ from flask import Blueprint, request, jsonify, session
 from werkzeug.security import generate_password_hash, check_password_hash
 import logging
 import os
-import secrets
 
 # 导入底层和共享模块
 import db_handler
@@ -15,6 +14,8 @@ from extensions import login_required
 # 1. 创建蓝图
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 logger = logging.getLogger(__name__)
+
+DEFAULT_INITIAL_PASSWORD = "password"
 
 # 2. 将 init_auth 函数迁移到这里，因为它与认证功能紧密相关
 def init_auth():
@@ -38,18 +39,24 @@ def init_auth():
             user = cursor.fetchone()
             
             if user is None:
-                random_password = secrets.token_urlsafe(12)
-                password_hash = generate_password_hash(random_password)
+                # 【修改3】: 使用固定的默认密码，而不是随机生成
+                logger.info(f"数据库中未找到用户 '{username}'，将为其创建并设置默认密码。")
+                
+                # 不再使用 random_password，直接使用我们定义的常量
+                password_hash = generate_password_hash(DEFAULT_INITIAL_PASSWORD)
+                
                 cursor.execute(
                     "INSERT INTO users (username, password_hash) VALUES (?, ?)",
                     (username, password_hash)
                 )
                 conn.commit()
+                
+                # 【修改4】: 更新日志信息，明确告知默认密码和修改要求
                 logger.critical("=" * 60)
                 logger.critical(f"首次运行，已为用户 '{username}' 自动生成初始密码。")
                 logger.critical(f"用户名: {username}")
-                logger.critical(f"初始密码: {random_password}")
-                logger.critical("请立即使用此密码登录，并在设置页面修改。")
+                logger.critical(f"初始密码: {DEFAULT_INITIAL_PASSWORD}")
+                logger.critical("请立即使用此密码登录，系统将强制要求您修改密码。")
                 logger.critical("=" * 60)
     except Exception as e:
         logger.error(f"初始化认证系统时发生错误: {e}", exc_info=True)
@@ -89,7 +96,19 @@ def login():
         session['user_id'] = user['id']
         session['username'] = user['username']
         logger.info(f"用户 '{user['username']}' 登录成功。")
-        return jsonify({"message": "登录成功", "username": user['username']})
+        
+        # 【修改5】: 核心逻辑 - 判断用户是否正在使用默认密码登录
+        force_change_password = (password == DEFAULT_INITIAL_PASSWORD)
+        
+        if force_change_password:
+            logger.info(f"用户 '{user['username']}' 使用默认密码登录，将强制其修改密码。")
+
+        # 在返回的 JSON 中加入这个新标志
+        return jsonify({
+            "message": "登录成功", 
+            "username": user['username'],
+            "force_change_password": force_change_password
+        })
     
     logger.warning(f"用户 '{username}' 登录失败：用户名或密码错误。")
     return jsonify({"error": "用户名或密码错误"}), 401

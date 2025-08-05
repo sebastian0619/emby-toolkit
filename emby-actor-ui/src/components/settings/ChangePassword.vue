@@ -34,10 +34,11 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, defineEmits } from 'vue';
 import { NCard, NForm, NFormItemRow, NInput, NButton, useMessage } from 'naive-ui';
 import axios from 'axios';
 
+const emit = defineEmits(['password-changed']);
 const message = useMessage();
 const loading = ref(false);
 const passwords = ref({
@@ -75,6 +76,7 @@ async function handleChangePassword() {
     };
     await axios.post('/api/auth/change_password', payload);
     message.success('密码修改成功！');
+    emit('password-changed');
     // 清空表单
     passwords.value = {
       current_password: '',
