@@ -950,11 +950,9 @@ class MediaProcessor:
             logger.error("未配置TMDb API Key，无法从在线获取数据。")
             return False
 
-        # ★★★ 1. 提前定义评分逻辑所需的变量 ★★★
-        genres = item_details_from_emby.get("Genres", [])
-        is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
+        # --- 获取原始演员数量
         original_emby_actor_count = len(item_details_from_emby.get("People", []))
-
+        
         log_prefix = f"[{'在线模式' if force_fetch_from_tmdb else '本地优先'}]"
         logger.info(f"{log_prefix} 开始处理 '{item_name_for_log}' (TMDb ID: {tmdb_id})")
 
@@ -1113,6 +1111,13 @@ class MediaProcessor:
                 # --- 最终格式化 ---
                 genres = item_details_from_emby.get("Genres", [])
                 is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
+
+                # --- 判断是否为动画片或记录片
+                genres_from_tmdb = main_tmdb_data.get("genres", [])
+                genre_names = [g['name'] for g in genres_from_tmdb if 'name' in g]
+                is_animation = "Animation" in genre_names or "动画" in genre_names or "Documentary" in genre_names or "纪录" in genre_names
+                logger.debug(f"根据权威数据源判断 '{item_name_for_log}' (Is Animation/Doc): {is_animation}")
+
                 final_cast_perfect = actor_utils.format_and_complete_cast_list(
                     intermediate_cast, is_animation, self.config, mode='auto'
                 )
