@@ -35,7 +35,7 @@
                     :loading="taskStatus.is_running && currentActionIncludesScan"
                     :disabled="taskStatus.is_running && !currentActionIncludesScan"
                   >
-                    启动全量扫描
+                    启动全量处理
                   </n-button>
                   <n-button type="error" @click="triggerStopTask" :disabled="!taskStatus.is_running" ghost>
                     停止当前任务
@@ -307,7 +307,7 @@ const triggerFullScan = async () => {
     await axios.post('/api/tasks/run', payload);
     message.success('全量处理任务已提交！');
   } catch (error) {
-    message.error(error.response?.data?.error || '启动全量扫描失败，请查看日志。');
+    message.error(error.response?.data?.error || '启动全量处理失败，请查看日志。');
   }
 };
 

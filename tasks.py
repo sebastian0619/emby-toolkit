@@ -113,16 +113,16 @@ def run_full_rebuild_task(self, update_status_callback: Optional[callable] = Non
             update_status_callback(-1, f"任务失败: {e}")
         raise
 
-# ★★★ 全量扫描任务 ★★★
+# ★★★ 全量处理任务 ★★★
 def task_run_full_scan(processor: MediaProcessor, force_reprocess: bool = False):
     """
     根据传入的 force_reprocess 参数，决定是执行标准扫描还是强制扫描。
     """
     # 1. 根据参数决定日志信息
     if force_reprocess:
-        logger.warning("即将执行【强制】全量扫描，将处理所有媒体项...")
+        logger.warning("即将执行【强制】全量处理，将处理所有媒体项...")
     else:
-        logger.info("即将执行【标准】全量扫描，将跳过已处理项...")
+        logger.info("即将执行【标准】全量处理，将跳过已处理项...")
 
 
     # 3. 调用核心处理函数，并将 force_reprocess 参数透传下去

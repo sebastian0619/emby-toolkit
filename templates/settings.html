@@ -211,7 +211,7 @@
 
                 <hr>
                 <h2>其他配置</h2>
-                <label for="delay_between_items_sec">全量扫描时项目处理间隔 (秒):</label>
+                <label for="delay_between_items_sec">全量处理时项目处理间隔 (秒):</label>
                 <input type="number" step="0.1" min="0" id="delay_between_items_sec" name="delay_between_items_sec" value="{{ config.get('delay_between_items_sec', 0.5) }}">
 
                 <label for="api_douban_default_cooldown_seconds">豆瓣API默认冷却时间 (秒):</label>
@@ -219,10 +219,10 @@
             </div>
 
             <div id="schedulerTab" class="tab-content">
-                <h2>定时任务：全量扫描</h2>
+                <h2>定时任务：全量处理</h2>
                 <div>
                     <input type="checkbox" id="schedule_enabled" name="schedule_enabled" value="true" {% if config.get('schedule_enabled') %}checked{% endif %}>
-                    <label for="schedule_enabled" class="inline-label">启用定时全量扫描</label>
+                    <label for="schedule_enabled" class="inline-label">启用定时全量处理</label>
                 </div>
 
                 <label for="schedule_cron">CRON表达式 (分 时 日 月 周):</label>
@@ -259,7 +259,7 @@
                         <input type="checkbox" id="force_reprocess_all" name="force_reprocess_all" {% if task_status.is_running %}disabled{% endif %}>
                         <label for="force_reprocess_all" class="inline-label">强制重处理所有项目</label>
                     </span>
-                    <small>注意: 全量扫描可能非常耗时</small>
+                    <small>注意: 全量处理可能非常耗时</small>
                 </form>
 
                 <form method="POST" action="{{ url_for('trigger_sync_person_map') }}">

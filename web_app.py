@@ -527,19 +527,19 @@ def setup_scheduled_tasks():
             force = config.get(constants.CONFIG_OPTION_SCHEDULE_FORCE_REPROCESS, False)
             
             def scheduled_scan_task():
-                logger.info(f"定时任务触发：全量扫描 (强制={force})。")
+                logger.info(f"定时任务触发：全量处理 (强制={force})。")
                 task_manager.submit_task(
                     task_run_full_scan, 
                     "定时全量处理媒体", 
                     force_reprocess=force 
                 )
             
-            scheduler.add_job(func=scheduled_scan_task, trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_FULL_SCAN, name="定时全量扫描", replace_existing=True)
-            logger.info(f"已设置定时任务：全量扫描，将{_get_next_run_time_str(cron)}{' (强制重处理)' if force else ''}")
+            scheduler.add_job(func=scheduled_scan_task, trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_FULL_SCAN, name="定时全量处理", replace_existing=True)
+            logger.info(f"已设置定时任务：全量处理媒体->  将{_get_next_run_time_str(cron)}{' (强制重处理)' if force else ''}")
         except Exception as e:
-            logger.error(f"设置定时全量扫描任务失败: {e}", exc_info=True)
+            logger.error(f"设置定时全量处理任务失败: {e}", exc_info=True)
     else:
-        logger.info("定时全量扫描任务未启用。")
+        logger.info("定时全量处理任务未启用。")
 
     # --- 任务 2: 同步演员映射表 ---
     JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"

@@ -14,10 +14,10 @@
           <n-card title="常规任务" class="glass-section" :bordered="false">
             <div class="task-list-container">
 
-              <!-- 任务 1.1: 全量扫描 -->
+              <!-- 任务 1.1: 全量处理 -->
               <div class="task-item">
                 <n-space align="center" justify="space-between">
-                  <n-text strong>全量扫描</n-text>
+                  <n-text strong>全量处理</n-text>
                   <n-switch v-model:value="configModel.schedule_enabled" />
                 </n-space>
                 <n-form :model="configModel" label-placement="left" label-width="80" class="mt-3" :show-feedback="false">

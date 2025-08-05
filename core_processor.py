@@ -1274,7 +1274,7 @@ class MediaProcessor:
     def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False, force_fetch_from_tmdb: bool = False):
         """
         【V3 - 最终完整版】
-        这是所有全量扫描的唯一入口，它自己处理所有与“强制”相关的逻辑。
+        这是所有全量处理的唯一入口，它自己处理所有与“强制”相关的逻辑。
         """
         self.clear_stop_signal()
         

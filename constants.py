@@ -78,9 +78,9 @@ CONFIG_OPTION_AI_TRANSLATION_MODE = "ai_translation_mode"       # AI翻译模式
 # ==============================================================================
 CONFIG_SECTION_SCHEDULER = "Scheduler"
 
-# --- 全量扫描任务 ---
-CONFIG_OPTION_SCHEDULE_ENABLED = "schedule_enabled"             # 是否启用全量扫描定时任务
-CONFIG_OPTION_SCHEDULE_CRON = "schedule_cron"                   # 全量扫描的CRON表达式
+# --- 全量处理任务 ---
+CONFIG_OPTION_SCHEDULE_ENABLED = "schedule_enabled"             # 是否启用全量处理定时任务
+CONFIG_OPTION_SCHEDULE_CRON = "schedule_cron"                   # 全量处理的CRON表达式
 CONFIG_OPTION_SCHEDULE_FORCE_REPROCESS = "schedule_force_reprocess" # 定时任务是否强制重处理所有项目
 
 # --- 同步演员映射表任务 ---
