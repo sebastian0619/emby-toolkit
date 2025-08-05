@@ -261,6 +261,55 @@ def get_country_translation_map() -> dict:
         _country_map_cache = {}
         return {}
 
+_country_reverse_map_cache = None
+
+def get_country_reverse_lookup_map() -> dict:
+    """
+    【新增】从硬编码数据中，创建一个 "英文全称 -> 两字母代码" 的反向查找表。
+    """
+    global _country_reverse_map_cache
+    if _country_reverse_map_cache is not None:
+        return _country_reverse_map_cache
+
+    # 复用 get_country_translation_map 中定义的源数据
+    source_data = {
+        "Hong Kong": {"chinese_name": "香港", "abbr": "HK"},
+        "United States of America": {"chinese_name": "美国", "abbr": "US"},
+        "Japan": {"chinese_name": "日本", "abbr": "JP"},
+        "United Kingdom": {"chinese_name": "英国", "abbr": "GB"},
+        "France": {"chinese_name": "法国", "abbr": "FR"},
+        "South Korea": {"chinese_name": "韩国", "abbr": "KR"},
+        "Germany": {"chinese_name": "德国", "abbr": "DE"},
+        "Canada": {"chinese_name": "加拿大", "abbr": "CA"},
+        "India": {"chinese_name": "印度", "abbr": "IN"},
+        "Italy": {"chinese_name": "意大利", "abbr": "IT"},
+        "Spain": {"chinese_name": "西班牙", "abbr": "ES"},
+        "Australia": {"chinese_name": "澳大利亚", "abbr": "AU"},
+        "China": {"chinese_name": "中国大陆", "abbr": "CN"},
+        "Taiwan": {"chinese_name": "中国台湾", "abbr": "TW"},
+        "Russia": {"chinese_name": "俄罗斯", "abbr": "RU"},
+        "Thailand": {"chinese_name": "泰国", "abbr": "TH"},
+        "Sweden": {"chinese_name": "瑞典", "abbr": "SE"},
+        "Denmark": {"chinese_name": "丹麦", "abbr": "DK"},
+        "Mexico": {"chinese_name": "墨西哥", "abbr": "MX"},
+        "Brazil": {"chinese_name": "巴西", "abbr": "BR"},
+        "Argentina": {"chinese_name": "阿根廷", "abbr": "AR"},
+        "Ireland": {"chinese_name": "爱尔兰", "abbr": "IE"},
+        "New Zealand": {"chinese_name": "新西兰", "abbr": "NZ"},
+        "Netherlands": {"chinese_name": "荷兰", "abbr": "NL"},
+        "Belgium": {"chinese_name": "比利时", "abbr": "BE"}
+    }
+    
+    reverse_map = {
+        english_name.lower(): details.get('abbr')
+        for english_name, details in source_data.items()
+        if details.get('abbr')
+    }
+    
+    _country_reverse_map_cache = reverse_map
+    logger.trace(f"成功构建了 {len(reverse_map)} 条国家英文名到代码的反向映射。")
+    return _country_reverse_map_cache
+
 def translate_country_list(country_names_or_codes: list) -> list:
     """
     接收一个包含国家英文名或代码的列表，返回一个翻译后的中文名列表。

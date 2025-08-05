@@ -72,9 +72,23 @@ def _save_metadata_to_cache(
             if member.get("job") == "Director":
                 directors.append({"id": member.get("id"), "name": member.get("name")})
         
-        raw_countries_list = raw_tmdb_json.get("production_countries", [])
-        original_country_names = [c.get('name') for c in raw_countries_list if c.get('name')]
-        translated_countries = translate_country_list(original_country_names)
+        # 2. 提取国家，并翻译 (兼容 'production_countries' 和 'origin_country')
+        countries_to_translate = []
+        
+        # 优先尝试更详细的 'production_countries' (适用于在线模式和电影本地模式)
+        if 'production_countries' in raw_tmdb_json and raw_tmdb_json['production_countries']:
+            # 这是一个对象列表，我们需要提取 'name'
+            countries_to_translate = [c.get('name') for c in raw_tmdb_json['production_countries'] if c.get('name')]
+            logger.trace(f"在 'production_countries' 键中找到国家名称: {countries_to_translate}")
+        
+        # 如果上面没找到，则回退到 'origin_country' (主要用于电视剧本地缓存模式)
+        if not countries_to_translate and 'origin_country' in raw_tmdb_json:
+            # 这是一个字符串列表 (国家代码)，直接使用
+            countries_to_translate = raw_tmdb_json.get('origin_country', [])
+            logger.trace(f"在 'origin_country' 键中找到国家代码: {countries_to_translate}")
+
+        # 统一调用翻译函数，它应该能同时处理国家名和国家代码
+        translated_countries = translate_country_list(countries_to_translate)
         
         # 准备要存入数据库的数据
         metadata = {
@@ -154,7 +168,8 @@ def _build_movie_json(source_data: Dict[str, Any], processed_cast: List[Dict[str
 
 def _build_series_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    【V-Rebuild - 重建版】根据最小化模板构建电视剧 series.json。
+    【V-Final Emby-Native】根据 Emby 友好格式构建 series.json。
+    此版本假设输入数据已被上游归一化。
     """
     final_json = {
         "id": source_data.get("id"),
@@ -166,16 +181,17 @@ def _build_series_json(source_data: Dict[str, Any], processed_cast: List[Dict[st
         "first_air_date": source_data.get("first_air_date"),
         "last_air_date": source_data.get("last_air_date"),
         "status": source_data.get("status", ""),
-        "networks": source_data.get("networks", []),
         "genres": source_data.get("genres", []),
         "external_ids": source_data.get("external_ids", {}),
         "videos": source_data.get("videos", {"results": []}),
         "content_ratings": source_data.get("content_ratings", {"results": []}),
-        "production_companies": source_data.get("production_companies", []),
-        "production_countries": source_data.get("production_countries", [])
+        
+        # 【关键】: 现在只从归一化后的键取值
+        "networks": source_data.get("networks", []),
+        "origin_country": source_data.get("origin_country", [])
     }
 
-    # ★★★ 核心：强制创建 "credits" 键，并填入处理好的演员和职员数据 ★★★
+    # 创建 credits 键
     final_json["credits"] = {
         "cast": processed_cast,
         "crew": processed_crew
@@ -969,6 +985,7 @@ class MediaProcessor:
             main_tmdb_data = {}
             seasons_data = []
             episodes_data = []
+            authoritative_tmdb_data = {}
 
             # 检查是否需要从TMDB API强制获取
             is_fetch_needed = force_fetch_from_tmdb
@@ -985,11 +1002,13 @@ class MediaProcessor:
                     main_tmdb_data = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
                     if not main_tmdb_data:
                         raise ValueError(f"从TMDb获取电影 {tmdb_id} 详情失败。")
+                    authoritative_tmdb_data = main_tmdb_data
                 
                 elif item_type == "Series":
                     main_tmdb_data = tmdb_handler.get_tv_details_tmdb(tmdb_id, self.tmdb_api_key)
                     if not main_tmdb_data:
                         raise ValueError(f"从TMDb获取剧集 {tmdb_id} 详情失败。")
+                    authoritative_tmdb_data = main_tmdb_data
 
                     # ======================================================================
                     # ★★★★★★★★★★★★★★★★★ 核心修正区域 V2 START ★★★★★★★★★★★★★★★★★
@@ -1053,6 +1072,7 @@ class MediaProcessor:
                 main_tmdb_data = _read_local_json(os.path.join(base_cache_dir, main_json_filename))
                 if not main_tmdb_data:
                     raise ValueError(f"读取本地主缓存文件失败: {os.path.join(base_cache_dir, main_json_filename)}")
+                authoritative_tmdb_data = main_tmdb_data
 
                 if item_type == "Series":
                     for filename in os.listdir(base_cache_dir):
@@ -1062,6 +1082,32 @@ class MediaProcessor:
                             else:
                                 seasons_data.append(_read_local_json(os.path.join(base_cache_dir, filename)))
 
+            # ======================================================================
+            # 【【【最终手术：数据归一化层 (Format for Emby)】】】
+            # 无论数据来源如何，都在此步骤将其强制转换为 Emby 友好的格式。
+            # ======================================================================
+            
+            if is_fetch_needed: # 只在在线模式下才需要转换
+                logger.debug("在线模式：开始将 TMDB API 数据归一化为 Emby 友好格式...")
+                
+                # 1. 工作室转换: production_companies -> networks
+                if main_tmdb_data.get('production_companies'):
+                    main_tmdb_data['networks'] = main_tmdb_data['production_companies']
+                    logger.trace("  - 已将 'production_companies' 复制到 'networks'。")
+
+                # 2. 国家转换: production_countries -> origin_country
+                if main_tmdb_data.get('production_countries'):
+                    reverse_map = utils.get_country_reverse_lookup_map()
+                    country_codes = []
+                    for country_obj in main_tmdb_data.get('production_countries', []):
+                        eng_name = country_obj.get('name', '').lower()
+                        code = reverse_map.get(eng_name)
+                        if code:
+                            country_codes.append(code)
+                    
+                    main_tmdb_data['origin_country'] = list(dict.fromkeys(country_codes)) # 去重
+                    logger.trace(f"  - 已将 'production_countries' 转换为 'origin_country': {main_tmdb_data['origin_country']}")
+            
             # ======================================================================
             # 阶段 2: 演员处理 (Actor Processing)
             # ======================================================================
@@ -1180,7 +1226,7 @@ class MediaProcessor:
                     item_type=item_type,
                     item_details=item_details_from_emby,
                     processed_cast=final_cast_perfect,
-                    raw_tmdb_json=main_tmdb_data
+                    raw_tmdb_json=authoritative_tmdb_data
                 )
                 
                 if self.sync_images_enabled:
