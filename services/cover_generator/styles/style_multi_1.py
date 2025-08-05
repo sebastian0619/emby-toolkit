@@ -204,11 +204,20 @@ def create_blur_background(image_path, template_width, template_height, backgrou
     original_img = Image.open(image_path).convert('RGBA')
     bg_img = ImageOps.fit(original_img.copy(), (template_width, template_height), method=Image.LANCZOS).filter(ImageFilter.GaussianBlur(radius=int(blur_size)))
     actual_color = darken_color(background_color, 0.85)
-    bg_color = actual_color[:3]
+    
+    # 【【【关键修复：确保颜色是4通道的RGBA】】】
+    # 原始代码: bg_color = actual_color[:3]  <-- 这导致了3通道 vs 4通道的错误
+    # 修正后，我们给RGB颜色添加一个完全不透明的Alpha通道(255)
+    bg_color = actual_color[:3] + (255,)
+
     bg_img_array = np.array(bg_img, dtype=float)
     bg_color_array = np.array([[bg_color]], dtype=float)
+    
+    # 现在两个数组的通道数都是4，可以正确进行运算
     blended_bg_array = np.clip(bg_img_array * (1 - float(color_ratio)) + bg_color_array * float(color_ratio), 0, 255).astype(np.uint8)
+    
     blended_bg_img = Image.fromarray(blended_bg_array, 'RGBA')
+    
     if lighten_gradient_strength > 0:
         gradient_mask = Image.new("L", (template_width, template_height), 0)
         draw_mask = ImageDraw.Draw(gradient_mask)
@@ -218,6 +227,7 @@ def create_blur_background(image_path, template_width, template_height, backgrou
         lighten_layer = Image.new("RGBA", (template_width, template_height), (255, 255, 255, 0))
         lighten_layer.putalpha(gradient_mask)
         blended_bg_img = Image.alpha_composite(blended_bg_img, lighten_layer)
+        
     return add_film_grain(blended_bg_img, intensity=0.03)
 
 def image_to_base64(image):
