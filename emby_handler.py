@@ -24,15 +24,15 @@ _emby_id_cache = {}
 _emby_season_cache = {}
 _emby_episode_cache = {}
 # ✨✨✨ 快速获取指定类型的项目总数，不获取项目本身 ✨✨✨
-def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_type: str) -> Optional[int]:
+def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_type: str, parent_id: Optional[str] = None) -> Optional[int]:
     """
-    【新】快速获取指定类型的项目总数，不获取项目本身。
+    【增强版】快速获取指定类型的项目总数。
+    新增 parent_id 参数，用于统计特定媒体库或合集内的项目数量。
     """
     if not all([base_url, api_key, user_id, item_type]):
         logger.error(f"get_item_count: 缺少必要的参数 (需要 user_id)。")
         return None
     
-    # Emby API 获取项目列表的端点
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
     params = {
         "api_key": api_key,
@@ -41,16 +41,21 @@ def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_typ
         "Limit": 0 # ★★★ 核心：Limit=0 只返回元数据（包括总数），不返回任何项目，速度极快
     }
     
-    logger.debug(f"正在获取 {item_type} 的总数...")
+    # ★★★ 新增的核心逻辑：如果提供了父ID，就加入查询参数 ★★★
+    if parent_id:
+        params["ParentId"] = parent_id
+        logger.debug(f"正在获取父级 {parent_id} 下 {item_type} 的总数...")
+    else:
+        logger.debug(f"正在获取所有 {item_type} 的总数...")
+            
     try:
         response = requests.get(api_url, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
         
-        # TotalRecordCount 是 Emby API 返回的总记录数字段
         total_count = data.get("TotalRecordCount")
         if total_count is not None:
-            logger.debug(f"成功获取到 {item_type} 总数: {total_count}")
+            logger.debug(f"成功获取到总数: {total_count}")
             return int(total_count)
         else:
             logger.warning(f"Emby API 响应中未找到 'TotalRecordCount' 字段。")

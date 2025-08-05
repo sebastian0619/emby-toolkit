@@ -327,18 +327,24 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
     # --- 新增：步骤 E - 为所属的常规媒体库生成封面 ---
     # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
     try:
-        # 1. 读取封面生成器的配置
+        # 1. 读取配置
         cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, "cover_generator.json")
         cover_config = {}
         if os.path.exists(cover_config_path):
             with open(cover_config_path, 'r', encoding='utf-8') as f:
                 cover_config = json.load(f)
 
-        # 2. 检查“监控新入库”开关是否开启
+        # 2. 检查开关
         if cover_config.get("enabled") and cover_config.get("transfer_monitor"):
+            # 确保在获取 item_details 之后再记录日志
+            item_details = emby_handler.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+            if not item_details:
+                logger.error(f"Webhook 任务：无法获取项目 {item_id} 的详情，无法继续封面生成。")
+                return
+
             logger.info(f"检测到新项目 '{item_details.get('Name')}' 入库，将为其所属媒体库生成新封面...")
             
-            # ▼▼▼ 核心修改：调用新函数来准确查找媒体库根 ▼▼▼
+            # 3. 定位媒体库
             library_info = emby_handler.get_library_root_for_item(
                 item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
             )
@@ -350,29 +356,40 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
             library_id = library_info.get("Id")
             library_name = library_info.get("Name", library_id)
             
-            # 4. 检查该媒体库是否需要处理（类型检查、忽略列表检查）
-            # (这部分逻辑和之前完全一样，无需改动)
-            if library_info.get('CollectionType') not in ['movies', 'tvshows', 'boxsets', 'mixed']:
+            # 4. 检查是否需要处理
+            if library_info.get('CollectionType') not in ['movies', 'tvshows', 'boxsets', 'mixed', 'music']:
                 logger.debug(f"父级 '{library_name}' 不是一个常规媒体库，跳过封面生成。")
                 return
 
-            server_id = 'main_emby' # 占位符
+            server_id = 'main_emby'
             library_unique_id = f"{server_id}-{library_id}"
             if library_unique_id in cover_config.get("exclude_libraries", []):
                 logger.info(f"媒体库 '{library_name}' 在忽略列表中，跳过。")
                 return
             
-            # 5. 为了获取 ItemCount，我们需要完整的媒体库列表
-            all_libraries = emby_handler.get_emby_libraries(
-                processor.emby_url, processor.emby_api_key, processor.emby_user_id
-            ) or []
-            # 从列表中找到我们当前这个媒体库的完整信息
-            full_library_info = next((lib for lib in all_libraries if lib.get("Id") == library_id), None)
-            # 从完整信息中安全地提取 ItemCount
-            item_count = full_library_info.get('ItemCount', 0) if full_library_info else 0
+            # 【【【核心修复：在这里也使用实时计数API】】】
+            # 5. 定义类型映射
+            TYPE_MAP = {
+                'movies': 'Movie', 'tvshows': 'Series', 'music': 'MusicAlbum',
+                'boxsets': 'BoxSet', 'mixed': 'Movie,Series'
+            }
+            collection_type = library_info.get('CollectionType')
+            item_type_to_query = TYPE_MAP.get(collection_type)
             
-            # 6. 实例化服务并为这一个媒体库生成封面
-            logger.info(f"--- 正在为媒体库 '{library_name}' (ID: {library_id}) 生成封面 (当前数量: {item_count}) ---")
+            item_count = 0
+            if library_id and item_type_to_query:
+                logger.debug(f"正在为媒体库 '{library_name}' (ID: {library_id}) 实时查询 '{item_type_to_query}' 的总数...")
+                # 调用我们之前增强过的、最可靠的计数函数
+                item_count = emby_handler.get_item_count(
+                    base_url=processor.emby_url,
+                    api_key=processor.emby_api_key,
+                    user_id=processor.emby_user_id,
+                    parent_id=library_id,
+                    item_type=item_type_to_query
+                ) or 0
+            
+            # 6. 实例化服务并生成封面
+            logger.info(f"--- 正在为媒体库 '{library_name}' (ID: {library_id}) 生成封面 (当前实时数量: {item_count}) ---")
             cover_service = CoverGeneratorService(config=cover_config)
             cover_service.generate_for_library(
                 emby_server_id=server_id,
@@ -2008,19 +2025,19 @@ def task_populate_metadata_cache(processor: 'MediaProcessor'):
 def task_generate_all_covers(processor: MediaProcessor):
     """
     后台任务：为所有（未被忽略的）媒体库生成封面。
-    【V17 修复版】修正了 cover_config 变量未定义的错误。
+    【V20 - 终极数字精确版】
+    - 使用增强后的 get_item_count 函数，为每个媒体库获取精确的项目总数。
     """
     task_name = "一键生成所有媒体库封面"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
-        # 1. 读取封面生成器的配置
+        # 1. 读取配置
         cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, "cover_generator.json")
         if not os.path.exists(cover_config_path):
             task_manager.update_status_from_thread(-1, "错误：找不到封面生成器配置文件。")
             return
 
-        # ★★★ 核心修复：在这里定义 cover_config 变量 ★★★
         with open(cover_config_path, 'r', encoding='utf-8') as f:
             cover_config = json.load(f)
 
@@ -2028,7 +2045,7 @@ def task_generate_all_covers(processor: MediaProcessor):
             task_manager.update_status_from_thread(100, "任务跳过：封面生成器未启用。")
             return
 
-        # 2. 获取所有媒体库
+        # 2. 获取媒体库列表
         task_manager.update_status_from_thread(5, "正在获取所有媒体库列表...")
         all_libraries = emby_handler.get_emby_libraries(
             base_url=processor.emby_url,
@@ -2039,12 +2056,14 @@ def task_generate_all_covers(processor: MediaProcessor):
             task_manager.update_status_from_thread(-1, "错误：未能从Emby获取到任何媒体库。")
             return
 
-        # 3. 筛选出需要处理的媒体库
-        # ★★★ 现在这里的 cover_config 是已定义的，不再会报错 ★★★
-        exclude_ids = set(cover_config.get("exclude_libraries", []))
+        # 3. 筛选媒体库
+        server_id = 'main_emby' 
+        exclude_unique_ids = set(cover_config.get("exclude_libraries", []))
+        
         libraries_to_process = [
             lib for lib in all_libraries 
-            if lib.get("Id") not in exclude_ids and lib.get('CollectionType') in ['movies', 'tvshows', 'boxsets', 'mixed', 'music']
+            if f"{server_id}-{lib.get('Id')}" not in exclude_unique_ids 
+            and lib.get('CollectionType') in ['movies', 'tvshows', 'boxsets', 'mixed', 'music']
         ]
         
         total = len(libraries_to_process)
@@ -2055,24 +2074,42 @@ def task_generate_all_covers(processor: MediaProcessor):
         logger.info(f"将为 {total} 个媒体库生成封面: {[lib['Name'] for lib in libraries_to_process]}")
         
         # 4. 实例化服务并循环处理
-        # ★★★ 这里的 cover_config 也是已定义的 ★★★
         cover_service = CoverGeneratorService(config=cover_config)
         
+        # 定义媒体库类型到API查询类型的映射
+        TYPE_MAP = {
+            'movies': 'Movie',
+            'tvshows': 'Series',
+            'music': 'MusicAlbum',
+            'boxsets': 'BoxSet',
+            'mixed': 'Movie,Series'
+        }
+
         for i, library in enumerate(libraries_to_process):
-            if processor.is_stop_requested():
-                logger.info("任务被用户中止。")
-                break
+            if processor.is_stop_requested(): break
             
             progress = 10 + int((i / total) * 90)
             task_manager.update_status_from_thread(progress, f"({i+1}/{total}) 正在处理: {library.get('Name')}")
             
             try:
-                # 1. 从 Emby 返回的 library 信息中，安全地获取 ItemCount
-                item_count = library.get('ItemCount', 0)
+                # 【【【核心修复：调用增强后的函数获取精准数量】】】
+                library_id = library.get('Id')
+                collection_type = library.get('CollectionType')
+                item_type_to_query = TYPE_MAP.get(collection_type)
 
-                # 2. 将获取到的数量，通过 item_count 参数传递给服务
+                item_count = 0
+                if library_id and item_type_to_query:
+                    # 调用我们增强后的函数，传入父级ID和要查询的类型
+                    item_count = emby_handler.get_item_count(
+                        base_url=processor.emby_url,
+                        api_key=processor.emby_api_key,
+                        user_id=processor.emby_user_id,
+                        parent_id=library_id,
+                        item_type=item_type_to_query
+                    ) or 0 # 如果返回None则默认为0
+
                 cover_service.generate_for_library(
-                    emby_server_id='main_emby', 
+                    emby_server_id=server_id,
                     library=library,
                     item_count=item_count
                 )
