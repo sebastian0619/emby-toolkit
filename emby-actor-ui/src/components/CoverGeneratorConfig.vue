@@ -36,9 +36,9 @@
             </n-gi>
             <!-- 第三列 -->
             <n-gi>
-              <n-form-item label="在封面上显示数量">
+              <n-form-item label="在封面上显示媒体数量">
                 <n-switch v-model:value="configData.show_item_count" />
-                <template #feedback>在封面右下角显示媒体项总数</template>
+                <template #feedback>在封面左上角显示媒体项总数</template>
               </n-form-item>
             </n-gi>
             <!-- 第四列 -->
@@ -61,22 +61,51 @@
               </n-form-item>
             </n-gi>
           </n-grid>
+          <div v-if="configData.show_item_count" style="margin-top: 16px;">
+          <n-divider /> <!-- 一条分割线，让界面更清晰 -->
+          <n-grid :cols="2" :x-gap="24">
+            <!-- 子选项1：样式选择 -->
+            <n-gi>
+              <n-form-item label="徽章样式">
+                <n-radio-group v-model:value="configData.badge_style">
+                  <n-radio-button value="badge">徽章</n-radio-button>
+                  <n-radio-button value="ribbon">缎带</n-radio-button>
+                </n-radio-group>
+              </n-form-item>
+            </n-gi>
+            <!-- 子选项2：大小滑块 -->
+            <n-gi>
+              <n-form-item label="徽章大小">
+                <n-slider 
+                  v-model:value="configData.badge_size_ratio" 
+                  :step="0.01" 
+                  :min="0.08" 
+                  :max="0.20" 
+                  :format-tooltip="value => `${(value * 100).toFixed(0)}%`"
+                />
+              </n-form-item>
+            </n-gi>
+          </n-grid>
+        </div>
         </n-card>
 
         <!-- ... 其余的 n-card 和 n-tabs 保持不变 ... -->
         <n-card style="margin-top: 24px;">
           <n-tabs v-model:value="configData.tab" type="line" animated>
             <n-tab-pane name="style-tab" tab="封面风格">
-              <n-radio-group v-model:value="configData.cover_style" name="cover-style-group">
-                <n-grid :cols="3" :x-gap="16" :y-gap="16" responsive="screen">
-                  <n-gi v-for="style in styles" :key="style.value">
-                    <n-card class="style-card">
-                      <template #cover><img :src="style.src" class="style-img" /></template>
-                      <n-radio :value="style.value" :label="style.title" />
-                    </n-card>
-                  </n-gi>
-                </n-grid>
-              </n-radio-group>
+              <n-spin :show="isPreviewLoading"> <!-- 添加一个加载动画，提升体验 -->
+                <n-radio-group v-model:value="configData.cover_style" name="cover-style-group">
+                  <n-grid :cols="3" :x-gap="16" :y-gap="16" responsive="screen">
+                    <!-- 【【【关键修改：src 绑定到动态的 ref】】】 -->
+                    <n-gi v-for="style in styles" :key="style.value">
+                      <n-card class="style-card">
+                        <template #cover><img :src="stylePreviews[style.value]" class="style-img" /></template>
+                        <n-radio :value="style.value" :label="style.title" />
+                      </n-card>
+                    </n-gi>
+                  </n-grid>
+                </n-radio-group>
+              </n-spin>
             </n-tab-pane>
 
             <n-tab-pane name="title-tab" tab="封面标题">
@@ -238,13 +267,24 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import axios from 'axios';
 import { useMessage, NLayout, NPageHeader, NButton, NIcon, NCard, NGrid, NGi, NFormItem, NSwitch, NSelect, NTabs, NCheckboxGroup, NCheckbox, NSpin, NSpace } from 'naive-ui';
 import { SaveOutline as SaveIcon, ImagesOutline as ImagesIcon } from '@vicons/ionicons5';
 
 // 导入静态图片数据
 import { single_1, single_2, multi_1 } from '../assets/cover_styles/images.js';
+const stylePreviews = ref({
+  single_1: single_1,
+  single_2: single_2,
+  multi_1: multi_1,
+});
+
+const styles = [
+  { title: "单图 1", value: "single_1", src: stylePreviews.value.single_1 },
+  { title: "单图 2", value: "single_2", src: stylePreviews.value.single_2 },
+  { title: "多图 1", value: "multi_1", src: stylePreviews.value.multi_1 }
+];
 
 const message = useMessage();
 const isLoading = ref(true);
@@ -259,11 +299,6 @@ const sortOptions = [
   { label: "随机", value: "Random" },
 ];
 
-const styles = [
-  { title: "单图 1", value: "single_1", src: single_1 },
-  { title: "单图 2", value: "single_2", src: single_2 },
-  { title: "多图 1", value: "multi_1", src: multi_1 }
-];
 
 const fetchConfig = async () => {
   isLoading.value = true;
@@ -309,6 +344,69 @@ const runGenerateAllTask = async () => {
     isGenerating.value = false;
   }
 };
+
+let previewUpdateTimeout = null;
+const isPreviewLoading = ref(false);
+
+// 这是一个“防抖”函数，防止用户疯狂拖动滑块时发送大量请求
+function debounceUpdatePreview() {
+  isPreviewLoading.value = true;
+  if (previewUpdateTimeout) {
+    clearTimeout(previewUpdateTimeout);
+  }
+  previewUpdateTimeout = setTimeout(updateAllPreviews, 500); // 延迟500ms执行
+}
+
+async function updateAllPreviews() {
+  if (!configData.value.show_item_count) {
+    // 如果开关是关的，就恢复原始图片
+    stylePreviews.value.single_1 = single_1;
+    stylePreviews.value.single_2 = single_2;
+    stylePreviews.value.multi_1 = multi_1;
+    isPreviewLoading.value = false;
+    return;
+  }
+
+  try {
+    // 并发更新所有三个预览图
+    const previewsToUpdate = [
+      { key: 'single_1', base_image: single_1 },
+      { key: 'single_2', base_image: single_2 },
+      { key: 'multi_1', base_image: multi_1 },
+    ];
+
+    const promises = previewsToUpdate.map(p => 
+      axios.post('/api/config/cover_generator/preview', {
+        base_image: p.base_image,
+        badge_style: configData.value.badge_style,
+        badge_size_ratio: configData.value.badge_size_ratio,
+      })
+    );
+
+    const results = await Promise.all(promises);
+    
+    stylePreviews.value.single_1 = results[0].data.image;
+    stylePreviews.value.single_2 = results[1].data.image;
+    stylePreviews.value.multi_1 = results[2].data.image;
+
+  } catch (error) {
+    message.error("实时预览失败");
+  } finally {
+    isPreviewLoading.value = false;
+  }
+}
+
+// 监听所有相关设置的变化
+watch(
+  () => [
+    configData.value.show_item_count, 
+    configData.value.badge_style, 
+    configData.value.badge_size_ratio
+  ],
+  () => {
+    debounceUpdatePreview();
+  }
+);
 
 onMounted(() => {
   fetchConfig();

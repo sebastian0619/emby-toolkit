@@ -10,6 +10,9 @@ import config_manager # 导入以获取数据路径
 from extensions import login_required
 from tasks import get_task_registry
 import emby_handler
+from services.cover_generator.styles.badge_drawer import draw_badge
+from services.cover_generator import CoverGeneratorService 
+
 logger = logging.getLogger(__name__)
 
 # 创建一个新的蓝图
@@ -29,6 +32,8 @@ def get_default_config():
 
         # 媒体数量开关
         "show_item_count": False, # 默认为关闭
+        "badge_style": "badge",
+        "badge_size_ratio": 0.12,
         
         # 封面风格
         "cover_style": "single_1",
@@ -114,6 +119,62 @@ def get_all_libraries():
         logger.error(f"获取媒体库列表失败: {e}", exc_info=True)
         return jsonify({"error": "获取媒体库列表失败"}), 500
 
+# --- 创建实时预览 ---
+@cover_generator_config_bp.route('/preview', methods=['POST'])
+@login_required
+def api_generate_cover_preview():
+    """根据传入的设置，实时生成带徽章的预览图"""
+    try:
+        data = request.json
+        base_image_b64 = data.get('base_image')
+        item_count = data.get('item_count', 99) # 使用一个示例数字
+        badge_style = data.get('badge_style', 'badge')
+        badge_size_ratio = data.get('badge_size_ratio', 0.12)
+        
+        if not base_image_b64:
+            return jsonify({"error": "缺少基础图片数据"}), 400
+
+        # --- 准备绘图所需资源 ---
+        # 1. 解码基础图片
+        from PIL import Image
+        import base64
+        from io import BytesIO
+
+        # 移除 base64 头部 (e.g., "data:image/png;base64,")
+        if ',' in base_image_b64:
+            header, encoded = base_image_b64.split(',', 1)
+            image_data = base64.b64decode(encoded)
+        else:
+            image_data = base64.b64decode(base_image_b64)
+        
+        image = Image.open(BytesIO(image_data)).convert("RGBA")
+
+        # 2. 获取字体路径 (我们需要实例化一个临时的 CoverGeneratorService 来获取)
+        # 这里的 config 可以是默认的，因为它只影响字体路径
+        temp_config = get_default_config() 
+        cover_service = CoverGeneratorService(config=temp_config)
+        cover_service._CoverGeneratorService__get_fonts() # 调用私有方法来加载字体路径
+        font_path = str(cover_service.en_font_path)
+
+        # 3. 调用核心绘图函数
+        image_with_badge = draw_badge(
+            image=image,
+            item_count=item_count,
+            font_path=font_path,
+            style=badge_style,
+            size_ratio=badge_size_ratio
+        )
+
+        # 4. 将结果编码回 base64
+        buffered = BytesIO()
+        image_with_badge.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+        return jsonify({"image": "data:image/png;base64," + img_str})
+
+    except Exception as e:
+        logger.error(f"生成封面预览时出错: {e}", exc_info=True)
+        return jsonify({"error": "生成预览失败"}), 500
 
 # --- 获取所有已选服务器下的所有媒体库 ---
 # @cover_generator_config_bp.route('/libraries', methods=['GET'])
