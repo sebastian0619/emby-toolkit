@@ -56,71 +56,72 @@ def _save_metadata_to_cache(
     raw_tmdb_json: Dict[str, Any]
 ):
     """
-    【V4 - 最终修复版】
-    将媒体项的关键元数据保存到 media_metadata 表中。
-    - ★★★ 确保所有 json.dumps 都使用 ensure_ascii=False ★★★
+    【V5.3 - 终极版】
+    确保所有 TMDB 元数据均从 raw_tmdb_json 提取，并兼容所有已知键值差异。
     """
     try:
-        directors = []
+        # --- 统一从 raw_tmdb_json (权威数据源) 中提取所有信息 ---
         
-        # ★★★ 核心修复：使用统一逻辑智能提取 crew 列表 ★★★
-        # 无论数据源是本地缓存("casts")还是在线API("credits")，都能正确找到职员列表
+        # 导演
         actor_data_container = raw_tmdb_json.get("casts") or raw_tmdb_json.get("credits", {})
         crew = actor_data_container.get("crew", [])
-        
-        for member in crew:
-            if member.get("job") == "Director":
-                directors.append({"id": member.get("id"), "name": member.get("name")})
-        
-        # 2. 提取国家，并翻译 (兼容 'production_countries' 和 'origin_country')
-        countries_to_translate = []
-        
-        # 优先尝试更详细的 'production_countries' (适用于在线模式和电影本地模式)
-        if 'production_countries' in raw_tmdb_json and raw_tmdb_json['production_countries']:
-            # 这是一个对象列表，我们需要提取 'name'
-            countries_to_translate = [c.get('name') for c in raw_tmdb_json['production_countries'] if c.get('name')]
-            logger.trace(f"在 'production_countries' 键中找到国家名称: {countries_to_translate}")
-        
-        # 如果上面没找到，则回退到 'origin_country' (主要用于电视剧本地缓存模式)
-        if not countries_to_translate and 'origin_country' in raw_tmdb_json:
-            # 这是一个字符串列表 (国家代码)，直接使用
-            countries_to_translate = raw_tmdb_json.get('origin_country', [])
-            logger.trace(f"在 'origin_country' 键中找到国家代码: {countries_to_translate}")
+        directors = [{"id": m.get("id"), "name": m.get("name")} for m in crew if m.get("job") == "Director"]
 
-        # 统一调用翻译函数，它应该能同时处理国家名和国家代码
+        # 国家 (兼容 'production_countries' 和 'origin_country')
+        countries_to_translate = []
+        if 'production_countries' in raw_tmdb_json and raw_tmdb_json['production_countries']:
+            countries_to_translate = [c.get('name') for c in raw_tmdb_json['production_countries'] if c.get('name')]
+        elif 'origin_country' in raw_tmdb_json:
+            countries_to_translate = raw_tmdb_json.get('origin_country', [])
         translated_countries = translate_country_list(countries_to_translate)
+
+        # 【【【最终手术：工作室/电视网络】】】
+        # 兼容 'production_companies' (电影/在线电视剧) 和 'networks' (本地电视剧缓存)
+        studios_list = raw_tmdb_json.get("production_companies")
+        if not studios_list:
+            studios_list = raw_tmdb_json.get("networks", [])
         
-        # 准备要存入数据库的数据
+        studios = [s.get("name") for s in studios_list if s.get("name")]
+        logger.trace(f"从权威数据源提取到工作室/电视网络: {studios}")
+        # 【【【手术结束】】】
+
+        # 类型
+        genres = [g.get("name") for g in raw_tmdb_json.get("genres", []) if g.get("name")]
+
+        # 标题、年份、评分等 (兼容电影和电视剧)
+        title = raw_tmdb_json.get('title') or raw_tmdb_json.get('name')
+        original_title = raw_tmdb_json.get('original_title') or raw_tmdb_json.get('original_name')
+        release_date_str = raw_tmdb_json.get('release_date') or raw_tmdb_json.get('first_air_date')
+        release_year = int(release_date_str.split('-')[0]) if release_date_str and '-' in release_date_str else None
+        rating = raw_tmdb_json.get('vote_average')
+        
+        # --- 准备要存入数据库的数据 ---
         metadata = {
             "tmdb_id": tmdb_id,
             "item_type": item_type,
-            "title": item_details.get("Name"),
-            "original_title": item_details.get("OriginalTitle"),
-            "release_year": item_details.get("ProductionYear"),
-            "rating": item_details.get("CommunityRating"),
-            "genres_json": json.dumps(item_details.get("Genres", []), ensure_ascii=False),
+            "title": title,
+            "original_title": original_title,
+            "release_year": release_year,
+            "rating": rating,
+            "genres_json": json.dumps(genres, ensure_ascii=False),
             "actors_json": json.dumps([
-                {
-                    "id": p.get("id"), 
-                    "name": p.get("name"), 
-                    "original_name": p.get("original_name") or p.get("name")
-                }
+                {"id": p.get("id"), "name": p.get("name"), "original_name": p.get("original_name") or p.get("name")}
                 for p in processed_cast
             ], ensure_ascii=False),
-            "directors_json": json.dumps(directors, ensure_ascii=False), # <--- 现在这里有数据了
-            "studios_json": json.dumps([s.get("Name") for s in item_details.get("Studios", [])], ensure_ascii=False),
+            "directors_json": json.dumps(directors, ensure_ascii=False),
+            "studios_json": json.dumps(studios, ensure_ascii=False), # <--- 现在来源绝对可靠
             "countries_json": json.dumps(translated_countries, ensure_ascii=False),
             "date_added": item_details.get("DateCreated", "").split("T")[0] if item_details.get("DateCreated") else None,
-            "release_date": item_details.get("PremiereDate", "").split("T")[0] if item_details.get("PremiereDate") else None,
+            "release_date": release_date_str,
         }
         
-        # 使用 INSERT OR REPLACE 插入或更新数据
+        # --- 数据库写入 ---
         columns = ', '.join(metadata.keys())
         placeholders = ', '.join('?' for _ in metadata)
         sql = f"INSERT OR REPLACE INTO media_metadata ({columns}) VALUES ({placeholders})"
-        
         cursor.execute(sql, tuple(metadata.values()))
-        logger.debug(f"成功将《{metadata['title']}》的元数据缓存到数据库 (实时处理模式)。")
+        logger.debug(f"成功将《{metadata.get('title', '未知标题')}》的元数据缓存到数据库。")
+
     except Exception as e:
         logger.error(f"保存元数据到缓存表时失败: {e}", exc_info=True)
         
