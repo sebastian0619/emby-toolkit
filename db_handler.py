@@ -328,7 +328,7 @@ def clear_all_review_items(db_path: str) -> int:
             # 2. 第二步：准备“写入”的数据
             # 根据我们的“操作清单”，创建准备写入 `processed_log` 的精确数据。
             data_for_processed_log = [
-                (row['item_id'], row['item_name'], row.get('score') or 10.0)
+                (row['item_id'], row['item_name'], row['score'] or 10.0)
                 for row in items_to_move
             ]
 
