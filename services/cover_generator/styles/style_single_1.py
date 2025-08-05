@@ -4,6 +4,7 @@ import logging
 import colorsys
 import random
 import base64
+from pathlib import Path
 from io import BytesIO
 from collections import Counter
 import numpy as np
@@ -243,11 +244,19 @@ def create_style_single_1(image_path, title, font_path, font_size=(1,1), blur_si
         
         if config and config.get("show_item_count", False) and item_count is not None:
             combined = combined.convert('RGBA')
+
+            # 构建到徽章图片的可靠路径
+            current_dir = Path(__file__).parent
+            badge_png_path = current_dir / "assets" / "badge_image.png"
+            if not badge_png_path.exists():
+                badge_png_path = None # 如果图片不存在，则安全退回
+
             combined = draw_badge(
                 image=combined, item_count=item_count, font_path=en_font_path,
                 style=config.get('badge_style', 'badge'),
                 size_ratio=config.get('badge_size_ratio', 0.12),
-                base_color=base_color_for_badge
+                base_color=base_color_for_badge,
+                badge_image_path=str(badge_png_path) if badge_png_path else None # 传入新参数
             )
 
         return image_to_base64(combined)
