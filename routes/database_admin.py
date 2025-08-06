@@ -192,6 +192,8 @@ def api_get_database_stats():
                 "total": _count_table_rows(cursor, "media_metadata"),
                 "movies": _count_table_rows(cursor, "media_metadata", "item_type = 'Movie'"),
                 "series": _count_table_rows(cursor, "media_metadata", "item_type = 'Series'"),
+                # ★★★ 新增：用户统计 ★★★
+                "users": _count_table_rows(cursor, "users"),
             }
 
             # --- 2. 合集管理统计 ---

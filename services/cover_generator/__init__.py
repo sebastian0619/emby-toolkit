@@ -74,7 +74,7 @@ class CoverGeneratorService:
         # 获取排序方式对应的中文展示名，默认显示英文原值，避免KeyError
         sort_by_name = self.SORT_BY_DISPLAY_NAME.get(self._sort_by, self._sort_by)
         # ★★★ 新增日志，明确当前使用的排序方式 ★★★
-        logger.info(f"开始以排序方式: {sort_by_name} 为媒体库 '{library['Name']}' 生成封面...")
+        logger.info(f"  -> 开始以排序方式: {sort_by_name} 为媒体库 '{library['Name']}' 生成封面...")
         
         # 1. 确保字体文件已准备好 (已修改为自动下载)
         self.__get_fonts()
@@ -88,7 +88,7 @@ class CoverGeneratorService:
         # 3. 上传封面到媒体服务器
         success = self.__set_library_image(emby_server_id, library, image_data)
         if success:
-            logger.info(f"成功更新媒体库 '{library['Name']}' 的封面！")
+            logger.info(f"  -> 成功更新媒体库 '{library['Name']}' 的封面！")
         else:
             logger.error(f"上传封面到媒体库 '{library['Name']}' 失败。")
             
@@ -191,7 +191,7 @@ class CoverGeneratorService:
         - 确保传递给底层函数的是字符串路径。
         - 在多图模式下，如果专用字体不存在，则优雅地回退到使用单图字体，并记录日志。
         """
-        logger.info(f"正在为 '{library_name}' 从本地路径生成封面...")
+        logger.trace(f"正在为 '{library_name}' 从本地路径生成封面...")
         
         # 字体和尺寸配置
         zh_font_size = self.config.get("zh_font_size", 1)
@@ -273,7 +273,7 @@ class CoverGeneratorService:
         try:
             response = requests.post(upload_url, data=image_data, headers=headers, timeout=30)
             response.raise_for_status()
-            logger.info(f"成功上传封面到媒体库 '{library['Name']}'。")
+            logger.debug(f"  -> 成功上传封面到媒体库 '{library['Name']}'。")
             return True
         except requests.exceptions.RequestException as e:
             logger.error(f"上传封面到媒体库 '{library['Name']}' 时发生网络错误: {e}")

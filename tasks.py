@@ -342,7 +342,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
                 logger.error(f"Webhook 任务：无法获取项目 {item_id} 的详情，无法继续封面生成。")
                 return
 
-            logger.info(f"检测到新项目 '{item_details.get('Name')}' 入库，将为其所属媒体库生成新封面...")
+            logger.info(f"  -> 检测到 '{item_details.get('Name')}' 入库，将为其所属媒体库生成新封面...")
             
             # 3. 定位媒体库
             library_info = emby_handler.get_library_root_for_item(
@@ -389,7 +389,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
                 ) or 0
             
             # 6. 实例化服务并生成封面
-            logger.info(f"--- 正在为媒体库 '{library_name}' (ID: {library_id}) 生成封面 (当前实时数量: {item_count}) ---")
+            logger.info(f"  -> 正在为媒体库 '{library_name}' 生成封面 (当前实时数量: {item_count}) ---")
             cover_service = CoverGeneratorService(config=cover_config)
             cover_service.generate_for_library(
                 emby_server_id=server_id,
@@ -403,7 +403,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
     except Exception as e:
         logger.error(f"在新入库后执行精准封面生成时发生错误: {e}", exc_info=True)
 
-    logger.info(f"Webhook 任务及所有后续流程完成: {item_id}")
+    logger.trace(f"Webhook 任务及所有后续流程完成: {item_id}")
 # --- 追剧 ---    
 def task_process_watchlist(processor: WatchlistProcessor, item_id: Optional[str] = None):
     """

@@ -319,7 +319,7 @@ class FilterEngine:
         media_item_type = item_metadata.get('item_type')
         media_type_cn = "剧集" if media_item_type == "Series" else "影片"
         
-        logger.info(f"正在为{media_type_cn}《{item_metadata.get('title')}》实时匹配自定义合集...")
+        logger.info(f"  -> 正在为{media_type_cn}《{item_metadata.get('title')}》实时匹配自定义合集...")
         matched_collections = []
         
         all_filter_collections = [
