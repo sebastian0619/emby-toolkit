@@ -29,6 +29,10 @@ class CoverGeneratorService:
     """
     一个独立的媒体库封面生成服务，从MoviePilot插件移植而来。
     """
+    SORT_BY_DISPLAY_NAME = {
+        "Random": "随机",
+        "Latest": "最新添加"
+    }
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         
@@ -59,14 +63,18 @@ class CoverGeneratorService:
         self.zh_font_path_multi_1 = None
         self.en_font_path_multi_1 = None
 
+        self._fonts_checked_and_ready = False
+
     # --- 核心公开方法 ---
     def generate_for_library(self, emby_server_id: str, library: Dict[str, Any], item_count: Optional[int] = None):
         """
         为指定的媒体库生成并上传封面。
         这是从外部调用的主入口。
         """
+        # 获取排序方式对应的中文展示名，默认显示英文原值，避免KeyError
+        sort_by_name = self.SORT_BY_DISPLAY_NAME.get(self._sort_by, self._sort_by)
         # ★★★ 新增日志，明确当前使用的排序方式 ★★★
-        logger.info(f"开始为媒体库 '{library['Name']}' (服务器: {emby_server_id}, 排序方式: {self._sort_by}) 生成封面...")
+        logger.info(f"开始以排序方式: {sort_by_name} 为媒体库 '{library['Name']}' 生成封面...")
         
         # 1. 确保字体文件已准备好 (已修改为自动下载)
         self.__get_fonts()
@@ -373,69 +381,53 @@ class CoverGeneratorService:
 
     def __get_fonts(self):
         """
-        检查并准备字体文件。
-        此函数严格遵循配置逻辑：
-        1. 优先检查并使用用户指定的本地字体路径。
-        2. 如果本地路径未指定或文件不存在，则尝试从用户指定的URL下载。
+        检查并准备字体文件。此函数只会完整运行一次。
+        它会优先检查最终的字体文件是否存在，如果存在则直接使用，
+        只有在文件不存在时，才会去解析配置并尝试下载。
         """
-        
-        # 1. 定义一个包含所有字体配置信息的列表，完全对应您的JSON结构
+        if self._fonts_checked_and_ready:
+            return
+
         font_definitions = [
-            {
-                "target_attr": "zh_font_path",          # 要设置的实例属性名
-                "filename": "zh_font.ttf",              # 下载后保存的文件名
-                "local_key": "zh_font_path_local",      # JSON中的本地路径键
-                "url_key": "zh_font_url"                # JSON中的URL键
-            },
-            {
-                "target_attr": "en_font_path",
-                "filename": "en_font.ttf",
-                "local_key": "en_font_path_local",
-                "url_key": "en_font_url"
-            },
-            {
-                "target_attr": "zh_font_path_multi_1",
-                "filename": "zh_font_multi_1.ttf",
-                "local_key": "zh_font_path_multi_1_local",
-                "url_key": "zh_font_url_multi_1"
-            },
-            {
-                "target_attr": "en_font_path_multi_1",
-                "filename": "en_font_multi_1.otf",
-                "local_key": "en_font_path_multi_1_local",
-                "url_key": "en_font_url_multi_1"
-            }
+            {"target_attr": "zh_font_path", "filename": "zh_font.ttf", "local_key": "zh_font_path_local", "url_key": "zh_font_url"},
+            {"target_attr": "en_font_path", "filename": "en_font.ttf", "local_key": "en_font_path_local", "url_key": "en_font_url"},
+            {"target_attr": "zh_font_path_multi_1", "filename": "zh_font_multi_1.ttf", "local_key": "zh_font_path_multi_1_local", "url_key": "zh_font_url_multi_1"},
+            {"target_attr": "en_font_path_multi_1", "filename": "en_font_multi_1.otf", "local_key": "en_font_path_multi_1_local", "url_key": "en_font_url_multi_1"}
         ]
 
-        # 2. 遍历所有字体定义，并应用精确逻辑
         for font_def in font_definitions:
-            font_path = None
+            font_path_to_set = None
             
-            # 步骤 A: 优先检查本地路径
+            # 步骤 A: 检查预设的本地字体文件是否存在
+            expected_font_file = self.font_path / font_def["filename"]
+            if expected_font_file.exists():
+                font_path_to_set = expected_font_file
+            
+            # 步骤 B: 检查用户是否在UI中指定了外部的本地路径
             local_path_str = self.config.get(font_def["local_key"])
             if local_path_str:
                 local_path = Path(local_path_str)
                 if local_path.exists():
-                    logger.info(f"发现并使用本地字体: {local_path_str}")
-                    font_path = local_path
+                    logger.trace(f"发现并优先使用用户指定的外部字体: {local_path_str}")
+                    font_path_to_set = local_path
                 else:
-                    logger.warning(f"配置的本地字体路径不存在: {local_path_str}，将尝试从URL下载。")
+                    logger.warning(f"配置的外部字体路径不存在: {local_path_str}，将忽略此配置。")
 
-            # 步骤 B: 如果本地路径无效，则尝试从URL下载
-            if not font_path:
+            # 步骤 C: 如果以上路径都无效，且文件确实不存在，才尝试从URL下载
+            if not font_path_to_set:
                 url = self.config.get(font_def["url_key"])
                 if url:
-                    dest_path = self.font_path / font_def["filename"]
-                    self.__download_file(url, dest_path)
-                    if dest_path.exists():
-                        font_path = dest_path
-                else:
-                    logger.debug(f"未配置 '{font_def['url_key']}'，无法下载 {font_def['filename']}。")
+                    self.__download_file(url, expected_font_file)
+                    if expected_font_file.exists():
+                        font_path_to_set = expected_font_file
+            
+            # 将最终确定的有效路径设置到实例属性上
+            setattr(self, font_def["target_attr"], font_path_to_set)
 
-            # 步骤 C: 将最终确定的有效路径设置到实例属性上
-            setattr(self, font_def["target_attr"], font_path)
-
-        # 3. 最后统一检查核心字体是否存在，并给出警告
-        #    这里的 self.zh_font_path 等属性已经被上面的循环精确设置
-        if not getattr(self, 'zh_font_path', None) or not getattr(self, 'en_font_path', None):
-             logger.warning("一个或多个核心字体文件缺失。请检查UI中的本地路径或下载链接是否有效。")
+        # 最后，统一检查核心字体是否就绪，并设置“记忆”标志
+        if self.zh_font_path and self.en_font_path:
+            logger.trace("核心字体文件已准备就绪。后续任务将不再重复检查。")
+            self._fonts_checked_and_ready = True # 大功告成，设置标志为True
+        else:
+            # 只有在所有努力都失败后，才打印一次真正的警告
+            logger.warning("一个或多个核心字体文件缺失且无法下载。请检查UI中的本地路径或下载链接是否有效。")

@@ -57,7 +57,7 @@ def clean_character_name_static(character_name: Optional[str]) -> str:
     name = re.sub(r'^(as\s+)', '', name, flags=re.IGNORECASE).strip()
 
     # 清理前缀中的“饰演/饰/配音/配”（不加判断，直接清理）
-    prefix_pattern = r'^((?:饰演|饰|配音|配|as\b)\s*)+'
+    prefix_pattern = r'^((?:饰演|饰|扮演|扮|配音|配|as\b)\s*)+'
     name = re.sub(prefix_pattern, '', name, flags=re.IGNORECASE).strip()
 
     # 清理后缀中的“饰演/饰/配音/配”
@@ -109,7 +109,6 @@ def generate_search_url(site: str, title: str, year: Optional[int] = None) -> st
     return f"https://www.google.com/search?q={quote_plus(final_query)}"
 
 # --- ★★★ 全新的智能名字匹配核心逻辑 ★★★ ---
-
 def normalize_name_for_matching(name: Optional[str]) -> str:
     """
     将名字极度标准化，用于模糊比较。
@@ -199,11 +198,9 @@ class LogDBManager:
             raise
     
     # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-# --- 新增：国家/地区名称映射功能 ---
-# ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
 
+# --- 国家/地区名称映射功能 ---
 _country_map_cache = None
-
 def get_country_translation_map() -> dict:
     """
     【V-Hardcoded - 硬编码最终版】
@@ -216,20 +213,20 @@ def get_country_translation_map() -> dict:
     try:
         # 直接在代码中定义数据源
         source_data = {
-        "Hong Kong": {"chinese_name": "香港", "abbr": "HK"},
+        "China": {"chinese_name": "中国大陆", "abbr": "CN"},
+        "Taiwan": {"chinese_name": "中国台湾", "abbr": "TW"},
+        "Hong Kong": {"chinese_name": "中国香港", "abbr": "HK"},
         "United States of America": {"chinese_name": "美国", "abbr": "US"},
         "Japan": {"chinese_name": "日本", "abbr": "JP"},
+        "South Korea": {"chinese_name": "韩国", "abbr": "KR"},
         "United Kingdom": {"chinese_name": "英国", "abbr": "GB"},
         "France": {"chinese_name": "法国", "abbr": "FR"},
-        "South Korea": {"chinese_name": "韩国", "abbr": "KR"},
         "Germany": {"chinese_name": "德国", "abbr": "DE"},
         "Canada": {"chinese_name": "加拿大", "abbr": "CA"},
         "India": {"chinese_name": "印度", "abbr": "IN"},
         "Italy": {"chinese_name": "意大利", "abbr": "IT"},
         "Spain": {"chinese_name": "西班牙", "abbr": "ES"},
         "Australia": {"chinese_name": "澳大利亚", "abbr": "AU"},
-        "China": {"chinese_name": "中国大陆", "abbr": "CN"},
-        "Taiwan": {"chinese_name": "中国台湾", "abbr": "TW"},
         "Russia": {"chinese_name": "俄罗斯", "abbr": "RU"},
         "Thailand": {"chinese_name": "泰国", "abbr": "TH"},
         "Sweden": {"chinese_name": "瑞典", "abbr": "SE"},
@@ -240,6 +237,7 @@ def get_country_translation_map() -> dict:
         "Ireland": {"chinese_name": "爱尔兰", "abbr": "IE"},
         "New Zealand": {"chinese_name": "新西兰", "abbr": "NZ"},
         "Netherlands": {"chinese_name": "荷兰", "abbr": "NL"},
+        "Singapore": {"chinese_name": "新加坡", "abbr": "SG"},
         "Belgium": {"chinese_name": "比利时", "abbr": "BE"}
         }
 
