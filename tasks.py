@@ -1350,7 +1350,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
     【V3 - 终极完整版】处理所有已启用的自定义合集。
     不仅在Emby中创建/更新，还为每个合集执行完整的健康状态分析并写入数据库。
     """
-    task_name = "一键生成所有自建合集"
+    task_name = "生成所有自建合集"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
 
     try:
@@ -1550,7 +1550,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                     emby_collection_id = collection.get('emby_collection_id')
                     
                     if emby_collection_id:
-                        logger.info(f"--- 正在为合集 '{collection_name}' 生成封面 ---")
+                        logger.info(f"  -> 正在为合集 '{collection_name}' 生成封面")
                         # 同样，您需要有方法确定服务器ID
                         server_id = 'main_emby' 
                         
