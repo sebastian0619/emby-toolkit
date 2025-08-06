@@ -162,7 +162,7 @@ def init_db():
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS custom_collections (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
+                    name TEXT NOT NULL UNIQUE,
                     type TEXT NOT NULL,
                     definition_json TEXT NOT NULL,
                     status TEXT DEFAULT 'active',
@@ -197,6 +197,7 @@ def init_db():
 
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_type ON custom_collections (type)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_status ON custom_collections (status)")
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_name_unique ON custom_collections (name)")
 
             # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             # ★★★ 新增: 'media_metadata' 表 (筛选引擎的数据源) ★★★

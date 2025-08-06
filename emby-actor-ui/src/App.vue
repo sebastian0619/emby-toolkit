@@ -123,7 +123,6 @@ import Login from './components/Login.vue';
 import ChangePassword from './components/settings/ChangePassword.vue';
 import {
   AnalyticsOutline as StatsIcon,
-  PlayCircleOutline as ActionsIcon,
   ListOutline as ReviewListIcon,
   ServerOutline as EmbyIcon,
   KeyOutline as ApiIcon,
@@ -200,10 +199,6 @@ const menuOptions = computed(() => [
         key: 'DatabaseStats', // 必须与路由的 name 匹配
         icon: renderIcon(StatsIcon) // 使用新图标
       },
-      { label: '任务中心', 
-        key: 'actions-status', 
-        icon: renderIcon(ActionsIcon) 
-      },
     ]
   },
   {
@@ -236,7 +231,7 @@ const menuOptions = computed(() => [
     type: 'group',
     children: [
       { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
-      { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
+      { label: '任务中心', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
       { label: '查看更新', key: 'Releases', icon: renderIcon(AboutIcon) },
     ]
   }

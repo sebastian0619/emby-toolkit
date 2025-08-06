@@ -54,20 +54,6 @@ def api_reprocess_all_review_items():
     else:
         return jsonify({"error": "提交任务失败，已有任务在运行。"}), 409
 
-
-# --- 一键重构演员数据端点 ---
-@actions_bp.route('/tasks/rebuild-actors', methods=['POST'])
-@login_required
-@task_lock_required
-@processor_ready_required
-def trigger_rebuild_actors_task():
-    from tasks import run_full_rebuild_task # 延迟导入
-    success = task_manager.submit_task(run_full_rebuild_task, "重构演员数据库")
-    if success:
-        return jsonify({"status": "success", "message": "重构演员数据库任务已成功提交到后台队列。"}), 202
-    else:
-        return jsonify({"status": "error", "message": "提交任务失败，已有任务在运行。"}), 409
-    
 # +++ 一键添加所有剧集到追剧列表的 API +++
 @actions_bp.route('/actions/add_all_series_to_watchlist', methods=['POST'])
 @login_required

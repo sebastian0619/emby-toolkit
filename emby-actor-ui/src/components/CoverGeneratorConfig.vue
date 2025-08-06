@@ -20,7 +20,7 @@
 
         <!-- ★★★ 核心修改：使用 n-grid 重新排版 ★★★ -->
         <n-card title="基础设置" style="margin-top: 24px;">
-          <n-grid :cols="5" :x-gap="24" responsive="screen">
+          <n-grid :cols="4" :x-gap="24" responsive="screen">
             <!-- 第一列 -->
             <n-gi>
               <n-form-item label="启用">
@@ -47,17 +47,17 @@
                 <n-select v-model:value="configData.sort_by" :options="sortOptions" />
               </n-form-item>
             </n-gi>
-            <!-- 第五列 -->
-            <n-gi>
+            <!-- 另起一行，占据所有列 -->
+            <n-divider /> 
+            <n-gi :span="3">
               <n-form-item label="选择要【忽略】的媒体库">
-                <n-select
-                  v-model:value="configData.exclude_libraries"
-                  :options="libraryOptions"
-                  multiple
-                  clearable
-                  placeholder="请选择要忽略的媒体库"
-                />
-                <template #feedback>勾选的媒体库将【不会】被处理</template>
+                <n-checkbox-group v-model:value="configData.exclude_libraries" class="exclude-group">
+                  <n-grid :y-gap="8" :cols="8" responsive="screen">
+                    <n-gi v-for="lib in libraryOptions" :key="lib.value">
+                      <n-checkbox :value="lib.value" :label="lib.label" />
+                    </n-gi>
+                  </n-grid>
+                </n-checkbox-group>
               </n-form-item>
             </n-gi>
           </n-grid>

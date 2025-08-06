@@ -1,4 +1,4 @@
-<!-- src/components/DatabaseStats.vue -->
+<!-- src/components/DatabaseStats.vue (并列布局优化版) -->
 <template>
   <div>
     <n-page-header title="数据看板" subtitle="了解您媒体库的核心数据统计" style="margin-bottom: 24px;"></n-page-header>
@@ -15,7 +15,7 @@
     <n-grid v-else :x-gap="24" :y-gap="24" :cols="4" responsive="screen" item-responsive>
       <!-- 卡片1: 核心媒体库 -->
       <n-gi span="4 m:2 l:1">
-        <n-card title="核心媒体库" :bordered="false">
+        <n-card title="核心媒体库" :bordered="false" class="content-card">
           <n-space vertical size="large" align="center">
             <n-statistic label="已索引媒体总数" class="centered-statistic">
               <span class="stat-value">{{ stats.media_metadata?.total }}</span>
@@ -45,7 +45,7 @@
 
       <!-- 卡片2: 合集管理 -->
       <n-gi span="4 m:2 l:1">
-        <n-card title="合集管理" :bordered="false">
+        <n-card title="合集管理" :bordered="false" class="content-card">
           <n-space vertical size="large" align="center">
             <n-statistic label="已识别TMDB合集" class="centered-statistic" :value="stats.collections?.total_tmdb_collections" />
             <n-statistic label="存在缺失的合集" class="centered-statistic" :value="stats.collections?.collections_with_missing" />
@@ -59,7 +59,7 @@
       
       <!-- 卡片3: 订阅服务 -->
       <n-gi span="4 m:4 l:2">
-        <n-card title="订阅服务" :bordered="false">
+        <n-card title="订阅服务" :bordered="false" class="content-card">
           <n-grid :x-gap="12" :y-gap="20" :cols="3">
             <n-gi><n-statistic label="追剧中" class="centered-statistic" :value="stats.subscriptions?.watchlist_active" /></n-gi>
             <n-gi><n-statistic label="已暂停" class="centered-statistic" :value="stats.subscriptions?.watchlist_paused" /></n-gi>
@@ -71,9 +71,9 @@
         </n-card>
       </n-gi>
 
-      <!-- 卡片4: 系统与缓存 -->
-      <n-gi span="4">
-        <n-card title="系统与缓存" :bordered="false">
+      <!-- ★ 修改点1: 调整 span 属性以实现并列布局 -->
+      <n-gi span="4 l:2">
+        <n-card title="系统与缓存" :bordered="false" class="content-card">
           <n-grid :x-gap="12" :y-gap="16" :cols="4" item-responsive>
             <n-gi span="2 s:1">
               <n-statistic label="数据库大小" class="centered-statistic">
@@ -92,22 +92,76 @@
           </n-grid>
         </n-card>
       </n-gi>
+
+      <!-- ★ 修改点2: 调整 span 属性并确保卡片高度一致 -->
+      <n-gi span="4 l:2">
+        <n-card 
+          title="实时日志" 
+          :bordered="false" 
+          class="content-card"
+          style="display: flex; flex-direction: column; height: 100%;" 
+          content-style="flex-grow: 1; display: flex; flex-direction: column; padding: 0 24px 24px 24px;"
+          header-style="padding-bottom: 12px;"
+        >
+          <template #header-extra>
+            <n-button text @click="isLogViewerVisible = true" title="查看历史归档日志">
+              <template #icon><n-icon :component="DocumentTextOutline" /></template>
+              历史日志
+            </n-button>
+          </template>
+          <n-log ref="logRef" :log="logContent" trim class="log-panel" style="flex-grow: 1;"/>
+        </n-card>
+      </n-gi>
     </n-grid>
+
+    <!-- 历史日志查看器模态框 -->
+    <LogViewer v-model:show="isLogViewerVisible" />
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed, watch, nextTick } from 'vue';
 import axios from 'axios';
 import { 
-  NPageHeader, NGrid, NGi, NCard, NStatistic, NSpin, NAlert, NIcon, NSpace, NDivider, NIconWrapper
+  NPageHeader, NGrid, NGi, NCard, NStatistic, NSpin, NAlert, NIcon, NSpace, NDivider, NIconWrapper,
+  NLog, NButton
 } from 'naive-ui';
-import { FilmOutline as FilmIcon, TvOutline as TvIcon } from '@vicons/ionicons5';
+import { FilmOutline as FilmIcon, TvOutline as TvIcon, DocumentTextOutline } from '@vicons/ionicons5';
+import LogViewer from './LogViewer.vue'; // 确保 LogViewer 组件路径正确
 
+// --- Props ---
+const props = defineProps({
+  taskStatus: {
+    type: Object,
+    required: true,
+    default: () => ({
+      is_running: false,
+      current_action: '空闲',
+      logs: []
+    })
+  }
+});
+
+// --- 数据看板相关状态 ---
 const loading = ref(true);
 const error = ref(null);
 const stats = ref({});
 
+// --- 日志相关状态 ---
+const logRef = ref(null);
+const isLogViewerVisible = ref(false);
+
+// --- Computed ---
+const logContent = computed(() => props.taskStatus?.logs?.join('\n') || '等待任务日志...');
+
+// --- Watchers ---
+watch(() => props.taskStatus.logs, async () => {
+  await nextTick();
+  logRef.value?.scrollTo({ position: 'bottom', slient: true });
+}, { deep: true });
+
+
+// --- Methods ---
 const fetchStats = async () => {
   loading.value = true;
   error.value = null;
@@ -126,6 +180,7 @@ const fetchStats = async () => {
   }
 };
 
+// --- Lifecycle Hooks ---
 onMounted(() => {
   fetchStats();
 });
@@ -150,8 +205,18 @@ onMounted(() => {
   font-weight: 600;
   line-height: 1.2;
 }
-/* 微调图标和数字的对齐 */
 .centered-statistic .n-statistic__prefix {
   margin-right: 6px;
+}
+
+/* 确保所有卡片在栅格中高度一致 */
+.content-card {
+  height: 100%;
+}
+
+.log-panel {
+  font-size: 13px;
+  line-height: 1.6;
+  background-color: transparent;
 }
 </style>

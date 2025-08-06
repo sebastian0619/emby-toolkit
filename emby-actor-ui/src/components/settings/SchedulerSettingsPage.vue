@@ -124,7 +124,24 @@
                   </n-button>
                 </n-space>
               </div>
-
+              <div class="task-item">
+                <n-space align="center" justify="space-between">
+                  <n-text strong>全量海报同步</n-text>
+                  <n-switch v-model:value="configModel.schedule_sync_images_enabled" />
+                </n-space>
+                <n-form :model="configModel" label-placement="left" label-width="80" class="mt-3">
+                  <n-form-item label="" path="schedule_sync_images_cron">
+                    <n-input-group>
+                      <n-input v-model:value="configModel.schedule_sync_images_cron" :disabled="!configModel.schedule_sync_images_enabled" placeholder="例如: 0 2 * * 1 (每周一凌晨2点)" />
+                      <n-button type="primary" ghost @click="triggerTaskNow('sync-images-map')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
+                        <template #icon><n-icon :component="Play24Regular" /></template>
+                        立即执行
+                      </n-button>
+                    </n-input-group>
+                    <template #feedback>将所有已处理媒体的海报、背景图等同步到缓存目录。</template>
+                  </n-form-item>
+                </n-form>
+              </div>
             </div>
           </n-card>
         </n-gi>
@@ -276,6 +293,7 @@ const tasksToWatch = [
   { enabledKey: 'schedule_sync_map_enabled', cronKey: 'schedule_sync_map_cron' },
   { enabledKey: 'schedule_enrich_aliases_enabled', cronKey: 'schedule_enrich_aliases_cron' },
   { enabledKey: 'schedule_watchlist_enabled', cronKey: 'schedule_watchlist_cron' },
+  { enabledKey: 'schedule_sync_images_enabled', cronKey: 'schedule_sync_images_cron' },
   { enabledKey: 'schedule_actor_cleanup_enabled', cronKey: 'schedule_actor_cleanup_cron' },
   { enabledKey: 'schedule_autosub_enabled', cronKey: 'schedule_autosub_cron' },
   { enabledKey: 'schedule_refresh_collections_enabled', cronKey: 'schedule_refresh_collections_cron' },
@@ -317,14 +335,18 @@ const triggerTaskNow = async (taskIdentifier) => {
 
   isTriggeringTask.value = true;
   try {
-    const response = await axios.post(`/api/tasks/trigger/${taskIdentifier}`);
-    if (response.data.status === 'success') {
-      message.success(`任务 "${response.data.task_name}" 已成功提交！`);
-    } else {
-      message.error(response.data.message || '提交任务失败。');
-    }
+    // 使用通用的任务运行API，将任务标识符作为JSON数据发送
+    const response = await axios.post('/api/tasks/run', {
+      task_name: taskIdentifier
+    });
+    
+    // 后端成功接收并提交任务后会返回 202 Accepted
+    message.success(response.data.message || `任务已成功提交！`);
+
   } catch (error) {
-    message.error('请求后端接口失败，请检查网络或后台服务。');
+    // 处理API调用本身的错误，或后端返回的特定错误信息
+    const errorMessage = error.response?.data?.error || '请求后端接口失败，请检查网络或后台服务。';
+    message.error(errorMessage);
   } finally {
     isTriggeringTask.value = false;
   }

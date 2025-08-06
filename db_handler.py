@@ -24,6 +24,8 @@ TABLE_PRIMARY_KEYS = {
     "processed_log": "item_id",
     "failed_log": "item_id",
     "users": "username",
+    "custom_collections": "name", 
+    "media_metadata": ("tmdb_id", "item_type"),
 }
 
 def get_db_connection(db_path: str) -> sqlite3.Connection:
