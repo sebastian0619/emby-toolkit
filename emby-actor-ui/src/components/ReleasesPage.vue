@@ -28,7 +28,7 @@
     </n-page-header>
     <n-divider />
 
-    <div v-if="isLoading" class="center-container"><n-spin size="large" /></div>
+    <div v-if="isLoading" class="dashboard-card"><n-spin size="large" /></div>
     <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error">{{ error }}</n-alert></div>
     
     <div v-else>

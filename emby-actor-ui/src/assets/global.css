@@ -1,15 +1,116 @@
-/* ========== 全局基础样式重置 ========== */
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+/* ========== 全局主题变量定义 ========== */
+:root {
+  --accent-color: #00a1ff; /* 科技蓝 */
+  --accent-glow-color: rgba(0, 161, 255, 0.4); /* 科技蓝辉光 */
+
+  /* --- 深色模式卡片背景色 --- */
+  --card-bg-color: rgba(26, 27, 30, 0.7);
+  --card-border-color: rgba(255, 255, 255, 0.1);
+
+  /* 文字色 */
+  --text-color: #ffffff;
 }
-html, body {
-  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  font-size: 16px;
-  scroll-behavior: smooth;
-  -webkit-font-smoothing: antialiased;
-  min-height: 100vh;
+
+/* 浅色模式覆盖主题变量 */
+html.light {
+  --card-bg-color: rgba(255, 255, 255, 0.85);
+  --card-border-color: rgba(0, 0, 0, 0.1);
+
+  --text-color: #1a1a1a;
+}
+
+/* ========== 赛博科技风 卡片样式 (dashboard-card) ========== */
+.n-card.dashboard-card {
+  background: var(--card-bg-color) !important;
+  border-radius: 12px !important;
+  border: 1px solid var(--card-border-color) !important;
+
+  backdrop-filter: blur(10px) !important;
+  -webkit-backdrop-filter: blur(10px) !important;
+
+  box-shadow: 
+    0 0 2px rgba(0, 0, 0, 0.2),
+    0 4px 12px rgba(0, 0, 0, 0.3),
+    0 0 20px -5px var(--accent-glow-color) !important;
+
+  transition: all 0.3s ease-in-out !important;
+
+  /* 让卡片撑满其父容器(n-gi) */
+  height: 100%;
+  display: flex !important;
+  flex-direction: column !important;
+
+  /* 入场动画 */
+  opacity: 0;
+  transform: translateY(20px);
+  animation: card-fade-in 0.5s ease-out forwards;
+
+  /* 文字颜色继承变量 */
+  color: var(--text-color) !important;
+}
+
+/* 卡片内容区撑满剩余高度，实现底部对齐 */
+.dashboard-card > .n-card__content {
+  flex-grow: 1 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: space-between !important;
+}
+
+/* 悬浮效果 */
+.n-card.dashboard-card:hover {
+  transform: translateY(-5px) !important;
+  box-shadow: 
+    0 0 5px rgba(0, 0, 0, 0.3),
+    0 8px 20px rgba(0, 0, 0, 0.4),
+    0 0 35px var(--accent-glow-color) !important;
+}
+
+/* 卡片标题 */
+.dashboard-card .card-title {
+  color: var(--accent-color) !important;
+  font-weight: 600 !important;
+  letter-spacing: 1px;
+  text-shadow: 0 0 8px var(--accent-glow-color);
+}
+/* n-card 的 title 属性样式覆盖 */
+.dashboard-card > .n-card-header > .n-card-header__main {
+  color: var(--accent-color) !important;
+  font-weight: 600 !important;
+  letter-spacing: 1px;
+  text-shadow: 0 0 8px var(--accent-glow-color);
+}
+
+/* 关键数字样式 */
+.dashboard-card .statistic-value {
+  font-size: 3.5em !important;
+  font-weight: 700 !important;
+  color: var(--text-color) !important;
+  text-shadow: 0 0 15px rgba(255, 255, 255, 0.3);
+}
+.dashboard-card .statistic-label {
+  color: #a0a0a0 !important;
+  font-size: 0.9em !important;
+  text-transform: uppercase;
+}
+
+/* 入场动画延迟 */
+.dashboard-card:nth-child(1) { animation-delay: 0.1s; }
+.dashboard-card:nth-child(2) { animation-delay: 0.2s; }
+.dashboard-card:nth-child(3) { animation-delay: 0.3s; }
+.dashboard-card:nth-child(4) { animation-delay: 0.4s; }
+.dashboard-card:nth-child(5) { animation-delay: 0.5s; }
+
+@keyframes card-fade-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 给日志面板透明背景 */
+.dashboard-card .n-log {
+  background-color: transparent !important;
 }
 
 /* ========== 滚动条美化 ========== */

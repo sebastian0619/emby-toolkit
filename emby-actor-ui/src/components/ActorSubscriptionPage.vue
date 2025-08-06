@@ -45,7 +45,7 @@
       <div v-else>
         <n-grid :x-gap="12" :y-gap="12" cols="3 s:5 m:6 l:7 xl:8 xxl:9" responsive="screen" style="margin-top: 20px;">
           <n-gi v-for="sub in renderedSubscriptions" :key="sub.id">
-            <n-card class="glass-section actor-card" @click="handleCardClick(sub)">
+            <n-card class="dashboard-card actor-card" @click="handleCardClick(sub)">
               <template #cover>
                 <img :src="getImageUrl(sub.profile_path)" class="actor-avatar">
               </template>

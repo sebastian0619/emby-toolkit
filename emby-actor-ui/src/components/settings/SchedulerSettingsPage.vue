@@ -11,7 +11,7 @@
         
         <!-- 卡片 1: 常规任务 -->
         <n-gi>
-          <n-card title="常规任务" class="glass-section" :bordered="false">
+          <n-card title="常规任务" class="dashboard-card" :bordered="false">
             <div class="task-list-container">
 
               <!-- 任务 1.1: 全量处理 -->
@@ -148,7 +148,7 @@
 
         <!-- 卡片 2: 订阅与刷新 -->
         <n-gi>
-          <n-card title="订阅与刷新" class="glass-section" :bordered="false">
+          <n-card title="订阅与刷新" class="dashboard-card" :bordered="false">
             <div class="task-list-container">
 
               <!-- 任务 2.1: 智能追剧刷新 -->

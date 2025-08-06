@@ -42,19 +42,56 @@ watchEffect(() => {
 
 // 3. 主题覆盖配置依赖 isDarkTheme，所以也必须在这里
 const themeOverrides = computed(() => {
-  const lightCardShadow = '0 1px 2px -2px rgba(0, 0, 0, 0.08), 0 3px 6px 0 rgba(0, 0, 0, 0.06), 0 5px 12px 4px rgba(0, 0, 0, 0.04)';
-  const darkCardShadow = '0 1px 2px -2px rgba(0, 0, 0, 0.24), 0 3px 6px 0 rgba(0, 0, 0, 0.18), 0 5px 12px 4px rgba(0, 0, 0, 0.12)';
+  // 1. 定义“颜色包”
+  const primaryColorConfig = {
+    primaryColor: '#9c27b0',
+    primaryColorHover: '#b143c7',
+    primaryColorPressed: '#89229b',
+    primaryColorSuppl: '#9c27b0',
+  };
 
+  // 2. 定义通用的组件覆盖
+  const componentOverrides = {
+    Checkbox: { colorChecked: primaryColorConfig.primaryColor, borderColorChecked: primaryColorConfig.primaryColor },
+    Radio: { buttonColorActive: primaryColorConfig.primaryColor, buttonTextColorActive: '#FFFFFF', borderColorActive: primaryColorConfig.primaryColor },
+    Slider: { fillColor: primaryColorConfig.primaryColor, fillColorHover: primaryColorConfig.primaryColorHover },
+    Divider: { color: primaryColorConfig.primaryColor }
+  };
+
+  // 3. 根据当前主题模式，合并配置
   if (!isDarkTheme.value) {
+    // --- 亮色模式 ---
     return {
-      common: { bodyColor: '#f0f2f5' },
-      Card: { boxShadow: lightCardShadow }
+      common: { 
+        ...primaryColorConfig,
+        bodyColor: '#f0f2f5' 
+      },
+      ...componentOverrides,
+      Card: {
+        // ★★★ 核心修复：明确指定亮色模式下的卡片颜色 ★★★
+        color: '#ffffff', // 卡片背景色为纯白
+        titleTextColor: primaryColorConfig.primaryColor, // 标题颜色为我们的主题紫
+        boxShadow: '0 1px 2px -2px rgba(0, 0, 0, 0.08), 0 3px 6px 0 rgba(0, 0, 0, 0.06), 0 5px 12px 4px rgba(0, 0, 0, 0.04)',
+      }
     };
   }
   
+  // --- 暗色模式 ---
   return {
-    common: { bodyColor: '#101014', cardColor: '#1a1a1e', inputColor: '#1a1a1e', actionColor: '#242428', borderColor: 'rgba(255, 255, 255, 0.12)' },
-    Card: { color: '#1a1a1e', titleTextColor: 'rgba(255, 255, 255, 0.92)', boxShadow: darkCardShadow, },
+    common: { 
+      ...primaryColorConfig,
+      bodyColor: '#101014', 
+      cardColor: '#1a1a1e', 
+      inputColor: '#1a1a1e', 
+      actionColor: '#242428', 
+      borderColor: 'rgba(255, 255, 255, 0.12)' 
+    },
+    ...componentOverrides,
+    Card: { 
+      color: '#1a1a1e', // 暗色卡片背景
+      titleTextColor: primaryColorConfig.primaryColor, // 标题颜色为我们的主题紫
+      boxShadow: '0 1px 2px -2px rgba(0, 0, 0, 0.24), 0 3px 6px 0 rgba(0, 0, 0, 0.18), 0 5px 12px 4px rgba(0, 0, 0, 0.12)',
+    },
     DataTable: { tdColor: '#1a1a1e', thColor: '#1a1a1e', tdColorStriped: '#202024' },
     Input: { color: '#1a1a1e' },
     Select: { peers: { InternalSelection: { color: '#1a1a1e' } } }

@@ -117,7 +117,7 @@
               >
                 <template #item="{ element: actor, index }">
                   <div class="actor-card-header">
-                    <n-card size="small" class="actor-edit-card" content-style="padding: 16px;">
+                    <n-card size="small" class="dashboard-card actor-edit-card" content-style="padding: 16px;">
                       <template #header>
                         <div class="actor-card-header">
                           <n-avatar

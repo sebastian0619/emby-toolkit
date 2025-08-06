@@ -1,5 +1,6 @@
 <!-- src/components/DatabaseStats.vue (并列布局优化版) -->
 <template>
+ <n-layout content-style="padding: 24px;">
   <div>
     <n-page-header title="数据看板" subtitle="了解您媒体库的核心数据统计" style="margin-bottom: 24px;"></n-page-header>
     
@@ -15,7 +16,7 @@
     <n-grid v-else :x-gap="24" :y-gap="24" :cols="4" responsive="screen" item-responsive>
       <!-- 卡片1: 核心媒体库 -->
       <n-gi span="4 m:2 l:1">
-        <n-card title="核心媒体库" :bordered="false" class="content-card">
+        <n-card title="核心媒体库" :bordered="false" class="dashboard-card">
           <n-space vertical size="large" align="center">
             <n-statistic label="已索引媒体总数" class="centered-statistic">
               <span class="stat-value">{{ stats.media_metadata?.total }}</span>
@@ -45,7 +46,7 @@
 
       <!-- 卡片2: 合集管理 -->
       <n-gi span="4 m:2 l:1">
-        <n-card title="合集管理" :bordered="false" class="content-card">
+        <n-card title="合集管理" :bordered="false" class="dashboard-card">
           <n-space vertical size="large" align="center">
             <n-statistic label="已识别TMDB合集" class="centered-statistic" :value="stats.collections?.total_tmdb_collections" />
             <n-statistic label="存在缺失的合集" class="centered-statistic" :value="stats.collections?.collections_with_missing" />
@@ -59,7 +60,7 @@
       
       <!-- 卡片3: 订阅服务 -->
       <n-gi span="4 m:4 l:2">
-        <n-card title="订阅服务" :bordered="false" class="content-card">
+        <n-card title="订阅服务" :bordered="false" class="dashboard-card">
           <n-grid :x-gap="12" :y-gap="20" :cols="3">
             <n-gi><n-statistic label="追剧中" class="centered-statistic" :value="stats.subscriptions?.watchlist_active" /></n-gi>
             <n-gi><n-statistic label="已暂停" class="centered-statistic" :value="stats.subscriptions?.watchlist_paused" /></n-gi>
@@ -73,7 +74,7 @@
 
       <!-- ★ 修改点1: 调整 span 属性以实现并列布局 -->
       <n-gi span="4 l:2">
-        <n-card title="系统与缓存" :bordered="false" class="content-card">
+        <n-card title="系统与缓存" :bordered="false" class="dashboard-card">
           <n-grid :x-gap="12" :y-gap="16" :cols="4" item-responsive>
             <n-gi span="2 s:1">
               <n-statistic label="数据库大小" class="centered-statistic">
@@ -98,7 +99,7 @@
         <n-card 
           title="实时日志" 
           :bordered="false" 
-          class="content-card"
+          class="content-card dashboard-card"
           style="display: flex; flex-direction: column; height: 100%;" 
           content-style="flex-grow: 1; display: flex; flex-direction: column; padding: 0 24px 24px 24px;"
           header-style="padding-bottom: 12px;"
@@ -117,6 +118,7 @@
     <!-- 历史日志查看器模态框 -->
     <LogViewer v-model:show="isLogViewerVisible" />
   </div>
+  </n-layout>
 </template>
 
 <script setup>

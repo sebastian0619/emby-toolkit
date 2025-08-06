@@ -19,7 +19,7 @@
         </n-page-header>
 
         <!-- ★★★ 核心修改：使用 n-grid 重新排版 ★★★ -->
-        <n-card title="基础设置" style="margin-top: 24px;">
+        <n-card title="基础设置" class="content-card, dashboard-card" style="margin-top: 24px;">
           <n-grid :cols="4" :x-gap="24" :y-gap="16" responsive="screen"> <!-- 建议加一个 y-gap -->
             <!-- 第一列 -->
             <n-gi>
@@ -99,7 +99,7 @@
         </n-card>
 
         <!-- ... 其余的 n-card 和 n-tabs 保持不变 ... -->
-        <n-card style="margin-top: 24px;">
+        <n-card class="content-card, dashboard-card" style="margin-top: 24px;">
           <n-tabs v-model:value="configData.tab" type="line" animated>
             <n-tab-pane name="style-tab" tab="封面风格">
               <n-spin :show="isPreviewLoading"> <!-- 添加一个加载动画，提升体验 -->
@@ -107,7 +107,7 @@
                   <n-grid :cols="3" :x-gap="16" :y-gap="16" responsive="screen">
                     <!-- 【【【关键修改：src 绑定到动态的 ref】】】 -->
                     <n-gi v-for="style in styles" :key="style.value">
-                      <n-card class="style-card">
+                      <n-card class="dashboard-card style-card">
                         <template #cover><img :src="stylePreviews[style.value]" class="style-img" /></template>
                         <n-radio :value="style.value" :label="style.title" />
                       </n-card>
