@@ -20,7 +20,7 @@
 
         <!-- ★★★ 核心修改：使用 n-grid 重新排版 ★★★ -->
         <n-card title="基础设置" style="margin-top: 24px;">
-          <n-grid :cols="4" :x-gap="24" responsive="screen">
+          <n-grid :cols="4" :x-gap="24" :y-gap="16" responsive="screen"> <!-- 建议加一个 y-gap -->
             <!-- 第一列 -->
             <n-gi>
               <n-form-item label="启用">
@@ -47,16 +47,25 @@
                 <n-select v-model:value="configData.sort_by" :options="sortOptions" />
               </n-form-item>
             </n-gi>
-            <!-- 另起一行，占据所有列 -->
-            <n-divider /> 
-            <n-gi :span="3">
+
+            <!-- ★★★ 新增的分割线 ★★★ -->
+            <n-gi :span="4">
+              <n-divider style="margin-top: 8px; margin-bottom: 8px;" />
+            </n-gi>
+            
+            <!-- 忽略媒体库部分 -->
+            <n-gi :span="4"> <!-- ★ 确保这里也是 span="4" -->
               <n-form-item label="选择要【忽略】的媒体库">
-                <n-checkbox-group v-model:value="configData.exclude_libraries" class="exclude-group">
-                  <n-grid :y-gap="8" :cols="8" responsive="screen">
-                    <n-gi v-for="lib in libraryOptions" :key="lib.value">
-                      <n-checkbox :value="lib.value" :label="lib.label" />
-                    </n-gi>
-                  </n-grid>
+                <n-checkbox-group 
+                  v-model:value="configData.exclude_libraries"
+                  style="display: flex; flex-wrap: wrap; gap: 8px 16px;"
+                >
+                  <n-checkbox 
+                    v-for="lib in libraryOptions" 
+                    :key="lib.value" 
+                    :value="lib.value" 
+                    :label="lib.label" 
+                  />
                 </n-checkbox-group>
               </n-form-item>
             </n-gi>
