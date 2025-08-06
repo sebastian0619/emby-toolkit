@@ -122,6 +122,7 @@ import { useConfig } from './composables/useConfig';
 import Login from './components/Login.vue';
 import ChangePassword from './components/settings/ChangePassword.vue';
 import {
+  AnalyticsOutline as StatsIcon,
   PlayCircleOutline as ActionsIcon,
   ListOutline as ReviewListIcon,
   ServerOutline as EmbyIcon,
@@ -189,29 +190,56 @@ const handleUserSelect = async (key) => {
 
 // --- [修改] 侧边栏菜单的定义，使其动态化 ---
 const menuOptions = computed(() => [
-  { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
-  { type: 'divider', key: 'd1' },
-  { label: '任务中心', key: 'actions-status', icon: renderIcon(ActionsIcon) },
-  { type: 'divider', key: 'd1' },
-  { label: '合集检查', key: 'Collections', icon: renderIcon(CollectionsIcon) },
-  { type: 'divider', key: 'd1' },
-  { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) },
-  { type: 'divider', key: 'd1' },
-  { 
-    label: '封面生成', 
-    key: 'CoverGeneratorConfig', // 这个 key 必须与您在路由中定义的 name 完全一致
-    icon: renderIcon(PaletteIcon) // 使用我们新导入的调色板图标
+  {
+    label: '发现',
+    key: 'group-discovery',
+    type: 'group',
+    children: [
+      { 
+        label: '数据看板', 
+        key: 'DatabaseStats', // 必须与路由的 name 匹配
+        icon: renderIcon(StatsIcon) // 使用新图标
+      },
+      { label: '任务中心', 
+        key: 'actions-status', 
+        icon: renderIcon(ActionsIcon) 
+      },
+    ]
   },
-  { type: 'divider', key: 'd1' },
-  { label: '智能追剧', key: 'Watchlist', icon: renderIcon(WatchlistIcon) },
-  { type: 'divider', key: 'd1' },
-  { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) },
-  { type: 'divider', key: 'd1' },
-  { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
-  { type: 'divider', key: 'd1' },
-  { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
-  { type: 'divider', key: 'd1' },
-  { label: '查看更新', key: 'Releases', icon: renderIcon(AboutIcon) },
+  {
+    label: '整理',
+    key: 'group-management',
+    type: 'group',
+    children: [
+      { label: '合集检查', key: 'Collections', icon: renderIcon(CollectionsIcon) },
+      { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) },
+      { 
+        label: '封面生成', 
+        key: 'CoverGeneratorConfig',
+        icon: renderIcon(PaletteIcon)
+      },
+      { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
+    ]
+  },
+  {
+    label: '订阅',
+    key: 'group-subscriptions',
+    type: 'group',
+    children: [
+      { label: '智能追剧', key: 'Watchlist', icon: renderIcon(WatchlistIcon) },
+      { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) },
+    ]
+  },
+  {
+    label: '系统',
+    key: 'group-system',
+    type: 'group',
+    children: [
+      { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
+      { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
+      { label: '查看更新', key: 'Releases', icon: renderIcon(AboutIcon) },
+    ]
+  }
 ]);
 
 
@@ -317,4 +345,23 @@ html, body { height: 100vh; margin: 0; padding: 0; font-family: -apple-system, B
 .page-content-inner-wrapper { flex-grow: 1; overflow-y: auto; }
 .fullscreen-container { display: flex; justify-content: center; align-items: center; height: 100vh; width: 100%; background-color: #f0f2f5; }
 .dark-mode .fullscreen-container { background-color: #101014; }
+/* 新增：美化菜单分组标题 */
+.n-menu .n-menu-item-group-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: #8e8e93; /* 调整为截图中的灰色调 */
+  padding-left: 24px; /* 调整左边距，使其与菜单项对齐 */
+  margin-top: 16px; /* 增加与上一个分组的间距 */
+  margin-bottom: 8px; /* 调整与下方第一个菜单项的间距 */
+}
+
+/* 新增：确保第一个分组顶部没有额外间距 */
+.n-menu .n-menu-item-group:first-child .n-menu-item-group-title {
+  margin-top: 0;
+}
+
+/* 新增：暗色模式下的分组标题颜色 */
+.dark-mode .n-menu .n-menu-item-group-title {
+  color: #828287;
+}
 </style>

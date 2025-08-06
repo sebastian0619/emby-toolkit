@@ -3,6 +3,7 @@
 import { createRouter, createWebHistory } from 'vue-router';
 
 // --- 1. 导入你的页面组件 (这部分保持不变) ---
+import DatabaseStats from '../components/DatabaseStats.vue';
 import ReviewList from '../components/ReviewList.vue';
 import ActionsPage from '../components/ActionsPage.vue';
 import SchedulerSettingsPage from '../components/settings/SchedulerSettingsPage.vue';
@@ -26,7 +27,13 @@ const routes = [
   },
   {
     path: '/',
-    redirect: '/actions' 
+    redirect: '/DatabaseStats' 
+  },
+  {
+    path: '/DatabaseStats',
+    name: 'DatabaseStats',
+    component: DatabaseStats,
+    meta: { requiresAuth: true },
   },
   {
     path: '/review',

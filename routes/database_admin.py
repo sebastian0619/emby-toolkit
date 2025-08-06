@@ -4,6 +4,7 @@ from flask import Blueprint, request, jsonify, Response
 import logging
 import json
 import re
+import os
 import time
 from datetime import datetime
 import sqlite3
@@ -21,6 +22,22 @@ from extensions import login_required, processor_ready_required, task_lock_requi
 # 1. 创建蓝图
 db_admin_bp = Blueprint('database_admin', __name__, url_prefix='/api')
 logger = logging.getLogger(__name__)
+
+def _count_table_rows(cursor: sqlite3.Cursor, table_name: str, condition: str = "") -> int:
+    """一个通用的表行数计数辅助函数，增加错误处理。"""
+    try:
+        # 使用参数化查询防止SQL注入，即使表名是内部控制的
+        query = f"SELECT COUNT(*) FROM {table_name}"
+        if condition:
+            # 注意：这里的condition仍然是直接拼接，因为它可能包含复杂的逻辑
+            # 但在调用此函数时，应确保condition的内容是安全的
+            query += f" WHERE {condition}"
+        cursor.execute(query)
+        result = cursor.fetchone()
+        return result[0] if result else 0
+    except sqlite3.Error as e:
+        logger.error(f"计算表 '{table_name}' 行数时出错: {e}")
+        return -1 # 返回-1表示错误
 
 # 2. 定义路由
 
@@ -157,6 +174,57 @@ def api_import_database():
     except Exception as e:
         logger.error(f"处理数据库导入请求时发生错误: {e}", exc_info=True)
         return jsonify({"error": "处理上传文件时发生服务器错误"}), 500
+
+# --- 数据看板 ---
+@db_admin_bp.route('/database/stats', methods=['GET'])
+@login_required
+def api_get_database_stats():
+    """
+    从数据库中查询并聚合各种统计数据，用于在UI上展示。
+    """
+    stats = {}
+    try:
+        with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
+            cursor = conn.cursor()
+
+            # --- 1. 核心媒体元数据统计 ---
+            stats['media_metadata'] = {
+                "total": _count_table_rows(cursor, "media_metadata"),
+                "movies": _count_table_rows(cursor, "media_metadata", "item_type = 'Movie'"),
+                "series": _count_table_rows(cursor, "media_metadata", "item_type = 'Series'"),
+            }
+
+            # --- 2. 合集管理统计 ---
+            stats['collections'] = {
+                "total_tmdb_collections": _count_table_rows(cursor, "collections_info"),
+                "collections_with_missing": _count_table_rows(cursor, "collections_info", "has_missing = 1"),
+                "total_custom_collections": _count_table_rows(cursor, "custom_collections", "status = 'active'"),
+            }
+
+            # --- 3. 订阅服务统计 ---
+            stats['subscriptions'] = {
+                "watchlist_active": _count_table_rows(cursor, "watchlist", "status = 'Watching'"),
+                "watchlist_paused": _count_table_rows(cursor, "watchlist", "status = 'Paused'"),
+                "watchlist_ended": _count_table_rows(cursor, "watchlist", "status = 'Ended'"),
+                "actor_subscriptions_active": _count_table_rows(cursor, "actor_subscriptions", "status = 'active'"),
+                "tracked_media_total": _count_table_rows(cursor, "tracked_actor_media"),
+                "tracked_media_in_library": _count_table_rows(cursor, "tracked_actor_media", "status = 'IN_LIBRARY'"),
+            }
+
+            # --- 4. 系统与缓存统计 ---
+            db_size_bytes = os.path.getsize(config_manager.DB_PATH)
+            stats['system'] = {
+                "db_size_mb": round(db_size_bytes / (1024 * 1024), 2),
+                "translation_cache_count": _count_table_rows(cursor, "translation_cache"),
+                "processed_log_count": _count_table_rows(cursor, "processed_log"),
+                "failed_log_count": _count_table_rows(cursor, "failed_log"),
+            }
+
+        return jsonify({"status": "success", "data": stats})
+
+    except Exception as e:
+        logger.error(f"获取数据库统计信息时发生严重错误: {e}", exc_info=True)
+        return jsonify({"error": "获取数据库统计信息时发生服务器内部错误"}), 500
 
 # --- 待复核列表管理 ---
 @db_admin_bp.route('/review_items', methods=['GET'])
