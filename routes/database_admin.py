@@ -207,7 +207,7 @@ def api_get_database_stats():
             stats['subscriptions'] = {
                 "watchlist_active": _count_table_rows(cursor, "watchlist", "status = 'Watching'"),
                 "watchlist_paused": _count_table_rows(cursor, "watchlist", "status = 'Paused'"),
-                "watchlist_ended": _count_table_rows(cursor, "watchlist", "status = 'Ended'"),
+                "watchlist_ended": _count_table_rows(cursor, "watchlist", "status = 'Completed'"),
                 "actor_subscriptions_active": _count_table_rows(cursor, "actor_subscriptions", "status = 'active'"),
                 "tracked_media_total": _count_table_rows(cursor, "tracked_actor_media"),
                 "tracked_media_in_library": _count_table_rows(cursor, "tracked_actor_media", "status = 'IN_LIBRARY'"),
