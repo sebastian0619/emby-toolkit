@@ -2025,8 +2025,6 @@ def task_populate_metadata_cache(processor: 'MediaProcessor'):
 def task_generate_all_covers(processor: MediaProcessor):
     """
     后台任务：为所有（未被忽略的）媒体库生成封面。
-    【V20 - 终极数字精确版】
-    - 使用增强后的 get_item_count 函数，为每个媒体库获取精确的项目总数。
     """
     task_name = "一键生成所有媒体库封面"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
@@ -2057,12 +2055,12 @@ def task_generate_all_covers(processor: MediaProcessor):
             return
 
         # 3. 筛选媒体库
-        server_id = 'main_emby' 
-        exclude_unique_ids = set(cover_config.get("exclude_libraries", []))
+        # ★★★ 核心修复：直接使用原始ID进行比较 ★★★
+        exclude_ids = set(cover_config.get("exclude_libraries", []))
         
         libraries_to_process = [
             lib for lib in all_libraries 
-            if f"{server_id}-{lib.get('Id')}" not in exclude_unique_ids 
+            if lib.get('Id') not in exclude_ids  # <-- 修正了这里的判断逻辑
             and lib.get('CollectionType') in ['movies', 'tvshows', 'boxsets', 'mixed', 'music']
         ]
         
@@ -2076,13 +2074,9 @@ def task_generate_all_covers(processor: MediaProcessor):
         # 4. 实例化服务并循环处理
         cover_service = CoverGeneratorService(config=cover_config)
         
-        # 定义媒体库类型到API查询类型的映射
         TYPE_MAP = {
-            'movies': 'Movie',
-            'tvshows': 'Series',
-            'music': 'MusicAlbum',
-            'boxsets': 'BoxSet',
-            'mixed': 'Movie,Series'
+            'movies': 'Movie', 'tvshows': 'Series', 'music': 'MusicAlbum',
+            'boxsets': 'BoxSet', 'mixed': 'Movie,Series'
         }
 
         for i, library in enumerate(libraries_to_process):
@@ -2092,24 +2086,22 @@ def task_generate_all_covers(processor: MediaProcessor):
             task_manager.update_status_from_thread(progress, f"({i+1}/{total}) 正在处理: {library.get('Name')}")
             
             try:
-                # 【【【核心修复：调用增强后的函数获取精准数量】】】
                 library_id = library.get('Id')
                 collection_type = library.get('CollectionType')
                 item_type_to_query = TYPE_MAP.get(collection_type)
 
                 item_count = 0
                 if library_id and item_type_to_query:
-                    # 调用我们增强后的函数，传入父级ID和要查询的类型
                     item_count = emby_handler.get_item_count(
                         base_url=processor.emby_url,
                         api_key=processor.emby_api_key,
                         user_id=processor.emby_user_id,
                         parent_id=library_id,
                         item_type=item_type_to_query
-                    ) or 0 # 如果返回None则默认为0
+                    ) or 0
 
                 cover_service.generate_for_library(
-                    emby_server_id=server_id,
+                    emby_server_id='main_emby', # 这里的 server_id 只是一个占位符，不影响忽略逻辑
                     library=library,
                     item_count=item_count
                 )

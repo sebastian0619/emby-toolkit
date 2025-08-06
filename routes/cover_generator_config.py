@@ -5,7 +5,6 @@ import json
 import logging
 from flask import Blueprint, request, jsonify
 import task_manager
-from pathlib import Path
 from extensions import media_processor_instance
 import config_manager # 导入以获取数据路径
 from extensions import login_required
@@ -128,7 +127,7 @@ def api_generate_cover_preview():
     try:
         data = request.json
         base_image_b64 = data.get('base_image')
-        item_count = data.get('item_count', 99)
+        item_count = data.get('item_count', 99) # 使用一个示例数字
         badge_style = data.get('badge_style', 'badge')
         badge_size_ratio = data.get('badge_size_ratio', 0.12)
         
@@ -141,6 +140,7 @@ def api_generate_cover_preview():
         import base64
         from io import BytesIO
 
+        # 移除 base64 头部 (e.g., "data:image/png;base64,")
         if ',' in base_image_b64:
             header, encoded = base_image_b64.split(',', 1)
             image_data = base64.b64decode(encoded)
@@ -149,28 +149,20 @@ def api_generate_cover_preview():
         
         image = Image.open(BytesIO(image_data)).convert("RGBA")
 
-        # 2. 获取字体路径
+        # 2. 获取字体路径 (我们需要实例化一个临时的 CoverGeneratorService 来获取)
+        # 这里的 config 可以是默认的，因为它只影响字体路径
         temp_config = get_default_config() 
         cover_service = CoverGeneratorService(config=temp_config)
-        cover_service._CoverGeneratorService__get_fonts()
+        cover_service._CoverGeneratorService__get_fonts() # 调用私有方法来加载字体路径
         font_path = str(cover_service.en_font_path)
 
-        # 【【【关键修改：构建自定义徽章图片的路径】】】
-        # 使用 __file__ 构建相对于当前文件的可靠路径
-        current_dir = Path(__file__).parent.parent # 从 routes 目录上溯到项目根目录
-        badge_png_path = current_dir / "services" / "cover_generator" / "styles" / "assets" / "badge_image.png"
-        if not badge_png_path.exists():
-            logger.warning(f"预览时未找到徽章图片: {badge_png_path}")
-            badge_png_path = None # 如果图片不存在，则安全退回
-        
-        # 3. 调用核心绘图函数，并传入徽章图片路径
+        # 3. 调用核心绘图函数
         image_with_badge = draw_badge(
             image=image,
             item_count=item_count,
             font_path=font_path,
             style=badge_style,
-            size_ratio=badge_size_ratio,
-            badge_image_path=str(badge_png_path) if badge_png_path else None # <--- 传入新参数
+            size_ratio=badge_size_ratio
         )
 
         # 4. 将结果编码回 base64

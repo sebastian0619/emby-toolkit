@@ -36,7 +36,7 @@
             </n-gi>
             <!-- 第三列 -->
             <n-gi>
-              <n-form-item label="在封面上显示媒体数量">
+              <n-form-item label="在封面上显示媒体统计数字">
                 <n-switch v-model:value="configData.show_item_count" />
                 <template #feedback>在封面左上角显示媒体项总数</template>
               </n-form-item>
@@ -66,7 +66,7 @@
           <n-grid :cols="2" :x-gap="24">
             <!-- 子选项1：样式选择 -->
             <n-gi>
-              <n-form-item label="徽章样式">
+              <n-form-item label="数字样式">
                 <n-radio-group v-model:value="configData.badge_style">
                   <n-radio-button value="badge">徽章</n-radio-button>
                   <n-radio-button value="ribbon">缎带</n-radio-button>
@@ -75,7 +75,7 @@
             </n-gi>
             <!-- 子选项2：大小滑块 -->
             <n-gi>
-              <n-form-item label="徽章大小">
+              <n-form-item label="数字大小">
                 <n-slider 
                   v-model:value="configData.badge_size_ratio" 
                   :step="0.01" 
