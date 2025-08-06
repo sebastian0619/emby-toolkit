@@ -1,139 +1,127 @@
-<!-- src/App.vue -->
+<!-- src/components/MainLayout.vue (最终正确版) -->
 <template>
-  <div :class="isDarkTheme ? 'dark-mode' : 'light-mode'">
-        <!-- 1. 如果需要登录，则显示全屏的登录页面 -->
-        <div v-if="authStore.isAuthEnabled && !authStore.isLoggedIn" class="fullscreen-container">
-          <Login />
+  <n-layout style="height: 100vh;">
+    <n-layout-header :bordered="false" class="app-header">
+      <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+        <span>Emby 工具箱</span>
+          <div style="display: flex; align-items: center; gap: 16px;">
+            <!-- 用户名下拉菜单 -->
+            <n-dropdown 
+              v-if="authStore.isAuthEnabled" 
+              trigger="hover" 
+              :options="userOptions" 
+              @select="handleUserSelect"
+            >
+              <div style="display: flex; align-items: center; cursor: pointer; gap: 4px;">
+                <span style="font-size: 14px;">欢迎, {{ authStore.username }}</span>
+                <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="currentColor" d="m7 10l5 5l5-5z"></path></svg>
+              </div>
+            </n-dropdown>
+
+            <span style="font-size: 12px; color: #999;">v{{ appVersion }}</span>
+            <n-switch 
+              :value="props.isDark" 
+              @update:value="newValue => emit('update:is-dark', newValue)"
+              size="small"
+            >
+              <template #checked>暗色</template>
+              <template #unchecked>亮色</template>
+            </n-switch>
+          </div>
+      </div>
+    </n-layout-header>
+    <n-layout has-sider>
+      <n-layout-sider
+        :bordered="false"
+        collapse-mode="width"
+        :collapsed-width="64"
+        :width="240"
+        show-trigger="arrow-circle"
+        content-style="padding-top: 10px;"
+        :native-scrollbar="false"
+        :collapsed="collapsed"
+        @update:collapsed="val => collapsed = val"
+      >
+        <n-menu
+          :collapsed="collapsed"
+          :collapsed-width="64"
+          :collapsed-icon-size="22"
+          :options="menuOptions"
+          :value="activeMenuKey"
+          @update:value="handleMenuUpdate"
+        />
+      </n-layout-sider>
+      <n-layout-content
+        class="app-main-content-wrapper"
+        content-style="padding: 24px; transition: background-color 0.3s;"
+        :native-scrollbar="false"
+      >
+        <div class="status-display-area" v-if="showStatusArea">
+          <n-card size="small" :bordered="false" style="margin-bottom: 15px;">
+            <p style="margin: 0; font-size: 0.9em; display: flex; align-items: center; justify-content: space-between; gap: 16px;">
+              <span style="flex-grow: 1;">
+                <strong>任务状态:</strong>
+                <n-text :type="statusTypeComputed">{{ backgroundTaskStatus.current_action }}</n-text> -
+                <n-text :type="statusTypeComputed" :depth="2">{{ backgroundTaskStatus.message }}</n-text>
+                <n-progress
+                    v-if="backgroundTaskStatus.is_running && backgroundTaskStatus.progress >= 0 && backgroundTaskStatus.progress < 100"
+                    type="line"
+                    :percentage="backgroundTaskStatus.progress"
+                    :indicator-placement="'inside'"
+                    processing
+                    style="margin-top: 5px;"
+                />
+                <span v-else-if="backgroundTaskStatus.is_running"> ({{ backgroundTaskStatus.progress }}%)</span>
+              </span>
+              <n-button
+                v-if="backgroundTaskStatus.is_running"
+                type="error"
+                size="small"
+                @click="triggerStopTask"
+                ghost
+              >
+                <template #icon><n-icon :component="StopIcon" /></template>
+              </n-button>
+            </p>
+          </n-card>
         </div>
-
-        <!-- 2. 否则，显示后台管理布局 -->
-        <n-layout v-else style="height: 100vh;">
-          <n-layout-header :bordered="false" class="app-header">
-            <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-              <span>Emby 工具箱</span>
-                <div style="display: flex; align-items: center; gap: 16px;">
-                  <!-- 用户名下拉菜单 -->
-                  <n-dropdown 
-                    v-if="authStore.isAuthEnabled" 
-                    trigger="hover" 
-                    :options="userOptions" 
-                    @select="handleUserSelect"
-                  >
-                    <div style="display: flex; align-items: center; cursor: pointer; gap: 4px;">
-                      <span style="font-size: 14px;">欢迎, {{ authStore.username }}</span>
-                      <!-- 可以加一个下拉小箭头图标，更美观 -->
-                      <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="currentColor" d="m7 10l5 5l5-5z"></path></svg>
-                    </div>
-                  </n-dropdown>
-
-                  <span style="font-size: 12px; color: #999;">v{{ appVersion }}</span>
-                  <n-switch v-model:value="isDarkTheme" size="small">
-                    <template #checked>暗色</template>
-                    <template #unchecked>亮色</template>
-                  </n-switch>
-                </div>
-            </div>
-          </n-layout-header>
-          <n-layout has-sider>
-            <n-layout-sider
-              :bordered="false"
-              collapse-mode="width"
-              :collapsed-width="64"
-              :width="240"
-              show-trigger="arrow-circle"
-              content-style="padding-top: 10px;"
-              :native-scrollbar="false"
-              :collapsed="collapsed"
-              @update:collapsed="val => collapsed = val"
-            >
-              <n-menu
-                :collapsed="collapsed"
-                :collapsed-width="64"
-                :collapsed-icon-size="22"
-                :options="menuOptions"
-                :value="activeMenuKey"
-                @update:value="handleMenuUpdate"
-              />
-            </n-layout-sider>
-            <n-layout-content
-              class="app-main-content-wrapper"
-              content-style="padding: 24px; transition: background-color 0.3s;"
-              :style="{ backgroundColor: isDarkTheme ? (themeOverridesComputed?.common?.bodyColor || '#101014') : (themeOverridesComputed?.common?.bodyColor || '#f0f2f5') }"
-              :native-scrollbar="false"
-            >
-              <div class="status-display-area" v-if="showStatusArea">
-                <n-card size="small" :bordered="false" style="margin-bottom: 15px;">
-                  <!-- ★ 1. 修改 p 标签的样式，启用 flex 布局 -->
-                  <p style="margin: 0; font-size: 0.9em; display: flex; align-items: center; justify-content: space-between; gap: 16px;">
-                      <!-- 左侧的状态文本和进度条 -->
-                      <span style="flex-grow: 1;">
-                        <strong>任务状态:</strong>
-                        <n-text :type="statusTypeComputed">{{ backgroundTaskStatus.current_action }}</n-text> -
-                        <n-text :type="statusTypeComputed" :depth="2">{{ backgroundTaskStatus.message }}</n-text>
-                        <n-progress
-                            v-if="backgroundTaskStatus.is_running && backgroundTaskStatus.progress >= 0 && backgroundTaskStatus.progress < 100"
-                            type="line"
-                            :percentage="backgroundTaskStatus.progress"
-                            :indicator-placement="'inside'"
-                            processing
-                            style="margin-top: 5px;"
-                        />
-                        <span v-else-if="backgroundTaskStatus.is_running"> ({{ backgroundTaskStatus.progress }}%)</span>
-                      </span>
-                      
-                      <!-- ★ 2. 新增的停止按钮 -->
-                      <n-button
-                        v-if="backgroundTaskStatus.is_running"
-                        type="error"
-                        size="small"
-                        @click="triggerStopTask"
-                        ghost
-                        circle
-                      >
-                        <template #icon><n-icon :component="StopIcon" /></template>
-                      </n-button>
-                  </p>
-                </n-card>
-              </div>
-              <div class="page-content-inner-wrapper">
-               <router-view v-slot="slotProps">
-                <component :is="slotProps.Component" :task-status="backgroundTaskStatus" />
-              </router-view>
-              </div>
-            </n-layout-content>
-          </n-layout>
-        </n-layout>
-        <n-modal 
-            v-model:show="showPasswordModal"
-            preset="card"
-            style="width: 90%; max-width: 500px;"
-            title="修改密码"
-            :bordered="false"
-            size="huge"
-          >
-            <ChangePassword @password-changed="showPasswordModal = false" />
-          </n-modal>
-  </div>
+        <div class="page-content-inner-wrapper">
+          <router-view v-slot="slotProps">
+            <component :is="slotProps.Component" :task-status="backgroundTaskStatus" />
+          </router-view>
+        </div>
+      </n-layout-content>
+    </n-layout>
+    <n-modal 
+      v-model:show="showPasswordModal"
+      preset="card"
+      style="width: 90%; max-width: 500px;"
+      title="修改密码"
+      :bordered="false"
+      size="huge"
+    >
+      <ChangePassword @password-changed="showPasswordModal = false" />
+    </n-modal>
+  </n-layout>
 </template>
 
 <script setup>
 import { ref, computed, h, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import {
-  NConfigProvider, NLayout, NLayoutHeader, NLayoutSider, NLayoutContent,
+  NLayout, NLayoutHeader, NLayoutSider, NLayoutContent,
   NMenu, NSwitch, NIcon, NCard, NText, NProgress,
-  darkTheme, zhCN, dateZhCN, useMessage, NMessageProvider,
-  NModal, NDropdown, NDialogProvider, NButton
+  useMessage, NModal, NDropdown, NButton
 } from 'naive-ui';
 import axios from 'axios';
 import { useAuthStore } from './stores/auth';
-// [新增] 引入 useConfig 以获取全局配置
 import { useConfig } from './composables/useConfig';
-import Login from './components/Login.vue';
 import ChangePassword from './components/settings/ChangePassword.vue';
 import {
   AnalyticsOutline as StatsIcon,
   ListOutline as ReviewListIcon,
+  ServerOutline as EmbyIcon,
+  KeyOutline as ApiIcon,
   TimerOutline as SchedulerIcon,
   OptionsOutline as GeneralIcon,
   LogOutOutline as LogoutIcon,
@@ -143,61 +131,39 @@ import {
   InformationCircleOutline as AboutIcon,
   CreateOutline as CustomCollectionsIcon,
   ColorPaletteOutline as PaletteIcon,
-  Stop as StopIcon,
+  Stop as StopIcon
 } from '@vicons/ionicons5';
-import { Password24Regular as PasswordIcon } from '@vicons/fluent'
-import { watchEffect } from 'vue'
+import { Password24Regular as PasswordIcon } from '@vicons/fluent';
+
+// 1. 定义接收的 props 和要发出的 emits
+const props = defineProps({
+  isDark: Boolean
+});
+const emit = defineEmits(['update:is-dark']);
+
+// 2. 内部状态定义
 const router = useRouter(); 
 const route = useRoute(); 
 const authStore = useAuthStore();
-// [新增] 调用 useConfig 获取配置模型
 const { configModel } = useConfig();
+const message = useMessage();
 
-// --- 状态定义 (Refs) ---
 const showPasswordModal = ref(false);
-const isDarkTheme = ref(localStorage.getItem('theme') !== 'light');
 const collapsed = ref(false);
 const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲', message: '等待任务', progress: 0, last_action: null });
 const showStatusArea = ref(true);
 const activeMenuKey = computed(() => route.name);
 const appVersion = ref(__APP_VERSION__);
-const message = useMessage();
 
-watch(isDarkTheme, (newValue) => {
-  localStorage.setItem('theme', newValue ? 'dark' : 'light');
-});
-
+// 3. 所有函数和 computed 属性
 const renderIcon = (iconComponent) => {
   return () => h(NIcon, null, { default: () => h(iconComponent) });
 };
-watchEffect(() => {
-  const html = document.documentElement
-  html.classList.remove('dark', 'light')
-  html.classList.add(isDarkTheme.value ? 'dark' : 'light')
-})
-// --- 用户下拉菜单的逻辑 ---
-const userOptions = computed(() => [
-  {
-    label: '修改密码',
-    key: 'change-password',
-    icon: renderIcon(PasswordIcon)
-  },
-  {
-    label: '退出登录',
-    key: 'logout',
-    icon: renderIcon(LogoutIcon)
-  }
-]);
 
-// ★ 刹车 ★
-const triggerStopTask = async () => {
-  try {
-    await axios.post('/api/trigger_stop_task');
-    message.info('已发送停止任务请求。');
-  } catch (error) {
-    message.error(error.response?.data?.error || '发送停止任务请求失败，请查看日志。');
-  }
-};
+const userOptions = computed(() => [
+  { label: '修改密码', key: 'change-password', icon: renderIcon(PasswordIcon) },
+  { label: '退出登录', key: 'logout', icon: renderIcon(LogoutIcon) }
+]);
 
 const handleUserSelect = async (key) => {
   if (key === 'change-password') {
@@ -207,58 +173,13 @@ const handleUserSelect = async (key) => {
   }
 };
 
-// --- [修改] 侧边栏菜单的定义，使其动态化 ---
 const menuOptions = computed(() => [
-  {
-    label: '发现',
-    key: 'group-discovery',
-    type: 'group',
-    children: [
-      { 
-        label: '数据看板', 
-        key: 'DatabaseStats', // 必须与路由的 name 匹配
-        icon: renderIcon(StatsIcon) // 使用新图标
-      },
-    ]
-  },
-  {
-    label: '整理',
-    key: 'group-management',
-    type: 'group',
-    children: [
-      { label: '合集检查', key: 'Collections', icon: renderIcon(CollectionsIcon) },
-      { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) },
-      { 
-        label: '封面生成', 
-        key: 'CoverGeneratorConfig',
-        icon: renderIcon(PaletteIcon)
-      },
-      { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) },
-    ]
-  },
-  {
-    label: '订阅',
-    key: 'group-subscriptions',
-    type: 'group',
-    children: [
-      { label: '智能追剧', key: 'Watchlist', icon: renderIcon(WatchlistIcon) },
-      { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) },
-    ]
-  },
-  {
-    label: '系统',
-    key: 'group-system',
-    type: 'group',
-    children: [
-      { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
-      { label: '任务中心', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
-      { label: '查看更新', key: 'Releases', icon: renderIcon(AboutIcon) },
-    ]
-  }
+  { label: '发现', key: 'group-discovery', type: 'group', children: [ { label: '数据看板', key: 'DatabaseStats', icon: renderIcon(StatsIcon) } ] },
+  { label: '整理', key: 'group-management', type: 'group', children: [ { label: '合集检查', key: 'Collections', icon: renderIcon(CollectionsIcon) }, { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) }, { label: '封面生成', key: 'CoverGeneratorConfig', icon: renderIcon(PaletteIcon) }, { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) }, ] },
+  { label: '订阅', key: 'group-subscriptions', type: 'group', children: [ { label: '智能追剧', key: 'Watchlist', icon: renderIcon(WatchlistIcon) }, { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) }, ] },
+  { label: '系统', key: 'group-system', type: 'group', children: [ { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) }, { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) }, { label: '查看更新', key: 'Releases', icon: renderIcon(AboutIcon) }, ] }
 ]);
 
-
-// --- 菜单点击事件处理 ---
 async function handleMenuUpdate(key) {
   router.push({ name: key });
 }
@@ -268,7 +189,6 @@ const statusTypeComputed = computed(() => 'info');
 const fetchStatus = async () => {
   try {
     const response = await axios.get('/api/status');
-    
     backgroundTaskStatus.value = response.data;
   } catch (error) {
     if (error.response?.status !== 401) {
@@ -277,72 +197,36 @@ const fetchStatus = async () => {
   }
 };
 
-const themeOverridesComputed = computed(() => {
-  const lightCardShadow = '0 1px 2px -2px rgba(0, 0, 0, 0.08), 0 3px 6px 0 rgba(0, 0, 0, 0.06), 0 5px 12px 4px rgba(0, 0, 0, 0.04)';
-  const darkCardShadow = '0 1px 2px -2px rgba(0, 0, 0, 0.24), 0 3px 6px 0 rgba(0, 0, 0, 0.18), 0 5px 12px 4px rgba(0, 0, 0, 0.12)';
-
-  if (!isDarkTheme.value) {
-    return {
-      common: { bodyColor: '#f0f2f5' },
-      Card: { boxShadow: lightCardShadow }
-    };
+const triggerStopTask = async () => {
+  try {
+    await axios.post('/api/trigger_stop_task');
+    message.info('已发送停止任务请求。');
+  } catch (error) {
+    message.error(error.response?.data?.error || '发送停止任务请求失败，请查看日志。');
   }
-  
-  return {
-    common: { 
-      bodyColor: '#101014', 
-      cardColor: '#1a1a1e', 
-      inputColor: '#1a1a1e', 
-      actionColor: '#242428', 
-      borderColor: 'rgba(255, 255, 255, 0.12)' 
-    },
-    Card: { 
-      color: '#1a1a1e', 
-      titleTextColor: 'rgba(255, 255, 255, 0.92)',
-      boxShadow: darkCardShadow,
-    },
-    DataTable: { 
-      tdColor: '#1a1a1e', 
-      thColor: '#1a1a1e', 
-      tdColorStriped: '#202024' 
-    },
-    Input: { color: '#1a1a1e' },
-    Select: { peers: { InternalSelection: { color: '#1a1a1e' } } }
-  };
-});
+};
 
 let statusIntervalId = null;
 
-onMounted(() => {
-});
-
+onMounted(() => {});
 onBeforeUnmount(() => {
   if (statusIntervalId) clearInterval(statusIntervalId);
 });
 
 watch(() => authStore.isLoggedIn, (newIsLoggedIn, oldIsLoggedIn) => {
   if (newIsLoggedIn) {
-    // 用户刚刚登录成功 (从 false -> true)
-    if (!oldIsLoggedIn) {
-      // 检查 Pinia store 中由后端设置的标志
-      if (authStore.forceChangePassword) {
-        console.log("检测到需要强制修改密码，正在弹出模态框...");
-        showPasswordModal.value = true;
-      }
+    if (!oldIsLoggedIn && authStore.forceChangePassword) {
+      showPasswordModal.value = true;
     }
-    
-    // 只要是登录状态，就启动状态轮询
     if (!statusIntervalId) {
       fetchStatus();
       statusIntervalId = setInterval(fetchStatus, 1000);
     }
   } else {
-    // 用户已登出
     if (statusIntervalId) {
       clearInterval(statusIntervalId);
       statusIntervalId = null;
     }
-    // 如果当前不在登录页，则跳转到登录页
     if (route.name !== 'Login') {
       router.push({ name: 'Login' });
     }
@@ -351,32 +235,14 @@ watch(() => authStore.isLoggedIn, (newIsLoggedIn, oldIsLoggedIn) => {
 </script>
 
 <style>
-html, body { height: 100vh; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; overflow: hidden; }
+/* MainLayout 的样式 */
 .app-header { padding: 0 24px; height: 60px; display: flex; align-items: center; font-size: 1.25em; font-weight: 600; flex-shrink: 0; }
 .status-display-area .n-card .n-card__content { padding: 8px 12px !important; }
 .status-display-area p { margin: 0; font-size: 0.9em; }
 .app-main-content-wrapper { height: 100%; display: flex; flex-direction: column; }
 .status-display-area { flex-shrink: 0; }
 .page-content-inner-wrapper { flex-grow: 1; overflow-y: auto; }
-.fullscreen-container { display: flex; justify-content: center; align-items: center; height: 100vh; width: 100%; background-color: #f0f2f5; }
-.dark-mode .fullscreen-container { background-color: #101014; }
-/* 新增：美化菜单分组标题 */
-.n-menu .n-menu-item-group-title {
-  font-size: 12px;
-  font-weight: 500;
-  color: #8e8e93; /* 调整为截图中的灰色调 */
-  padding-left: 24px; /* 调整左边距，使其与菜单项对齐 */
-  margin-top: 16px; /* 增加与上一个分组的间距 */
-  margin-bottom: 8px; /* 调整与下方第一个菜单项的间距 */
-}
-
-/* 新增：确保第一个分组顶部没有额外间距 */
-.n-menu .n-menu-item-group:first-child .n-menu-item-group-title {
-  margin-top: 0;
-}
-
-/* 新增：暗色模式下的分组标题颜色 */
-.dark-mode .n-menu .n-menu-item-group-title {
-  color: #828287;
-}
+.n-menu .n-menu-item-group-title { font-size: 12px; font-weight: 500; color: #8e8e93; padding-left: 24px; margin-top: 16px; margin-bottom: 8px; }
+.n-menu .n-menu-item-group:first-child .n-menu-item-group-title { margin-top: 0; }
+html.dark .n-menu .n-menu-item-group-title { color: #828287; }
 </style>

@@ -1,6 +1,6 @@
-<!-- src/App.vue (简化后的版本) -->
+<!-- src/App.vue (最终正确版) -->
 <template>
-  <div :class="isDarkTheme ? 'dark-mode' : 'light-mode'">
+  <div>
     <n-config-provider :theme="isDarkTheme ? darkTheme : undefined" :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
       <n-message-provider>
         <n-dialog-provider>
@@ -9,7 +9,11 @@
             <Login />
           </div>
           <!-- 2. 否则，渲染我们的主布局组件 -->
-          <MainLayout v-else />
+          <MainLayout 
+            v-else 
+            :is-dark="isDarkTheme" 
+            @update:is-dark="newValue => isDarkTheme = newValue"
+          />
         </n-dialog-provider>
       </n-message-provider>
     </n-config-provider>
@@ -17,24 +21,26 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watchEffect } from 'vue';
 import { NConfigProvider, NMessageProvider, NDialogProvider, darkTheme, zhCN, dateZhCN } from 'naive-ui';
 import { useAuthStore } from './stores/auth';
-import MainLayout from './MainLayout.vue'; // 引入新的布局组件
+import MainLayout from './MainLayout.vue';
 import Login from './components/Login.vue';
 
 const authStore = useAuthStore();
+
+// 1. isDarkTheme 状态由 App.vue 这个顶层组件拥有和管理
 const isDarkTheme = ref(localStorage.getItem('theme') !== 'light');
 
-// 监听主题变化并更新 localStorage 和 html class
-watch(isDarkTheme, (newValue) => {
-  localStorage.setItem('theme', newValue ? 'dark' : 'light');
+// 2. watchEffect 监听 isDarkTheme 的变化，并同步更新 <html> 标签的 class
+watchEffect(() => {
   const html = document.documentElement;
   html.classList.remove('dark', 'light');
-  html.classList.add(newValue ? 'dark' : 'light');
-}, { immediate: true });
+  html.classList.add(isDarkTheme.value ? 'dark' : 'light');
+  localStorage.setItem('theme', isDarkTheme.value ? 'dark' : 'light');
+});
 
-// 主题覆盖配置可以保留在 App.vue，因为它是全局的
+// 3. 主题覆盖配置依赖 isDarkTheme，所以也必须在这里
 const themeOverrides = computed(() => {
   const lightCardShadow = '0 1px 2px -2px rgba(0, 0, 0, 0.08), 0 3px 6px 0 rgba(0, 0, 0, 0.06), 0 5px 12px 4px rgba(0, 0, 0, 0.04)';
   const darkCardShadow = '0 1px 2px -2px rgba(0, 0, 0, 0.24), 0 3px 6px 0 rgba(0, 0, 0, 0.18), 0 5px 12px 4px rgba(0, 0, 0, 0.12)';
@@ -59,6 +65,9 @@ const themeOverrides = computed(() => {
 <style>
 /* 全局样式可以保留在 App.vue */
 html, body { height: 100vh; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; overflow: hidden; }
-.fullscreen-container { display: flex; justify-content: center; align-items: center; height: 100vh; width: 100%; background-color: #f0f2f5; }
-.dark-mode .fullscreen-container { background-color: #101014; }
+.fullscreen-container { display: flex; justify-content: center; align-items: center; height: 100vh; width: 100%; }
+
+/* 确保全局样式能正确应用 */
+html.light .fullscreen-container { background-color: #f0f2f5; }
+html.dark .fullscreen-container { background-color: #101014; }
 </style>
