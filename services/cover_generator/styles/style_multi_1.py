@@ -201,14 +201,24 @@ def get_poster_primary_color(image_path):
         return [(150, 100, 50, 255)]
 
 def create_blur_background(image_path, template_width, template_height, background_color, blur_size, color_ratio, lighten_gradient_strength=0.6):
-    original_img = Image.open(image_path).convert('RGBA')
+    # 【修复】从 RGBA 改为 RGB，避免通道不匹配
+    original_img = Image.open(image_path).convert('RGB')
     bg_img = ImageOps.fit(original_img.copy(), (template_width, template_height), method=Image.LANCZOS).filter(ImageFilter.GaussianBlur(radius=int(blur_size)))
+    
     actual_color = darken_color(background_color, 0.85)
+    # 确保 bg_color 是 3 通道
     bg_color = actual_color[:3]
+    
+    # bg_img_array 现在是 (H, W, 3)
     bg_img_array = np.array(bg_img, dtype=float)
+    # bg_color_array 是 (1, 1, 3)，形状匹配
     bg_color_array = np.array([[bg_color]], dtype=float)
+    
     blended_bg_array = np.clip(bg_img_array * (1 - float(color_ratio)) + bg_color_array * float(color_ratio), 0, 255).astype(np.uint8)
-    blended_bg_img = Image.fromarray(blended_bg_array, 'RGBA')
+    
+    # 【修复】从 RGB 数组创建图像，然后转换为 RGBA 以进行后续合成
+    blended_bg_img = Image.fromarray(blended_bg_array, 'RGB').convert('RGBA')
+
     if lighten_gradient_strength > 0:
         gradient_mask = Image.new("L", (template_width, template_height), 0)
         draw_mask = ImageDraw.Draw(gradient_mask)
@@ -218,6 +228,7 @@ def create_blur_background(image_path, template_width, template_height, backgrou
         lighten_layer = Image.new("RGBA", (template_width, template_height), (255, 255, 255, 0))
         lighten_layer.putalpha(gradient_mask)
         blended_bg_img = Image.alpha_composite(blended_bg_img, lighten_layer)
+        
     return add_film_grain(blended_bg_img, intensity=0.03)
 
 def image_to_base64(image):
