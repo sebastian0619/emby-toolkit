@@ -175,9 +175,9 @@ const handleUserSelect = async (key) => {
 
 const menuOptions = computed(() => [
   { label: '发现', key: 'group-discovery', type: 'group', children: [ { label: '数据看板', key: 'DatabaseStats', icon: renderIcon(StatsIcon) } ] },
-  { label: '整理', key: 'group-management', type: 'group', children: [ { label: '合集检查', key: 'Collections', icon: renderIcon(CollectionsIcon) }, { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) }, { label: '封面生成', key: 'CoverGeneratorConfig', icon: renderIcon(PaletteIcon) }, { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) }, ] },
+  { label: '整理', key: 'group-management', type: 'group', children: [ { label: '原生合集', key: 'Collections', icon: renderIcon(CollectionsIcon) }, { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) }, { label: '封面生成', key: 'CoverGeneratorConfig', icon: renderIcon(PaletteIcon) }, { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) }, ] },
   { label: '订阅', key: 'group-subscriptions', type: 'group', children: [ { label: '智能追剧', key: 'Watchlist', icon: renderIcon(WatchlistIcon) }, { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) }, ] },
-  { label: '系统', key: 'group-system', type: 'group', children: [ { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) }, { label: '定时任务', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) }, { label: '查看更新', key: 'Releases', icon: renderIcon(AboutIcon) }, ] }
+  { label: '系统', key: 'group-system', type: 'group', children: [ { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) }, { label: '任务中心', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) }, { label: '查看更新', key: 'Releases', icon: renderIcon(AboutIcon) }, ] }
 ]);
 
 async function handleMenuUpdate(key) {
