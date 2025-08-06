@@ -23,11 +23,11 @@
 
 <script setup>
 import { ref } from 'vue';
-import { useRouter } from 'vue-router'; // ★★★ 1. 导入 useRouter ★★★
+import { useRouter } from 'vue-router'; // ★ 1. 重新导入 useRouter
 import { NCard, NForm, NFormItemRow, NInput, NButton, useMessage } from 'naive-ui';
 import { useAuthStore } from '../stores/auth';
 
-const router = useRouter(); // ★★★ 2. 获取 router 实例 ★★★
+const router = useRouter(); // ★ 2. 获取 router 实例
 const credentials = ref({
   username: 'admin',
   password: '',
@@ -46,16 +46,13 @@ async function handleLogin() {
     await authStore.login(credentials.value);
     message.success('登录成功！');
     
-    // ★★★ 3. 登录成功后，跳转到后台主页 ★★★
-    // 我们跳转到 'actions-status' 路由，这是你的默认后台页面之一
-    router.push({ name: 'actions-status' }); 
+    // ★ 3. 登录成功后，明确地告诉路由器跳转到主页 ★
+    // 我们跳转到 'DatabaseStats' (数据看板)，这是您现在的默认首页
+    router.push({ name: 'DatabaseStats' }); 
 
   } catch (error) {
-    if (error.response && error.response.data.error) {
-      message.error(`登录失败: ${error.response.data.error}`);
-    } else {
-      message.error('登录失败，请检查网络或联系管理员');
-    }
+    const errorMessage = error.response?.data?.error || error.message || '登录失败，请检查网络或联系管理员';
+    message.error(errorMessage);
   } finally {
     loading.value = false;
   }

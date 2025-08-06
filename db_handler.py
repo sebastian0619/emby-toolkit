@@ -855,13 +855,12 @@ def delete_actor_subscription(db_path: str, subscription_id: int) -> bool:
 # 模块 6: 自定义电影合集数据访问 (custom_collections Data Access)
 # ======================================================================
 
-def create_custom_collection(db_path: str, name: str, type: str, definition_json: str) -> Optional[int]:
+def create_custom_collection(db_path: str, name: str, type: str, definition_json: str) -> int:
     """
     在数据库中创建一个新的自定义合集定义。
-    :param name: 合集名称。
-    :param type: 合集类型 ('filter' 或 'list')。
-    :param definition_json: 存储规则或URL的JSON字符串。
-    :return: 新创建的合集的ID，如果失败则返回None。
+    :return: 新创建的合集的ID。
+    :raises sqlite3.IntegrityError: 如果合集名称已存在。
+    :raises sqlite3.Error: 如果发生其他数据库错误。
     """
     sql = """
         INSERT INTO custom_collections (name, type, definition_json, status, created_at)
@@ -873,10 +872,18 @@ def create_custom_collection(db_path: str, name: str, type: str, definition_json
             cursor.execute(sql, (name, type, definition_json))
             conn.commit()
             logger.info(f"成功创建自定义合集 '{name}' (类型: {type})。")
-            return cursor.lastrowid
+            new_id = cursor.lastrowid
+            if new_id is None:
+                # 这是一个不太可能发生但需要防御的情况
+                raise sqlite3.Error("数据库未能返回新创建行的ID。")
+            return new_id
+    except sqlite3.IntegrityError:
+        # ★★★ 捕获到唯一性冲突时，不再记录为错误，而是直接将异常向上抛出 ★★★
+        raise
     except sqlite3.Error as e:
-        logger.error(f"创建自定义合集 '{name}' 时发生数据库错误: {e}", exc_info=True)
-        return None
+        # ★★★ 捕获到其他数据库错误时，记录日志并同样向上抛出 ★★★
+        logger.error(f"创建自定义合集 '{name}' 时发生非预期的数据库错误: {e}", exc_info=True)
+        raise
 
 def get_all_custom_collections(db_path: str) -> List[Dict[str, Any]]:
     """

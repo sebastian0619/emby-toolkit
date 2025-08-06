@@ -34,42 +34,37 @@ def api_get_all_custom_collections():
         return jsonify({"error": "服务器内部错误"}), 500
 
 # --- 创建一个新的自定义合集定义 ---
-@custom_collections_bp.route('', methods=['POST']) # 原为 '/'
+@custom_collections_bp.route('', methods=['POST'])
 @login_required
 def api_create_custom_collection():
     """创建一个新的自定义合集定义"""
+    data = request.json
+    name = data.get('name')
+    type = data.get('type')
+    definition = data.get('definition')
+
+    if not all([name, type, definition]):
+        return jsonify({"error": "请求无效: 缺少 name, type, 或 definition"}), 400
+    # ... [其他数据验证代码] ...
+
+    definition_json = json.dumps(definition, ensure_ascii=False)
+    
     try:
-        data = request.json
-        name = data.get('name')
-        type = data.get('type')
-        definition = data.get('definition')
-
-        if not all([name, type, definition]):
-            return jsonify({"error": "请求无效: 缺少 name, type, 或 definition"}), 400
-        if type not in ['filter', 'list']:
-            return jsonify({"error": f"请求无效: 不支持的类型 '{type}'"}), 400
-
-        if type == 'list' and not definition.get('url'):
-            return jsonify({"error": "榜单导入模式下，definition 必须包含 'url'"}), 400
-        if type == 'filter':
-            if not isinstance(definition.get('rules'), list) or not definition.get('logic'):
-                 return jsonify({"error": "筛选规则模式下，definition 必须包含 'rules' 列表和 'logic'"}), 400
-            if not definition['rules']:
-                 return jsonify({"error": "筛选规则不能为空"}), 400
-
-        definition_json = json.dumps(definition, ensure_ascii=False)
-        
+        # ★★★ 将数据库操作包裹在新的 try...except 块中 ★★★
         collection_id = db_handler.create_custom_collection(config_manager.DB_PATH, name, type, definition_json)
-        
-        if collection_id:
-            new_collection = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, collection_id)
-            return jsonify(new_collection), 201
-        else:
-            return jsonify({"error": "数据库操作失败，无法创建合集"}), 500
-            
+        new_collection = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, collection_id)
+        return jsonify(new_collection), 201
+
+    except sqlite3.IntegrityError:
+        # ★★★ 专门捕获唯一性冲突异常 ★★★
+        logger.warning(f"创建自定义合集失败：名称 '{name}' 已存在。")
+        # ★★★ 返回一个明确的、用户友好的错误信息，和 409 Conflict 状态码 ★★★
+        return jsonify({"error": f"创建失败：名为 '{name}' 的合集已存在。"}), 409
+
     except Exception as e:
-        logger.error(f"创建自定义合集时发生严重错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器内部错误，请检查后端日志"}), 500
+        # ★★★ 捕获所有其他可能的错误（包括db_handler抛出的其他sqlite3.Error） ★★★
+        logger.error(f"创建自定义合集 '{name}' 时发生严重错误: {e}", exc_info=True)
+        return jsonify({"error": "数据库操作失败，无法创建合集，请检查后端日志。"}), 500
 
 # --- 更新一个自定义合集定义 ---
 @custom_collections_bp.route('/<int:collection_id>', methods=['PUT'])

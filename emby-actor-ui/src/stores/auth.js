@@ -1,4 +1,4 @@
-// src/stores/auth.js
+// src/stores/auth.js (最终正确版)
 
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
@@ -10,7 +10,6 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthEnabled = ref(true);
   const username = ref(null);
   const initializationError = ref(null);
-  // 【【【新增1】】】: 在 state 中定义强制修改密码的标志
   const forceChangePassword = ref(false);
 
   // --- Actions ---
@@ -21,12 +20,9 @@ export const useAuthStore = defineStore('auth', () => {
       isLoggedIn.value = response.data.logged_in;
       username.value = response.data.username;
       initializationError.value = null;
-      
-      // 如果检查后发现未登录，确保重置强制修改密码的标志
       if (!isLoggedIn.value) {
         forceChangePassword.value = false;
       }
-
       return response.data;
     } catch (error) {
       console.error('检查认证状态失败:', error);
@@ -34,46 +30,56 @@ export const useAuthStore = defineStore('auth', () => {
       isAuthEnabled.value = true;
       isLoggedIn.value = false;
       username.value = null;
-      forceChangePassword.value = false; // 出错时也要重置
+      forceChangePassword.value = false;
       throw error;
     }
   }
 
-  // 【【【修改】】】: 重写 login 函数，使其直接处理登录响应
+  // ★★★ 核心修改在这里 ★★★
   async function login(credentials) {
-    // 发送登录请求
-    const response = await axios.post('/api/auth/login', credentials);
-    
-    // 直接使用 /login 接口的返回数据来更新状态
-    isLoggedIn.value = true;
-    username.value = response.data.username;
-    forceChangePassword.value = response.data.force_change_password; // <--- 保存关键标志
-
-    return response; // 将原始响应返回，以防万一
+    try {
+      const response = await axios.post('/api/auth/login', credentials);
+      
+      // 1. 检查后端返回的数据是否表示成功。
+      //    我们假设成功的响应总是包含一个 username 字段。
+      //    如果您的后端成功时不一定返回 username，可以换成检查 response.status === 200
+      if (response.data && response.data.username) {
+        // 2. 只有在业务逻辑真正成功时，才更新前端状态
+        isLoggedIn.value = true;
+        username.value = response.data.username;
+        forceChangePassword.value = response.data.force_change_password;
+        // 成功时，函数正常结束
+      } else {
+        // 3. 如果后端返回了 200 OK 但内容表示失败，我们主动抛出一个错误
+        throw new Error('后端返回了意外的成功响应结构。');
+      }
+    } catch (error) {
+      // 4. 捕获所有错误（axios抛出的网络/HTTP错误，或我们自己抛出的业务错误）
+      console.error("登录时发生错误:", error);
+      // 5. 将错误再次向上抛出，让调用它的组件（Login.vue）去处理
+      throw error;
+    }
   }
 
-  // 【【【修改】】】: 重写 logout 函数，使其更直接
   async function logout() {
     try {
         await axios.post('/api/auth/logout');
     } catch (error) {
         console.error("登出时后端发生错误:", error);
     } finally {
-        // 无论后端是否成功，前端都必须清理状态
         isLoggedIn.value = false;
         username.value = null;
-        forceChangePassword.value = false; // <--- 重置标志
+        forceChangePassword.value = false;
     }
   }
 
   // --- Return ---
-  // 【【【新增2】】】: 确保将新状态和修改后的 action 导出
   return {
     isLoggedIn,
     isAuthEnabled,
     username,
     initializationError,
-    forceChangePassword, // <--- 导出新状态
+    forceChangePassword,
     checkAuthStatus,
     login,
     logout,
