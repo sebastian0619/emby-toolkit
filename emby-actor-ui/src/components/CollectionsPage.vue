@@ -59,7 +59,7 @@
       <div v-else-if="collections.length > 0" style="margin-top: 24px;">
         <n-grid cols="1 s:2 m:3 l:4 xl:5" :x-gap="20" :y-gap="20" responsive="screen">
           <n-gi v-for="item in renderedCollections" :key="item.emby_collection_id">
-            <n-card class="glass-section" :bordered="false" content-style="display: flex; padding: 0; gap: 16px;">
+            <n-card class="dashboard-card series-card" :bordered="false" content-style="display: flex; padding: 0; gap: 16px;">
               <div class="card-poster-container"><n-image lazy :src="getCollectionPosterUrl(item.poster_path)" class="card-poster" object-fit="cover"><template #placeholder><div class="poster-placeholder"><n-icon :component="AlbumsIcon" size="32" /></div></template></n-image></div>
               <div class="card-content-container">
                 <div class="card-header"><n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.name }}</n-ellipsis></div>
@@ -434,5 +434,29 @@ const extractYear = (dateStr) => {
   display: flex;
   justify-content: center;
   align-items: center;
+}
+/*
+  【布局终极修正】
+  此样式块专门用于对抗 .dashboard-card 的全局布局设置。
+  它使用 :deep() 来穿透组件，并用 !important 强制覆盖，
+  确保追剧列表的卡片内容区（.n-card__content）采用我们期望的水平布局。
+*/
+.series-card.dashboard-card > :deep(.n-card__content) {
+  /* 核心：强制将 flex 方向从全局的 "column" 改为 "row" */
+  flex-direction: row !important;
+
+  /* 
+    重置对齐方式。
+    全局的 "space-between" 在水平布局下会导致元素被拉开，
+    我们把它改回默认的起始对齐。
+  */
+  justify-content: flex-start !important;
+
+  /* 
+    重置内边距和间距，以匹配你在 template 中最初的设定。
+    这确保了海报和右侧内容区之间有正确的空隙。
+  */
+  padding: 12px !important;
+  gap: 12px !important;
 }
 </style>
