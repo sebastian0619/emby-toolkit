@@ -104,8 +104,10 @@
 
         <!-- 右侧演员列表 -->
         <n-grid-item span="1 l:3">
-          <n-card title="演员列表 (可拖动排序)" :bordered="false">
-            
+          <n-card :bordered="false" class="dashboard-card">
+            <template #header>
+              <span class="card-title">演员列表</span>
+            </template>
             <n-form label-placement="left" label-width="auto">
               <draggable
                 v-model="editableCast"

@@ -27,6 +27,15 @@
               size="small"
               style="width: 120px;"
             />
+            <!-- ★★★ 编辑按钮入口 ★★★ -->
+            <n-tooltip v-if="props.selectedTheme === 'custom'">
+              <template #trigger>
+                <n-button @click="emit('edit-custom-theme')" circle size="small">
+                  <template #icon><n-icon :component="PaletteIcon" /></template>
+                </n-button>
+              </template>
+              编辑我的专属主题
+            </n-tooltip>
 
             <!-- 随机主题按钮 -->
             <n-tooltip>
@@ -76,13 +85,9 @@
         content-style="padding: 24px; transition: background-color 0.3s;"
         :native-scrollbar="false"
       >
-        <!-- 注意：这里不再需要任务状态栏，因为它应该由 App.vue 或其他地方管理 -->
         <div class="page-content-inner-wrapper">
           <router-view v-slot="slotProps">
-            <component 
-              :is="slotProps.Component" 
-              :task-status="props.taskStatus" 
-            />
+            <component :is="slotProps.Component" :task-status="props.taskStatus" />
           </router-view>
         </div>
       </n-layout-content>
@@ -134,9 +139,9 @@ import { Password24Regular as PasswordIcon } from '@vicons/fluent';
 const props = defineProps({
   isDark: Boolean,
   selectedTheme: String,
-  taskStatus: Object // 【新增】接收军情
+  taskStatus: Object
 });
-const emit = defineEmits(['update:is-dark', 'update:selected-theme']);
+const emit = defineEmits(['update:is-dark', 'update:selected-theme', 'edit-custom-theme']);
 
 // 2. 状态和路由
 const router = useRouter(); 
@@ -145,13 +150,17 @@ const authStore = useAuthStore();
 const showPasswordModal = ref(false);
 const collapsed = ref(false);
 const activeMenuKey = computed(() => route.name);
-const appVersion = ref('1.0.0'); // 你的版本号
+const appVersion = ref('2.0.0'); // 你的版本号
 
 // 3. 从 theme.js 动态生成选项
-const themeOptions = Object.keys(themes).map(key => ({
-  label: themes[key].name,
-  value: key
-}));
+const themeOptions = [
+    ...Object.keys(themes).map(key => ({
+        label: themes[key].name,
+        value: key
+    })),
+    { type: 'divider', key: 'd1' },
+    { label: '自定义工坊…', value: 'custom' }
+];
 
 // 4. 所有函数
 const renderIcon = (iconComponent) => () => h(NIcon, null, { default: () => h(iconComponent) });
@@ -181,7 +190,7 @@ function handleMenuUpdate(key) {
 }
 
 const setRandomTheme = () => {
-  const otherThemes = themeOptions.filter(t => t.value !== props.selectedTheme);
+  const otherThemes = themeOptions.filter(t => t.type !== 'divider' && t.value !== props.selectedTheme);
   if (otherThemes.length === 0) return;
   const randomIndex = Math.floor(Math.random() * otherThemes.length);
   const randomTheme = otherThemes[randomIndex];

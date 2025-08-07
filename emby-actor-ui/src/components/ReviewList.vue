@@ -1,6 +1,10 @@
 <template>
   <n-layout content-style="padding: 24px;">
-  <n-card title="媒体库浏览器" class="glass-section" :bordered="false" size="small">
+  <n-card class="dashboard-card" :bordered="false" size="small">
+    <template #header>
+      <!-- 将 card-title 类应用到标题文本的容器上 -->
+      <span class="card-title">手动管理</span>
+    </template>
     <!-- ✅ [修正] Access prop via `props.taskStatus` -->
     <n-alert 
       v-if="props.taskStatus?.is_running" 

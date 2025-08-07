@@ -50,26 +50,6 @@ def api_handle_trigger_stop_task():
     else:
         return jsonify({"error": "核心处理器未就绪"}), 503
 
-# ✨✨✨ “立即执行”API接口 ✨✨✨
-@system_bp.route('/tasks/trigger/<task_identifier>', methods=['POST'])
-@login_required
-@task_lock_required
-def api_trigger_task_now(task_identifier: str):
-    task_registry = tasks.get_task_registry()
-    task_info = task_registry.get(task_identifier)
-    if not task_info:
-        return jsonify({"status": "error", "message": f"未知的任务标识符: {task_identifier}"}), 404
-
-    task_function, task_name = task_info
-    kwargs = {}
-        
-    success = task_manager.submit_task(task_function, task_name, **kwargs)
-    
-    if success:
-        return jsonify({"status": "success", "message": "任务已成功提交到后台队列。", "task_name": task_name}), 202
-    else:
-        return jsonify({"status": "error", "message": "提交任务失败，已有任务在运行。"}), 409
-    
 # --- API 端点：获取当前配置 ---
 @system_bp.route('/config', methods=['GET'])
 def api_get_config():
@@ -79,6 +59,8 @@ def api_get_config():
         
         if current_config:
             current_config['emby_server_id'] = extensions.EMBY_SERVER_ID
+            custom_theme = config_manager.load_custom_theme()
+            current_config['custom_theme'] = custom_theme
             logger.trace(f"API /api/config (GET): 成功加载并返回配置。")
             return jsonify(current_config)
         else:
@@ -126,6 +108,28 @@ def api_save_config():
         logger.error(f"API /api/config (POST) 保存配置时发生错误: {e}", exc_info=True)
         return jsonify({"error": f"保存配置时发生服务器内部错误: {str(e)}"}), 500
     
+# ★★★ 保存用户的自定义主题 ★★★
+@system_bp.route('/config/custom_theme', methods=['POST'])
+@login_required
+def api_save_custom_theme():
+    """
+    接收前端发来的自定义主题JSON对象，并将其保存到配置文件。
+    """
+    try:
+        theme_data = request.json
+        if not isinstance(theme_data, dict):
+            return jsonify({"error": "无效的主题数据格式，必须是一个JSON对象。"}), 400
+        
+        # 调用 config_manager 中的新函数来保存
+        config_manager.save_custom_theme(theme_data)
+        
+        logger.info("用户的自定义主题已成功保存。")
+        return jsonify({"message": "你的专属主题已保存！"})
+        
+    except Exception as e:
+        logger.error(f"保存自定义主题时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "保存自定义主题时发生服务器内部错误。"}), 500
+
 # +++ 关于页面的信息接口 +++
 @system_bp.route('/system/about_info', methods=['GET'])
 def get_about_info():

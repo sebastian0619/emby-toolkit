@@ -1,17 +1,8 @@
-/* global.css (完整版) */
-
-/* =================================================================== */
-/* =================== 全局样式最终版 (纯结构) =================== */
-/* =================================================================== */
-
-/* ========== 1. 卡片核心样式 (dashboard-card) ========== */
-
+/* global.css */
 .n-card.dashboard-card {
   background: var(--card-bg-color) !important;
   border: 1px solid var(--card-border-color) !important;
-  box-shadow: 
-    0 4px 12px var(--card-shadow-color),
-    0 0 20px -5px var(--accent-glow-color) !important;
+  box-shadow: 0 4px 12px var(--card-shadow-color), 0 0 20px -5px var(--accent-glow-color) !important;
   color: var(--text-color) !important;
   border-radius: 12px !important;
   backdrop-filter: blur(10px) !important;
@@ -24,94 +15,35 @@
   transform: translateY(20px);
   animation: card-fade-in 0.5s ease-out forwards;
 }
-
 .dashboard-card > .n-card__content {
   flex-grow: 1 !important;
   display: flex !important;
   flex-direction: column !important;
   justify-content: space-between !important;
 }
-
 .n-card.dashboard-card:hover {
   transform: translateY(-5px) !important;
-  box-shadow: 
-    0 8px 20px var(--card-shadow-color),
-    0 0 35px var(--accent-glow-color) !important;
+  box-shadow: 0 8px 20px var(--card-shadow-color), 0 0 35px var(--accent-glow-color) !important;
 }
-
-.dashboard-card .card-title,
-.dashboard-card > .n-card-header > .n-card-header__main {
-  color: var(--accent-color) !important;
+.dashboard-card .card-title {
+  color: var(--accent-color) !important; /* ★★★ 灵魂归位！★★★ */
   font-weight: 600 !important;
   letter-spacing: 1px;
   text-shadow: 0 0 8px var(--accent-glow-color);
 }
-
 .n-card.dashboard-card.series-card {
   flex-direction: row !important;
   height: auto !important;
 }
-
 .n-card.dashboard-card.series-card > .n-card__content {
   flex-direction: row !important;
   justify-content: flex-start !important;
   padding: 12px !important;
   gap: 12px !important;
 }
-
-/* ========== 2. 全局组件样式接管 ========== */
-
-.n-layout-sider {
-  background: var(--sider-bg-color) !important;
-  transition: background 0.3s ease-in-out;
-}
-
-.n-menu .n-menu-item-content {
-  transition: all 0.2s ease-in-out;
-}
-
-:root .n-menu .n-menu-item-content__text,
-:root .n-menu .n-menu-item-content .n-icon,
-html.light .n-menu .n-menu-item-content__text,
-html.light .n-menu .n-menu-item-content .n-icon {
-  color: var(--menu-item-text-color) !important;
-}
-
-.n-menu .n-menu-item:not(.n-menu-item--selected):hover .n-menu-item-content {
-  background-color: rgba(128, 128, 128, 0.1) !important;
-}
-
-:root .n-menu .n-menu-item--selected .n-menu-item-content,
-html.light .n-menu .n-menu-item--selected .n-menu-item-content {
-  background-color: var(--menu-item-bg-active-color) !important;
-}
-
-:root .n-menu .n-menu-item--selected .n-menu-item-content__text,
-:root .n-menu .n-menu-item--selected .n-menu-item-content .n-icon,
-html.light .n-menu .n-menu-item--selected .n-menu-item-content__text,
-html.light .n-menu .n-menu-item--selected .n-menu-item-content .n-icon {
-  color: var(--menu-item-text-active-color) !important;
-  font-weight: 600;
-}
-
-:root .n-menu .n-menu-item--selected .n-menu-item-content::before,
-html.light .n-menu .n-menu-item--selected .n-menu-item-content::before {
-  background-color: var(--accent-color) !important;
-}
-
-/* ========== 3. 动画与其他全局样式 ========== */
-
-@keyframes card-fade-in {
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
+@keyframes card-fade-in { to { opacity: 1; transform: translateY(0); } }
 .dashboard-card:nth-child(1) { animation-delay: 0.1s; }
 .dashboard-card:nth-child(2) { animation-delay: 0.2s; }
 .dashboard-card:nth-child(3) { animation-delay: 0.3s; }
 .dashboard-card:nth-child(4) { animation-delay: 0.4s; }
 .dashboard-card:nth-child(5) { animation-delay: 0.5s; }
-
-/* ... 其他你可能有的通用样式，如滚动条等 ... */

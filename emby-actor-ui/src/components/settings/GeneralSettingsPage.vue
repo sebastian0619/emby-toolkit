@@ -18,7 +18,10 @@
       <n-gi>
         <n-space vertical :size="24">
           <!-- 卡片: 基础设置 -->
-          <n-card title="基础设置" :bordered="false" class="dashboard-card">
+          <n-card :bordered="false" class="dashboard-card">
+            <template #header>
+              <span class="card-title">基础设置</span>
+            </template>
             <n-form-item-grid-item label="处理项目间的延迟 (秒)" path="delay_between_items_sec">
               <n-input-number v-model:value="configModel.delay_between_items_sec" :min="0" :step="0.1" placeholder="例如: 0.5"/>
             </n-form-item-grid-item>
@@ -62,7 +65,10 @@
           </n-card>
           
           <!-- 卡片: 数据源与 API -->
-          <n-card title="数据源与 API" :bordered="false" class="dashboard-card">
+          <n-card :bordered="false" class="dashboard-card">
+            <template #header>
+              <span class="card-title">数据源与API</span>
+            </template>
             <n-form-item label="本地数据源路径" path="local_data_path" required>
               <n-input v-model:value="configModel.local_data_path" placeholder="神医TMDB缓存目录 (cache和override的上层)" />
             </n-form-item>
@@ -103,7 +109,10 @@
               </template>
             </n-form-item>
           </n-card>
-          <n-card title="日志配置（更改后重启生效）" :bordered="false" class="dashboard-card">
+          <n-card :bordered="false" class="dashboard-card">
+            <template #header>
+              <span class="card-title">日志配置</span>
+            </template>
             <n-form-item-grid-item label="单个日志文件大小 (MB)" path="log_rotation_size_mb">
               <n-input-number 
                 v-model:value="configModel.log_rotation_size_mb" 
@@ -130,7 +139,10 @@
           </n-card>
           
           <!-- ★★★ 新增的数据管理卡片 ★★★ -->
-          <n-card title="数据管理 (备份与恢复)" class="dashboard-card" :bordered="false">
+          <n-card :bordered="false" class="dashboard-card">
+            <template #header>
+              <span class="card-title">数据管理</span>
+            </template>
             <n-space vertical>
               <n-space align="center">
                 <n-button @click="showExportModal" :loading="isExporting" class="action-button">
@@ -162,7 +174,10 @@
       <n-gi>
         <n-space vertical :size="24">
           <!-- ★★★ Emby 连接设置卡片 ★★★ -->
-          <n-card title="Emby 设置" :bordered="false" class="dashboard-card">
+          <n-card :bordered="false" class="dashboard-card">
+            <template #header>
+              <span class="card-title">Emby设置</span>
+            </template>
             <!-- Part 1: Emby 连接设置 -->
             <n-form-item-grid-item label="Emby 服务器 URL" path="emby_server_url">
               <n-input v-model:value="configModel.emby_server_url" placeholder="例如: http://localhost:8096" />
@@ -204,7 +219,10 @@
           </n-card>
 
           <!-- 卡片: AI 翻译设置 -->
-          <n-card title="AI 翻译设置" :bordered="false" class="dashboard-card">
+          <n-card :bordered="false" class="dashboard-card">
+            <template #header>
+              <span class="card-title">AI翻译</span>
+            </template>
             <template #header-extra>
               <n-space align="center">
                 <n-switch v-model:value="configModel.ai_translation_enabled" />
@@ -273,7 +291,10 @@
               </n-form-item>
             </div>
           </n-card>
-          <n-card title="MoviePilot 订阅服务" :bordered="false" class="dashboard-card">
+          <n-card :bordered="false" class="dashboard-card">
+            <template #header>
+              <span class="card-title">MoviePilot订阅</span>
+            </template>
             <n-form-item-grid-item label="MoviePilot URL" path="moviepilot_url">
               <n-input v-model:value="configModel.moviepilot_url" placeholder="例如: http://192.168.1.100:3000"/>
             </n-form-item-grid-item>

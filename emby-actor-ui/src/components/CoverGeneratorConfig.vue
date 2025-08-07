@@ -19,7 +19,11 @@
         </n-page-header>
 
         <!-- ★★★ 核心修改：使用 n-grid 重新排版 ★★★ -->
-        <n-card title="基础设置" class="content-card, dashboard-card" style="margin-top: 24px;">
+        <n-card class="content-card, dashboard-card" style="margin-top: 24px;">
+          <template #header>
+            <!-- 将 card-title 类应用到标题文本的容器上 -->
+            <span class="card-title">基础设置</span>
+          </template>
           <n-grid :cols="4" :x-gap="24" :y-gap="16" responsive="screen"> <!-- 建议加一个 y-gap -->
             <!-- 第一列 -->
             <n-gi>

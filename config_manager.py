@@ -3,6 +3,7 @@ import os
 import configparser
 import logging
 from typing import Dict, Any, Tuple
+import json
 
 # --- 核心模块导入 ---
 import constants # 你的常量定义
@@ -212,3 +213,44 @@ def save_config(new_config: Dict[str, Any]):
         logger.error(f"保存配置文件时失败: {e}", exc_info=True)
         # 抛出异常，让调用者知道保存失败
         raise
+
+# ★★★ 自定义主题的保存与加载功能 ★★★
+def save_custom_theme(theme_data: dict):
+    """
+    将一个字典（自定义主题对象）保存为 config/custom_theme.json 文件。
+    """
+    # 使用已经定义好的 PERSISTENT_DATA_PATH 来构建路径
+    custom_theme_path = os.path.join(PERSISTENT_DATA_PATH, 'custom_theme.json')
+    try:
+        with open(custom_theme_path, 'w', encoding='utf-8') as f:
+            json.dump(theme_data, f, ensure_ascii=False, indent=4)
+        logger.info(f"自定义主题已成功写入到: {custom_theme_path}")
+    except Exception as e:
+        logger.error(f"写入自定义主题文件失败: {e}", exc_info=True)
+        raise
+
+def load_custom_theme() -> dict:
+    """
+    从 config/custom_theme.json 文件加载自定义主题。
+    如果文件不存在，返回一个空字典。
+    """
+    # 使用已经定义好的 PERSISTENT_DATA_PATH 来构建路径
+    custom_theme_path = os.path.join(PERSISTENT_DATA_PATH, 'custom_theme.json')
+    if not os.path.exists(custom_theme_path):
+        return {}
+    
+    try:
+        with open(custom_theme_path, 'r', encoding='utf-8') as f:
+            theme_data = json.load(f)
+            if isinstance(theme_data, dict):
+                logger.debug(f"成功从 {custom_theme_path} 加载自定义主题。")
+                return theme_data
+            else:
+                logger.warning(f"自定义主题文件 {custom_theme_path} 内容格式不正确，不是一个JSON对象。")
+                return {}
+    except json.JSONDecodeError:
+        logger.error(f"解析自定义主题文件 {custom_theme_path} 失败，请检查JSON格式。")
+        return {}
+    except Exception as e:
+        logger.error(f"读取自定义主题文件时发生未知错误: {e}", exc_info=True)
+        return {}
