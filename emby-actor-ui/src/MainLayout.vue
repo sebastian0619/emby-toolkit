@@ -191,7 +191,7 @@ const authStore = useAuthStore();
 const showPasswordModal = ref(false);
 const collapsed = ref(false);
 const activeMenuKey = computed(() => route.name);
-const appVersion = ref('2.0.0'); // 你的版本号
+const appVersion = ref(__APP_VERSION__);
 
 // 3. 从 theme.js 动态生成选项
 const themeOptions = [
