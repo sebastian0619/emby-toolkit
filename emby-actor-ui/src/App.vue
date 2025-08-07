@@ -1,18 +1,21 @@
-<!-- src/App.vue (最终正确版) -->
+<!-- src/App.vue (中央集权版) -->
 <template>
   <div>
-    <n-config-provider :theme="isDarkTheme ? darkTheme : undefined" :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
+    <!-- themeOverrides 现在由我们的主题中心动态提供 -->
+    <n-config-provider :theme="isDarkTheme ? darkTheme : undefined" :theme-overrides="currentNaiveTheme" :locale="zhCN" :date-locale="dateZhCN">
       <n-message-provider>
         <n-dialog-provider>
-          <!-- 1. 如果需要登录，则显示全屏的登录页面 -->
           <div v-if="authStore.isAuthEnabled && !authStore.isLoggedIn" class="fullscreen-container">
             <Login />
           </div>
-          <!-- 2. 否则，渲染我们的主布局组件 -->
+          <!-- 将主题状态作为 props 传递给 MainLayout -->
           <MainLayout 
             v-else 
             :is-dark="isDarkTheme" 
+            :selected-theme="selectedTheme"
+            :task-status="backgroundTaskStatus"
             @update:is-dark="newValue => isDarkTheme = newValue"
+            @update:selected-theme="newValue => selectedTheme = newValue"
           />
         </n-dialog-provider>
       </n-message-provider>
@@ -21,81 +24,83 @@
 </template>
 
 <script setup>
-import { ref, computed, watchEffect } from 'vue';
+import { ref, computed, watch, onBeforeUnmount } from 'vue'; // 引入 onBeforeUnmount
 import { NConfigProvider, NMessageProvider, NDialogProvider, darkTheme, zhCN, dateZhCN } from 'naive-ui';
 import { useAuthStore } from './stores/auth';
 import MainLayout from './MainLayout.vue';
 import Login from './components/Login.vue';
+import { themes } from './theme.js';
+import axios from 'axios'; // 【新增】导入 axios
 
 const authStore = useAuthStore();
 
-// 1. isDarkTheme 状态由 App.vue 这个顶层组件拥有和管理
-const isDarkTheme = ref(localStorage.getItem('theme') !== 'light');
+// --- 主题状态管理 (保持不变) ---
+const isDarkTheme = ref(localStorage.getItem('isDark') === 'true');
+const selectedTheme = ref(localStorage.getItem('user-theme') || 'default');
+const currentNaiveTheme = ref({});
 
-// 2. watchEffect 监听 isDarkTheme 的变化，并同步更新 <html> 标签的 class
-watchEffect(() => {
-  const html = document.documentElement;
-  html.classList.remove('dark', 'light');
-  html.classList.add(isDarkTheme.value ? 'dark' : 'light');
-  localStorage.setItem('theme', isDarkTheme.value ? 'dark' : 'light');
-});
+// --- 【新增】任务状态管理 ---
+const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲', message: '等待任务', progress: 0, last_action: null });
+let statusIntervalId = null;
 
-// 3. 主题覆盖配置依赖 isDarkTheme，所以也必须在这里
-const themeOverrides = computed(() => {
-  // 1. 定义“颜色包”
-  const primaryColorConfig = {
-    primaryColor: '#9c27b0',
-    primaryColorHover: '#b143c7',
-    primaryColorPressed: '#89229b',
-    primaryColorSuppl: '#9c27b0',
-  };
-
-  // 2. 定义通用的组件覆盖
-  const componentOverrides = {
-    Checkbox: { colorChecked: primaryColorConfig.primaryColor, borderColorChecked: primaryColorConfig.primaryColor },
-    Radio: { buttonColorActive: primaryColorConfig.primaryColor, buttonTextColorActive: '#FFFFFF', borderColorActive: primaryColorConfig.primaryColor },
-    Slider: { fillColor: primaryColorConfig.primaryColor, fillColorHover: primaryColorConfig.primaryColorHover },
-    Divider: { color: primaryColorConfig.primaryColor }
-  };
-
-  // 3. 根据当前主题模式，合并配置
-  if (!isDarkTheme.value) {
-    // --- 亮色模式 ---
-    return {
-      common: { 
-        ...primaryColorConfig,
-        bodyColor: '#f0f2f5' 
-      },
-      ...componentOverrides,
-      Card: {
-        // ★★★ 核心修复：明确指定亮色模式下的卡片颜色 ★★★
-        color: '#ffffff', // 卡片背景色为纯白
-        titleTextColor: primaryColorConfig.primaryColor, // 标题颜色为我们的主题紫
-        boxShadow: '0 1px 2px -2px rgba(0, 0, 0, 0.08), 0 3px 6px 0 rgba(0, 0, 0, 0.06), 0 5px 12px 4px rgba(0, 0, 0, 0.04)',
-      }
-    };
+const fetchStatus = async () => {
+  try {
+    const response = await axios.get('/api/status');
+    backgroundTaskStatus.value = response.data;
+  } catch (error) {
+    if (error.response?.status !== 401) {
+      console.error('获取状态失败:', error);
+    }
   }
-  
-  // --- 暗色模式 ---
-  return {
-    common: { 
-      ...primaryColorConfig,
-      bodyColor: '#101014', 
-      cardColor: '#1a1a1e', 
-      inputColor: '#1a1a1e', 
-      actionColor: '#242428', 
-      borderColor: 'rgba(255, 255, 255, 0.12)' 
-    },
-    ...componentOverrides,
-    Card: { 
-      color: '#1a1a1e', // 暗色卡片背景
-      titleTextColor: primaryColorConfig.primaryColor, // 标题颜色为我们的主题紫
-      boxShadow: '0 1px 2px -2px rgba(0, 0, 0, 0.24), 0 3px 6px 0 rgba(0, 0, 0, 0.18), 0 5px 12px 4px rgba(0, 0, 0, 0.12)',
-    },
-    DataTable: { tdColor: '#1a1a1e', thColor: '#1a1a1e', tdColorStriped: '#202024' },
-    Input: { color: '#1a1a1e' },
-    Select: { peers: { InternalSelection: { color: '#1a1a1e' } } }
-  };
+};
+
+// --- 统一的状态监听与应用 ---
+watch(
+  [isDarkTheme, selectedTheme], 
+  ([isDark, themeValue], [wasDark, oldThemeValue]) => {
+    // ... 主题切换的“卸妆上妆”逻辑保持不变 ...
+    const root = document.documentElement;
+    if (oldThemeValue) {
+      const oldThemeMode = wasDark ? 'dark' : 'light';
+      const oldThemeConfig = themes[oldThemeValue]?.[oldThemeMode];
+      if (oldThemeConfig && oldThemeConfig.custom) {
+        for (const key in oldThemeConfig.custom) {
+          root.style.removeProperty(key);
+        }
+      }
+    }
+    const themeMode = isDark ? 'dark' : 'light';
+    const themeConfig = themes[themeValue]?.[themeMode];
+    if (!themeConfig) return;
+    currentNaiveTheme.value = themeConfig.naive;
+    const customVars = themeConfig.custom;
+    for (const key in customVars) {
+      root.style.setProperty(key, customVars[key]);
+    }
+    root.classList.remove('dark', 'light');
+    root.classList.add(isDark ? 'dark' : 'light');
+    localStorage.setItem('isDark', String(isDark));
+    localStorage.setItem('user-theme', themeValue);
+}, { immediate: true });
+
+// 【新增】监听登录状态，来启动或停止任务轮询
+watch(() => authStore.isLoggedIn, (newIsLoggedIn) => {
+  if (newIsLoggedIn) {
+    if (!statusIntervalId) {
+      fetchStatus();
+      statusIntervalId = setInterval(fetchStatus, 1000);
+    }
+  } else {
+    if (statusIntervalId) {
+      clearInterval(statusIntervalId);
+      statusIntervalId = null;
+    }
+  }
+}, { immediate: true });
+
+// 【新增】组件卸载前，清理定时器
+onBeforeUnmount(() => {
+  if (statusIntervalId) clearInterval(statusIntervalId);
 });
 </script>
 

@@ -1,4 +1,3 @@
-<!-- src/components/MainLayout.vue (最终正确版) -->
 <template>
   <n-layout style="height: 100vh;">
     <n-layout-header :bordered="false" class="app-header">
@@ -19,15 +18,17 @@
             </n-dropdown>
 
             <span style="font-size: 12px; color: #999;">v{{ appVersion }}</span>
+
             <!-- 主题选择器 -->
             <n-select
-              v-model:value="selectedTheme"
+              :value="props.selectedTheme"
+              @update:value="newValue => emit('update:selected-theme', newValue)"
               :options="themeOptions"
               size="small"
               style="width: 120px;"
             />
 
-            <!-- 随机切换主题 -->
+            <!-- 随机主题按钮 -->
             <n-tooltip>
               <template #trigger>
                 <n-button @click="setRandomTheme" circle size="small">
@@ -75,38 +76,13 @@
         content-style="padding: 24px; transition: background-color 0.3s;"
         :native-scrollbar="false"
       >
-        <div class="status-display-area" v-if="showStatusArea">
-          <n-card size="small" :bordered="false" style="margin-bottom: 15px;">
-            <p style="margin: 0; font-size: 0.9em; display: flex; align-items: center; justify-content: space-between; gap: 16px;">
-              <span style="flex-grow: 1;">
-                <strong>任务状态:</strong>
-                <n-text :type="statusTypeComputed">{{ backgroundTaskStatus.current_action }}</n-text> -
-                <n-text :type="statusTypeComputed" :depth="2">{{ backgroundTaskStatus.message }}</n-text>
-                <n-progress
-                    v-if="backgroundTaskStatus.is_running && backgroundTaskStatus.progress >= 0 && backgroundTaskStatus.progress < 100"
-                    type="line"
-                    :percentage="backgroundTaskStatus.progress"
-                    :indicator-placement="'inside'"
-                    processing
-                    style="margin-top: 5px;"
-                />
-                <span v-else-if="backgroundTaskStatus.is_running"> ({{ backgroundTaskStatus.progress }}%)</span>
-              </span>
-              <n-button
-                v-if="backgroundTaskStatus.is_running"
-                type="error"
-                size="small"
-                @click="triggerStopTask"
-                ghost
-              >
-                <template #icon><n-icon :component="StopIcon" /></template>
-              </n-button>
-            </p>
-          </n-card>
-        </div>
+        <!-- 注意：这里不再需要任务状态栏，因为它应该由 App.vue 或其他地方管理 -->
         <div class="page-content-inner-wrapper">
           <router-view v-slot="slotProps">
-            <component :is="slotProps.Component" :task-status="backgroundTaskStatus" />
+            <component 
+              :is="slotProps.Component" 
+              :task-status="props.taskStatus" 
+            />
           </router-view>
         </div>
       </n-layout-content>
@@ -125,16 +101,15 @@
 </template>
 
 <script setup>
-import { ref, computed, h, onMounted, onBeforeUnmount, watch } from 'vue';
+import { ref, computed, h } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import {
   NLayout, NLayoutHeader, NLayoutSider, NLayoutContent,
-  NMenu, NSwitch, NIcon, NCard, NText, NProgress,
-  useMessage, NModal, NDropdown, NButton, NSelect, NTooltip 
+  NMenu, NSwitch, NIcon, NModal, NDropdown, NButton,
+  NSelect, NTooltip
 } from 'naive-ui';
-import axios from 'axios';
 import { useAuthStore } from './stores/auth';
-import { useConfig } from './composables/useConfig';
+import { themes } from './theme.js';
 import ChangePassword from './components/settings/ChangePassword.vue';
 import {
   AnalyticsOutline as StatsIcon,
@@ -150,35 +125,36 @@ import {
   InformationCircleOutline as AboutIcon,
   CreateOutline as CustomCollectionsIcon,
   ColorPaletteOutline as PaletteIcon,
-  ShuffleOutline as ShuffleIcon,
-  Stop as StopIcon
+  Stop as StopIcon,
+  ShuffleOutline as ShuffleIcon
 } from '@vicons/ionicons5';
 import { Password24Regular as PasswordIcon } from '@vicons/fluent';
 
-// 1. 定义接收的 props 和要发出的 emits
+// 1. 定义 props 和 emits
 const props = defineProps({
-  isDark: Boolean
+  isDark: Boolean,
+  selectedTheme: String,
+  taskStatus: Object // 【新增】接收军情
 });
-const emit = defineEmits(['update:is-dark']);
+const emit = defineEmits(['update:is-dark', 'update:selected-theme']);
 
-// 2. 内部状态定义
+// 2. 状态和路由
 const router = useRouter(); 
 const route = useRoute(); 
 const authStore = useAuthStore();
-const { configModel } = useConfig();
-const message = useMessage();
-
 const showPasswordModal = ref(false);
 const collapsed = ref(false);
-const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲', message: '等待任务', progress: 0, last_action: null });
-const showStatusArea = ref(true);
 const activeMenuKey = computed(() => route.name);
-const appVersion = ref(__APP_VERSION__);
+const appVersion = ref('1.0.0'); // 你的版本号
 
-// 3. 所有函数和 computed 属性
-const renderIcon = (iconComponent) => {
-  return () => h(NIcon, null, { default: () => h(iconComponent) });
-};
+// 3. 从 theme.js 动态生成选项
+const themeOptions = Object.keys(themes).map(key => ({
+  label: themes[key].name,
+  value: key
+}));
+
+// 4. 所有函数
+const renderIcon = (iconComponent) => () => h(NIcon, null, { default: () => h(iconComponent) });
 
 const userOptions = computed(() => [
   { label: '修改密码', key: 'change-password', icon: renderIcon(PasswordIcon) },
@@ -200,108 +176,23 @@ const menuOptions = computed(() => [
   { label: '系统', key: 'group-system', type: 'group', children: [ { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) }, { label: '任务中心', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) }, { label: '查看更新', key: 'Releases', icon: renderIcon(AboutIcon) }, ] }
 ]);
 
-async function handleMenuUpdate(key) {
+function handleMenuUpdate(key) {
   router.push({ name: key });
 }
 
-const statusTypeComputed = computed(() => 'info');
-
-const fetchStatus = async () => {
-  try {
-    const response = await axios.get('/api/status');
-    backgroundTaskStatus.value = response.data;
-  } catch (error) {
-    if (error.response?.status !== 401) {
-      console.error('获取状态失败:', error);
-    }
-  }
-};
-
-const triggerStopTask = async () => {
-  try {
-    await axios.post('/api/trigger_stop_task');
-    message.info('已发送停止任务请求。');
-  } catch (error) {
-    message.error(error.response?.data?.error || '发送停止任务请求失败，请查看日志。');
-  }
-};
-
-let statusIntervalId = null;
-
-// 【新增】定义所有可选的主题
-const themeOptions = [
-  { label: '赛博科技', value: 'default' }, 
-  { label: '玻璃拟态', value: 'glass' },
-  { label: '落日浪潮', value: 'synthwave' }, 
-  { label: '全息机甲', value: 'holo' },     
-  { label: '美漫硬派', value: 'comic' },     
-];
-
-// 【最终版】默认主题现在是 'default'
-const selectedTheme = ref('default');
-
-// 【最终版】watch 逻辑简化
-watch(selectedTheme, (newThemeValue) => {
-  // 只需要设置 data-theme 属性即可
-  document.documentElement.dataset.theme = newThemeValue;
-  // 保存选择
-  localStorage.setItem('user-theme', newThemeValue);
-});
-
-// 【最终版】onMounted 逻辑简化
-onMounted(() => {
-  const savedTheme = localStorage.getItem('user-theme') || 'default';
-  selectedTheme.value = savedTheme;
-});
-
-onBeforeUnmount(() => {
-  if (statusIntervalId) clearInterval(statusIntervalId);
-});
-
-//  添加随机切换主题
 const setRandomTheme = () => {
-  // 找出除了当前主题以外的所有其他主题
-  const otherThemes = themeOptions.filter(t => t.value !== selectedTheme.value);
-  
-  // 如果没有其他主题可选（虽然不太可能），就啥也不干
+  const otherThemes = themeOptions.filter(t => t.value !== props.selectedTheme);
   if (otherThemes.length === 0) return;
-  
-  // 从其他主题中随机选一个
   const randomIndex = Math.floor(Math.random() * otherThemes.length);
   const randomTheme = otherThemes[randomIndex];
-  
-  // 更新 selectedTheme 的值，这会自动触发 watch 来应用新主题
-  selectedTheme.value = randomTheme.value;
+  emit('update:selected-theme', randomTheme.value);
 };
-
-watch(() => authStore.isLoggedIn, (newIsLoggedIn, oldIsLoggedIn) => {
-  if (newIsLoggedIn) {
-    if (!oldIsLoggedIn && authStore.forceChangePassword) {
-      showPasswordModal.value = true;
-    }
-    if (!statusIntervalId) {
-      fetchStatus();
-      statusIntervalId = setInterval(fetchStatus, 1000);
-    }
-  } else {
-    if (statusIntervalId) {
-      clearInterval(statusIntervalId);
-      statusIntervalId = null;
-    }
-    if (route.name !== 'Login') {
-      router.push({ name: 'Login' });
-    }
-  }
-}, { immediate: true });
 </script>
 
 <style>
 /* MainLayout 的样式 */
 .app-header { padding: 0 24px; height: 60px; display: flex; align-items: center; font-size: 1.25em; font-weight: 600; flex-shrink: 0; }
-.status-display-area .n-card .n-card__content { padding: 8px 12px !important; }
-.status-display-area p { margin: 0; font-size: 0.9em; }
 .app-main-content-wrapper { height: 100%; display: flex; flex-direction: column; }
-.status-display-area { flex-shrink: 0; }
 .page-content-inner-wrapper { flex-grow: 1; overflow-y: auto; }
 .n-menu .n-menu-item-group-title { font-size: 12px; font-weight: 500; color: #8e8e93; padding-left: 24px; margin-top: 16px; margin-bottom: 8px; }
 .n-menu .n-menu-item-group:first-child .n-menu-item-group-title { margin-top: 0; }
