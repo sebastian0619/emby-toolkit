@@ -50,6 +50,27 @@ def api_handle_trigger_stop_task():
     else:
         return jsonify({"error": "核心处理器未就绪"}), 503
 
+# ✨✨✨ “立即执行”API接口 ✨✨✨
+@system_bp.route('/tasks/trigger/<task_identifier>', methods=['POST'])
+@login_required
+@task_lock_required
+def api_trigger_task_now(task_identifier: str):
+    task_registry = tasks.get_task_registry()
+    task_info = task_registry.get(task_identifier)
+    if not task_info:
+        return jsonify({"status": "error", "message": f"未知的任务标识符: {task_identifier}"}), 404
+
+    task_function, task_name = task_info
+    kwargs = {}
+        
+    success = task_manager.submit_task(task_function, task_name, **kwargs)
+    
+    if success:
+        return jsonify({"status": "success", "message": "任务已成功提交到后台队列。", "task_name": task_name}), 202
+    else:
+        return jsonify({"status": "error", "message": "提交任务失败，已有任务在运行。"}), 409
+    
+
 # --- API 端点：获取当前配置 ---
 @system_bp.route('/config', methods=['GET'])
 def api_get_config():
