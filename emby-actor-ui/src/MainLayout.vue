@@ -85,7 +85,36 @@
         content-style="padding: 24px; transition: background-color 0.3s;"
         :native-scrollbar="false"
       >
-        <div class="page-content-inner-wrapper">
+      <!-- ★★★ 任务状态 ★★★ -->
+      <div class="status-display-area" v-if="props.taskStatus && props.taskStatus.current_action !== '空闲'">
+        <n-card size="small" :bordered="false" style="margin-bottom: 15px;">
+          <p style="margin: 0; font-size: 0.9em; display: flex; align-items: center; justify-content: space-between; gap: 16px;">
+            <span style="flex-grow: 1;">
+              <strong>任务状态:</strong>
+              <n-text type="info">{{ props.taskStatus.current_action }}</n-text> -
+              <n-text type="info" :depth="2">{{ props.taskStatus.message }}</n-text>
+              <n-progress
+                  v-if="props.taskStatus.is_running && props.taskStatus.progress >= 0 && props.taskStatus.progress <= 100"
+                  type="line"
+                  :percentage="props.taskStatus.progress"
+                  :indicator-placement="'inside'"
+                  processing
+                  style="margin-top: 5px;"
+              />
+            </span>
+            <n-button
+              v-if="props.taskStatus.is_running"
+              type="error"
+              size="small"
+              @click="triggerStopTask"
+              ghost
+            >
+              <template #icon><n-icon :component="StopIcon" /></template>
+            </n-button>
+          </p>
+        </n-card>
+      </div>  
+      <div class="page-content-inner-wrapper">
           <router-view v-slot="slotProps">
             <component :is="slotProps.Component" :task-status="props.taskStatus" />
           </router-view>
@@ -111,7 +140,7 @@ import { useRouter, useRoute } from 'vue-router';
 import {
   NLayout, NLayoutHeader, NLayoutSider, NLayoutContent,
   NMenu, NSwitch, NIcon, NModal, NDropdown, NButton,
-  NSelect, NTooltip
+  NSelect, NTooltip, NCard, NText, NProgress
 } from 'naive-ui';
 import { useAuthStore } from './stores/auth';
 import { themes } from './theme.js';
@@ -134,7 +163,19 @@ import {
   ShuffleOutline as ShuffleIcon
 } from '@vicons/ionicons5';
 import { Password24Regular as PasswordIcon } from '@vicons/fluent';
+import axios from 'axios';
+import { useMessage } from 'naive-ui';
 
+const message = useMessage();
+
+const triggerStopTask = async () => {
+  try {
+    await axios.post('/api/trigger_stop_task');
+    message.info('已发送停止任务请求。');
+  } catch (error) {
+    message.error(error.response?.data?.error || '发送停止任务请求失败，请查看日志。');
+  }
+};
 // 1. 定义 props 和 emits
 const props = defineProps({
   isDark: Boolean,
