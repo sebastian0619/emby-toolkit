@@ -20,6 +20,7 @@
       @update:show="handleEditorClose"
       @save="handleSaveCustomTheme"
       @update:preview="handlePreviewUpdate"
+      @delete-custom-theme="handleDeleteCustomTheme"
     />
   </div>
   <div v-else class="fullscreen-container">
@@ -28,8 +29,9 @@
 </template>
 
 <script setup>
-import { ref, watch, onBeforeUnmount, onMounted, computed } from 'vue';
-import { useDialog, NSpin } from 'naive-ui';
+// ★★★ 引入 nextTick ★★★
+import { ref, watch, onBeforeUnmount, onMounted, computed, nextTick } from 'vue';
+import { useDialog, NSpin, useMessage } from 'naive-ui';
 import { useAuthStore } from './stores/auth';
 import MainLayout from './MainLayout.vue';
 import Login from './components/Login.vue';
@@ -40,6 +42,7 @@ import { cloneDeep } from 'lodash-es';
 
 const authStore = useAuthStore();
 const dialog = useDialog();
+const message = useMessage();
 
 const isDarkTheme = ref(localStorage.getItem('isDark') === 'true');
 const selectedTheme = ref(localStorage.getItem('user-theme') || 'default');
@@ -47,6 +50,10 @@ const userCustomTheme = ref(null);
 const showThemeEditor = ref(false);
 const previewTheme = ref(null);
 const isReady = ref(false);
+const newThemeTemplate = ref(null);
+
+// ★★★ 新增一把“安全锁”，防止 watch 监听器在不该动的时候乱动 ★★★
+const isOpeningEditor = ref(false);
 
 const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲' });
 let statusIntervalId = null;
@@ -79,27 +86,52 @@ const applyTheme = (themeKey, isDark) => {
 };
 
 const themeForEditor = computed(() => {
-    if (userCustomTheme.value) return userCustomTheme.value;
-    return {
-        name: '自定义',
-        light: cloneDeep(themes.default.light),
-        dark: cloneDeep(themes.default.dark)
-    };
+    if (userCustomTheme.value) {
+        return userCustomTheme.value;
+    }
+    return newThemeTemplate.value;
 });
 
-const openThemeEditor = () => { showThemeEditor.value = true; };
+const openThemeEditor = () => { 
+  if (userCustomTheme.value) {
+    newThemeTemplate.value = null;
+  }
+  showThemeEditor.value = true; 
+};
 
 const handleThemeChange = (newTheme) => {
-  if (newTheme === 'custom' && !userCustomTheme.value) {
-    dialog.info({
-      title: '欢迎来到主题设计工坊',
-      content: '你还没有专属主题，快来亲手设计一个吧！',
-      positiveText: '立即设计',
-      onPositiveClick: openThemeEditor
-    });
-  } else {
+  if (newTheme !== 'custom' || (newTheme === 'custom' && userCustomTheme.value)) {
     selectedTheme.value = newTheme;
     localStorage.setItem('user-theme', newTheme);
+    return;
+  }
+
+  if (newTheme === 'custom' && !userCustomTheme.value) {
+    const currentTemplateSource = themes[selectedTheme.value] || themes.default;
+    newThemeTemplate.value = {
+        name: '自定义',
+        light: cloneDeep(currentTemplateSource.light),
+        dark: cloneDeep(currentTemplateSource.dark)
+    };
+
+    dialog.info({
+      title: '欢迎来到主题设计工坊',
+      content: `准备基于你当前的【${currentTemplateSource.name}】主题进行创作吗？`,
+      positiveText: '立即设计',
+      onPositiveClick: () => {
+        // ★★★ 核心修复：上锁 -> 操作 -> 解锁 ★★★
+        isOpeningEditor.value = true; // 1. 上锁！
+        
+        selectedTheme.value = 'custom';
+        localStorage.setItem('user-theme', 'custom');
+        openThemeEditor();
+
+        // 3. 等UI更新完之后，再悄悄地把锁解开
+        nextTick(() => {
+          isOpeningEditor.value = false;
+        });
+      }
+    });
   }
 };
 
@@ -123,13 +155,35 @@ const handleSaveCustomTheme = async (newThemeConfigForCurrentMode) => {
     localStorage.setItem('user-theme', 'custom');
     showThemeEditor.value = false;
     previewTheme.value = null;
-  } catch (error) { console.error('保存自定义主题失败:', error); }
+    newThemeTemplate.value = null;
+    message.success('专属主题已保存！');
+  } catch (error) { 
+    message.error('保存自定义主题失败');
+    console.error('保存自定义主题失败:', error); 
+  }
+};
+
+const handleDeleteCustomTheme = async () => {
+  try {
+    await axios.delete('/api/config/custom_theme');
+    userCustomTheme.value = null;
+    selectedTheme.value = 'default';
+    localStorage.setItem('user-theme', 'default');
+    showThemeEditor.value = false;
+    previewTheme.value = null;
+    newThemeTemplate.value = null;
+    message.success('自定义主题已删除，已切换回默认主题。');
+  } catch (error) {
+    message.error('删除自定义主题失败');
+    console.error('删除自定义主题失败:', error);
+  }
 };
 
 const handleEditorClose = (show) => {
     if (!show) {
         showThemeEditor.value = false;
         previewTheme.value = null;
+        newThemeTemplate.value = null;
         applyTheme(selectedTheme.value, isDarkTheme.value);
     }
 };
@@ -145,15 +199,15 @@ const handlePreviewUpdate = (themeConfig) => {
 
 // --- 监听与初始化 ---
 
+// ★★★ 监听器已加锁 ★★★
 watch([isDarkTheme, selectedTheme], ([isDark, themeKey]) => {
+  // 2. 每次执行前，先检查锁的状态。如果锁着，就直接跳过！
+  if (isOpeningEditor.value) return; 
+  
   if (!previewTheme.value) {
       applyTheme(themeKey, isDark);
   }
 }, { deep: true });
-
-// ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-// ★★★ 核心架构修正：将 watch 登录状态的逻辑移出 onMounted ★★★
-// ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
 watch(() => authStore.isLoggedIn, (isLoggedIn) => {
   if (isLoggedIn) {

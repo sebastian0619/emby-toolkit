@@ -1,7 +1,25 @@
 <!-- src/components/ThemeEditor.vue -->
 <template>
   <n-modal :show="show" preset="card" style="width: 90%; max-width: 800px;" title="主题设计工坊" :bordered="false" size="huge" :mask-closable="false" @update:show="handleClose">
-    <template #header-extra><n-button @click="handleReset" size="small" secondary>重置为默认</n-button></template>
+    <template #header-extra>
+      <n-space>
+        <!-- ★★★ 新增：删除按钮，带二次确认功能 ★★★ -->
+        <n-popconfirm
+          @positive-click="handleDelete"
+          :positive-button-props="{ type: 'error' }"
+          positive-text="确认删除"
+          negative-text="我再想想"
+        >
+          <template #trigger>
+            <n-button type="error" size="small" ghost>删除自定义主题</n-button>
+          </template>
+          确定要永久删除你的专属主题吗？<br>删除后将无法恢复，并自动切换回默认主题。
+        </n-popconfirm>
+        
+        <n-button @click="handleReset" size="small" secondary>撤销本次更改</n-button>
+      </n-space>
+    </template>
+    
     <div v-if="editableTheme && editableTheme.naive && editableTheme.custom">
       <n-tabs type="line" animated>
         <n-tab-pane name="colors" tab="核心色彩">
@@ -33,27 +51,52 @@
     <template #footer><n-space justify="end"><n-button @click="handleClose">取消</n-button><n-button type="primary" @click="handleSave">保存并应用</n-button></n-space></template>
   </n-modal>
 </template>
+
 <script setup>
 import { ref, watch } from 'vue';
-import { NModal, NButton, NSpace, NTabs, NTabPane, NGrid, NGi, NFormItem, NColorPicker, NSpin, useMessage } from 'naive-ui';
-import { themes } from '../theme.js';
+import { NModal, NButton, NSpace, NTabs, NTabPane, NGrid, NGi, NFormItem, NColorPicker, NSpin, useMessage, NPopconfirm } from 'naive-ui';
 import { cloneDeep } from 'lodash-es';
-const props = defineProps({ show: Boolean, initialTheme: Object, isDark: Boolean, });
-const emit = defineEmits(['update:show', 'save', 'update:preview']);
+
+const props = defineProps({
+  show: Boolean,
+  initialTheme: Object,
+  isDark: Boolean,
+});
+
+// ★★★ 新增 emit 事件 ★★★
+const emit = defineEmits(['update:show', 'save', 'update:preview', 'delete-custom-theme']);
 const message = useMessage();
 const editableTheme = ref(null);
+
 watch(() => props.show, (newVal) => {
   if (newVal && props.initialTheme) {
     const currentModeTheme = props.initialTheme[props.isDark ? 'dark' : 'light'];
     editableTheme.value = cloneDeep(currentModeTheme);
   }
 }, { immediate: true });
-watch(editableTheme, (newVal) => { if (props.show && newVal) { emit('update:preview', newVal); } }, { deep: true });
-const handleSave = () => { emit('save', editableTheme.value); };
-const handleClose = () => { emit('update:show', false); };
+
+watch(editableTheme, (newVal) => {
+  if (props.show && newVal) {
+    emit('update:preview', newVal);
+  }
+}, { deep: true });
+
+const handleSave = () => {
+  emit('save', editableTheme.value);
+};
+
+const handleClose = () => {
+  emit('update:show', false);
+};
+
 const handleReset = () => {
-    const defaultTheme = themes.default[props.isDark ? 'dark' : 'light'];
-    editableTheme.value = cloneDeep(defaultTheme);
-    message.info('已重置为默认主题样式。');
+    const originalTheme = props.initialTheme[props.isDark ? 'dark' : 'light'];
+    editableTheme.value = cloneDeep(originalTheme);
+    message.info('已撤销本次更改。');
+};
+
+// ★★★ 新增：删除处理函数 ★★★
+const handleDelete = () => {
+  emit('delete-custom-theme');
 };
 </script>

@@ -200,7 +200,7 @@ const themeOptions = [
         value: key
     })),
     { type: 'divider', key: 'd1' },
-    { label: '自定义工坊…', value: 'custom' }
+    { label: '自定义', value: 'custom' }
 ];
 
 // 4. 所有函数

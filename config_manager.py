@@ -214,7 +214,7 @@ def save_config(new_config: Dict[str, Any]):
         # 抛出异常，让调用者知道保存失败
         raise
 
-# ★★★ 自定义主题的保存与加载功能 ★★★
+# ★★★ 保存自定义主题 ★★★
 def save_custom_theme(theme_data: dict):
     """
     将一个字典（自定义主题对象）保存为 config/custom_theme.json 文件。
@@ -228,7 +228,7 @@ def save_custom_theme(theme_data: dict):
     except Exception as e:
         logger.error(f"写入自定义主题文件失败: {e}", exc_info=True)
         raise
-
+# ★★★ 加载自定义主题 ★★★
 def load_custom_theme() -> dict:
     """
     从 config/custom_theme.json 文件加载自定义主题。
@@ -254,3 +254,22 @@ def load_custom_theme() -> dict:
     except Exception as e:
         logger.error(f"读取自定义主题文件时发生未知错误: {e}", exc_info=True)
         return {}
+# ★★★ 删除自定义主题 ★★★    
+def delete_custom_theme() -> bool:
+    """
+    删除 custom_theme.json 文件。
+    
+    :return: 如果文件被成功删除或文件本就不存在，返回 True。如果删除失败，返回 False。
+    """
+    # ★★★ 核心修正：使用已经定义好的 PERSISTENT_DATA_PATH ★★★
+    theme_file_path = os.path.join(PERSISTENT_DATA_PATH, 'custom_theme.json')
+    try:
+        if os.path.exists(theme_file_path):
+            os.remove(theme_file_path)
+            logger.info(f"✅ 成功删除自定义主题文件: {theme_file_path}")
+        else:
+            logger.info("尝试删除自定义主题文件，但文件本就不存在。")
+        return True
+    except OSError as e:
+        logger.error(f"删除自定义主题文件时发生 I/O 错误: {e}", exc_info=True)
+        return False

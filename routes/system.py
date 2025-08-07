@@ -150,6 +150,28 @@ def api_save_custom_theme():
     except Exception as e:
         logger.error(f"保存自定义主题时发生错误: {e}", exc_info=True)
         return jsonify({"error": "保存自定义主题时发生服务器内部错误。"}), 500
+    
+# --- 调用文件删除函数的API端点 ---
+@system_bp.route('/config/custom_theme', methods=['DELETE'])
+@login_required
+def api_delete_custom_theme():
+    """
+    删除 custom_theme.json 文件。
+    """
+    try:
+        # ★★★ 核心修改：调用 config_manager 中的文件删除函数 ★★★
+        success = config_manager.delete_custom_theme()
+        
+        if success:
+            logger.info("API: 用户的自定义主题文件已成功删除。")
+            return jsonify({"message": "自定义主题已删除。"})
+        else:
+            # 这种情况只在极端的权限问题下发生
+            return jsonify({"error": "删除自定义主题文件时发生服务器内部错误。"}), 500
+
+    except Exception as e:
+        logger.error(f"删除自定义主题时发生未知错误: {e}", exc_info=True)
+        return jsonify({"error": "删除自定义主题时发生服务器内部错误。"}), 500
 
 # +++ 关于页面的信息接口 +++
 @system_bp.route('/system/about_info', methods=['GET'])
