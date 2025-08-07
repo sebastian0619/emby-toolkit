@@ -4,7 +4,7 @@
     <div class="collections-page">
       <n-page-header>
         <template #title>
-          电影合集检查
+          原生合集
         </template>
         <template #footer>
           <n-space align="center" size="large">
