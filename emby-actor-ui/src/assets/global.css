@@ -1,55 +1,227 @@
-/* ========== 全局主题变量定义 ========== */
-:root {
-  --accent-color: #00a1ff; /* 科技蓝 */
-  --accent-glow-color: rgba(0, 161, 255, 0.4); /* 科技蓝辉光 */
+/* =================================================================== */
+/* =================== 全局主题与样式最终版 =================== */
+/* =================================================================== */
 
-  /* --- 深色模式卡片背景色 --- */
+/*
+  说明:
+  1. 默认主题 (赛博科技) 在 :root 和 html.light 中定义。
+  2. 其他主题 (如 玻璃拟态) 通过 [data-theme="xxx"] 属性来激活。
+  3. 所有主题都能自动响应 html.light 的明暗模式切换。
+  4. 卡片动画和布局修正已包含在内。
+*/
+
+
+/* ========== 1. 主题变量定义 ========== */
+
+/* --- 主题一: 赛博科技 (默认) --- */
+/* 暗色模式变量 (全局默认) */
+:root {
   --card-bg-color: rgba(26, 27, 30, 0.7);
   --card-border-color: rgba(255, 255, 255, 0.1);
-
-  /* 文字色 */
+  --card-shadow-color: rgba(0, 0, 0, 0.3);
+  --accent-color: #00a1ff;
+  --accent-glow-color: rgba(0, 161, 255, 0.4);
   --text-color: #ffffff;
 }
 
-/* 浅色模式覆盖主题变量 */
+/* 亮色模式变量 (当 <html> 有 .light 类时激活) */
 html.light {
   --card-bg-color: rgba(255, 255, 255, 0.85);
   --card-border-color: rgba(0, 0, 0, 0.1);
-
+  --card-shadow-color: rgba(0, 0, 0, 0.08);
+  --accent-color: #007aff;
+  --accent-glow-color: rgba(0, 122, 255, 0.2);
   --text-color: #1a1a1a;
 }
 
-/* ========== 赛博科技风 卡片样式 (dashboard-card) ========== */
-.n-card.dashboard-card {
-  background: var(--card-bg-color) !important;
-  border-radius: 12px !important;
-  border: 1px solid var(--card-border-color) !important;
 
+/* --- 主题二: 玻璃拟态 --- */
+/* 暗色模式变量 */
+[data-theme="glass"] {
+  --card-bg-color: rgba(30, 30, 30, 0.5);
+  --card-border-color: rgba(255, 255, 255, 0.15);
+  --accent-color: #c33cff;
+  --accent-glow-color: rgba(195, 60, 255, 0.5);
+  --text-color: #f0f0f0;
+}
+
+/* 亮色模式变量 */
+html.light[data-theme="glass"] {
+  --card-bg-color: rgba(255, 255, 255, 0.6);
+  --card-border-color: rgba(0, 0, 0, 0.1);
+  --accent-color: #e91e63;
+  --accent-glow-color: rgba(233, 30, 99, 0.3);
+  --text-color: #1a1a1a;
+}
+
+/* ========== 主题三: 落日浪潮 (Synthwave) ========== */
+/* 灵感来源: 80年代复古未来主义，霓虹灯、日落、网格 */
+
+/* --- 暗色模式 --- */
+[data-theme="synthwave"] {
+  --card-bg-color: rgba(29, 15, 54, 0.75); /* 深紫色背景 */
+  --card-border-color: rgba(255, 110, 199, 0.5); /* 霓虹粉边框 */
+  --card-shadow-color: rgba(0, 0, 0, 0.5);
+  --accent-color: #00f7ff; /* 亮青色，形成强烈对比 */
+  --accent-glow-color: rgba(0, 247, 255, 0.6);
+  --text-color: #f5f5f5;
+}
+
+/* --- 亮色模式 --- */
+html.light[data-theme="synthwave"] {
+  --card-bg-color: rgba(240, 230, 255, 0.8); /* 浅紫色背景 */
+  --card-border-color: rgba(228, 90, 216, 0.6);
+  --accent-color: #ff3d8d; /* 亮粉色 */
+  --accent-glow-color: rgba(255, 61, 141, 0.4);
+  --text-color: #1a1a1a;
+}
+
+/* 【特效】给卡片增加一个扫描线和渐变背景的叠加效果 */
+.n-card.dashboard-card[data-theme="synthwave"] {
+  background: 
+    repeating-linear-gradient(
+      rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px, rgba(0,0,0,0.1) 3px
+    ),
+    linear-gradient(160deg, var(--accent-color), #ff6ec7) !important;
+  background-blend-mode: multiply;
+  background-size: cover;
+  border-width: 2px !important;
+}
+
+
+/* ========== 主题四: 全息机甲 (Holographic Mech) ========== */
+/* 灵感来源: 高达、环太平洋，充满科技感的棱角、HUD界面 */
+
+/* --- 暗色模式 --- */
+[data-theme="holo"] {
+  --card-bg-color: rgba(10, 25, 47, 0.8); /* 星际深蓝 */
+  --card-border-color: rgba(100, 255, 218, 0.3); /* 能量青色 */
+  --card-shadow-color: rgba(0, 0, 0, 0.4);
+  --accent-color: #64ffda; /* 能量青色 */
+  --accent-glow-color: rgba(100, 255, 218, 0.5);
+  --text-color: #ccd6f6;
+}
+
+/* --- 亮色模式 --- */
+html.light[data-theme="holo"] {
+  --card-bg-color: rgba(230, 245, 255, 0.85); /* 洁净白 */
+  --card-border-color: rgba(20, 120, 220, 0.4);
+  --accent-color: #0d6efd; /* 科技蓝 */
+  --accent-glow-color: rgba(13, 110, 253, 0.3);
+  --text-color: #061a40;
+}
+
+/* 【特效】使用 clip-path 裁切出硬朗的棱角，并添加扫描线伪元素 */
+.n-card.dashboard-card[data-theme="holo"] {
+  border-radius: 0 !important;
+  clip-path: polygon(
+    0 15px, /* 左上角 Y偏移 */
+    15px 0, /* 左上角 X偏移 */
+    calc(100% - 15px) 0, /* 右上角 X偏移 */
+    100% 15px, /* 右上角 Y偏移 */
+    100% calc(100% - 15px), /* 右下角 Y偏移 */
+    calc(100% - 15px) 100%, /* 右下角 X偏移 */
+    15px 100%, /* 左下角 X偏移 */
+    0 calc(100% - 15px) /* 左下角 Y偏移 */
+  );
+}
+/* 鼠标悬浮时，标题出现轻微的“信号干扰”效果 */
+.n-card.dashboard-card[data-theme="holo"]:hover .card-title {
+  animation: text-glitch 0.3s infinite;
+}
+@keyframes text-glitch {
+  0% { text-shadow: 1px 0 0 var(--accent-color), -1px 0 0 #ff3d8d; }
+  25% { text-shadow: -1px 0 0 var(--accent-color), 1px 0 0 #ff3d8d; }
+  50% { text-shadow: 1px 0 0 var(--accent-color), -1px 0 0 #ff3d8d; }
+  75% { text-shadow: -1px 0 0 var(--accent-color), 1px 0 0 #ff3d8d; }
+  100% { text-shadow: 1px 0 0 var(--accent-color), -1px 0 0 #ff3d8d; }
+}
+
+
+/* ========== 主题五: 美漫硬派 (Comic Book) ========== */
+/* 灵感来源: 经典美漫、无主之地，粗犷的黑边、半色调网点 */
+
+/* --- 暗色模式 (其实这个主题不太分明暗，但还是做了区分) --- */
+[data-theme="comic"] {
+  --card-bg-color: #2c2c2c;
+  --card-border-color: #000000;
+  --card-shadow-color: rgba(0, 0, 0, 0.7);
+  --accent-color: #ffcc00; /* 醒目的黄色 */
+  --accent-glow-color: rgba(255, 204, 0, 0.5);
+  --text-color: #ffffff;
+}
+
+/* --- 亮色模式 --- */
+html.light[data-theme="comic"] {
+  --card-bg-color: #f0f0f0;
+  --card-border-color: #000000;
+  --card-shadow-color: rgba(0, 0, 0, 0.2);
+  --accent-color: #d93025; /* 醒目的红色 */
+  --accent-glow-color: rgba(217, 48, 37, 0.4);
+  --text-color: #000000;
+}
+
+/* 【特效】用粗边框和硬阴影模拟漫画描边，并用伪元素添加半色调网点背景 */
+.n-card.dashboard-card[data-theme="comic"] {
+  border-width: 3px !important;
+  border-radius: 4px !important;
+  box-shadow: 5px 5px 0px 0px var(--card-shadow-color) !important;
+  transition: all 0.2s ease-in-out !important;
+  backdrop-filter: none !important; /* 这个主题不需要毛玻璃 */
+}
+.n-card.dashboard-card[data-theme="comic"]:hover {
+  transform: translate(-2px, -2px) !important;
+  box-shadow: 7px 7px 0px 0px var(--card-shadow-color) !important;
+}
+/* 半色调网点背景 */
+.n-card.dashboard-card[data-theme="comic"]::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-image: radial-gradient(rgba(0,0,0,0.15) 20%, transparent 0);
+  background-size: 6px 6px;
+  background-position: 0 0, 3px 3px;
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* --- 在这里添加更多主题... --- */
+/*
+[data-theme="new-theme"] { ... }
+html.light[data-theme="new-theme"] { ... }
+*/
+
+
+/* ========== 2. 卡片核心样式 (dashboard-card) ========== */
+
+/* --- 基础样式 (所有主题通用) --- */
+.n-card.dashboard-card {
+  /* 使用变量实现主题切换 */
+  background: var(--card-bg-color) !important;
+  border: 1px solid var(--card-border-color) !important;
+  box-shadow: 
+    0 4px 12px var(--card-shadow-color),
+    0 0 20px -5px var(--accent-glow-color) !important;
+  color: var(--text-color) !important;
+
+  /* 通用美学样式 */
+  border-radius: 12px !important;
   backdrop-filter: blur(10px) !important;
   -webkit-backdrop-filter: blur(10px) !important;
-
-  box-shadow: 
-    0 0 2px rgba(0, 0, 0, 0.2),
-    0 4px 12px rgba(0, 0, 0, 0.3),
-    0 0 20px -5px var(--accent-glow-color) !important;
-
   transition: all 0.3s ease-in-out !important;
 
-  /* 让卡片撑满其父容器(n-gi) */
+  /* 默认垂直 Flex 布局 */
   height: 100%;
   display: flex !important;
   flex-direction: column !important;
 
-  /* 入场动画 */
+  /* 入场动画 (所有主题通用) */
   opacity: 0;
   transform: translateY(20px);
   animation: card-fade-in 0.5s ease-out forwards;
-
-  /* 文字颜色继承变量 */
-  color: var(--text-color) !important;
 }
 
-/* 卡片内容区撑满剩余高度，实现底部对齐 */
+/* 卡片内容区默认撑满剩余高度 */
 .dashboard-card > .n-card__content {
   flex-grow: 1 !important;
   display: flex !important;
@@ -57,29 +229,54 @@ html.light {
   justify-content: space-between !important;
 }
 
-/* 悬浮效果 */
+/* 卡片悬浮效果 */
 .n-card.dashboard-card:hover {
   transform: translateY(-5px) !important;
   box-shadow: 
-    0 0 5px rgba(0, 0, 0, 0.3),
-    0 8px 20px rgba(0, 0, 0, 0.4),
+    0 8px 20px var(--card-shadow-color),
     0 0 35px var(--accent-glow-color) !important;
 }
 
-/* 卡片标题 */
-.dashboard-card .card-title {
-  color: var(--accent-color) !important;
-  font-weight: 600 !important;
-  letter-spacing: 1px;
-  text-shadow: 0 0 8px var(--accent-glow-color);
-}
-/* n-card 的 title 属性样式覆盖 */
+/* 卡片标题样式 */
+.dashboard-card .card-title,
 .dashboard-card > .n-card-header > .n-card-header__main {
   color: var(--accent-color) !important;
   font-weight: 600 !important;
   letter-spacing: 1px;
   text-shadow: 0 0 8px var(--accent-glow-color);
 }
+
+/* --- 布局修正 (专门针对追剧列表的水平卡片) --- */
+/* 这个规则只在 .dashboard-card 和 .series-card 同时存在时生效 */
+.n-card.dashboard-card.series-card {
+  flex-direction: row !important; /* 改为水平布局 */
+  height: auto !important;
+}
+
+.n-card.dashboard-card.series-card > .n-card__content {
+  flex-direction: row !important;
+  justify-content: flex-start !important;
+  padding: 12px !important; /* 恢复内边距 */
+  gap: 12px !important;     /* 恢复元素间距 */
+}
+
+
+/* ========== 3. 动画与其他全局样式 ========== */
+
+/* 卡片入场动画定义 */
+@keyframes card-fade-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 卡片入场动画延迟 */
+.dashboard-card:nth-child(1) { animation-delay: 0.1s; }
+.dashboard-card:nth-child(2) { animation-delay: 0.2s; }
+.dashboard-card:nth-child(3) { animation-delay: 0.3s; }
+.dashboard-card:nth-child(4) { animation-delay: 0.4s; }
+.dashboard-card:nth-child(5) { animation-delay: 0.5s; }
 
 /* 关键数字样式 */
 .dashboard-card .statistic-value {
@@ -92,20 +289,6 @@ html.light {
   color: #a0a0a0 !important;
   font-size: 0.9em !important;
   text-transform: uppercase;
-}
-
-/* 入场动画延迟 */
-.dashboard-card:nth-child(1) { animation-delay: 0.1s; }
-.dashboard-card:nth-child(2) { animation-delay: 0.2s; }
-.dashboard-card:nth-child(3) { animation-delay: 0.3s; }
-.dashboard-card:nth-child(4) { animation-delay: 0.4s; }
-.dashboard-card:nth-child(5) { animation-delay: 0.5s; }
-
-@keyframes card-fade-in {
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 /* 给日志面板透明背景 */
@@ -123,30 +306,6 @@ html.light {
 }
 ::-webkit-scrollbar-track {
   background: transparent;
-}
-
-/* ========== 玻璃拟态卡片样式 ========== */
-.glass-section {
-  background: rgba(30, 30, 30, 0.8);
-  border-radius: 16px;
-  padding: 20px;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 0 32px rgba(156, 39, 176, 0.3);
-  color: #f0f0f0;
-  transition: all 0.3s ease;
-}
-.glass-section:hover {
-  box-shadow: 0 0 25px rgba(248, 2, 2, 0.9);
-}
-
-/* 明亮模式下玻璃卡片 */
-html.light .glass-section {
-  background: rgba(255, 255, 255, 0.75);
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  box-shadow: 0 0 32px rgba(0, 0, 0, 0.06);
-  color: #111;
 }
 
 /* ========== 渐变发光按钮 ========== */
@@ -168,30 +327,11 @@ html.light .btn-gradient {
   background: linear-gradient(135deg, #2196f3, #e91e63);
 }
 
-/* ========== 输入框样式优化 ========== */
-input, textarea {
-  background-color: #1e1e1e;
-  border: 1px solid #444;
-  color: #fff;
-  padding: 8px 12px;
-  border-radius: 6px;
-  transition: border-color 0.3s ease;
-}
-input:focus, textarea:focus {
-  border-color: #00bcd4;
-  outline: none;
-}
-html.light input, html.light textarea {
-  background-color: #fff;
-  border: 1px solid #ccc;
-  color: #111;
-}
-
 /* ========== 实用工具类 ========== */
 .text-gradient {
   background: linear-gradient(to right, #00bcd4, #9c27b0);
-  background-clip: text;               /* 标准语法 */
-  -webkit-background-clip: text;       /* 兼容 Chrome/Safari */
+  background-clip: text;
+  -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 .fade-in {
@@ -200,7 +340,4 @@ html.light input, html.light textarea {
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0); }
-}
-.actions-page-container {
-  padding: 0 24px 24px 24px; /* 左右和底部间距 */
 }

@@ -19,6 +19,25 @@
             </n-dropdown>
 
             <span style="font-size: 12px; color: #999;">v{{ appVersion }}</span>
+            <!-- 主题选择器 -->
+            <n-select
+              v-model:value="selectedTheme"
+              :options="themeOptions"
+              size="small"
+              style="width: 120px;"
+            />
+
+            <!-- 随机切换主题 -->
+            <n-tooltip>
+              <template #trigger>
+                <n-button @click="setRandomTheme" circle size="small">
+                  <template #icon><n-icon :component="ShuffleIcon" /></template>
+                </n-button>
+              </template>
+              天灵灵地灵灵，给我来个好心情！
+            </n-tooltip>
+
+            <!-- 明暗模式切换器 -->
             <n-switch 
               :value="props.isDark" 
               @update:value="newValue => emit('update:is-dark', newValue)"
@@ -111,7 +130,7 @@ import { useRouter, useRoute } from 'vue-router';
 import {
   NLayout, NLayoutHeader, NLayoutSider, NLayoutContent,
   NMenu, NSwitch, NIcon, NCard, NText, NProgress,
-  useMessage, NModal, NDropdown, NButton
+  useMessage, NModal, NDropdown, NButton, NSelect, NTooltip 
 } from 'naive-ui';
 import axios from 'axios';
 import { useAuthStore } from './stores/auth';
@@ -131,6 +150,7 @@ import {
   InformationCircleOutline as AboutIcon,
   CreateOutline as CustomCollectionsIcon,
   ColorPaletteOutline as PaletteIcon,
+  ShuffleOutline as ShuffleIcon,
   Stop as StopIcon
 } from '@vicons/ionicons5';
 import { Password24Regular as PasswordIcon } from '@vicons/fluent';
@@ -208,10 +228,51 @@ const triggerStopTask = async () => {
 
 let statusIntervalId = null;
 
-onMounted(() => {});
+// 【新增】定义所有可选的主题
+const themeOptions = [
+  { label: '赛博科技', value: 'default' }, 
+  { label: '玻璃拟态', value: 'glass' },
+  { label: '落日浪潮', value: 'synthwave' }, 
+  { label: '全息机甲', value: 'holo' },     
+  { label: '美漫硬派', value: 'comic' },     
+];
+
+// 【最终版】默认主题现在是 'default'
+const selectedTheme = ref('default');
+
+// 【最终版】watch 逻辑简化
+watch(selectedTheme, (newThemeValue) => {
+  // 只需要设置 data-theme 属性即可
+  document.documentElement.dataset.theme = newThemeValue;
+  // 保存选择
+  localStorage.setItem('user-theme', newThemeValue);
+});
+
+// 【最终版】onMounted 逻辑简化
+onMounted(() => {
+  const savedTheme = localStorage.getItem('user-theme') || 'default';
+  selectedTheme.value = savedTheme;
+});
+
 onBeforeUnmount(() => {
   if (statusIntervalId) clearInterval(statusIntervalId);
 });
+
+//  添加随机切换主题
+const setRandomTheme = () => {
+  // 找出除了当前主题以外的所有其他主题
+  const otherThemes = themeOptions.filter(t => t.value !== selectedTheme.value);
+  
+  // 如果没有其他主题可选（虽然不太可能），就啥也不干
+  if (otherThemes.length === 0) return;
+  
+  // 从其他主题中随机选一个
+  const randomIndex = Math.floor(Math.random() * otherThemes.length);
+  const randomTheme = otherThemes[randomIndex];
+  
+  // 更新 selectedTheme 的值，这会自动触发 watch 来应用新主题
+  selectedTheme.value = randomTheme.value;
+};
 
 watch(() => authStore.isLoggedIn, (newIsLoggedIn, oldIsLoggedIn) => {
   if (newIsLoggedIn) {
