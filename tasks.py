@@ -231,19 +231,20 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
         engine = FilterEngine(db_path=config_manager.DB_PATH)
         matching_collections = engine.find_matching_collections(item_metadata)
 
-        if not matching_collections:
+        if matching_collections:
+            logger.info(f"影片《{item_metadata.get('title')}》匹配到 {len(matching_collections)} 个自定义合集，正在处理...")
+            # 3. 遍历所有匹配的合集，并向其中追加当前项目
+            for collection in matching_collections:
+                emby_handler.append_item_to_collection(
+                    collection_id=collection['emby_collection_id'],
+                    item_emby_id=item_id, # 这是新入库项目的Emby ID
+                    base_url=processor.emby_url,
+                    api_key=processor.emby_api_key,
+                    user_id=processor.emby_user_id
+                )
+        else:
+            # 如果没有匹配到，只记录日志，然后函数会自然地继续往下执行
             logger.info(f"影片《{item_metadata.get('title')}》没有匹配到任何自定义合集。")
-            return
-
-        # 3. 遍历所有匹配的合集，并向其中追加当前项目
-        for collection in matching_collections:
-            emby_handler.append_item_to_collection(
-                collection_id=collection['emby_collection_id'],
-                item_emby_id=item_id, # 这是新入库项目的Emby ID
-                base_url=processor.emby_url,
-                api_key=processor.emby_api_key,
-                user_id=processor.emby_user_id
-            )
     except Exception as e:
         logger.error(f"为新入库项目 {item_id} 匹配自定义合集时发生意外错误: {e}", exc_info=True)
 
