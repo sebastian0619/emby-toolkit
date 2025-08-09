@@ -1,287 +1,144 @@
+<!-- src/components/settings/SchedulerSettingsPage.vue -->
 <template>
   <n-layout content-style="padding: 24px;">
-    <!-- 保留加载状态 -->
+    <!-- 加载状态 -->
     <div v-if="isLoading" class="center-container">
       <n-spin size="large" />
     </div>
     
     <n-space v-else-if="configModel" vertical :size="24" style="margin-top: 15px;">
       
-      <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
+      <!-- 卡片 1: 自动化维护任务链 (V2 - 两列布局) -->
+      <n-card :bordered="false" class="dashboard-card">
+        <template #header>
+          <span class="card-title">自动化任务链</span>
+        </template>
         
-        <!-- 卡片 1: 常规任务 -->
-        <n-gi>
-          <n-card :bordered="false" class="dashboard-card">
-            <template #header>
-              <span class="card-title">常规任务</span>
-            </template>
-            <div class="task-list-container">
-
-              <!-- 任务 1.1: 全量处理 -->
-              <div class="task-item">
-                <n-space align="center" justify="space-between">
-                  <n-text strong>全量处理</n-text>
-                  <n-switch v-model:value="configModel.schedule_enabled" />
-                </n-space>
-                <n-form :model="configModel" label-placement="left" label-width="80" class="mt-3" :show-feedback="false">
-                  <n-form-item label="" path="schedule_cron">
-                    <n-input v-model:value="configModel.schedule_cron" :disabled="!configModel.schedule_enabled" placeholder="例如: 0 3 * * *" />
-                  </n-form-item>
-                  <n-form-item label="选项">
-                    <n-space align="center" justify="space-between" style="width: 100%;">
-                      <n-checkbox v-model:checked="configModel.schedule_force_reprocess" :disabled="!configModel.schedule_enabled">
-                        强制重处理
-                        <n-tooltip trigger="hover">
-                          <template #trigger>
-                            <n-icon :component="Info24Regular" class="ms-1 align-middle" style="cursor: help;" />
-                          </template>
-                          定时任务强制重处理所有项目 (将清空已处理记录)
-                        </n-tooltip>
-                      </n-checkbox>
-                      <n-button size="small" type="primary" ghost @click="triggerTaskNow('full-scan')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
-                        <template #icon><n-icon :component="Play24Regular" /></template>
-                        立即执行
-                      </n-button>
-                    </n-space>
-                  </n-form-item>
-                </n-form>
-              </div>
-
-              <!-- 任务 1.2: 同步演员映射表 -->
-              <div class="task-item">
-                <n-space align="center" justify="space-between">
-                  <n-text strong>同步演员映射表</n-text>
-                  <n-switch v-model:value="configModel.schedule_sync_map_enabled" />
-                </n-space>
-                <n-form :model="configModel" label-placement="left" label-width="80" class="mt-3">
-                  <n-form-item label="" path="schedule_sync_map_cron">
-                    <n-input-group>
-                      <n-input v-model:value="configModel.schedule_sync_map_cron" :disabled="!configModel.schedule_sync_map_enabled" placeholder="例如: 0 1 * * * (每天凌晨1点)" />
-                      <n-button type="primary" ghost @click="triggerTaskNow('sync-person-map')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
-                        <template #icon><n-icon :component="Play24Regular" /></template>
-                        立即执行
-                      </n-button>
-                    </n-input-group>
-                  </n-form-item>
-                </n-form>
-              </div>
-
-              <!-- 任务 1.3: 演员名翻译 -->
-              <div class="task-item">
-                <n-space align="center" justify="space-between">
-                  <n-text strong>演员名翻译</n-text>
-                  <n-switch v-model:value="configModel.schedule_actor_cleanup_enabled" />
-                </n-space>
-                <n-form :model="configModel" label-placement="left" label-width="80" class="mt-3">
-                  <n-form-item label="" path="schedule_actor_cleanup_cron">
-                    <n-input-group>
-                      <n-input v-model:value="configModel.schedule_actor_cleanup_cron" :disabled="!configModel.schedule_actor_cleanup_enabled" placeholder="例如: 0 4 * * * (每天凌晨4点)" />
-                      <n-button type="primary" ghost @click="triggerTaskNow('actor-cleanup')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
-                        <template #icon><n-icon :component="Play24Regular" /></template>
-                        立即执行
-                      </n-button>
-                    </n-input-group>
-                    <template #feedback>自动翻译Emby中所有非中文的演员名。</template>
-                  </n-form-item>
-                </n-form>
-              </div>
-
-              <!-- 任务 1.4: 演员元数据补充 -->
-              <div class="task-item">
-                <n-space align="center" justify="space-between">
-                  <n-text strong>演员元数据补充</n-text>
-                  <n-switch v-model:value="configModel.schedule_enrich_aliases_enabled" />
-                </n-space>
-                <n-form :model="configModel" label-placement="top" class="mt-3">
-                  <n-grid :cols="3" :x-gap="12" align-items="end">
-                    <n-gi>
-                      <n-form-item-grid-item label="" path="schedule_enrich_aliases_cron">
-                        <n-input v-model:value="configModel.schedule_enrich_aliases_cron" :disabled="!configModel.schedule_enrich_aliases_enabled" placeholder="例如: 30 2 * * *" />
-                      </n-form-item-grid-item>
-                    </n-gi>
-                    <n-gi>
-                      <n-form-item-grid-item label="运行时长(分)" path="schedule_enrich_run_duration_minutes">
-                        <n-input-number v-model:value="configModel.schedule_enrich_run_duration_minutes" :disabled="!configModel.schedule_enrich_aliases_enabled" :min="0" :step="60" placeholder="0不限制" style="width: 100%;" />
-                      </n-form-item-grid-item>
-                    </n-gi>
-                    <n-gi>
-                      <n-form-item-grid-item path="schedule_enrich_sync_interval_days">
-                        <template #label>
-                          <n-space :size="4" align="center">
-                            <n-text>冷却(天)</n-text>
-                            <n-tooltip trigger="hover">
-                              <template #trigger><n-icon :component="Info24Regular" style="cursor: help;" /></template>
-                              设置在多少天内不重复检查同一个演员。
-                            </n-tooltip>
-                          </n-space>
-                        </template>
-                        <n-input-number v-model:value="configModel.schedule_enrich_sync_interval_days" :disabled="!configModel.schedule_enrich_aliases_enabled" :min="0" :step="1" placeholder="建议7" style="width: 100%;" />
-                      </n-form-item-grid-item>
-                    </n-gi>
-                  </n-grid>
-                </n-form>
-                <n-space justify="end">
-                  <n-button size="small" type="primary" ghost @click="triggerTaskNow('enrich-aliases')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
-                    <template #icon><n-icon :component="Play24Regular" /></template>
-                    立即执行
+        <!-- --- 【【【 使用 Grid 组件实现两列布局 】】】 --- -->
+        <n-grid cols="1 l:2" :x-gap="24" :y-gap="16" responsive="screen">
+          
+          <!-- 左侧列：配置区域 -->
+          <n-gi>
+            <n-space vertical>
+              <n-space align="center" justify="space-between">
+                <n-text strong>启用自动化任务链</n-text>
+                <n-switch v-model:value="configModel.task_chain_enabled" />
+              </n-space>
+              <n-form :model="configModel" label-placement="left" label-width="auto" class="mt-3" :show-feedback="false">
+                <n-form-item label="定时执行 (CRON)">
+                  <n-input v-model:value="configModel.task_chain_cron" :disabled="!configModel.task_chain_enabled" placeholder="例如: 0 2 * * *" />
+                </n-form-item>
+                <n-form-item label="任务序列">
+                  <n-button type="primary" @click="showChainConfigModal = true" :disabled="!configModel.task_chain_enabled">
+                    <template #icon><n-icon :component="Settings24Regular" /></template>
+                    配置任务链
                   </n-button>
-                </n-space>
+                </n-form-item>
+              </n-form>
+            </n-space>
+          </n-gi>
+
+          <!-- 右侧列：显示当前执行顺序 -->
+          <n-gi>
+            <n-text strong>当前执行顺序</n-text>
+            <div class="flowchart-wrapper">
+              <div v-if="enabledTaskChain.length > 0" class="flowchart-container">
+                <div v-for="task in enabledTaskChain" :key="task.key" class="flowchart-node">
+                  {{ task.name }}
+                </div>
               </div>
-              <div class="task-item">
-                <n-space align="center" justify="space-between">
-                  <n-text strong>全量海报同步</n-text>
-                  <n-switch v-model:value="configModel.schedule_sync_images_enabled" />
-                </n-space>
-                <n-form :model="configModel" label-placement="left" label-width="80" class="mt-3">
-                  <n-form-item label="" path="schedule_sync_images_cron">
-                    <n-input-group>
-                      <n-input v-model:value="configModel.schedule_sync_images_cron" :disabled="!configModel.schedule_sync_images_enabled" placeholder="例如: 0 2 * * 1 (每周一凌晨2点)" />
-                      <n-button type="primary" ghost @click="triggerTaskNow('sync-images-map')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
-                        <template #icon><n-icon :component="Play24Regular" /></template>
-                        立即执行
-                      </n-button>
-                    </n-input-group>
-                    <template #feedback>将所有已处理媒体的海报、背景图等同步到缓存目录。</template>
-                  </n-form-item>
-                </n-form>
+              <div v-else class="flowchart-container empty">
+                <n-text depth="3">暂未配置任何任务...</n-text>
               </div>
             </div>
-          </n-card>
-        </n-gi>
+          </n-gi>
 
-        <!-- 卡片 2: 订阅与刷新 -->
-        <n-gi>
-          <n-card :bordered="false" class="dashboard-card">
-            <template #header>
-              <span class="card-title">订阅与刷新</span>
-            </template>
-            <div class="task-list-container">
+        </n-grid>
+        <!-- --- 【【【 Grid 布局结束 】】】 --- -->
 
-              <!-- 任务 2.1: 智能追剧刷新 -->
-              <div class="task-item">
-                <n-space align="center" justify="space-between">
-                  <n-text strong>智能追剧刷新</n-text>
-                  <n-switch v-model:value="configModel.schedule_watchlist_enabled" />
-                </n-space>
-                <n-form :model="configModel" label-placement="left" label-width="80" class="mt-3">
-                  <n-form-item label="" path="schedule_watchlist_cron">
-                    <n-input-group>
-                      <n-input v-model:value="configModel.schedule_watchlist_cron" :disabled="!configModel.schedule_watchlist_enabled" placeholder="例如: 0 */6 * * * (每6小时)" />
-                      <n-button type="primary" ghost @click="triggerTaskNow('process-watchlist')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
-                        <template #icon><n-icon :component="Play24Regular" /></template>
-                        立即执行
-                      </n-button>
-                    </n-input-group>
-                    <template #feedback>检查智能追剧列表中的剧集是否有更新。</template>
-                  </n-form-item>
-                </n-form>
-              </div>
+        <!-- "工作原理"提示信息，放在 Grid 下方，保持通栏显示 -->
+        <n-alert title="任务详情" type="info" style="margin-top: 24px;">
+          启用后，系统将只在指定时间执行一个总任务。该任务会严格按照“配置任务链”中设定好的顺序，一个接一个地执行选中的子任务，无需再为每个任务单独设置时间，彻底避免了任务冲突。
+        </n-alert>
+      </n-card>
 
-              <!-- 任务 2.2: 智能订阅 -->
-              <div class="task-item">
-                <n-space align="center" justify="space-between">
-                  <n-text strong>智能订阅</n-text>
-                  <n-switch v-model:value="configModel.schedule_autosub_enabled" />
-                </n-space>
-                <n-form :model="configModel" label-placement="left" label-width="80" class="mt-3">
-                  <n-form-item label="" path="schedule_autosub_cron">
-                    <n-input-group>
-                      <n-input v-model:value="configModel.schedule_autosub_cron" :disabled="!configModel.schedule_autosub_enabled" placeholder="例如: 0 5 * * *" />
-                      <n-button type="primary" ghost @click="triggerTaskNow('auto-subscribe')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
-                        <template #icon><n-icon :component="Play24Regular" /></template>
-                        立即执行
-                      </n-button>
-                    </n-input-group>
-                    <template #feedback>自动订阅缺失的电影合集和追更的剧集以及RSS订阅合集。</template>
-                  </n-form-item>
-                </n-form>
-              </div>
-
-              <!-- 任务 2.3: 电影合集刷新 -->
-              <div class="task-item">
-                <n-space align="center" justify="space-between">
-                  <n-text strong>电影合集刷新</n-text>
-                  <n-switch v-model:value="configModel.schedule_refresh_collections_enabled" />
-                </n-space>
-                <n-form :model="configModel" label-placement="left" label-width="80" class="mt-3">
-                  <n-form-item label="" path="schedule_refresh_collections_cron">
-                    <n-input-group>
-                      <n-input v-model:value="configModel.schedule_refresh_collections_cron" :disabled="!configModel.schedule_refresh_collections_enabled" placeholder="例如: 0 2 * * *" />
-                      <n-button type="primary" ghost @click="triggerTaskNow('refresh-collections')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
-                        <template #icon><n-icon :component="Play24Regular" /></template>
-                        立即执行
-                      </n-button>
-                    </n-input-group>
-                    <template #feedback>定时检查所有电影合集的缺失情况。</template>
-                  </n-form-item>
-                </n-form>
-              </div>
-
-              <!-- 任务 2.4: 演员订阅 -->
-              <div class="task-item">
-                <n-space align="center" justify="space-between">
-                  <n-text strong>演员订阅</n-text>
-                  <n-switch v-model:value="configModel.schedule_actor_tracking_enabled" />
-                </n-space>
-                <n-form :model="configModel" label-placement="left" label-width="80" class="mt-3">
-                  <n-form-item label="" path="schedule_actor_tracking_cron">
-                    <n-input-group>
-                      <n-input v-model:value="configModel.schedule_actor_tracking_cron" :disabled="!configModel.schedule_actor_tracking_enabled" placeholder="例如: 0 5 * * *" />
-                      <n-button type="primary" ghost @click="triggerTaskNow('actor-tracking')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
-                        <template #icon><n-icon :component="Play24Regular" /></template>
-                        立即执行
-                      </n-button>
-                    </n-input-group>
-                    <template #feedback>定时扫描所有已订阅演员的作品，检查更新并订阅缺失项。</template>
-                  </n-form-item>
-                </n-form>
-              </div>
-              <div class="task-item">
-                <n-space align="center" justify="space-between">
-                  <n-text strong>自建合集刷新</n-text>
-                  <n-switch v-model:value="configModel.schedule_custom_collections_enabled" />
-                </n-space>
-                <n-form :model="configModel" label-placement="left" label-width="80" class="mt-3">
-                  <n-form-item label="" path="schedule_custom_collections_cron">
-                    <n-input-group>
-                      <n-input v-model:value="configModel.schedule_custom_collections_cron" :disabled="!configModel.schedule_custom_collections_enabled" placeholder="例如: 0 6 * * *" />
-                      <n-button type="primary" ghost @click="triggerTaskNow('custom-collections')" :loading="isTriggeringTask" :disabled="isBackgroundTaskRunning">
-                        <template #icon><n-icon :component="Play24Regular" /></template>
-                        立即执行
-                      </n-button>
-                    </n-input-group>
-                    <template #feedback>定时刷新所有RSS榜单和筛选规则合集。</template>
-                  </n-form-item>
-                </n-form>
-              </div>
+      <!-- 卡片 2: 临时任务 -->
+      <n-card :bordered="false" class="dashboard-card">
+        <template #header>
+          <span class="card-title">临时任务</span>
+        </template>
+        <template #header-extra>
+          <n-text depth="3">用于需要立即手动执行的场景</n-text>
+        </template>
+        <n-grid cols="1 m:2 l:3" :x-gap="24" :y-gap="16" responsive="screen">
+          <n-gi v-for="task in availableTasksForManualRun" :key="task.key">
+            <div class="temp-task-item">
+              <n-text>{{ task.name }}</n-text>
+              <n-button size="small" type="primary" ghost @click="triggerTaskNow(task.key)" :loading="isTriggeringTask === task.key" :disabled="isBackgroundTaskRunning">
+                <template #icon><n-icon :component="Play24Regular" /></template>
+                立即执行
+              </n-button>
             </div>
-          </n-card>
-        </n-gi>
-
-      </n-grid>
+          </n-gi>
+        </n-grid>
+      </n-card>
 
       <!-- 保存按钮 -->
       <n-button size="medium" type="primary" @click="savePageConfig" :loading="savingConfig" block>
-        保存定时任务配置
+        保存配置
       </n-button>
     </n-space>
+
+    <!-- 任务链配置模态框 (保持不变) -->
+    <n-modal
+      v-model:show="showChainConfigModal"
+      class="custom-card"
+      preset="card"
+      title="配置任务链执行顺序"
+      style="width: 90%; max-width: 600px;"
+      :mask-closable="false"
+    >
+      <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
+        请勾选需要定时执行的任务，并拖动任务调整它们的执行顺序。
+      </n-alert>
+      <div class="task-chain-list" ref="draggableContainer">
+        <div v-for="task in configuredTaskSequence" :key="task.key" class="task-chain-item" :data-key="task.key">
+          <n-icon :component="Drag24Regular" class="drag-handle" />
+          <n-checkbox v-model:checked="task.enabled" style="flex-grow: 1;">
+            {{ task.name }}
+          </n-checkbox>
+        </div>
+      </div>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showChainConfigModal = false">取消</n-button>
+          <n-button type="primary" @click="saveTaskChainConfig">保存</n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
   </n-layout>
 </template>
 
 <script setup>
-import { watch, ref } from 'vue';
+// ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+// --- 【【【 核心修改：导入 computed 】】】 ---
+import { ref, onMounted, watch, nextTick, computed } from 'vue';
+// ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 import {
-  NForm, NFormItem, NFormItemGridItem, NInput, NCheckbox, NGrid, NGi,
-  NButton, NCard, NSpace, NSwitch, NTooltip, NInputNumber, NIcon, NText,
-  useMessage, NLayout, NSpin, NInputGroup
+  NForm, NFormItem, NInput, NCheckbox, NGrid, NGi, NAlert,
+  NButton, NCard, NSpace, NSwitch, NIcon, NText,
+  useMessage, NLayout, NSpin, NModal
 } from 'naive-ui';
-import { Info24Regular, Play24Regular } from '@vicons/fluent';
+import { Play24Regular, Settings24Regular, Drag24Regular } from '@vicons/fluent';
 import { useConfig } from '../../composables/useConfig.js';
 import { useTaskStatus } from '../../composables/useTaskStatus.js';
 import axios from 'axios';
+import Sortable from 'sortablejs';
 
 const message = useMessage();
 
+// --- Composable Hooks ---
 const {
     configModel,
     loadingConfig: isLoading,
@@ -290,98 +147,242 @@ const {
     configError
 } = useConfig();
 
-const {
-    isBackgroundTaskRunning
-} = useTaskStatus();
+const { isBackgroundTaskRunning } = useTaskStatus();
 
-const tasksToWatch = [
-  { enabledKey: 'schedule_enabled', cronKey: 'schedule_cron' },
-  { enabledKey: 'schedule_sync_map_enabled', cronKey: 'schedule_sync_map_cron' },
-  { enabledKey: 'schedule_enrich_aliases_enabled', cronKey: 'schedule_enrich_aliases_cron' },
-  { enabledKey: 'schedule_watchlist_enabled', cronKey: 'schedule_watchlist_cron' },
-  { enabledKey: 'schedule_sync_images_enabled', cronKey: 'schedule_sync_images_cron' },
-  { enabledKey: 'schedule_actor_cleanup_enabled', cronKey: 'schedule_actor_cleanup_cron' },
-  { enabledKey: 'schedule_autosub_enabled', cronKey: 'schedule_autosub_cron' },
-  { enabledKey: 'schedule_refresh_collections_enabled', cronKey: 'schedule_refresh_collections_cron' },
-  { enabledKey: 'schedule_actor_tracking_enabled', cronKey: 'schedule_actor_tracking_cron' },
-  { enabledKey: 'schedule_custom_collections_enabled', cronKey: 'schedule_custom_collections_cron' }
-];
+// --- State ---
+const showChainConfigModal = ref(false);
+const availableTasksForChain = ref([]); // 从后端获取的所有可用于任务链的任务
+const availableTasksForManualRun = ref([]); // 从后端获取的所有可用于手动运行的任务
+const configuredTaskSequence = ref([]); // 用于模态框中配置的任务列表
+const isTriggeringTask = ref(null);
+const draggableContainer = ref(null);
+let sortableInstance = null;
 
-watch(isLoading, (loading) => {
-  if (loading === false && configModel.value) {
-    tasksToWatch.forEach(({ enabledKey, cronKey }) => {
-      watch(
-        () => configModel.value[enabledKey],
-        (newValue) => {
-          if (newValue === false) {
-            configModel.value[cronKey] = '';
-          }
-        }
-      );
-    });
-  }
-}, { immediate: true });
+// ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+// --- 【【【 核心修改：使用 computed 属性来动态计算已启用的任务列表 】】】 ---
+const enabledTaskChain = computed(() => {
+  if (!configuredTaskSequence.value) return [];
+  return configuredTaskSequence.value.filter(t => t.enabled);
+});
+// ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
-const savePageConfig = async () => {
-  const success = await handleSaveConfig();
-  if (success) {
-    message.success('定时任务配置已成功保存！');
-  } else {
-    message.error(configError.value || '定时任务配置保存失败。');
+// --- API Calls ---
+const fetchAvailableTasks = async () => {
+  try {
+    // 获取用于任务链的、已筛选的任务
+    const chainResponse = await axios.get('/api/tasks/available?context=chain');
+    availableTasksForChain.value = chainResponse.data;
+
+    // 获取所有任务，用于“临时任务”区域的手动执行
+    const allResponse = await axios.get('/api/tasks/available?context=all');
+    availableTasksForManualRun.value = allResponse.data;
+
+  } catch (error) {
+    message.error('获取可用任务列表失败！');
   }
 };
-
-const isTriggeringTask = ref(false);
 
 const triggerTaskNow = async (taskIdentifier) => {
   if (isBackgroundTaskRunning.value) {
     message.warning('已有后台任务正在运行，请稍后再试。');
     return;
   }
-
-  isTriggeringTask.value = true;
+  isTriggeringTask.value = taskIdentifier;
   try {
-    // 使用通用的任务运行API，将任务标识符作为JSON数据发送
-    const response = await axios.post('/api/tasks/run', {
-      task_name: taskIdentifier
-    });
-    
-    // 后端成功接收并提交任务后会返回 202 Accepted
+    const response = await axios.post('/api/tasks/run', { task_name: taskIdentifier });
     message.success(response.data.message || `任务已成功提交！`);
-
   } catch (error) {
-    // 处理API调用本身的错误，或后端返回的特定错误信息
-    const errorMessage = error.response?.data?.error || '请求后端接口失败，请检查网络或后台服务。';
+    const errorMessage = error.response?.data?.error || '请求后端接口失败。';
     message.error(errorMessage);
   } finally {
-    isTriggeringTask.value = false;
+    isTriggeringTask.value = null;
   }
 };
+
+// --- Logic ---
+const savePageConfig = async () => {
+  if (configModel.value) {
+    configModel.value.task_chain_sequence = enabledTaskChain.value.map(t => t.key);
+  }
+  const success = await handleSaveConfig();
+  if (success) {
+    message.success('配置已成功保存！');
+  } else {
+    message.error(configError.value || '配置保存失败。');
+  }
+};
+
+const saveTaskChainConfig = () => {
+  showChainConfigModal.value = false;
+  message.info('任务链顺序已在页面上更新，请点击“保存配置”按钮以持久化更改。');
+};
+
+const initializeTaskSequence = () => {
+  if (!configModel.value || !availableTasksForChain.value.length) return;
+
+  const savedSequence = configModel.value.task_chain_sequence || [];
+  const savedSequenceSet = new Set(savedSequence);
+
+  const enabledTasks = savedSequence
+    .map(key => {
+      const task = availableTasksForChain.value.find(t => t.key === key);
+      return task ? { ...task, enabled: true } : null;
+    })
+    .filter(Boolean);
+
+  const disabledTasks = availableTasksForChain.value
+    .filter(task => !savedSequenceSet.has(task.key))
+    .map(task => ({ ...task, enabled: false }));
+
+  configuredTaskSequence.value = [...enabledTasks, ...disabledTasks];
+};
+
+const initializeSortable = () => {
+  if (draggableContainer.value) {
+    sortableInstance = Sortable.create(draggableContainer.value, {
+      animation: 150,
+      handle: '.drag-handle',
+      onEnd: (evt) => {
+        const { oldIndex, newIndex } = evt;
+        const item = configuredTaskSequence.value.splice(oldIndex, 1)[0];
+        configuredTaskSequence.value.splice(newIndex, 0, item);
+      },
+    });
+  }
+};
+
+// --- Lifecycle and Watchers ---
+onMounted(() => {
+  fetchAvailableTasks();
+});
+
+watch(showChainConfigModal, (newValue) => {
+  if (newValue) {
+    nextTick(() => {
+      initializeSortable();
+    });
+  } else {
+    if (sortableInstance) {
+      sortableInstance.destroy();
+      sortableInstance = null;
+    }
+  }
+});
+
+watch([configModel, availableTasksForChain], ([newConfig, newTasks]) => {
+  if (newConfig && newTasks.length > 0) {
+    initializeTaskSequence();
+  }
+}, { immediate: true });
 </script>
 
 <style scoped>
-/* 简单的 margin-top 辅助类 */
-.mt-3 {
-  margin-top: 12px;
-}
-
-/* 用于居中显示加载动画的容器样式 */
 .center-container {
   display: flex;
   justify-content: center;
   align-items: center;
   height: calc(100vh - 200px);
 }
-
-/* 任务项样式 */
-.task-item {
-  padding-bottom: 16px;
-  margin-bottom: 16px;
-  border-bottom: 1px solid var(--n-border-color);
+.mt-3 {
+  margin-top: 12px;
 }
-.task-list-container > .task-item:last-of-type {
-  border-bottom: none;
-  margin-bottom: 0;
-  padding-bottom: 0;
+.temp-task-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid var(--n-border-color);
+  border-radius: 4px;
+}
+.task-chain-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.task-chain-item {
+  display: flex;
+  align-items: center;
+  padding: 10px;
+  background-color: var(--n-action-color);
+  border-radius: 4px;
+  border: 1px solid var(--n-border-color);
+  transition: background-color 0.3s;
+}
+.task-chain-item.sortable-ghost {
+  background-color: var(--n-color-target-suppl);
+}
+.drag-handle {
+  cursor: grab;
+  margin-right: 12px;
+  color: var(--n-text-color-disabled);
+}
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+/* ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼ */
+/* --- 【【【 新增：流程图核心样式 】】】 --- */
+.flowchart-wrapper {
+  margin-top: 12px;
+  padding: 16px;
+  background-color: var(--n-action-color);
+  border-radius: 4px;
+  min-height: 100px;
+  width: 100%;
+}
+.flowchart-container {
+  display: flex;
+  flex-wrap: wrap; /* 允许换行 */
+  align-items: center;
+  gap: 8px 0; /* 垂直间隙8px，水平间隙0（由连接器控制） */
+}
+.flowchart-container.empty {
+  justify-content: center; /* 空状态时居中显示文字 */
+  height: 100%;
+}
+.flowchart-node {
+  background-color: var(--n-color);
+  border: 1px solid var(--n-border-color);
+  padding: 8px 16px;
+  border-radius: 20px; /* 圆角矩形 */
+  text-align: center;
+  white-space: nowrap;
+  position: relative; /* 为连接器定位 */
+}
+/* 使用 ::after 伪元素创建连接器（箭头） */
+.flowchart-node:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  right: -20px; /* 将箭头定位在节点右侧 */
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
+  /* 使用内联SVG作为箭头，可以继承颜色 */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='currentColor'%3E%3Cpath d='M16.172 11l-5.364-5.364 1.414-1.414L20 12l-7.778 7.778-1.414-1.414L16.172 13H4v-2z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  opacity: 0.5;
+}
+
+/* --- 响应式设计：当屏幕变窄时，变为垂直流程图 --- */
+@media (max-width: 1200px) { /* 这个断点值可以根据实际情况调整 */
+  .flowchart-container {
+    flex-direction: column; /* 垂直排列 */
+    align-items: flex-start; /* 左对齐 */
+    gap: 0 8px; /* 水平间隙8px，垂直间隙0 */
+  }
+  .flowchart-node {
+    width: fit-content; /* 宽度自适应内容 */
+  }
+  .flowchart-node:not(:last-child)::after {
+    /* 调整箭头位置和方向 */
+    right: auto;
+    left: 50%;
+    top: 100%;
+    transform: translateX(-50%);
+    /* 切换为向下的箭头SVG */
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='currentColor'%3E%3Cpath d='M13 16.172l5.364-5.364 1.414 1.414L12 20l-7.778-7.778 1.414-1.414L11 16.172V4h2z'/%3E%3C/svg%3E");
+  }
 }
 </style>

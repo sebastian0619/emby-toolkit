@@ -39,6 +39,7 @@ import db_handler
 from db_handler import get_db_connection as get_central_db_connection
 from flask import session
 from croniter import croniter
+from scheduler_manager import scheduler_manager
 import logging
 # --- 导入蓝图 ---
 from routes.watchlist import watchlist_bp
@@ -78,7 +79,6 @@ logging.getLogger("PIL").setLevel(logging.WARNING)
 
 # --- 全局变量 ---
 
-scheduler = BackgroundScheduler(timezone=str(pytz.timezone(constants.TIMEZONE)))
 JOB_ID_FULL_SCAN = "scheduled_full_scan"
 JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
 JOB_ID_PROCESS_WATCHLIST = "scheduled_process_watchlist"
@@ -379,17 +379,18 @@ def init_db():
 # --- 保存配置并重新加载的函数 ---
 def save_config_and_reload(new_config: Dict[str, Any]):
     """
-    调用配置管理器保存配置，并在此处执行所有必要的重新初始化操作。
+    【新版】调用配置管理器保存配置，并在此处执行所有必要的重新初始化操作。
     """
     try:
         # 步骤 1: 调用 config_manager 来保存文件和更新内存中的 config_manager.APP_CONFIG
         config_manager.save_config(new_config)
         
         # 步骤 2: 执行所有依赖于新配置的重新初始化逻辑
-        # 这是从旧的 save_config 函数中移动过来的，现在的位置更合理
         initialize_processors()
         init_auth_from_blueprint()
-        setup_scheduled_tasks()
+        
+        scheduler_manager.update_task_chain_job()
+        
         logger.info("所有组件已根据新配置重新初始化完毕。")
         
     except Exception as e:
@@ -452,270 +453,25 @@ def initialize_processors():
     extensions.actor_subscription_processor_instance = actor_subscription_processor_instance_local
     extensions.EMBY_SERVER_ID = server_id_local
     
-# --- 将 CRON 表达式转换为人类可读的、干净的执行计划字符串 ---
-def _get_next_run_time_str(cron_expression: str) -> str:
-    """
-    【V3 - 口齿伶俐版】将 CRON 表达式转换为人类可读的、干净的执行计划字符串。
-    """
-    try:
-        parts = cron_expression.split()
-        if len(parts) != 5:
-            raise ValueError("CRON 表达式必须有5个部分")
-
-        minute, hour, day_of_month, month, day_of_week = parts
-
-        # --- 周期描述 ---
-        # 优先判断分钟级的周期任务
-        if minute.startswith('*/') and all(p == '*' for p in [hour, day_of_month, month, day_of_week]):
-            return f"每隔 {minute[2:]} 分钟执行"
-        
-        # 判断小时级的周期任务
-        if hour.startswith('*/') and all(p == '*' for p in [day_of_month, month, day_of_week]):
-            # 如果分钟是0，就说是整点
-            if minute == '0':
-                return f"每隔 {hour[2:]} 小时的整点执行"
-            else:
-                return f"每隔 {hour[2:]} 小时的第 {minute} 分钟执行"
-
-        # --- 时间点描述 ---
-        time_str = f"{hour.zfill(2)}:{minute.zfill(2)}"
-        
-        # 判断星期
-        if day_of_week != '*':
-            day_map = {
-                '0': '周日', '1': '周一', '2': '周二', '3': '周三', 
-                '4': '周四', '5': '周五', '6': '周六', '7': '周日',
-                'sun': '周日', 'mon': '周一', 'tue': '周二', 'wed': '周三',
-                'thu': '周四', 'fri': '周五', 'sat': '周六'
-            }
-            days = [day_map.get(d.lower(), d) for d in day_of_week.split(',')]
-            return f"每周的 {','.join(days)} {time_str} 执行"
-        
-        # 判断日期
-        if day_of_month != '*':
-            if day_of_month.startswith('*/'):
-                 return f"每隔 {day_of_month[2:]} 天的 {time_str} 执行"
-            else:
-                 return f"每月的 {day_of_month} 号 {time_str} 执行"
-
-        # 如果上面都没匹配上，说明是每天
-        return f"每天 {time_str} 执行"
-
-    except Exception as e:
-        logger.warning(f"无法智能解析CRON表达式 '{cron_expression}': {e}，回退到简单模式。")
-        # 保留旧的回退方案
-        try:
-            # ... (croniter 的回退逻辑保持不变) ...
-            tz = pytz.timezone(constants.TIMEZONE)
-            now = datetime.now(tz)
-            iterator = croniter(cron_expression, now)
-            next_run = iterator.get_next(datetime)
-            return f"下一次将在 {next_run.strftime('%Y-%m-%d %H:%M')} 执行"
-        except:
-            return f"按计划 '{cron_expression}' 执行"
-# --- 定时任务配置 ---
-def setup_scheduled_tasks():
-    """
-    【最终版】根据全局配置，设置或移除所有定时任务。
-    """
-    config = config_manager.APP_CONFIG
-    
-    # --- 任务 1: 全量处理 ---
-    JOB_ID_FULL_SCAN = "scheduled_full_scan"
-    if scheduler.get_job(JOB_ID_FULL_SCAN): scheduler.remove_job(JOB_ID_FULL_SCAN)
-    if config.get(constants.CONFIG_OPTION_SCHEDULE_ENABLED, False):
-        try:
-            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_CRON)
-            force = config.get(constants.CONFIG_OPTION_SCHEDULE_FORCE_REPROCESS, False)
-            
-            def scheduled_scan_task():
-                logger.info(f"定时任务触发：全量处理 (强制={force})。")
-                task_manager.submit_task(
-                    task_run_full_scan, 
-                    "定时全量处理媒体", 
-                    force_reprocess=force 
-                )
-            
-            scheduler.add_job(func=scheduled_scan_task, trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_FULL_SCAN, name="定时全量处理", replace_existing=True)
-            logger.info(f"已设置定时任务：全量处理媒体->  将{_get_next_run_time_str(cron)}{' (强制重处理)' if force else ''}")
-        except Exception as e:
-            logger.error(f"设置定时全量处理任务失败: {e}", exc_info=True)
-    else:
-        logger.info("定时全量处理任务未启用。")
-
-    # --- 任务 2: 同步演员映射表 ---
-    JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
-    if scheduler.get_job(JOB_ID_SYNC_PERSON_MAP): scheduler.remove_job(JOB_ID_SYNC_PERSON_MAP)
-    if config.get(constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_ENABLED, False):
-        try:
-            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_CRON)
-            scheduler.add_job(func=lambda: task_manager.submit_task(task_sync_person_map, "定时同步演员映射"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_SYNC_PERSON_MAP, name="定时同步演员映射表", replace_existing=True)
-            logger.info(f"已设置定时任务：同步演员映射->  将{_get_next_run_time_str(cron)}")
-        except Exception as e:
-            logger.error(f"设置定时同步演员映射表任务失败: {e}", exc_info=True)
-    else:
-        logger.info("定时同步演员映射表任务未启用。")
-
-    # --- 任务 3: 刷新电影合集 ---
-    JOB_ID_REFRESH_COLLECTIONS = 'scheduled_refresh_collections'
-    if scheduler.get_job(JOB_ID_REFRESH_COLLECTIONS): scheduler.remove_job(JOB_ID_REFRESH_COLLECTIONS)
-    if config.get(constants.CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_ENABLED, False):
-        try:
-            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_CRON)
-            scheduler.add_job(func=lambda: task_manager.submit_task(task_refresh_collections, "定时刷新电影合集"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_REFRESH_COLLECTIONS, name="定时刷新电影合集", replace_existing=True)
-            logger.info(f"已设置定时任务：刷新电影合集->  将{_get_next_run_time_str(cron)}")
-        except Exception as e:
-            logger.error(f"设置定时刷新电影合集任务失败: {e}", exc_info=True)
-    else:
-        logger.info("定时刷新电影合集任务未启用。")
-
-    # --- 任务 4: 智能追剧刷新 ---
-    JOB_ID_PROCESS_WATCHLIST = "scheduled_process_watchlist"
-    if scheduler.get_job(JOB_ID_PROCESS_WATCHLIST): scheduler.remove_job(JOB_ID_PROCESS_WATCHLIST)
-    if config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False):
-        try:
-            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON)
-            # ★★★ 核心修改：让定时任务调用新的、职责更明确的函数 ★★★
-            def scheduled_watchlist_task():
-                task_manager.submit_task(
-                    lambda p: p.run_regular_processing_task(task_manager.update_status_from_thread),
-                    "定时智能追剧更新"
-                )
-            scheduler.add_job(func=scheduled_watchlist_task, trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_PROCESS_WATCHLIST, name="定时常规追剧更新", replace_existing=True)
-            logger.info(f"已设置定时任务：智能追剧更新->  将{_get_next_run_time_str(cron)}")
-        except Exception as e:
-            logger.error(f"设置定时智能追剧更新任务失败: {e}", exc_info=True)
-    else:
-        logger.info("定时智能追剧更新任务未启用。")
-
-    # ★★★ 已完结剧集复活检查 (硬编码，每周一次) ★★★
-    global JOB_ID_REVIVAL_CHECK
-    if scheduler.get_job(JOB_ID_REVIVAL_CHECK): scheduler.remove_job(JOB_ID_REVIVAL_CHECK)
-    try:
-        # 硬编码为每周日的凌晨5点执行，这个时间点API调用压力小
-        revival_cron = "0 5 * * 0" 
-        def scheduled_revival_check_task():
-            task_manager.submit_task(
-                lambda p: p.run_revival_check_task(task_manager.update_status_from_thread),
-                "每周已完结剧集复活检查"
-            )
-        scheduler.add_job(func=scheduled_revival_check_task, trigger=CronTrigger.from_crontab(revival_cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_REVIVAL_CHECK, name="每周已完结剧集复活检查", replace_existing=True)
-        logger.trace(f"已设置内置任务：已完结剧集复活检查，将{_get_next_run_time_str(revival_cron)}")
-    except Exception as e:
-        logger.error(f"设置内置的已完结剧集复活检查任务失败: {e}", exc_info=True)
-
-    # --- 任务 5: 演员元数据 ---
-    JOB_ID_ENRICH_ALIASES = 'scheduled_enrich_aliases'
-    if scheduler.get_job(JOB_ID_ENRICH_ALIASES): scheduler.remove_job(JOB_ID_ENRICH_ALIASES)
-    if config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED, False):
-        try:
-            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON)
-            scheduler.add_job(func=lambda: task_manager.submit_task(task_enrich_aliases, "定时演员数据补充"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_ENRICH_ALIASES, name="定时演员元数据增强", replace_existing=True)
-            logger.info(f"已设置定时任务：演员数据补充->  将{_get_next_run_time_str(cron)}")
-        except Exception as e:
-            logger.error(f"设置定时演员元数据补充任务失败: {e}", exc_info=True)
-    else:
-        logger.info("定时演员元数据补充任务未启用。")
-
-    # --- 任务 6: 演员名翻译 ---
-    JOB_ID_ACTOR_CLEANUP = 'scheduled_actor_translation_cleanup'
-    if scheduler.get_job(JOB_ID_ACTOR_CLEANUP): scheduler.remove_job(JOB_ID_ACTOR_CLEANUP)
-    if config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED, True):
-        try:
-            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_CRON)
-            scheduler.add_job(func=lambda: task_manager.submit_task(task_actor_translation_cleanup, "定时演员翻译"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_ACTOR_CLEANUP, name="定时演员名查漏补缺", replace_existing=True)
-            logger.info(f"已设置定时任务：演员姓名翻译->  将{_get_next_run_time_str(cron)}")
-        except Exception as e:
-            logger.error(f"设置定时演员名翻译任务失败: {e}", exc_info=True)
-    else:
-        logger.info("定时演员名翻译任务未启用。")
-
-    # --- 任务 7: 智能订阅 ---
-    JOB_ID_AUTO_SUBSCRIBE = 'scheduled_auto_subscribe'
-    if scheduler.get_job(JOB_ID_AUTO_SUBSCRIBE): scheduler.remove_job(JOB_ID_AUTO_SUBSCRIBE)
-    if config.get(constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_ENABLED, False):
-        try:
-            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_CRON)
-            scheduler.add_job(func=lambda: task_manager.submit_task(task_auto_subscribe, "定时智能订阅缺失"), trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))), id=JOB_ID_AUTO_SUBSCRIBE, name="定时智能订阅", replace_existing=True)
-            logger.info(f"已设置定时任务：智能订阅缺失->  将{_get_next_run_time_str(cron)}")
-        except Exception as e:
-            logger.error(f"设置定时智能订阅任务失败: {e}", exc_info=True)
-    else:
-        logger.info("定时智能订阅任务未启用。")
-
-    # --- ★★★ 任务 8: 演员订阅扫描 ★★★ ---
-    JOB_ID_ACTOR_TRACKING = 'scheduled_actor_tracking'
-    if scheduler.get_job(JOB_ID_ACTOR_TRACKING): scheduler.remove_job(JOB_ID_ACTOR_TRACKING)
-    if config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_TRACKING_ENABLED, False):
-        try:
-            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_TRACKING_CRON)
-            scheduler.add_job(
-                func=lambda: task_manager.submit_task(task_process_actor_subscriptions, "定时演员订阅扫描"),
-                trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                id=JOB_ID_ACTOR_TRACKING,
-                name="定时演员订阅扫描",
-                replace_existing=True
-            )
-            logger.info(f"已设置定时任务：演员订阅扫描->  将{_get_next_run_time_str(cron)}")
-        except Exception as e:
-            logger.error(f"设置定时演员订阅扫描任务失败: {e}", exc_info=True)
-    else:
-        logger.info("定时演员订阅扫描任务未启用。")
-
-    # 任务 9 - 定时刷新自建合集 ★★★
-    JOB_ID_CUSTOM_COLLECTIONS = 'scheduled_custom_collections'
-    if scheduler.get_job(JOB_ID_CUSTOM_COLLECTIONS): scheduler.remove_job(JOB_ID_CUSTOM_COLLECTIONS)
-    if config.get(constants.CONFIG_OPTION_SCHEDULE_CUSTOM_COLLECTIONS_ENABLED, False):
-        try:
-            cron = config.get(constants.CONFIG_OPTION_SCHEDULE_CUSTOM_COLLECTIONS_CRON)
-            scheduler.add_job(
-                func=lambda: task_manager.submit_task(task_process_all_custom_collections, "定时刷新自建合集"),
-                trigger=CronTrigger.from_crontab(cron, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                id=JOB_ID_CUSTOM_COLLECTIONS,
-                name="定时刷新自建合集",
-                replace_existing=True
-            )
-            logger.info(f"已设置定时任务：刷新自建合集->  将{_get_next_run_time_str(cron)}")
-        except Exception as e:
-            logger.error(f"设置定时刷新自建合集任务失败: {e}", exc_info=True)
-    else:
-        logger.info("定时刷新自建合集任务未启用。")
-
-    # --- 启动调度器逻辑 (包含所有任务开关) ---
-    all_schedules_enabled = [
-        config.get(constants.CONFIG_OPTION_SCHEDULE_ENABLED, False),
-        config.get(constants.CONFIG_OPTION_SCHEDULE_SYNC_MAP_ENABLED, False),
-        config.get(constants.CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_ENABLED, False),
-        config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False),
-        config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED, False),
-        config.get(constants.CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED, True),
-        config.get(constants.CONFIG_OPTION_SCHEDULE_AUTOSUB_ENABLED, False),
-        config.get(constants.CONFIG_OPTION_SCHEDULE_CUSTOM_COLLECTIONS_ENABLED, False)
-    ]
-    if not scheduler.running and any(all_schedules_enabled):
-        try:
-            scheduler.start()
-            logger.info("APScheduler 已根据任务需求启动。")
-        except Exception as e_scheduler_start:
-            logger.error(f"APScheduler 启动失败: {e_scheduler_start}", exc_info=True)
 # --- 应用退出处理 ---
 def application_exit_handler():
-    global media_processor_instance, scheduler, task_worker_thread
+    # global media_processor_instance, scheduler, task_worker_thread # 不再需要 scheduler
+    global media_processor_instance, task_worker_thread # 修正后的
     logger.info("应用程序正在退出 (atexit)，执行清理操作...")
 
     # 1. 立刻通知当前正在运行的任务停止
-    if media_processor_instance:
+    if extensions.media_processor_instance: # 从 extensions 获取
         logger.info("正在发送停止信号给当前任务...")
-        media_processor_instance.signal_stop()
+        extensions.media_processor_instance.signal_stop()
 
     task_manager.clear_task_queue()
     task_manager.stop_task_worker()
 
     # 4. 关闭其他资源
-    if media_processor_instance:
-        media_processor_instance.close()
-    if scheduler and scheduler.running:
-        scheduler.shutdown(wait=False)
+    if extensions.media_processor_instance: # 从 extensions 获取
+        extensions.media_processor_instance.close()
+    
+    scheduler_manager.shutdown()
     
     logger.info("atexit 清理操作执行完毕。")
 atexit.register(application_exit_handler)
@@ -893,9 +649,7 @@ if __name__ == '__main__':
     task_manager.start_task_worker_if_not_running()
     
     # 7. 设置定时任务 (它会依赖全局配置和实例)
-    if not scheduler.running:
-        scheduler.start()
-    setup_scheduled_tasks()
+    scheduler_manager.start()
     
     # 8. 运行 Flask 应用
     app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=False)

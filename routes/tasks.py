@@ -14,6 +14,27 @@ logger = logging.getLogger(__name__)
 # 创建一个新的蓝图
 tasks_bp = Blueprint('tasks', __name__, url_prefix='/api/tasks')
 
+# ★★★ 新增API：获取所有可供选择的任务 ★★★
+@tasks_bp.route('/available', methods=['GET'])
+@login_required
+def get_available_tasks():
+    """
+    【V2】返回一个可用于任务链配置的、有序的、人类可读的任务列表。
+    它现在只返回那些被标记为适合在任务链中运行的任务。
+    """
+    try:
+        # 调用 get_task_registry 时，明确告诉它我们需要用于“任务链”的上下文
+        registry = get_task_registry(context='chain')
+        
+        available_tasks = [
+            {"key": key, "name": info[1]} 
+            for key, info in registry.items()
+        ]
+        return jsonify(available_tasks), 200
+    except Exception as e:
+        logger.error(f"获取可用任务列表时出错: {e}", exc_info=True)
+        return jsonify({"error": "无法获取可用任务列表"}), 500
+
 @tasks_bp.route('/run', methods=['POST'])
 @login_required
 @processor_ready_required

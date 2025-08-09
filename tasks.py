@@ -93,12 +93,12 @@ def task_sync_person_map(processor):
 # ✨✨✨ 演员元数据增强函数 ✨✨✨
 def task_enrich_aliases(processor: MediaProcessor):
     """
-    【后台任务】演员元数据增强任务的入口点。
-    它会调用 actor_utils 中的核心逻辑，并传递运行时长。
+    【V3 - 后台任务】演员元数据增强任务的入口点。
+    - 核心逻辑：内置了30天的固定冷却时间，无需任何外部配置。
     """
-    task_name = "演员元数据增强"
+    task_name = "演员元数据补充"
     logger.info(f"后台任务 '{task_name}' 开始执行...")
-    task_manager.update_status_from_thread(0, "准备开始演员元数据增强...")
+    task_manager.update_status_from_thread(0, "准备开始演员元数据补充...")
 
     try:
         # 从传入的 processor 对象中获取配置字典
@@ -113,28 +113,33 @@ def task_enrich_aliases(processor: MediaProcessor):
             task_manager.update_status_from_thread(-1, "错误：缺少TMDb API Key")
             return
 
-        # --- 使用 .get() 方法从字典中安全地获取所有配置 ---
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+        # --- 【【【 这 是 核 心 修 改 点 】】】 ---
         
-        # 1. 获取运行时长
-        duration_minutes = config.get(constants.CONFIG_OPTION_SCHEDULE_ENRICH_DURATION_MINUTES, 0)
+        # 1. 运行时长 (run_duration_minutes)
+        # 假设核心函数 enrich_all_actor_aliases_task 仍然需要这个参数。
+        # 如果不需要，可以安全地从下面的函数调用中移除它。
+        # 我们将其硬编码为 0，代表“不限制时长”，这是最常见的用法。
+        duration_minutes = 0
+
+        # 2. 冷却时间 (sync_interval_days)
+        # 直接将冷却时间硬编码为 30 天。
+        cooldown_days = 30
         
-        # 2. 获取同步冷却天数 (这是关键的修复！)
-        sync_interval_days = config.get(
-            constants.CONFIG_OPTION_SCHEDULE_ENRICH_SYNC_INTERVAL_DAYS, 
-            constants.DEFAULT_ENRICH_ALIASES_SYNC_INTERVAL_DAYS  # 使用默认值以防万一
-        )
-        
-        # 调用核心函数，并传递所有正确获取的参数
+        logger.info(f"演员元数据补充任务将使用固定的 {cooldown_days} 天冷却期。")
+
+        # 调用核心函数，并传递写死的值
         enrich_all_actor_aliases_task(
             db_path=db_path,
             tmdb_api_key=tmdb_api_key,
             run_duration_minutes=duration_minutes,
-            sync_interval_days=sync_interval_days, # <--- 现在这里是完全正确的
+            sync_interval_days=cooldown_days, # <--- 使用我们硬编码的冷却时间
             stop_event=processor.get_stop_event()
         )
+        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
         logger.info(f"'{task_name}' 任务执行完毕。")
-        task_manager.update_status_from_thread(100, "演员元数据增强任务完成。")
+        task_manager.update_status_from_thread(100, "演员元数据补充任务完成。")
 
     except Exception as e:
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
@@ -1324,26 +1329,117 @@ def task_add_all_series_to_watchlist(processor: MediaProcessor):
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+# --- 任务链 ---
+def task_run_chain(processor: MediaProcessor, task_sequence: list):
+    """
+    【V2 - 核心修复版】自动化任务链。
+    按顺序执行指定的一系列任务，并为每个任务智能选择正确的处理器。
+    """
+    task_name = "自动化任务链"
+    total_tasks = len(task_sequence)
+    logger.info(f"--- '{task_name}' 已启动，共包含 {total_tasks} 个子任务 ---")
+    task_manager.update_status_from_thread(0, f"任务链启动，共 {total_tasks} 个任务。")
+
+    # 获取所有可用任务的定义
+    registry = get_task_registry()
+    
+    # 遍历用户定义的任务序列
+    for i, task_key in enumerate(task_sequence):
+        # 注意：这里的 processor.is_stop_requested() 依赖于 task_manager 传递进来的默认处理器
+        # 这是一个可以接受的设计，因为停止信号是全局的。
+        if processor.is_stop_requested():
+            logger.warning(f"'{task_name}' 被用户中止。")
+            break
+
+        task_info = registry.get(task_key)
+        if not task_info:
+            logger.error(f"任务链警告：在注册表中未找到任务 '{task_key}'，已跳过。")
+            continue
+
+        task_function, task_description = task_info
+        
+        progress = int((i / total_tasks) * 100)
+        status_message = f"({i+1}/{total_tasks}) 正在执行: {task_description}"
+        logger.info(f"--- {status_message} ---")
+        task_manager.update_status_from_thread(progress, status_message)
+
+        try:
+            # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+            # --- 【【【 这 是 核 心 修 改 点 2/2：智能选择处理器】】】 ---
+            processor_to_use = None
+            # 根据任务的唯一标识符 (key) 来判断使用哪个处理器
+            if task_key in ['process-watchlist', 'refresh-single-watchlist-item']:
+                processor_to_use = extensions.watchlist_processor_instance
+                logger.debug(f"任务 '{task_description}' 将使用 WatchlistProcessor。")
+            elif task_key in ['actor-tracking', 'scan-actor-media']:
+                processor_to_use = extensions.actor_subscription_processor_instance
+                logger.debug(f"任务 '{task_description}' 将使用 ActorSubscriptionProcessor。")
+            else:
+                # 默认情况下，使用通用的 MediaProcessor
+                processor_to_use = extensions.media_processor_instance
+                logger.debug(f"任务 '{task_description}' 将使用默认的 MediaProcessor。")
+
+            if not processor_to_use:
+                logger.error(f"任务链中的子任务 '{task_description}' 无法执行：对应的处理器未初始化，已跳过。")
+                continue
+
+            # ★★★ 使用我们刚刚智能选择的 `processor_to_use` 来执行任务 ★★★
+            task_function(processor_to_use)
+            # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+            
+            # 子任务成功执行后，短暂等待，让状态更新能被前端捕获
+            time.sleep(1) 
+
+        except Exception as e:
+            error_message = f"任务链中的子任务 '{task_description}' 执行失败: {e}"
+            logger.error(error_message, exc_info=True)
+            # 更新UI状态以反映错误，但任务链会继续
+            task_manager.update_status_from_thread(progress, f"子任务'{task_description}'失败，继续...")
+            time.sleep(3) # 让用户能看到错误信息
+            continue # 继续下一个任务
+
+    final_message = f"'{task_name}' 执行完毕。"
+    if processor.is_stop_requested():
+        final_message = f"'{task_name}' 已中止。"
+    
+    logger.info(f"--- {final_message} ---")
+    task_manager.update_status_from_thread(100, "任务链已全部执行完毕。")
 # --- 任务注册表 ---
-def get_task_registry():
-    """返回一个包含所有可执行任务的字典。"""
-    # 在函数内部，所有 task_... 函数都已经是已定义的
-    return {
-        'full-scan': (task_run_full_scan, "全量处理媒体"),
-        'populate-metadata': (task_populate_metadata_cache, "同步媒体数据"),
-        'sync-person-map': (task_sync_person_map, "同步演员映射"),
-        'sync-images-map': (task_full_image_sync, "全量同步图片"),
-        'process-watchlist': (task_process_watchlist, "智能追剧更新"),
-        'enrich-aliases': (task_enrich_aliases, "演员数据补充"),
-        'actor-cleanup': (task_actor_translation_cleanup, "演员姓名翻译"),
-        'refresh-collections': (task_refresh_collections, "电影合集刷新"),
-        'process-single-custom-collection': (task_process_custom_collection, "生成单个自建合集"),
-        'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集"),
-        'auto-subscribe': (task_auto_subscribe, "智能订阅缺失"),
-        'actor-tracking': (task_process_actor_subscriptions, "演员订阅扫描"),
-        'custom-collections': (task_process_all_custom_collections, "自建合集刷新"),
-        'generate-all-covers': (task_generate_all_covers, "生成所有媒体库封面"),
+def get_task_registry(context: str = 'all'):
+    """
+    【V2】返回一个包含所有可执行任务的字典，并可根据上下文筛选。
+    :param context: 'all' (默认) 返回所有任务, 'chain' 只返回适合任务链的任务。
+    """
+    # 完整的任务注册表
+    full_registry = {
+        'task-chain': (task_run_chain, "自动化任务链", False), # 第三个元素表示是否适合任务链
+        
+        # --- 适合任务链的常规任务 ---
+        'full-scan': (task_run_full_scan, "全量处理媒体", True),
+        'populate-metadata': (task_populate_metadata_cache, "同步媒体数据", True),
+        'sync-person-map': (task_sync_person_map, "同步演员映射", True),
+        'sync-images-map': (task_full_image_sync, "全量同步图片", True),
+        'process-watchlist': (task_process_watchlist, "智能追剧更新", True),
+        'enrich-aliases': (task_enrich_aliases, "演员数据补充", True),
+        'actor-cleanup': (task_actor_translation_cleanup, "演员姓名翻译", True),
+        'refresh-collections': (task_refresh_collections, "原生合集刷新", True),
+        'custom-collections': (task_process_all_custom_collections, "自建合集刷新", True),
+        'auto-subscribe': (task_auto_subscribe, "智能订阅缺失", True),
+        'actor-tracking': (task_process_actor_subscriptions, "演员订阅扫描", True),
+        'generate-all-covers': (task_generate_all_covers, "生成所有封面", True),
+
+        # --- 不适合任务链的、需要特定参数的任务 ---
+        'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", False),
+        'process-single-custom-collection': (task_process_custom_collection, "生成单个自建合集", False),
+        # 更多需要参数的任务可以加在这里，例如：
+        # 'reprocess-single-item': (task_reprocess_single_item, "重新处理单个项目", False),
     }
+
+    if context == 'chain':
+        return {key: (info[0], info[1]) for key, info in full_registry.items() if info[2]}
+    
+    # 默认返回不包含第三个布尔值的简化版，以兼容旧的调用
+    return {key: (info[0], info[1]) for key, info in full_registry.items()}
 
 # ★★★ 一键生成所有合集的后台任务，核心优化在于只获取一次Emby媒体库 ★★★
 def task_process_all_custom_collections(processor: MediaProcessor):

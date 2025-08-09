@@ -67,6 +67,7 @@ COPY requirements.txt \
      tasks.py \
      github_handler.py \
      custom_collection_handler.py \
+     scheduler_manager.py \
      ./
 
 COPY services/ ./services/

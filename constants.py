@@ -78,54 +78,17 @@ CONFIG_OPTION_AI_TRANSLATION_MODE = "ai_translation_mode"       # AI翻译模式
 # ==============================================================================
 CONFIG_SECTION_SCHEDULER = "Scheduler"
 
-# --- 全量处理任务 ---
-CONFIG_OPTION_SCHEDULE_ENABLED = "schedule_enabled"             # 是否启用全量处理定时任务
-CONFIG_OPTION_SCHEDULE_CRON = "schedule_cron"                   # 全量处理的CRON表达式
-CONFIG_OPTION_SCHEDULE_FORCE_REPROCESS = "schedule_force_reprocess" # 定时任务是否强制重处理所有项目
+CONFIG_OPTION_TASK_CHAIN_ENABLED = "task_chain_enabled"
+CONFIG_OPTION_TASK_CHAIN_CRON = "task_chain_cron"
+CONFIG_OPTION_TASK_CHAIN_SEQUENCE = "task_chain_sequence"
 
-# --- 同步演员映射表任务 ---
-CONFIG_OPTION_SCHEDULE_SYNC_MAP_ENABLED = "schedule_sync_map_enabled" # 是否启用同步演员映射表任务
-CONFIG_OPTION_SCHEDULE_SYNC_MAP_CRON = "schedule_sync_map_cron"       # 同步映射表的CRON表达式
 
-# --- 智能追剧任务 ---
-CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED = "schedule_watchlist_enabled" # 是否启用智能追剧任务
-CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON = "schedule_watchlist_cron"       # 智能追剧的CRON表达式
-DEFAULT_SCHEDULE_WATCHLIST_CRON = "0 */6 * * *" # 默认每6小时执行一次
 
-# --- 自建合集定时刷新任务 ---
-CONFIG_OPTION_SCHEDULE_CUSTOM_COLLECTIONS_ENABLED = "schedule_custom_collections_enabled"
-CONFIG_OPTION_SCHEDULE_CUSTOM_COLLECTIONS_CRON = "schedule_custom_collections_cron"
-DEFAULT_SCHEDULE_CUSTOM_COLLECTIONS_CRON = "0 6 * * *" # 默认每天早上6点执行
-
-# --- 演员处理相关配置 ---
+# --- 演员前缀 ---
 CONFIG_SECTION_ACTOR = "Actor"
 CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX = "actor_role_add_prefix"
 
-# --- 演员订阅 ---
-CONFIG_OPTION_SCHEDULE_ACTOR_TRACKING_ENABLED = "schedule_actor_tracking_enabled"
-CONFIG_OPTION_SCHEDULE_ACTOR_TRACKING_CRON = "schedule_actor_tracking_cron"
 
-# --- 演员元数据增强任务 ---
-CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_ENABLED = "schedule_enrich_aliases_enabled" # 是否启用演员元数据增强任务
-CONFIG_OPTION_SCHEDULE_ENRICH_ALIASES_CRON = "schedule_enrich_aliases_cron"       # 演员元数据增强的CRON表达式
-CONFIG_OPTION_SCHEDULE_ENRICH_DURATION_MINUTES = "schedule_enrich_run_duration_minutes" # 演员元数据增强任务的运行时长常量
-CONFIG_OPTION_SCHEDULE_ENRICH_SYNC_INTERVAL_DAYS = "schedule_enrich_sync_interval_days"
-DEFAULT_ENRICH_ALIASES_SYNC_INTERVAL_DAYS = 7 # 默认冷却7天
-
-# --- 演员名翻译查漏补缺任务 ---
-CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_ENABLED = "schedule_actor_cleanup_enabled" # 是否启用演员名翻译查漏补缺任务
-CONFIG_OPTION_SCHEDULE_ACTOR_CLEANUP_CRON = "schedule_actor_cleanup_cron"       # 演员名翻译查漏补缺的CRON表达式
-DEFAULT_SCHEDULE_ACTOR_CLEANUP_CRON = "0 4 * * *" # 默认每天凌晨4点执行
-
-# --- 智能订阅任务 ---
-CONFIG_OPTION_SCHEDULE_AUTOSUB_ENABLED = "schedule_autosub_enabled" # 是否启用智能订阅任务
-CONFIG_OPTION_SCHEDULE_AUTOSUB_CRON = "schedule_autosub_cron"       # 智能订阅的CRON表达式
-DEFAULT_SCHEDULE_AUTOSUB_CRON = "0 5 * * *" # 默认每天凌晨5点执行
-
-# --- 电影合集刷新任务 ---
-CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_ENABLED = "schedule_refresh_collections_enabled"
-CONFIG_OPTION_SCHEDULE_REFRESH_COLLECTIONS_CRON = "schedule_refresh_collections_cron"
-DEFAULT_SCHEDULE_REFRESH_COLLECTIONS_CRON = "0 2 * * *" # 默认每天凌晨2点
 # --- 日志配置 ---
 CONFIG_SECTION_LOGGING = "Logging"
 CONFIG_OPTION_LOG_ROTATION_SIZE_MB = "log_rotation_size_mb"
