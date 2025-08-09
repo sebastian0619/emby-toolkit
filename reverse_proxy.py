@@ -274,34 +274,49 @@ def handle_get_latest_items(user_id, params):
     try:
         base_url, _ = _get_real_emby_url_and_key()
         user_token = params.get('api_key') or params.get('X-Emby-Token')
-        if not user_token: return Response(json.dumps([]), mimetype='application/json')
+        if not user_token: 
+            return Response(json.dumps([]), mimetype='application/json')
+        
+        # 从请求参数拿虚拟库ID，比如用 ParentId 或自定义参数 customViewId （前端调用时需保证带上）
+        virtual_library_id = params.get('ParentId') or params.get('customViewId')
+        if not virtual_library_id:
+            # 没指定虚拟库，无法获取最新媒体
+            return Response(json.dumps([]), mimetype='application/json')
 
-        active_collections = db_handler.get_all_active_custom_collections(config_manager.DB_PATH)
-        real_emby_collection_ids = [c.get('emby_collection_id') for c in active_collections if c.get('emby_collection_id')]
-        if not real_emby_collection_ids: return Response(json.dumps([]), mimetype='application/json')
+        # 从数据库根据虚拟库ID获取真实Emby合集ID
+        try:
+            virtual_library_db_id = int(virtual_library_id.replace(_MIMICKED_LIBRARY_ID_PREFIX, '')) if virtual_library_id.startswith(_MIMICKED_LIBRARY_ID_PREFIX) else int(virtual_library_id)
+        except Exception:
+            logger.warning(f"无效的虚拟库ID格式：{virtual_library_id}")
+            return Response(json.dumps([]), mimetype='application/json')
 
-        all_latest_items = []
-        def fetch_latest_from_collection(collection_id):
-            try:
-                latest_params = {
-                    "ParentId": collection_id, "Limit": 20, "Fields": "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated",
-                    "SortBy": "DateCreated", "SortOrder": "Descending", "api_key": user_token,
-                }
-                url = f"{base_url}/emby/Users/{user_id}/Items"
-                resp = requests.get(url, params=latest_params, timeout=10)
-                if resp.status_code == 200: return resp.json().get("Items", [])
-            except Exception: pass
-            return []
-
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            for items in executor.map(fetch_latest_from_collection, real_emby_collection_ids):
-                all_latest_items.extend(items)
-
-        unique_items = {item['Id']: item for item in all_latest_items}
-        sorted_items = sorted(unique_items.values(), key=lambda x: x.get('DateCreated', ''), reverse=True)
-        limit = int(params.get('Limit', '20'))
-        final_items = sorted_items[:limit]
-        return Response(json.dumps(final_items), mimetype='application/json')
+        collection_info = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, virtual_library_db_id)
+        if not collection_info:
+            logger.info(f"未找到虚拟库ID {virtual_library_db_id} 对应的数据")
+            return Response(json.dumps([]), mimetype='application/json')
+        
+        real_emby_collection_id = collection_info.get('emby_collection_id')
+        if not real_emby_collection_id:
+            logger.info(f"虚拟库ID {virtual_library_db_id} 未绑定真实Emby合集ID")
+            return Response(json.dumps([]), mimetype='application/json')
+        
+        # 构造参数请求真实Emby最新媒体
+        latest_params = {
+            "ParentId": real_emby_collection_id, 
+            "Limit": int(params.get('Limit', '20')),
+            "Fields": "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated",
+            "SortBy": "DateCreated", 
+            "SortOrder": "Descending", 
+            "api_key": user_token,
+        }
+        url = f"{base_url}/emby/Users/{user_id}/Items"
+        resp = requests.get(url, params=latest_params, timeout=10)
+        if resp.status_code == 200:
+            items = resp.json().get("Items", [])
+            return Response(json.dumps(items), mimetype='application/json')
+        else:
+            logger.warning(f"调用真实Emby失败，状态码: {resp.status_code}")
+            return Response(json.dumps([]), mimetype='application/json')
     except Exception as e:
         logger.error(f"处理最新媒体时出错: {e}", exc_info=True)
         return Response(json.dumps([]), mimetype='application/json')
@@ -321,27 +336,23 @@ def proxy_all(path):
         details_match = MIMICKED_ITEM_DETAILS_RE.search(f'/{path}')
         if details_match:
             return handle_get_mimicked_library_details(details_match.group(1))
-
         if path.endswith('/Items/Latest'):
             user_id_match = re.search(r'/emby/Users/([^/]+)/', f'/{path}')
             if user_id_match:
+                # 这里确保调用时request.args中包含虚拟库标识，前端或客户端请求时需加上ParentId或customViewId参数
                 return handle_get_latest_items(user_id_match.group(1), request.args)
         
         tag = request.args.get('tag')
         if tag and tag.startswith('watermark_'):
             return handle_get_watermarked_image(tag)
-
         parent_id = request.args.get("ParentId")
         if parent_id and parent_id.startswith(_MIMICKED_LIBRARY_ID_PREFIX):
             return handle_get_mimicked_library_items(parent_id, request.args)
-
         items_match = MIMICKED_ITEMS_RE.match(f'/{path}')
         if items_match:
             return handle_get_mimicked_library_items(items_match.group(1), request.args)
-
         if path.startswith(f'emby/Items/{_MIMICKED_LIBRARY_ID_PREFIX}') and '/Images/' in path:
             return handle_get_mimicked_library_image(path)
-
         path_to_forward = path
         if path and not path.startswith(('emby/', 'socket.io/')):
              path_to_forward = f'web/{path}'
