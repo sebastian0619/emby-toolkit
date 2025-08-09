@@ -259,7 +259,7 @@ def handle_get_mimicked_library_items(mimicked_id, params):
         # 4. 添加那些在真实合集中存在，但由于某种原因不在我们数据库列表中的项目
         for tmdb_id, real_item in real_items_map.items():
             if tmdb_id not in processed_real_tmdb_ids:
-                logger.warning(f"发现一个在Emby合集中但不在数据库列表的真实项目: '{real_item.get('Name')}' (TMDB: {tmdb_id})，将直接添加。")
+                logger.trace(f"发现一个在Emby合集中但不在数据库列表的真实项目: '{real_item.get('Name')}' (TMDB: {tmdb_id})，将直接添加。")
                 final_items.append(real_item)
 
         logger.debug(f"--- 遍历结束，最终将返回 {len(final_items)} 个项目 ---")
