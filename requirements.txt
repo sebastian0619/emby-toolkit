@@ -30,3 +30,6 @@ docker
 numpy
 Pillow
 PyYAML
+
+# --- 水印 ---
+Pillow
