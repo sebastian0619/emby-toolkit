@@ -3,7 +3,7 @@
   <n-card class="dashboard-card" :bordered="false" size="small">
     <template #header>
       <!-- 将 card-title 类应用到标题文本的容器上 -->
-      <span class="card-title">手动管理</span>
+      <span class="card-title">手动处理</span>
     </template>
     <!-- ✅ [修正] Access prop via `props.taskStatus` -->
     <n-alert 
