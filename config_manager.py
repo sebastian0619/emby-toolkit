@@ -52,6 +52,10 @@ CONFIG_DEFINITION = {
     constants.CONFIG_OPTION_REFRESH_AFTER_UPDATE: (constants.CONFIG_SECTION_EMBY, 'boolean', True),
     constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS: (constants.CONFIG_SECTION_EMBY, 'list', []),
 
+    # [ReverseProxy]
+    constants.CONFIG_OPTION_PROXY_ENABLED: (constants.CONFIG_SECTION_REVERSE_PROXY, 'boolean', False),
+    constants.CONFIG_OPTION_PROXY_PORT: (constants.CONFIG_SECTION_REVERSE_PROXY, 'int', 8097),
+
     # [TMDB]
     constants.CONFIG_OPTION_TMDB_API_KEY: (constants.CONFIG_SECTION_TMDB, 'string', ""),
     constants.CONFIG_OPTION_GITHUB_TOKEN: (constants.CONFIG_SECTION_GITHUB, 'string', ""),

@@ -1,4 +1,6 @@
 # web_app.py
+from gevent import monkey
+monkey.patch_all()
 import os
 import sqlite3
 import shutil
@@ -40,6 +42,7 @@ from db_handler import get_db_connection as get_central_db_connection
 from flask import session
 from croniter import croniter
 from scheduler_manager import scheduler_manager
+from reverse_proxy import proxy_app
 import logging
 # --- 导入蓝图 ---
 from routes.watchlist import watchlist_bp
@@ -601,57 +604,57 @@ app.register_blueprint(actions_bp)
 app.register_blueprint(cover_generator_config_bp)
 app.register_blueprint(tasks_bp)
 if __name__ == '__main__':
+    # ★★★ 猴子补丁已经移到文件顶部，这里不再需要 ★★★
+    from gevent.pywsgi import WSGIServer
+    from geventwebsocket.handler import WebSocketHandler
+
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}")
     
-    # 1. ★★★ 首先，加载配置，让 config_manager.APP_CONFIG 获得真实的值 ★★★
     config_manager.load_config()
     
-    # 2. ★★★ 然后，再执行依赖于配置的日志设置 ★★★
-    # --- 日志文件处理器配置 ---
     config_manager.LOG_DIRECTORY = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'logs')
-
-    # 从现在已经有值的 config_manager.APP_CONFIG 中获取配置
-    raw_size = config_manager.APP_CONFIG.get(
-        constants.CONFIG_OPTION_LOG_ROTATION_SIZE_MB, 
-        constants.DEFAULT_LOG_ROTATION_SIZE_MB
-    )
     try:
-        log_size = int(raw_size)
+        log_size = int(config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_LOG_ROTATION_SIZE_MB, constants.DEFAULT_LOG_ROTATION_SIZE_MB))
+        log_backups = int(config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_LOG_ROTATION_BACKUPS, constants.DEFAULT_LOG_ROTATION_BACKUPS))
     except (ValueError, TypeError):
         log_size = constants.DEFAULT_LOG_ROTATION_SIZE_MB
-
-    raw_backups = config_manager.APP_CONFIG.get(
-        constants.CONFIG_OPTION_LOG_ROTATION_BACKUPS, 
-        constants.DEFAULT_LOG_ROTATION_BACKUPS
-    )
-    try:
-        log_backups = int(raw_backups)
-    except (ValueError, TypeError):
         log_backups = constants.DEFAULT_LOG_ROTATION_BACKUPS
-
-    # 将正确的配置注入日志系统
-    add_file_handler(
-        log_directory=config_manager.LOG_DIRECTORY,
-        log_size_mb=log_size,
-        log_backups=log_backups
-    )
+    add_file_handler(log_directory=config_manager.LOG_DIRECTORY, log_size_mb=log_size, log_backups=log_backups)
     
-    # 3. 初始化数据库
     init_db()
-
-    # 4. 初始化认证系统 (它会依赖全局配置)
     init_auth_from_blueprint()
-
-    # 5. 创建唯一的 MediaProcessor 实例
     initialize_processors()
-    
-    # 6. 启动后台任务工人
     task_manager.start_task_worker_if_not_running()
-    
-    # 7. 设置定时任务 (它会依赖全局配置和实例)
     scheduler_manager.start()
     
-    # 8. 运行 Flask 应用
-    app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=False)
+    def run_proxy_server():
+        if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
+            try:
+                proxy_port = int(config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_PORT))
+                logger.info(f"🚀 [GEVENT] 反向代理服务即将启动，监听端口: {proxy_port}")
+                
+                proxy_server = WSGIServer(
+                    ('0.0.0.0', proxy_port), 
+                    proxy_app, 
+                    handler_class=WebSocketHandler
+                )
+                proxy_server.serve_forever()
+
+            except Exception as e:
+                logger.error(f"启动反向代理服务失败: {e}", exc_info=True)
+        else:
+            logger.info("反向代理功能未在配置中启用。")
+
+    proxy_thread = threading.Thread(target=run_proxy_server, daemon=True)
+    proxy_thread.start()
+
+    main_app_port = int(constants.WEB_APP_PORT)
+    logger.info(f"🚀 [GEVENT] 主应用服务器即将启动，监听端口: {main_app_port}")
+    
+    main_server = WSGIServer(
+        ('0.0.0.0', main_app_port), 
+        app
+    )
+    main_server.serve_forever()
 
 # # --- 主程序入口结束 ---

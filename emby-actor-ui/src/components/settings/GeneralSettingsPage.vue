@@ -173,7 +173,7 @@
       <!-- ########## 右侧列 ########## -->
       <n-gi>
         <n-space vertical :size="24">
-          <!-- ★★★ Emby 连接设置卡片 ★★★ -->
+          <!-- ★★★ Emby 设置卡片 (已整合反代) ★★★ -->
           <n-card :bordered="false" class="dashboard-card">
             <template #header>
               <span class="card-title">Emby设置</span>
@@ -197,7 +197,7 @@
               </template>
             </n-form-item-grid-item>
 
-            <!-- 分割线 -->
+            <!-- 分割线: 媒体库 -->
             <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">
               选择要处理的媒体库
             </n-divider>
@@ -216,8 +216,25 @@
                 <div v-if="libraryError" style="color: red; margin-top: 5px;">{{ libraryError }}</div>
               </n-spin>
             </n-form-item-grid-item>
-          </n-card>
 
+            <!-- ★★★ 分割线: 反向代理 ★★★ -->
+            <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">
+              反向代理 (实验性)
+            </n-divider>
+
+            <!-- ★★★ Part 3: 反向代理设置 ★★★ -->
+            <n-form-item-grid-item label="启用反向代理" path="proxy_enabled">
+              <n-switch v-model:value="configModel.proxy_enabled" />
+            </n-form-item-grid-item>
+            <n-form-item-grid-item label="代理监听端口" path="proxy_port">
+              <n-input-number 
+                v-model:value="configModel.proxy_port" 
+                :min="1025" 
+                :max="65535"
+                :disabled="!configModel.proxy_enabled"
+              />
+            </n-form-item-grid-item>
+          </n-card>
           <!-- 卡片: AI 翻译设置 -->
           <n-card :bordered="false" class="dashboard-card">
             <template #header>

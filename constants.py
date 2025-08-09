@@ -15,6 +15,12 @@ TIMEZONE = "Asia/Shanghai" # 应用使用的时区，用于计划任务等
 CONFIG_SECTION_DATABASE = "Database"
 CONFIG_OPTION_DB_PATH = "db_path"
 
+# ==============================================================================
+# ✨ 反向代理配置 (Reverse Proxy)
+# ==============================================================================
+CONFIG_SECTION_REVERSE_PROXY = "ReverseProxy"
+CONFIG_OPTION_PROXY_ENABLED = "proxy_enabled"
+CONFIG_OPTION_PROXY_PORT = "proxy_port"
 
 # ==============================================================================
 # ✨ Emby 服务器连接配置 (Emby Connection)

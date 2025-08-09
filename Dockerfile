@@ -68,6 +68,7 @@ COPY requirements.txt \
      github_handler.py \
      custom_collection_handler.py \
      scheduler_manager.py \
+     reverse_proxy.py \
      ./
 
 COPY services/ ./services/
