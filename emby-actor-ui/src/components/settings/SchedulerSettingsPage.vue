@@ -120,7 +120,21 @@
         </n-space>
       </template>
     </n-modal>
-
+    <n-modal
+      v-model:show="showFullScanModal"
+      preset="dialog"
+      title="选择处理模式"
+      :mask-closable="false"
+    >
+      <n-text>您希望如何执行“全量处理媒体”任务？</n-text>
+      <template #action>
+        <n-button @click="showFullScanModal = false">取消</n-button>
+        <n-button @click="runFullScan(false)">标准处理</n-button>
+        <n-button type="warning" @click="runFullScan(true)">
+          强制重处理
+        </n-button>
+      </template>
+    </n-modal>
   </n-layout>
 </template>
 
@@ -158,7 +172,7 @@ const configuredTaskSequence = ref([]); // 用于模态框中配置的任务列�
 const isTriggeringTask = ref(null);
 const draggableContainer = ref(null);
 let sortableInstance = null;
-
+const showFullScanModal = ref(false);
 // ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
 // --- 【【【 核心修改：使用 computed 属性来动态计算已启用的任务列表 】】】 ---
 const enabledTaskChain = computed(() => {
@@ -188,15 +202,43 @@ const triggerTaskNow = async (taskIdentifier) => {
     message.warning('已有后台任务正在运行，请稍后再试。');
     return;
   }
+
+  // 如果是“全量处理”，则显示模态框，而不是直接执行
+  if (taskIdentifier === 'full-scan') {
+    showFullScanModal.value = true;
+    return; // 提前退出，等待用户在模态框中做选择
+  }
+
+  // --- 对于所有其他普通任务，走原来的逻辑 ---
   isTriggeringTask.value = taskIdentifier;
   try {
-    const response = await axios.post('/api/tasks/run', { task_name: taskIdentifier });
+    const response = await axios.post('/api/tasks/run', {
+      task_name: taskIdentifier
+    });
     message.success(response.data.message || `任务已成功提交！`);
   } catch (error) {
     const errorMessage = error.response?.data?.error || '请求后端接口失败。';
     message.error(errorMessage);
   } finally {
     isTriggeringTask.value = null;
+  }
+};
+
+const runFullScan = async (isForced) => {
+  showFullScanModal.value = false; // 首先关闭模态框
+  isTriggeringTask.value = 'full-scan'; // 设置加载状态
+
+  try {
+    const response = await axios.post('/api/tasks/run', {
+      task_name: 'full-scan',
+      force_reprocess: isForced // ★★★ 将用户的选择作为参数传递给后端
+    });
+    message.success(response.data.message || '全量处理任务已成功提交！');
+  } catch (error) {
+    const errorMessage = error.response?.data?.error || '请求后端接口失败。';
+    message.error(errorMessage);
+  } finally {
+    isTriggeringTask.value = null; // 清除加载状态
   }
 };
 
