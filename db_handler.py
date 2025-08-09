@@ -561,6 +561,31 @@ def batch_update_watchlist_status(db_path: str, item_ids: list, new_status: str)
         logger.error(f"批量更新项目状态时数据库出错: {e}", exc_info=True)
         # 重新抛出异常，让上层(API路由)可以捕获并返回500错误
         raise
+
+# --- 水印 ---
+def get_watching_tmdb_ids(db_path: str) -> set:
+    """
+    获取所有正在追看（状态为 'Watching'）的剧集的 TMDB ID 集合。
+    返回一个集合(set)以便进行高效查询。
+    """
+    watching_ids = set()
+    try:
+        # 复用1: 使用标准的数据库连接获取方式
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            # 复用2: 借鉴现有的SQL查询逻辑
+            cursor.execute("SELECT tmdb_id FROM watchlist WHERE status = 'Watching'")
+            rows = cursor.fetchall()
+            # 复用3: 借鉴数据处理方式，但适配新需求
+            for row in rows:
+                # 我们只需要 tmdb_id，并将其转换为字符串放入集合
+                watching_ids.add(str(row['tmdb_id']))
+    except Exception as e:
+        # 使用你项目中已有的 logger
+        logger.error(f"从数据库获取正在追看的TMDB ID时出错: {e}", exc_info=True)
+        # 即使出错也返回空集合，保证上层逻辑的健壮性
+    return watching_ids
+
 # ======================================================================
 # 模块 5: 电影合集数据访问 (Collections Data Access)
 # ======================================================================

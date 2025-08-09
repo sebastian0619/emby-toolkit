@@ -1,4 +1,4 @@
-# reverse_proxy.py (终极伪装版 - 完整UI & 无文件夹图标)
+# reverse_proxy.py (最终完美版 V4 - 诊断增强版)
 
 import logging
 import requests
@@ -19,11 +19,13 @@ logger = logging.getLogger(__name__)
 
 _MIMICKED_LIBRARY_ID_PREFIX = "custom_coll_"
 MIMICKED_ITEMS_RE = re.compile(f'/emby/Users/[^/]+/Items/({_MIMICKED_LIBRARY_ID_PREFIX}\\d+)')
+MIMICKED_ITEM_DETAILS_RE = re.compile(f'emby/Users/[^/]+/Items/({_MIMICKED_LIBRARY_ID_PREFIX}\\d+)$')
 
 WATERMARK_MAP = {
     "missing": "缺失",
     "subscribed": "已订阅",
-    "not_released": "未上映"
+    "not_released": "未上映",
+    "Watching": "跟播中"
 }
 
 def _get_real_emby_url_and_key():
@@ -33,11 +35,7 @@ def _get_real_emby_url_and_key():
         raise ValueError("Emby服务器地址或API Key未配置")
     return base_url, api_key
 
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★★★ 核心升级：重构 handle_get_views，伪造一个功能完整的媒体库 ★★★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def handle_get_views():
-    """【终极伪装版】伪造与真实媒体库几乎无异的视图，解锁全部UI功能。"""
     real_server_id = extensions.EMBY_SERVER_ID
     if not real_server_id:
         return "Proxy is not ready", 503
@@ -49,38 +47,19 @@ def handle_get_views():
             real_emby_collection_id = coll.get('emby_collection_id')
             image_tags = {"Primary": real_emby_collection_id} if real_emby_collection_id else {}
             
-            # 从合集定义中获取权威的媒体类型 (Movie/Series)
             definition = json.loads(coll.get('definition_json', '{}'))
             item_type_from_db = definition.get('item_type', 'Movie')
             authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
             collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
-            # 构建一个功能完备的伪造视图
             fake_view = {
-                "Name": coll['name'],
-                "ServerId": real_server_id,
-                "Id": f"{_MIMICKED_LIBRARY_ID_PREFIX}{coll['id']}",
-                "Type": "View",  # ★ 关键：类型必须是 'View'
-                "CollectionType": collection_type, # ★ 关键：指明是电影还是剧集
-                "IsFolder": True,
-                "ImageTags": image_tags,
-                "BackdropImageTags": [],
-                "PrimaryImageAspectRatio": 0.6666666666666666,
-                
-                # --- 以下是解锁完整UI的关键补充字段 ---
-                "DisplayPreferencesId": "movies", # 可以借用内置的显示偏好
-                "LibraryOptions": { # 提供一个最小化的库选项
-                    "EnablePhotos": False,
-                    "EnableRealtimeMonitor": False,
-                    "EnableChapterImageExtraction": False,
-                    "ExtractChapterImagesDuringLibraryScan": False,
-                    "EnableInternetProviders": True,
-                    "SaveLocalMetadata": False,
-                    "PathInfos": [{
-                        "Path": f"//custom-collection/{coll['id']}", # 提供一个虚拟路径
-                        "NetworkPath": None
-                    }],
-                    "TypeOptions": []
+                "Name": coll['name'], "ServerId": real_server_id, "Id": f"{_MIMICKED_LIBRARY_ID_PREFIX}{coll['id']}",
+                "Type": "View", "CollectionType": collection_type, "IsFolder": True, "ImageTags": image_tags,
+                "BackdropImageTags": [], "PrimaryImageAspectRatio": 0.6666666666666666, "DisplayPreferencesId": "movies",
+                "LibraryOptions": {
+                    "EnablePhotos": False, "EnableRealtimeMonitor": False, "EnableChapterImageExtraction": False,
+                    "ExtractChapterImagesDuringLibraryScan": False, "EnableInternetProviders": True, "SaveLocalMetadata": False,
+                    "PathInfos": [{"Path": f"//custom-collection/{coll['id']}", "NetworkPath": None}], "TypeOptions": []
                 }
             }
             fake_views["Items"].append(fake_view)
@@ -89,6 +68,31 @@ def handle_get_views():
     except Exception as e:
         logger.error(f"[PROXY] 获取视图数据时出错: {e}", exc_info=True)
         return "Internal Proxy Error", 500
+
+def handle_get_mimicked_library_details(mimicked_id):
+    try:
+        real_db_id = int(mimicked_id.replace(_MIMICKED_LIBRARY_ID_PREFIX, ""))
+        coll = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, real_db_id)
+        if not coll: return "Not Found", 404
+
+        real_server_id = extensions.EMBY_SERVER_ID
+        real_emby_collection_id = coll.get('emby_collection_id')
+        image_tags = {"Primary": real_emby_collection_id} if real_emby_collection_id else {}
+        
+        definition = json.loads(coll.get('definition_json', '{}'))
+        item_type_from_db = definition.get('item_type', 'Movie')
+        authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
+        collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
+
+        fake_library_details = {
+            "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id, "Type": "CollectionFolder",
+            "CollectionType": collection_type, "IsFolder": True, "ImageTags": image_tags, "BackdropImageTags": [],
+            "PrimaryImageAspectRatio": 0.6666666666666666,
+        }
+        return Response(json.dumps(fake_library_details), mimetype='application/json')
+    except Exception as e:
+        logger.error(f"获取伪造库详情时出错: {e}", exc_info=True)
+        return "Internal Server Error", 500
 
 def handle_get_mimicked_library_image(path):
     try:
@@ -133,60 +137,39 @@ def handle_get_watermarked_image(tag):
             logger.warning("字体文件 'font.ttf' 未找到，使用默认字体。")
             font = ImageFont.load_default()
         
-        text_color = (255, 255, 0, 255)
-        bg_color = (0, 0, 0, 170)
-        border_color = (255, 255, 0, 220)
-
+        text_color = (255, 255, 0, 255); bg_color = (0, 0, 0, 170); border_color = (255, 255, 0, 220)
         padding = 20
         text_bbox = font.getbbox(watermark_text)
-        text_width = text_bbox[2] - text_bbox[0]
-        text_height = text_bbox[3] - text_bbox[1]
-        
-        stamp_width = text_width + padding * 2
-        stamp_height = text_height + padding * 2
-        
+        text_width = text_bbox[2] - text_bbox[0]; text_height = text_bbox[3] - text_bbox[1]
+        stamp_width = text_width + padding * 2; stamp_height = text_height + padding * 2
         stamp_unrotated = Image.new('RGBA', (stamp_width, stamp_height), (0,0,0,0))
         draw = ImageDraw.Draw(stamp_unrotated)
-
-        draw.rectangle(
-            (0, 0, stamp_width, stamp_height),
-            fill=bg_color,
-            outline=border_color,
-            width=4
-        )
-        draw.text(
-            (padding, padding - text_bbox[1]),
-            watermark_text, 
-            font=font, 
-            fill=text_color
-        )
-
+        draw.rectangle((0, 0, stamp_width, stamp_height), fill=bg_color, outline=border_color, width=4)
+        draw.text((padding, padding - text_bbox[1]), watermark_text, font=font, fill=text_color)
         angle = -15
         stamp_rotated = stamp_unrotated.rotate(angle, expand=True, resample=Image.BICUBIC)
-
-        paste_x = base_image.width - stamp_rotated.width - 10
-        paste_y = 10
-        
+        paste_x = base_image.width - stamp_rotated.width - 10; paste_y = 10
         base_image.paste(stamp_rotated, (paste_x, paste_y), stamp_rotated)
-
         img_buffer = io.BytesIO()
         base_image.convert("RGB").save(img_buffer, format='JPEG', quality=90)
         
         return Response(img_buffer.getvalue(), mimetype='image/jpeg')
-
     except Exception as e:
         logger.error(f"生成盖章水印图片时出错 (Tag: {tag}): {e}", exc_info=True)
         return "Internal Server Error", 500
 
+# ★★★ 已重构：增加大量诊断日志，并优化逻辑 ★★★
 def handle_get_mimicked_library_items(mimicked_id, params):
     try:
+        logger.debug(f"--- 开始处理虚拟库 {mimicked_id} 的内容 ---")
         real_db_id = int(mimicked_id.replace(_MIMICKED_LIBRARY_ID_PREFIX, ""))
         collection_info = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, real_db_id)
         if not collection_info:
+            logger.error(f"数据库中未找到 ID 为 {real_db_id} 的自定义合集。")
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
-        real_items = []
-        existing_tmdb_ids = set()
+        # 1. 获取 Emby 真实合集中的项目
+        real_items_map = {}
         real_emby_collection_id = collection_info.get('emby_collection_id')
         if real_emby_collection_id:
             base_url, api_key = _get_real_emby_url_and_key()
@@ -195,66 +178,107 @@ def handle_get_mimicked_library_items(mimicked_id, params):
             new_params["ParentId"] = real_emby_collection_id
             new_params['api_key'] = api_key
             new_params['Fields'] = new_params.get('Fields', '') + ',ProviderIds'
+            new_params['Limit'] = 1000   # <-- 新增，取消默认的50限制
             resp = requests.get(target_url, params=new_params, timeout=30.0)
             resp.raise_for_status()
-            real_items = resp.json().get("Items", [])
-            for item in real_items:
-                if 'ProviderIds' in item and 'Tmdb' in item['ProviderIds']:
-                    existing_tmdb_ids.add(str(item['ProviderIds']['Tmdb']))
+            for item in resp.json().get("Items", []):
+                tmdb_id = str(item.get('ProviderIds', {}).get('Tmdb'))
+                if tmdb_id:
+                    real_items_map[tmdb_id] = item
+        logger.debug(f"步骤1: 从Emby合集 '{collection_info['name']}' 中获取到 {len(real_items_map)} 个真实媒体项。")
 
-        fake_items = []
+        # 2. 获取所有相关元数据
+        watching_tmdb_ids = db_handler.get_watching_tmdb_ids(config_manager.DB_PATH)
         all_db_items = json.loads(collection_info.get('generated_media_info_json', '[]'))
         real_server_id = extensions.EMBY_SERVER_ID
-        
         definition = json.loads(collection_info.get('definition_json', '{}'))
         item_type_from_db = definition.get('item_type', 'Movie')
         authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
         emby_item_type = "Series" if authoritative_type == 'Series' else "Movie"
+        logger.debug(f"步骤2.1: 从追剧列表(watchlist)中获取到 {len(watching_tmdb_ids)} 个正在追的剧集ID: {watching_tmdb_ids if watching_tmdb_ids else '无'}")
+        logger.debug(f"步骤2.2: 此虚拟库的媒体类型被判定为: {emby_item_type}")
 
+        # 3. 遍历数据库中的完整列表，构建最终返回结果
+        final_items = []
+        processed_real_tmdb_ids = set()
+
+        logger.debug("--- 开始遍历数据库媒体列表，决定每个项目的显示方式 ---")
         for db_item in all_db_items:
             tmdb_id = str(db_item.get('tmdb_id', ''))
-            status = db_item.get('status', 'missing')
+            title = db_item.get('title', '未知标题')
+            if not tmdb_id: continue
 
-            if tmdb_id and tmdb_id not in existing_tmdb_ids and status != 'ok' and db_item.get('poster_path'):
-                poster_path_cleaned = db_item['poster_path'].lstrip('/')
-                if poster_path_cleaned:
-                    image_tag = f"watermark_{status}_{poster_path_cleaned}"
-
+            is_in_library = tmdb_id in real_items_map
+            is_watching = tmdb_id in watching_tmdb_ids
+            
+            # 核心判断逻辑
+            if emby_item_type == 'Series' and is_in_library and is_watching:
+                # 条件1: 是剧集，已入库，且正在追 -> 打“跟播中”水印
+                logger.debug(f"-> '{title}' (TMDB: {tmdb_id}): 满足[剧集/已入库/跟播中]，准备打'跟播中'水印。")
+                poster_path = db_item.get('poster_path')
+                if poster_path and poster_path.lstrip('/'):
+                    image_tag = f"watermark_watching_{poster_path.lstrip('/')}"
+                    # 创建一个虚拟替身，并继承真实项目的UserData
                     fake_item = {
-                        "Name": db_item.get('title', '未知标题'),
-                        "Id": f"fake_{tmdb_id}",
-                        "ServerId": real_server_id,
-                        "Type": emby_item_type,
-                        "IsFolder": emby_item_type == "Series",
-                        "RunTimeTicks": 0,
-                        "ProductionYear": db_item.get('year'),
-                        "ImageTags": {"Primary": image_tag},
-                        "BackdropImageTags": [],
-                        "UserData": {"Played": False, "IsFavorite": False, "PlayCount": 0, "PlaybackPositionTicks": 0},
-                        "ProviderIds": {"Tmdb": tmdb_id}
+                        "Name": title, "Id": f"fake_watching_{tmdb_id}", "ServerId": real_server_id, "Type": "Series", "IsFolder": True,
+                        "ProductionYear": db_item.get('year'), "ImageTags": {"Primary": image_tag}, "BackdropImageTags": [],
+                        "UserData": real_items_map[tmdb_id].get("UserData", {}), "ProviderIds": {"Tmdb": tmdb_id}
                     }
-                    fake_items.append(fake_item)
+                    final_items.append(fake_item)
+                    processed_real_tmdb_ids.add(tmdb_id)
+                else:
+                    logger.warning(f"-> '{title}' (TMDB: {tmdb_id}): 想打'跟播中'水印，但无海报路径，将显示为无水印的真实项目。")
+                    final_items.append(real_items_map[tmdb_id])
+                    processed_real_tmdb_ids.add(tmdb_id)
 
-        combined_items = real_items + fake_items
-        final_response = {"Items": combined_items, "TotalRecordCount": len(combined_items)}
+            elif is_in_library:
+                # 条件2: 已入库，但不满足条件1 -> 直接显示真实项目
+                logger.debug(f"-> '{title}' (TMDB: {tmdb_id}): 满足[已入库]，但非跟播中剧集，直接显示真实项目。")
+                final_items.append(real_items_map[tmdb_id])
+                processed_real_tmdb_ids.add(tmdb_id)
+
+            else:
+                # 条件3: 未入库 -> 根据状态打“缺失”、“订阅”等水印
+                status = db_item.get('status', 'missing')
+                if status != 'ok':
+                    logger.debug(f"-> '{title}' (TMDB: {tmdb_id}): 满足[未入库]，状态为'{status}'，准备打相应水印。")
+                    poster_path = db_item.get('poster_path')
+                    if poster_path and poster_path.lstrip('/'):
+                        image_tag = f"watermark_{status}_{poster_path.lstrip('/')}"
+                        fake_item = {
+                            "Name": title, "Id": f"fake_{status}_{tmdb_id}", "ServerId": real_server_id, "Type": emby_item_type, "IsFolder": emby_item_type == "Series",
+                            "ProductionYear": db_item.get('year'), "ImageTags": {"Primary": image_tag}, "BackdropImageTags": [],
+                            "UserData": {}, "ProviderIds": {"Tmdb": tmdb_id}
+                        }
+                        final_items.append(fake_item)
+                    else:
+                        logger.warning(f"-> '{title}' (TMDB: {tmdb_id}): 想打'{status}'水印，但无海报路径，此项将不显示。")
+                else:
+                    logger.debug(f"-> '{title}' (TMDB: {tmdb_id}): 状态为'ok'但未在Emby中找到，此项将不显示。")
+
+        # 4. 添加那些在真实合集中存在，但由于某种原因不在我们数据库列表中的项目
+        for tmdb_id, real_item in real_items_map.items():
+            if tmdb_id not in processed_real_tmdb_ids:
+                logger.warning(f"发现一个在Emby合集中但不在数据库列表的真实项目: '{real_item.get('Name')}' (TMDB: {tmdb_id})，将直接添加。")
+                final_items.append(real_item)
+        
+        logger.debug(f"--- 遍历结束，最终将返回 {len(final_items)} 个项目 ---")
+        final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')
 
     except Exception as e:
-        logger.error(f"处理伪造库内容时出错: {e}", exc_info=True)
+        logger.error(f"处理伪造库内容时发生严重错误: {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
-
 
 def handle_get_latest_items(user_id, params):
     try:
         base_url, _ = _get_real_emby_url_and_key()
         user_token = params.get('api_key') or params.get('X-Emby-Token')
-        if not user_token:
-            return Response(json.dumps([]), mimetype='application/json')
+        if not user_token: return Response(json.dumps([]), mimetype='application/json')
 
         active_collections = db_handler.get_all_active_custom_collections(config_manager.DB_PATH)
         real_emby_collection_ids = [c.get('emby_collection_id') for c in active_collections if c.get('emby_collection_id')]
-        if not real_emby_collection_ids:
-            return Response(json.dumps([]), mimetype='application/json')
+        if not real_emby_collection_ids: return Response(json.dumps([]), mimetype='application/json')
 
         all_latest_items = []
         def fetch_latest_from_collection(collection_id):
@@ -294,6 +318,10 @@ def proxy_all(path):
         if path.endswith('/Views') and path.startswith('emby/Users/'):
             return handle_get_views()
         
+        details_match = MIMICKED_ITEM_DETAILS_RE.search(f'/{path}')
+        if details_match:
+            return handle_get_mimicked_library_details(details_match.group(1))
+
         if path.endswith('/Items/Latest'):
             user_id_match = re.search(r'/emby/Users/([^/]+)/', f'/{path}')
             if user_id_match:
@@ -307,9 +335,9 @@ def proxy_all(path):
         if parent_id and parent_id.startswith(_MIMICKED_LIBRARY_ID_PREFIX):
             return handle_get_mimicked_library_items(parent_id, request.args)
 
-        match = MIMICKED_ITEMS_RE.match(f'/{path}')
-        if match:
-            return handle_get_mimicked_library_items(match.group(1), request.args)
+        items_match = MIMICKED_ITEMS_RE.match(f'/{path}')
+        if items_match:
+            return handle_get_mimicked_library_items(items_match.group(1), request.args)
 
         if path.startswith(f'emby/Items/{_MIMICKED_LIBRARY_ID_PREFIX}') and '/Images/' in path:
             return handle_get_mimicked_library_image(path)
