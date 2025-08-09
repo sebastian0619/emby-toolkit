@@ -187,7 +187,8 @@ def init_db():
                     "in_library_count": "INTEGER DEFAULT 0",
                     "missing_count": "INTEGER DEFAULT 0",
                     "generated_media_info_json": "TEXT",
-                    "poster_path": "TEXT"
+                    "poster_path": "TEXT",
+                    "sort_order": "INTEGER NOT NULL DEFAULT 0"
                 }
 
                 for col_name, col_type in new_columns_to_add.items():

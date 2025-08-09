@@ -103,6 +103,27 @@ def api_update_custom_collection(collection_id):
         logger.error(f"更新自定义合集 {collection_id} 时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误，请检查后端日志"}), 500
 
+# ★★★ 更新合集排序的API ★★★
+@custom_collections_bp.route('/update_order', methods=['POST'])
+@login_required
+def api_update_custom_collections_order():
+    """接收前端发来的新顺序并更新到数据库"""
+    data = request.json
+    ordered_ids = data.get('ids')
+
+    if not isinstance(ordered_ids, list):
+        return jsonify({"error": "请求无效: 需要一个ID列表。"}), 400
+
+    try:
+        success = db_handler.update_custom_collections_order(config_manager.DB_PATH, ordered_ids)
+        if success:
+            return jsonify({"message": "合集顺序已成功更新。"}), 200
+        else:
+            return jsonify({"error": "数据库操作失败，无法更新顺序。"}), 500
+    except Exception as e:
+        logger.error(f"更新自定义合集顺序时出错: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+
 # --- 联动删除Emby合集 ---
 @custom_collections_bp.route('/<int:collection_id>', methods=['DELETE'])
 @login_required

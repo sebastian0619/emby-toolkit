@@ -911,15 +911,14 @@ def create_custom_collection(db_path: str, name: str, type: str, definition_json
         raise
 
 def get_all_custom_collections(db_path: str) -> List[Dict[str, Any]]:
-    """
-    获取所有已定义的自定义合集。
-    :return: 包含所有合集信息的字典列表。
-    """
     try:
         with get_db_connection(db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM custom_collections ORDER BY name ASC")
+            cursor.execute("""
+                SELECT * FROM custom_collections
+                ORDER BY sort_order ASC, id ASC
+            """)
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
     except sqlite3.Error as e:
@@ -933,7 +932,7 @@ def get_all_active_custom_collections(db_path: str) -> List[Dict[str, Any]]:
         with get_db_connection(db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM custom_collections WHERE status = 'active' ORDER BY name ASC")
+            cursor.execute("SELECT * FROM custom_collections WHERE status = 'active' ORDER BY sort_order ASC, id ASC")
             rows = cursor.fetchall()
             logger.info(f"从数据库找到 {len(rows)} 个已启用的自定义合集。")
             return [dict(row) for row in rows]
@@ -1004,6 +1003,34 @@ def delete_custom_collection(db_path: str, collection_id: int) -> bool:
     except sqlite3.Error as e:
         logger.error(f"删除自定义合集 (ID: {collection_id}) 时发生数据库错误: {e}", exc_info=True)
         raise # 向上抛出异常，让API层可以捕获并返回500错误
+
+# ★★★ 新增：更新自定义合集排序的函数 ★★★
+def update_custom_collections_order(db_path: str, ordered_ids: List[int]) -> bool:
+    """
+    根据提供的ID列表，批量更新自定义合集的 sort_order。
+    :param db_path: 数据库路径。
+    :param ordered_ids: 按新顺序排列的合集ID列表。
+    :return: 操作是否成功。
+    """
+    if not ordered_ids:
+        return True
+
+    sql = "UPDATE custom_collections SET sort_order = ? WHERE id = ?"
+    # 创建一个元组列表，每个元组是 (sort_order, id)
+    data_to_update = [(index, collection_id) for index, collection_id in enumerate(ordered_ids)]
+
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN TRANSACTION;")
+            cursor.executemany(sql, data_to_update)
+            conn.commit()
+            logger.info(f"成功更新了 {len(ordered_ids)} 个自定义合集的顺序。")
+            return True
+    except sqlite3.Error as e:
+        logger.error(f"批量更新自定义合集顺序时发生数据库错误: {e}", exc_info=True)
+        # 发生错误时，事务会自动回滚
+        return False
 
 # +++ 自定义合集筛选引擎所需函数 +++
 def get_media_metadata_by_tmdb_id(db_path: str, tmdb_id: str) -> Optional[Dict[str, Any]]:

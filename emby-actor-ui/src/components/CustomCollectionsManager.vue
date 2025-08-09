@@ -32,6 +32,7 @@
             <ul style="margin: 0; padding-left: 20px;">
               <li>在这里创建和管理通过RSS榜单或自定义规则生成的“自建合集”。</li>
               <li>在创建或生成“筛选规则”合集前，请点击 <n-icon :component="SyncIcon" /> 按钮快速同步一次最新的媒体库元数据。</li>
+              <li>您可以通过拖动每行最左侧的 <n-icon :component="DragHandleIcon" /> 图标来对合集进行排序，Emby虚拟库实时联动更新排序。</li>
             </ul>
           </n-alert>
         </template>
@@ -39,12 +40,14 @@
 
       <!-- 2. 数据表格 -->
       <n-data-table
+        ref="tableRef"
         :columns="columns"
         :data="collections"
-        :loading="isLoading"
+        :loading="isLoading || isSavingOrder"
         :bordered="false"
         :single-line="false"
         style="margin-top: 24px;"
+        :row-key="row => row.id"
       />
     </div>
 
@@ -362,8 +365,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted, h, computed, watch } from 'vue';
+import { ref, onMounted, h, computed, watch, nextTick } from 'vue';
 import axios from 'axios';
+import Sortable from 'sortablejs';
 import { 
   NLayout, NPageHeader, NButton, NIcon, NText, NDataTable, NTag, NSpace,
   useMessage, NPopconfirm, NModal, NForm, NFormItem, NInput, NSelect,
@@ -378,7 +382,8 @@ import {
   PlayOutline as GenerateIcon,
   CloudDownloadOutline as CloudDownloadIcon,
   CheckmarkCircleOutline as CheckmarkCircle,
-  CloseCircleOutline as CloseCircleIcon
+  CloseCircleOutline as CloseCircleIcon,
+  ReorderFourOutline as DragHandleIcon // ★ 新增图标
 } from '@vicons/ionicons5';
 import { format } from 'date-fns';
 
@@ -389,6 +394,7 @@ const showModal = ref(false);
 const isEditing = ref(false);
 const isSaving = ref(false);
 const formRef = ref(null);
+const tableRef = ref(null); // ★ 新增：表格的引用
 const syncLoading = ref({});
 const isSyncingMetadata = ref(false);
 const countryOptions = ref([]);
@@ -402,6 +408,8 @@ const selectedCollectionDetails = ref(null);
 const subscribing = ref({});
 const actorOptions = ref([]); 
 const isSearchingActors = ref(false); 
+const isSavingOrder = ref(false); // ★ 新增：保存排序时的加载状态
+let sortableInstance = null; // ★ 新增：保存Sortable实例
 
 const getInitialFormModel = () => ({
   id: null,
@@ -409,7 +417,7 @@ const getInitialFormModel = () => ({
   type: 'list',
   status: 'active',
   definition: {
-    item_type: ['Movie'], // ★ 改为数组
+    item_type: ['Movie'],
     url: '' 
   }
 });
@@ -434,15 +442,11 @@ watch(() => currentCollection.value.type, (newType) => {
 const fetchCountryOptions = async () => {
   try {
     const response = await axios.get('/api/custom_collections/config/countries');
-    // 后端现在直接返回一个中文名数组: ['中国大陆', '中国台湾', '美国', ...]
     const countryList = response.data; 
-    
-    // ★ 直接将数组转换为选项
     countryOptions.value = countryList.map(name => ({
       label: name,
       value: name
     }));
-    
   } catch (error) {
     message.error('获取国家/地区列表失败。');
   }
@@ -461,7 +465,6 @@ const fetchGenreOptions = async () => {
   }
 };
 
-// 2. 添加新的搜索处理函数 (可以放在 handleStudioSearch 旁边)
 let actorSearchTimeout = null;
 const handleActorSearch = (query) => {
   if (!query) {
@@ -469,11 +472,7 @@ const handleActorSearch = (query) => {
     return;
   }
   isSearchingActors.value = true;
-  
-  if (actorSearchTimeout) {
-    clearTimeout(actorSearchTimeout);
-  }
-  
+  if (actorSearchTimeout) clearTimeout(actorSearchTimeout);
   actorSearchTimeout = setTimeout(async () => {
     try {
       const response = await axios.get(`/api/custom_collections/search_actors?q=${query}`);
@@ -494,21 +493,14 @@ const handleStudioSearch = (query) => {
     return;
   }
   isSearchingStudios.value = true;
-  
-  // 清除上一个定时器
-  if (searchTimeout) {
-    clearTimeout(searchTimeout);
-  }
-  
-  // 设置一个新的定时器，延迟300毫秒后执行搜索
+  if (searchTimeout) clearTimeout(searchTimeout);
   searchTimeout = setTimeout(async () => {
     try {
       const response = await axios.get(`/api/search_studios?q=${query}`);
-      // ★ 核心修改：为 n-auto-complete 和 n-select 提供兼容的 options 格式
       studioOptions.value = response.data.map(name => ({ label: name, value: name }));
     } catch (error) {
       console.error('搜索工作室失败:', error);
-      studioOptions.value = []; // 出错时清空
+      studioOptions.value = [];
     } finally {
       isSearchingStudios.value = false;
     }
@@ -525,15 +517,13 @@ watch(() => currentCollection.value.definition.rules, (newRules) => {
       }
       if (rule.field && !rule.operator) {
         const options = getOperatorOptionsForRow(rule);
-        if (options && options.length === 1) {
-          rule.operator = options[0].value;
-        }
+        if (options && options.length === 1) rule.operator = options[0].value;
       }
       const isMultiValueOp = ['is_one_of', 'is_none_of'].includes(rule.operator);
       if (isMultiValueOp && !Array.isArray(rule.value)) {
-        rule.value = []; // 切换到多值操作符，值应变为空数组
+        rule.value = [];
       } else if (!isMultiValueOp && Array.isArray(rule.value)) {
-        rule.value = ''; // 从多值操作符切走，值应变为空字符串
+        rule.value = '';
       }
     });
   }
@@ -553,10 +543,7 @@ const ruleConfig = {
 };
 
 const operatorLabels = {
-  contains: '包含', 
-  does_not_contain: '不包含', 
-  starts_with: '开头是',   
-  ends_with: '结尾是',    
+  contains: '包含', does_not_contain: '不包含', starts_with: '开头是', ends_with: '结尾是',    
   gte: '大于等于', lte: '小于等于', eq: '等于',
   in_last_days: '最近N天内', not_in_last_days: 'N天以前',
   is_one_of: '是其中之一', is_none_of: '不是任何一个'
@@ -588,12 +575,7 @@ const formRules = computed(() => {
   const baseRules = {
     name: { required: true, message: '请输入合集名称', trigger: 'blur' },
     type: { required: true, message: '请选择合集类型' },
-    // ★ 修改 item_type 验证
-    'definition.item_type': { 
-        type: 'array', 
-        required: true, 
-        message: '请至少选择一种合集内容类型' 
-    }
+    'definition.item_type': { type: 'array', required: true, message: '请至少选择一种合集内容类型' }
   };
   if (currentCollection.value.type === 'list') {
     baseRules['definition.url'] = { required: true, message: '请输入榜单的URL', trigger: 'blur' };
@@ -602,7 +584,6 @@ const formRules = computed(() => {
       type: 'array', required: true,
       validator: (rule, value) => {
         if (!value || value.length === 0) return new Error('请至少添加一条筛选规则');
-        // ★ 核心修改：检查 rule.value 是否为空，无论是字符串还是数组
         if (value.some(r => !r.field || !r.operator || (Array.isArray(r.value) ? r.value.length === 0 : !r.value))) {
           return new Error('请将所有规则填写完整');
         }
@@ -614,42 +595,27 @@ const formRules = computed(() => {
   return baseRules;
 });
 
-// 1. 新增一个权威的、健壮的类型判断计算属性
 const authoritativeCollectionType = computed(() => {
     const collection = selectedCollectionDetails.value;
-    if (!collection || !collection.item_type) {
-        return 'Movie'; // 提供一个安全默认值
-    }
-
+    if (!collection || !collection.item_type) return 'Movie';
     try {
-        // 后端返回的 item_type 是一个 JSON 字符串, e.g., '["Series"]'
-        // 我们需要先将它解析成一个真正的数组
         const parsedTypes = JSON.parse(collection.item_type);
-        
-        // 检查解析后的数组是否包含 'Series'
-        if (Array.isArray(parsedTypes) && parsedTypes.includes('Series')) {
-            return 'Series';
-        }
+        if (Array.isArray(parsedTypes) && parsedTypes.includes('Series')) return 'Series';
         return 'Movie';
     } catch (e) {
-        // 如果 JSON 解析失败，说明它可能是一个普通的字符串 (作为兜底逻辑)
-        if (collection.item_type === 'Series') {
-            return 'Series';
-        }
+        if (collection.item_type === 'Series') return 'Series';
         return 'Movie';
     }
 });
 
 const detailsModalTitle = computed(() => {
   if (!selectedCollectionDetails.value) return '';
-  // 使用新的 authoritativeCollectionType 来决定标签
   const typeLabel = authoritativeCollectionType.value === 'Series' ? '电视剧合集' : '电影合集';
   return `${typeLabel}详情 - ${selectedCollectionDetails.value.name}`;
 });
 
 const mediaTypeName = computed(() => {
   if (!selectedCollectionDetails.value) return '媒体';
-  // 使用新的 authoritativeCollectionType 来决定是“剧集”还是“影片”
   return authoritativeCollectionType.value === 'Series' ? '剧集' : '影片';
 });
 
@@ -668,12 +634,58 @@ const fetchCollections = async () => {
   try {
     const response = await axios.get('/api/custom_collections');
     collections.value = response.data;
+    // ★ 数据加载后，初始化或重新初始化拖拽功能
+    nextTick(() => {
+      initSortable();
+    });
   } catch (error) {
     message.error('加载自定义合集列表失败。');
   } finally {
     isLoading.value = false;
   }
 };
+
+// ★ 新增：初始化拖拽排序功能
+const initSortable = () => {
+  if (sortableInstance) {
+    sortableInstance.destroy();
+  }
+  const tbody = tableRef.value?.$el.querySelector('tbody');
+  if (tbody) {
+    sortableInstance = Sortable.create(tbody, {
+      handle: '.drag-handle',
+      animation: 150,
+      onEnd: handleDragEnd,
+    });
+  }
+};
+
+// ★ 新增：拖拽结束后的处理函数
+const handleDragEnd = async (event) => {
+  const { oldIndex, newIndex } = event;
+  if (oldIndex === newIndex) return;
+
+  // 1. 更新前端数组顺序以匹配DOM
+  const movedItem = collections.value.splice(oldIndex, 1)[0];
+  collections.value.splice(newIndex, 0, movedItem);
+
+  // 2. 准备要发送到后端的数据
+  const orderedIds = collections.value.map(c => c.id);
+  isSavingOrder.value = true;
+
+  try {
+    // 3. 调用API保存新顺序
+    await axios.post('/api/custom_collections/update_order', { ids: orderedIds });
+    message.success('合集顺序已保存。');
+  } catch (error) {
+    message.error(error.response?.data?.error || '保存顺序失败，请刷新页面重试。');
+    // 如果保存失败，重新获取最新列表以恢复
+    fetchCollections();
+  } finally {
+    isSavingOrder.value = false;
+  }
+};
+
 
 const openDetailsModal = async (collection) => {
   showDetailsModal.value = true;
@@ -691,27 +703,20 @@ const openDetailsModal = async (collection) => {
 };
 
 const subscribeMedia = async (media) => {
-  // 检查确保 selectedCollectionDetails 和它的 id 存在
   if (!selectedCollectionDetails.value?.id) {
     message.error("无法确定当前操作的合集ID，请重试。");
     return;
   }
-
   subscribing.value[media.tmdb_id] = true;
   try {
     await axios.post('/api/custom_collections/subscribe', {
       collection_id: selectedCollectionDetails.value.id,
       tmdb_id: media.tmdb_id,
       title: media.title,
-      // ▼▼▼ 核心修复：发送当前媒体项自己的类型，而不是整个合集的类型 ▼▼▼
       item_type: media.type 
-      // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
     });
-
     message.success(`《${media.title}》已成功提交订阅并更新状态！`);
-    
     media.status = 'subscribed'; 
-
   } catch (err) {
     message.error(err.response?.data?.error || '订阅失败，请检查后端日志。');
   } finally {
@@ -722,22 +727,11 @@ const subscribeMedia = async (media) => {
 const handleSync = async (row) => {
   syncLoading.value[row.id] = true;
   try {
-    // ★★★ 核心修改 ★★★
-
-    // 1. 定义我们要发送的“行李”（数据体）
     const payload = {
-      // a. 告诉调度中心，我们要执行哪个任务
       task_name: 'process-single-custom-collection', 
-      
-      // b. 告诉任务函数，具体要处理哪个合集
-      //    这里的键名 'custom_collection_id' 必须和后端 tasks.py 中
-      //    task_process_custom_collection 函数的参数名完全一致
       custom_collection_id: row.id 
     };
-
-    // 2. 将请求发送到唯一的、通用的“任务调度中心”
     const response = await axios.post('/api/tasks/run', payload);
-    
     message.success(response.data.message || `已提交同步任务: ${row.name}`);
   } catch (error) {
     message.error(error.response?.data?.error || '提交同步任务失败。');
@@ -838,46 +832,45 @@ const handleSave = () => {
 };
 
 const columns = [
+  // ★ 新增：拖拽把手列
+  {
+    key: 'drag',
+    width: 50,
+    render: () => h(NIcon, {
+      component: DragHandleIcon,
+      class: 'drag-handle',
+      style: { cursor: 'grab' },
+      size: 20
+    })
+  },
   { title: '名称', key: 'name', width: 250, ellipsis: { tooltip: true } },
   { 
     title: '类型', key: 'type', width: 120,
     render: (row) => h(NTag, { type: row.type === 'list' ? 'info' : 'default', bordered: false }, { default: () => row.type === 'list' ? '榜单导入' : '筛选生成' })
   },
   {
-    title: '内容', key: 'item_type', width: 120, // ★★★ 核心修复区域 START ★★★
+    title: '内容', key: 'item_type', width: 120,
     render: (row) => {
         let itemTypes = [];
         try {
-            // 优先从 item_type 字段解析，这是同步后存储的
             if (row.item_type) {
                 itemTypes = JSON.parse(row.item_type);
             } 
-            // 如果没有，则尝试从 definition_json 解析，这是创建时存储的
             else if (row.definition_json) {
                 const definition = JSON.parse(row.definition_json);
                 itemTypes = definition.item_type || ['Movie'];
             }
         } catch (e) {
-            itemTypes = ['Movie']; // 解析失败则默认为电影
+            itemTypes = ['Movie'];
         }
-
-        // 确保 itemTypes 是一个数组
-        if (!Array.isArray(itemTypes)) {
-            itemTypes = [itemTypes];
-        }
-
-        let label = '电影'; // 默认值
+        if (!Array.isArray(itemTypes)) itemTypes = [itemTypes];
+        let label = '电影';
         const hasMovie = itemTypes.includes('Movie');
         const hasSeries = itemTypes.includes('Series');
-
-        if (hasMovie && hasSeries) {
-            label = '电影、电视剧';
-        } else if (hasSeries) {
-            label = '电视剧';
-        }
-        
+        if (hasMovie && hasSeries) label = '电影、电视剧';
+        else if (hasSeries) label = '电视剧';
         return h(NTag, { bordered: false }, { default: () => label });
-    } // ★★★ 核心修复区域 END ★★★
+    }
   },
   {
     title: '健康检查', key: 'health_check', width: 150,
@@ -960,5 +953,9 @@ onMounted(() => {
   justify-content: center;
   align-items: center;
   height: 200px;
+}
+/* ★ 新增：拖拽把手样式 */
+.drag-handle:hover {
+  color: #2080f0; /* Naive UI Primary Color */
 }
 </style>
