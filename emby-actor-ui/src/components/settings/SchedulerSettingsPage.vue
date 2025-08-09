@@ -29,10 +29,16 @@
                   <n-input v-model:value="configModel.task_chain_cron" :disabled="!configModel.task_chain_enabled" placeholder="例如: 0 2 * * *" />
                 </n-form-item>
                 <n-form-item label="任务序列">
-                  <n-button type="primary" @click="showChainConfigModal = true" :disabled="!configModel.task_chain_enabled">
-                    <template #icon><n-icon :component="Settings24Regular" /></template>
-                    配置任务链
-                  </n-button>
+                  <n-button-group>
+                    <n-button type="default" @click="showChainConfigModal = true" :disabled="!configModel.task_chain_enabled">
+                      <template #icon><n-icon :component="Settings24Regular" /></template>
+                      配置
+                    </n-button>
+                    <n-button type="primary" @click="savePageConfig" :loading="savingConfig">
+                      <template #icon><n-icon :component="Save24Regular" /></template>
+                      保存配置
+                    </n-button>
+                  </n-button-group>
                 </n-form-item>
               </n-form>
             </n-space>
@@ -40,7 +46,7 @@
 
           <!-- 右侧列：显示当前执行顺序 -->
           <n-gi>
-            <n-text strong>当前执行顺序</n-text>
+            <n-text strong>当前执行流程</n-text>
             <div class="flowchart-wrapper">
               <div v-if="enabledTaskChain.length > 0" class="flowchart-container">
                 <div v-for="task in enabledTaskChain" :key="task.key" class="flowchart-node">
@@ -52,6 +58,7 @@
               </div>
             </div>
           </n-gi>
+
 
         </n-grid>
         <!-- --- 【【【 Grid 布局结束 】】】 --- -->
@@ -83,10 +90,7 @@
         </n-grid>
       </n-card>
 
-      <!-- 保存按钮 -->
-      <n-button size="medium" type="primary" @click="savePageConfig" :loading="savingConfig" block>
-        保存配置
-      </n-button>
+      
     </n-space>
 
     <!-- 任务链配置模态框 (保持不变) -->
@@ -121,16 +125,13 @@
 </template>
 
 <script setup>
-// ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-// --- 【【【 核心修改：导入 computed 】】】 ---
 import { ref, onMounted, watch, nextTick, computed } from 'vue';
-// ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 import {
   NForm, NFormItem, NInput, NCheckbox, NGrid, NGi, NAlert,
   NButton, NCard, NSpace, NSwitch, NIcon, NText,
   useMessage, NLayout, NSpin, NModal
 } from 'naive-ui';
-import { Play24Regular, Settings24Regular, Drag24Regular } from '@vicons/fluent';
+import { Play24Regular, Settings24Regular, Drag24Regular, Save24Regular } from '@vicons/fluent';
 import { useConfig } from '../../composables/useConfig.js';
 import { useTaskStatus } from '../../composables/useTaskStatus.js';
 import axios from 'axios';
@@ -325,7 +326,6 @@ watch([configModel, availableTasksForChain], ([newConfig, newTasks]) => {
 .flowchart-wrapper {
   margin-top: 12px;
   padding: 16px;
-  background-color: var(--n-action-color);
   border-radius: 4px;
   min-height: 100px;
   width: 100%;
