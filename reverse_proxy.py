@@ -191,7 +191,7 @@ def handle_get_mimicked_library_items(mimicked_id, params):
             new_params["ParentId"] = real_emby_collection_id
             new_params['api_key'] = api_key
             new_params['Fields'] = new_params.get('Fields', '') + ',ProviderIds'
-            new_params['Limit'] = 1000   # <-- 新增，取消默认的50限制
+            new_params['Limit'] = 1000   # 取消默认的50限制
             resp = requests.get(target_url, params=new_params, timeout=30.0)
             resp.raise_for_status()
             for item in resp.json().get("Items", []):
@@ -216,13 +216,10 @@ def handle_get_mimicked_library_items(mimicked_id, params):
         for db_item in all_db_items:
             tmdb_id = str(db_item.get('tmdb_id', ''))
             title = db_item.get('title', '未知标题')
-            if not tmdb_id: 
+            if not tmdb_id:
                 continue
             is_in_library = tmdb_id in real_items_map
-            # 删除跟播相关的is_watching判断
-            # is_watching = tmdb_id in watching_tmdb_ids
-            
-            # 核心判断逻辑
+
             if is_in_library:
                 # 条件2: 已入库 -> 直接显示真实项目
                 logger.debug(f"-> '{title}' (TMDB: {tmdb_id}): 满足[已入库]，直接显示真实项目。")
@@ -236,10 +233,23 @@ def handle_get_mimicked_library_items(mimicked_id, params):
                     poster_path = db_item.get('poster_path')
                     if poster_path and poster_path.lstrip('/'):
                         image_tag = f"watermark_{status}_{poster_path.lstrip('/')}"
+                        year = None
+                        release_date = db_item.get('release_date') or db_item.get('first_air_date')
+                        if release_date and isinstance(release_date, str) and len(release_date) >= 4:
+                            year = release_date[:4]
+                        if not year:
+                            year = db_item.get('year')
                         fake_item = {
-                            "Name": title, "Id": f"fake_{status}_{tmdb_id}", "ServerId": real_server_id, "Type": emby_item_type, "IsFolder": emby_item_type == "Series",
-                            "ProductionYear": db_item.get('year'), "ImageTags": {"Primary": image_tag}, "BackdropImageTags": [],
-                            "UserData": {}, "ProviderIds": {"Tmdb": tmdb_id}
+                            "Name": title,
+                            "Id": f"fake_{status}_{tmdb_id}",
+                            "ServerId": real_server_id,
+                            "Type": emby_item_type,
+                            "IsFolder": emby_item_type == "Series",
+                            "ProductionYear": year,
+                            "ImageTags": {"Primary": image_tag},
+                            "BackdropImageTags": [],
+                            "UserData": {},
+                            "ProviderIds": {"Tmdb": tmdb_id}
                         }
                         final_items.append(fake_item)
                     else:
@@ -251,7 +261,7 @@ def handle_get_mimicked_library_items(mimicked_id, params):
             if tmdb_id not in processed_real_tmdb_ids:
                 logger.warning(f"发现一个在Emby合集中但不在数据库列表的真实项目: '{real_item.get('Name')}' (TMDB: {tmdb_id})，将直接添加。")
                 final_items.append(real_item)
-        
+
         logger.debug(f"--- 遍历结束，最终将返回 {len(final_items)} 个项目 ---")
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')
