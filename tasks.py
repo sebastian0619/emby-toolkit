@@ -2031,7 +2031,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor'):
         # 步骤 4: 批量写入数据库
         if metadata_batch:
             task_manager.update_status_from_thread(95, f"提取完成，正在将 {len(metadata_batch)} 条数据写入数据库...")
-            db_handler.bulk_upsert_media_metadata(config_manager.DB_PATH, metadata_batch)
+            db_handler.bulk_replace_media_metadata(config_manager.DB_PATH, metadata_batch)
 
         task_manager.update_status_from_thread(100, f"元数据同步完成！共处理 {len(metadata_batch)} 条。")
         logger.info(f"--- '{task_name}' 任务成功完成 ---")
