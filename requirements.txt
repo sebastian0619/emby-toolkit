@@ -1,9 +1,10 @@
-# requirements.txt
+# requirements.txt (最终容器化版本)
 
 # --- Web 框架与服务器 (核心) ---
 Flask>=2.0
 gevent           # 高性能异步网络库，我们的服务器核心
 gevent-websocket # 为 gevent 添加 WebSocket 支持
+websocket-client # 【【【 新增：用于代理连接到远程 WebSocket 服务器 】】】
 
 # --- 核心功能 ---
 requests         # 用于发送所有HTTP请求
