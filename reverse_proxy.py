@@ -458,9 +458,37 @@ def proxy_all(path):
                 return new_resp
             except UnicodeDecodeError:
                 pass
-        excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
-        response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_headers]
-        return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
+        # 处理转发请求的Headers，保留Range等关键头部
+        forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
+        # 明确透传Range头，支持断点续传
+        if 'Range' in request.headers:
+            forward_headers['Range'] = request.headers['Range']
+
+        base_url, api_key = _get_real_emby_url_and_key()
+        target_url = f"{base_url}/{path_to_forward}"
+
+        # 带上api_key参数
+        params = request.args.copy()
+        params['api_key'] = api_key
+
+        # 转发请求
+        resp = requests.request(
+            method=request.method,
+            url=target_url,
+            headers=forward_headers,
+            params=params,
+            data=request.get_data(),
+            cookies=request.cookies,
+            stream=True,
+            timeout=30.0
+        )
+
+        # 关键：返回的响应头，不能删除Content-Length和Transfer-Encoding，否则浏览器识别流失败
+        excluded_resp_headers = ['host', 'accept-encoding', 'connection']  # 不要去除content-length和transfer-encoding
+        response_headers = [(name, value) for name, value in resp.raw.headers.items()
+                            if name.lower() not in excluded_resp_headers]
+
+        return Response(resp.iter_content(chunk_size=8192), status=resp.status_code, headers=response_headers)
         
     except Exception as e:
         logger.error(f"[PROXY] 代理时发生未知错误: {e}", exc_info=True)
