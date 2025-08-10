@@ -404,119 +404,130 @@ proxy_app = Flask(__name__)
 @proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
 def proxy_all(path):
-    # --- 1. WebSocket 代理逻辑 (保持不变) ---
+    # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
+        logger.info("--- 收到一个新的 WebSocket 连接请求 ---")
         ws_client = request.environ.get('wsgi.websocket')
         if not ws_client:
-            logger.error("WebSocket请求，但未找到 wsgi.websocket 对象。请确保以正确的 handler_class 运行。")
+            logger.error("!!! WebSocket请求，但未找到 wsgi.websocket 对象。请确保以正确的 handler_class 运行。")
             return "WebSocket upgrade failed", 400
+
         try:
+            # 1. 记录客户端信息
+            logger.debug(f"  [C->P] 客户端路径: /{path}")
+            logger.debug(f"  [C->P] 客户端查询参数: {request.query_string.decode()}")
+            logger.debug(f"  [C->P] 客户端 Headers: {dict(request.headers)}")
+
+            # 2. 构造目标 URL
             base_url, _ = _get_real_emby_url_and_key()
             parsed_url = urlparse(base_url)
             ws_scheme = 'wss' if parsed_url.scheme == 'https' else 'ws'
             target_ws_url = urlunparse((ws_scheme, parsed_url.netloc, f'/{path}', '', request.query_string.decode(), ''))
-            logger.info(f"开始代理 WebSocket 连接到: {target_ws_url}")
-            headers = {k: v for k, v in request.headers.items() if k.lower() not in ['host', 'upgrade', 'connection', 'sec-websocket-key', 'sec-websocket-version']}
-            ws_server = create_connection(target_ws_url, header=headers)
-            logger.info("成功连接到远程 Emby WebSocket 服务器。")
+            logger.info(f"  [P->S] 准备连接到目标 Emby WebSocket: {target_ws_url}")
 
+            # 3. 提取 Headers 并尝试连接
+            headers_to_server = {k: v for k, v in request.headers.items() if k.lower() not in ['host', 'upgrade', 'connection', 'sec-websocket-key', 'sec-websocket-version']}
+            logger.debug(f"  [P->S] 转发给服务器的 Headers: {headers_to_server}")
+            
+            ws_server = None
+            try:
+                ws_server = create_connection(target_ws_url, header=headers_to_server, timeout=10)
+                logger.info("  [P<->S] ✅ 成功连接到远程 Emby WebSocket 服务器。")
+            except Exception as e_connect:
+                logger.error(f"  [P<->S] ❌ 连接到远程 Emby WebSocket 失败! 错误: {e_connect}", exc_info=True)
+                ws_client.close()
+                return Response()
+
+            # 4. 创建双向转发协程
             def forward_to_server():
                 try:
-                    while not ws_client.closed:
+                    while not ws_client.closed and ws_server.connected:
                         message = ws_client.receive()
                         if message is not None:
+                            logger.trace(f"  [C->S] 转发消息: {message[:200] if message else 'None'}") # 只记录前200字符
                             ws_server.send(message)
-                        else: break
+                        else:
+                            logger.info("  [C->P] 客户端连接已关闭 (receive返回None)。")
+                            break
+                except Exception as e_fwd_s:
+                    logger.warning(f"  [C->S] 转发到服务器时出错: {e_fwd_s}")
                 finally:
-                    ws_server.close()
+                    if ws_server.connected:
+                        ws_server.close()
+                        logger.info("  [P->S] 已关闭到服务器的连接。")
 
             def forward_to_client():
                 try:
-                    while ws_server.connected:
+                    while ws_server.connected and not ws_client.closed:
                         message = ws_server.recv()
                         if message is not None:
+                            logger.trace(f"  [S->C] 转发消息: {message[:200] if message else 'None'}") # 只记录前200字符
                             ws_client.send(message)
-                        else: break
+                        else:
+                            logger.info("  [P<-S] 服务器连接已关闭 (recv返回None)。")
+                            break
+                except Exception as e_fwd_c:
+                    logger.warning(f"  [S->C] 转发到客户端时出错: {e_fwd_c}")
                 finally:
-                    ws_client.close()
+                    if not ws_client.closed:
+                        ws_client.close()
+                        logger.info("  [P->C] 已关闭到客户端的连接。")
             
             greenlets = [spawn(forward_to_server), spawn(forward_to_client)]
             from gevent.event import Event
             exit_event = Event()
             def on_exit(g): exit_event.set()
             for g in greenlets: g.link(on_exit)
+            
+            logger.info("  [P<->S] WebSocket 双向转发已启动。等待连接关闭...")
             exit_event.wait()
+            logger.info("--- WebSocket 会话结束 ---")
+
         except Exception as e:
-            logger.error(f"WebSocket 代理时发生错误: {e}", exc_info=True)
+            logger.error(f"WebSocket 代理主逻辑发生严重错误: {e}", exc_info=True)
+        
         return Response()
 
-    # --- 2. HTTP 代理逻辑 (包含所有修复) ---
+    # --- 2. HTTP 代理逻辑 (保持不变) ---
     try:
-        # 【【【 修复点 A: 优先处理虚拟库内容请求 】】】
         parent_id = request.args.get("ParentId")
         if parent_id and parent_id.startswith(_MIMICKED_LIBRARY_ID_PREFIX):
-            logger.debug(f"路由匹配：虚拟库内容请求 (ParentId: {parent_id})")
             return handle_get_mimicked_library_items(parent_id, request.args)
-
-        # 【【【 修复点 B: 优先处理虚拟库封面图片请求 】】】
         if path.startswith(f'emby/Items/{_MIMICKED_LIBRARY_ID_PREFIX}') and '/Images/' in path:
-            logger.debug(f"路由匹配：虚拟库封面图片请求 (Path: {path})")
             return handle_get_mimicked_library_image(path)
-
-        # --- 以下是您原有的其他路由判断 ---
         if path.endswith('/Views') and path.startswith('emby/Users/'):
-            logger.debug("路由匹配：获取视图列表 /Views")
             return handle_get_views()
-        
         details_match = MIMICKED_ITEM_DETAILS_RE.search(f'/{path}')
         if details_match:
-            logger.debug(f"路由匹配：虚拟库详情 (ID: {details_match.group(1)})")
             return handle_get_mimicked_library_details(details_match.group(1))
-
         if path.endswith('/Items/Latest'):
             user_id_match = re.search(r'/emby/Users/([^/]+)/', f'/{path}')
             if user_id_match:
-                logger.debug("路由匹配：最新媒体 /Items/Latest")
                 return handle_get_latest_items(user_id_match.group(1), request.args)
-        
         tag = request.args.get('tag')
         if tag and tag.startswith('watermark_'):
-            logger.debug(f"路由匹配：水印图片 (Tag: {tag})")
             return handle_get_watermarked_image(tag)
-
-        # 备用的虚拟库内容匹配 (以防万一)
         items_match = MIMICKED_ITEMS_RE.match(f'/{path}')
         if items_match:
-            logger.debug(f"路由匹配：虚拟库内容请求 (Regex Match: {items_match.group(1)})")
             return handle_get_mimicked_library_items(items_match.group(1), request.args)
-
-        # --- 默认转发逻辑 ---
-        logger.trace(f"无特殊路由匹配，执行默认转发: {path}")
         path_to_forward = path
         if path and not path.startswith(('emby/', 'socket.io/')):
              path_to_forward = f'web/{path}'
-        
         base_url, api_key = _get_real_emby_url_and_key()
         target_url = f"{base_url}/{path_to_forward}"
-        
         headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
         headers['Host'] = urlparse(base_url).netloc
-        headers['Accept-Encoding'] = 'identity' # 避免压缩问题
-        
+        headers['Accept-Encoding'] = 'identity'
         params = request.args.copy()
         params['api_key'] = api_key
-        
         resp = requests.request(
             method=request.method, url=target_url, headers=headers, params=params,
             data=request.get_data(), cookies=request.cookies, stream=True, timeout=30.0
         )
-        
         excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
         response_headers = [(name, value) for name, value in resp.raw.headers.items()
                             if name.lower() not in excluded_resp_headers]
-
         return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
-        
     except Exception as e:
-        logger.error(f"[PROXY] 代理时发生未知错误: {e}", exc_info=True)
+        logger.error(f"[PROXY] HTTP 代理时发生未知错误: {e}", exc_info=True)
         return "Internal Server Error", 500
