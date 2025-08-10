@@ -75,7 +75,6 @@
             <n-form-item label="TMDB API Key" path="tmdb_api_key">
               <n-input type="password" show-password-on="mousedown" v-model:value="configModel.tmdb_api_key" placeholder="输入你的 TMDB API Key" />
             </n-form-item>
-            <!-- ★★★ 新增的 GitHub Token 表单项 ★★★ -->
             <n-form-item label="GitHub 个人访问令牌" path="github_token">
               <n-input
                 type="password"
@@ -138,7 +137,6 @@
             </n-form-item-grid-item>
           </n-card>
           
-          <!-- ★★★ 新增的数据管理卡片 ★★★ -->
           <n-card :bordered="false" class="dashboard-card">
             <template #header>
               <span class="card-title">数据管理</span>
@@ -173,7 +171,6 @@
       <!-- ########## 右侧列 ########## -->
       <n-gi>
         <n-space vertical :size="24">
-          <!-- ★★★ Emby 设置卡片 (已整合反代) ★★★ -->
           <n-card :bordered="false" class="dashboard-card">
             <template #header>
               <span class="card-title">Emby设置</span>
@@ -202,7 +199,7 @@
               选择要处理的媒体库
             </n-divider>
 
-            <!-- Part 2: 媒体库选择 -->
+            <!-- ★★★ FIX: 修复后的“处理媒体库”选择 ★★★ -->
             <n-form-item-grid-item :span="24" label-placement="top" style="margin-top: -10px;">
               <n-spin :show="loadingLibraries">
                 <n-checkbox-group v-model:value="configModel.libraries_to_process">
@@ -219,12 +216,58 @@
 
             <!-- ★★★ 分割线: 反向代理 ★★★ -->
             <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">
-              反向代理 (实验性)
+              反向代理
             </n-divider>
 
-            <!-- ★★★ Part 3: 反向代理设置 ★★★ -->
             <n-form-item-grid-item label="启用反向代理" path="proxy_enabled">
               <n-switch v-model:value="configModel.proxy_enabled" />
+            </n-form-item-grid-item>
+
+            <n-form-item-grid-item label="合并原生媒体库" path="proxy_merge_native_libraries">
+              <n-switch 
+                v-model:value="configModel.proxy_merge_native_libraries"
+                :disabled="!configModel.proxy_enabled"
+              />
+              <template #feedback>
+                <n-text depth="3" style="font-size:0.8em;">
+                  开启后，将在虚拟库列表的顶部显示您在 Emby 中配置的原生媒体库（如音乐、电影等）。
+                </n-text>
+              </template>
+            </n-form-item-grid-item>
+
+            <!-- ★★★ FIX: 修复后的“合并显示媒体库”选择 (新功能) ★★★ -->
+            <n-form-item-grid-item v-if="configModel.proxy_enabled && configModel.proxy_merge_native_libraries" label="选择合并显示的原生媒体库" path="proxy_native_view_selection">
+              <n-spin :show="loadingNativeLibraries">
+                <n-checkbox-group v-model:value="configModel.proxy_native_view_selection">
+                  <n-space item-style="display: flex;">
+                    <n-checkbox 
+                      v-for="lib in nativeAvailableLibraries" 
+                      :key="lib.Id" 
+                      :value="lib.Id" 
+                      :label="lib.Name"  
+                    />
+                  </n-space>
+                </n-checkbox-group>
+                <n-text depth="3" v-if="!loadingNativeLibraries && nativeAvailableLibraries.length === 0 && (configModel.emby_server_url && configModel.emby_api_key && configModel.emby_user_id)">
+                  未找到原生媒体库。请检查 Emby URL、API Key 和 用户ID。
+                </n-text>
+                <div v-if="nativeLibraryError" style="color: red; margin-top: 5px;">{{ nativeLibraryError }}</div>
+              </n-spin>
+            </n-form-item-grid-item>
+
+            <n-form-item-grid-item label="原生媒体库显示位置" path="proxy_native_view_order">
+              <n-radio-group 
+                v-model:value="configModel.proxy_native_view_order"
+                :disabled="!configModel.proxy_enabled || !configModel.proxy_merge_native_libraries"
+              >
+                <n-radio value="before">显示在虚拟库前面</n-radio>
+                <n-radio value="after">显示在虚拟库后面</n-radio>
+              </n-radio-group>
+              <template #feedback>
+                <n-text depth="3" style="font-size:0.8em;">
+                  选择原生媒体库与虚拟媒体库的合并显示顺序。
+                </n-text>
+              </template>
             </n-form-item-grid-item>
             <n-form-item-grid-item label="代理监听端口" path="proxy_port">
               <n-input-number 
@@ -234,7 +277,7 @@
                 :disabled="!configModel.proxy_enabled"
               />
             </n-form-item-grid-item>
-          </n-card>
+          </n-card>  
           <!-- 卡片: AI 翻译设置 -->
           <n-card :bordered="false" class="dashboard-card">
             <template #header>
@@ -470,8 +513,11 @@ const availableLibraries = ref([]);
 const loadingLibraries = ref(false);
 const libraryError = ref(null);
 const componentIsMounted = ref(false);
+// --- 反代相关
+const nativeAvailableLibraries = ref([]);
+const loadingNativeLibraries = ref(false);
+const nativeLibraryError = ref(null);
 
-// ★★★ 核心修复：确保 unwatch 变量只在这里声明一次 ★★★
 let unwatchGlobal = null;
 let unwatchEmbyConfig = null;
 
@@ -491,6 +537,54 @@ const embyUserIdRule = {
   }
 };
 
+// --- 反代 合并媒体库 ---
+const fetchNativeViewsSimple = async () => {
+  if (!configModel.value?.emby_server_url || !configModel.value?.emby_api_key || !configModel.value?.emby_user_id) {
+    nativeAvailableLibraries.value = [];
+    return;
+  }
+  loadingNativeLibraries.value = true;
+  nativeLibraryError.value = null;
+  try {
+    const userId = configModel.value.emby_user_id;
+    const response = await axios.get(`/api/emby/user/${userId}/views`, {
+      headers: {
+        'X-Emby-Token': configModel.value.emby_api_key,
+      },
+    });
+    const items = response.data?.Items || [];
+    nativeAvailableLibraries.value = items.map(i => ({
+      Id: i.Id,
+      Name: i.Name,
+      CollectionType: i.CollectionType,
+    }));
+    if (nativeAvailableLibraries.value.length === 0) nativeLibraryError.value = "未找到原生媒体库。";
+  } catch (err) {
+    nativeAvailableLibraries.value = [];
+    nativeLibraryError.value = `获取原生媒体库失败: ${err.response?.data?.error || err.message}`;
+  } finally {
+    loadingNativeLibraries.value = false;
+  }
+};
+
+watch(
+  () => [
+    configModel.value?.proxy_enabled,
+    configModel.value?.proxy_merge_native_libraries,
+    configModel.value?.emby_server_url,
+    configModel.value?.emby_api_key,
+    configModel.value?.emby_user_id,
+  ],
+  ([proxyEnabled, mergeNative, url, apiKey, userId]) => {
+    if (proxyEnabled && mergeNative && url && apiKey && userId) {
+      fetchNativeViewsSimple();
+    } else {
+      nativeAvailableLibraries.value = [];
+    }
+  },
+  { immediate: true }
+);
+
 // --- AI 服务商逻辑 ---
 const aiProviderOptions = ref([
   { label: 'OpenAI (及兼容服务)', value: 'openai' },
@@ -498,14 +592,11 @@ const aiProviderOptions = ref([
   { label: 'Google Gemini', value: 'gemini' },
 ]);
 
-// --- ★★★ 新增的数据管理逻辑 ★★★ ---
-// --- Export Logic Refs ---
+// --- 数据管理逻辑 ---
 const isExporting = ref(false);
 const exportModalVisible = ref(false);
 const allDbTables = ref([]);
 const tablesToExport = ref([]);
-
-// --- Import Logic Refs ---
 const isImporting = ref(false);
 const importModalVisible = ref(false);
 const fileToImport = ref(null);
@@ -525,7 +616,6 @@ watch(() => importOptions.value.mode, (newMode) => {
   }
 });
 
-// --- 函数定义 ---
 const save = async () => {
   try {
     await formRef.value?.validate();
@@ -561,8 +651,6 @@ const fetchEmbyLibrariesInternal = async () => {
   }
 };
 
-// --- ★★★ 新增的数据管理函数 ★★★ ---
-// --- Export Logic ---
 const showExportModal = async () => {
   try {
     const response = await axios.get('/api/database/tables');
@@ -611,7 +699,6 @@ const handleExport = async () => {
 const selectAllForExport = () => tablesToExport.value = [...allDbTables.value];
 const deselectAllForExport = () => tablesToExport.value = [];
 
-// --- Import Logic ---
 const handleCustomImportRequest = ({ file }) => {
   const reader = new FileReader();
   reader.onload = (e) => {

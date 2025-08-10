@@ -34,33 +34,59 @@ def _get_real_emby_url_and_key():
         raise ValueError("Emby服务器地址或API Key未配置")
     return base_url, api_key
 
+# ★★★ 新增辅助函数：获取原生Emby媒体库 ★★★
+def _get_native_emby_views(user_id):
+    """
+    连接到真实的Emby服务器，获取其原生的媒体库视图。
+    """
+    try:
+        base_url, api_key = _get_real_emby_url_and_key()
+        # 这个是获取用户视图（即主页媒体库列表）的真实API端点
+        target_url = f"{base_url}/emby/Users/{user_id}/Views"
+        params = {'api_key': api_key}
+        headers = {'Accept': 'application/json'}
+        
+        resp = requests.get(target_url, params=params, headers=headers, timeout=15)
+        resp.raise_for_status()
+        
+        data = resp.json()
+        logger.info(f"成功从Emby获取到 {len(data.get('Items', []))} 个原生媒体库视图。")
+        return data.get('Items', [])
+    except requests.exceptions.RequestException as e:
+        logger.error(f"连接真实Emby服务器获取原生媒体库失败: {e}", exc_info=True)
+        return []
+    except Exception as e:
+        logger.error(f"处理原生Emby媒体库数据时发生未知错误: {e}", exc_info=True)
+        return []
+
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★★★ 已重构：handle_get_views 函数，实现原生库与自定义库的合并逻辑 ★★★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def handle_get_views():
     real_server_id = extensions.EMBY_SERVER_ID
     if not real_server_id:
         return "Proxy is not ready", 503
+
     try:
+        # --- 步骤 1: 获取所有自定义合集（伪造的视图） ---
         collections = db_handler.get_all_active_custom_collections(config_manager.DB_PATH)
-        fake_views = {"Items": [], "TotalRecordCount": len(collections)}
-        
+        fake_views_items = []
         for coll in collections:
             real_emby_collection_id = coll.get('emby_collection_id')
-            
-            # --- 核心升级点 ---
             image_tags = {}
             if real_emby_collection_id:
-                # 我们不再只传递 ID，而是传递一个包含动态时间戳的完整 tag
-                # Emby 客户端会将这个 tag 作为 URL 查询参数 ( ?tag=... )
-                # 这样每次刷新首页，URL 都会变化，从而绕过缓存
                 image_tags["Primary"] = f"{real_emby_collection_id}?timestamp={int(time.time())}"
-            # --- 升级结束 ---
 
             definition = json.loads(coll.get('definition_json', '{}'))
+            merged_libraries = definition.get('merged_libraries', [])
+            name_suffix = f" (合并库: {len(merged_libraries)}个)" if merged_libraries else ""
+            
             item_type_from_db = definition.get('item_type', 'Movie')
             authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
             collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
             fake_view = {
-                "Name": coll['name'], "ServerId": real_server_id, "Id": f"{_MIMICKED_LIBRARY_ID_PREFIX}{coll['id']}",
+                "Name": coll['name'] + name_suffix, "ServerId": real_server_id, "Id": f"{_MIMICKED_LIBRARY_ID_PREFIX}{coll['id']}",
                 "Type": "View", "CollectionType": collection_type, "IsFolder": True, "ImageTags": image_tags,
                 "BackdropImageTags": [], "PrimaryImageAspectRatio": 0.6666666666666666, "DisplayPreferencesId": "movies",
                 "LibraryOptions": {
@@ -69,9 +95,58 @@ def handle_get_views():
                     "PathInfos": [{"Path": f"//custom-collection/{coll['id']}", "NetworkPath": None}], "TypeOptions": []
                 }
             }
-            fake_views["Items"].append(fake_view)
-            
-        return Response(json.dumps(fake_views), mimetype='application/json')
+            fake_views_items.append(fake_view)
+        logger.debug(f"已生成 {len(fake_views_items)} 个自定义合集视图。")
+
+        # --- 步骤 2: 根据配置，获取并处理原生Emby媒体库 ---
+        native_views_items = []
+        # 读取配置，判断是否要合并原生库
+        should_merge_native = config_manager.APP_CONFIG.get('proxy_merge_native_libraries', True)
+        if should_merge_native:
+            logger.info("配置已启用原生库合并功能，开始获取原生库...")
+            # 从请求路径中提取 user_id
+            user_id_match = re.search(r'/emby/Users/([^/]+)/Views', request.path)
+            if user_id_match:
+                user_id = user_id_match.group(1)
+                all_native_views = _get_native_emby_views(user_id)
+
+                # 读取要显示哪些原生库的配置，尝试拆分成列表
+                raw_selection = config_manager.APP_CONFIG.get('proxy_native_view_selection', '')
+                if isinstance(raw_selection, str):
+                    selected_native_view_ids = [x.strip() for x in raw_selection.split(',') if x.strip()]
+                else:
+                    selected_native_view_ids = raw_selection
+
+                if not selected_native_view_ids:
+                    # 如果配置为空，则默认显示所有原生库
+                    native_views_items = all_native_views
+                    logger.info("原生库选择列表为空，将显示所有获取到的原生库。")
+                else:
+                    # 根据ID字段筛选，这里注意ID前缀可能要和_fake_views一致
+                    native_views_items = [view for view in all_native_views if view.get("Id") in selected_native_view_ids]
+                    logger.info(f"根据配置筛选出 {len(native_views_items)} 个原生库: {[v.get('Name') for v in native_views_items]}")
+            else:
+                logger.warning("无法从请求路径中解析出 UserId，无法获取原生媒体库。")
+        else:
+            logger.info("配置未启用原生库合并功能，将仅显示自定义合集。")
+
+        # --- 步骤 3: 合并自定义库和原生库 ---
+        final_items = []
+        # 读取排序配置
+        native_order = config_manager.APP_CONFIG.get('proxy_native_view_order', 'before')
+        
+        if native_order == 'after':
+            final_items.extend(fake_views_items)
+            final_items.extend(native_views_items)
+            logger.debug("排序方式'after': 自定义库在前，原生库在后。")
+        else: # 默认为 'before'
+            final_items.extend(native_views_items)
+            final_items.extend(fake_views_items)
+            logger.debug("排序方式'before': 原生库在前，自定义库在后。")
+
+        final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
+        return Response(json.dumps(final_response), mimetype='application/json')
+        
     except Exception as e:
         logger.error(f"[PROXY] 获取视图数据时出错: {e}", exc_info=True)
         return "Internal Proxy Error", 500

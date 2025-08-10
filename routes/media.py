@@ -12,7 +12,7 @@ import task_manager
 import extensions
 import db_handler
 from extensions import login_required, processor_ready_required
-
+from urllib.parse import urlparse
 
 # --- 蓝图 1：用于所有 /api/... 的路由 ---
 media_api_bp = Blueprint('media_api', __name__, url_prefix='/api')
@@ -285,6 +285,50 @@ def api_get_emby_libraries():
         logger.error("/api/emby_libraries: 无法获取Emby媒体库列表 (emby_handler返回None)。")
         return jsonify({"error": "无法获取Emby媒体库列表，请检查Emby连接和日志"}), 500
     
+# --- 获取emby媒体库（反代用） ---
+@media_api_bp.route('/emby/user/<user_id>/views', methods=['GET'])
+def api_get_emby_user_views(user_id):
+    """
+    从真实Emby服务器获取指定用户的所有原生媒体库（Views）。
+    需要在请求头或查询参数中携带 API Key。
+    """
+    if not extensions.media_processor_instance or \
+       not extensions.media_processor_instance.emby_url:
+        logger.warning("/api/emby/user/<user_id>/views: Emby配置不完整或服务未就绪。")
+        return jsonify({"error": "Emby配置不完整或服务未就绪"}), 500
+    
+    # 尝试从请求头和查询参数获取用户令牌
+    user_token = request.headers.get('X-Emby-Token') or request.args.get('api_key')
+    
+    if not user_token:
+        return jsonify({"error": "缺少用户访问令牌(api_key或X-Emby-Token)"}), 400
+    
+    base_url = extensions.media_processor_instance.emby_url.rstrip('/')
+    real_views_url = f"{base_url}/emby/Users/{user_id}/Views"
+    
+    try:
+        # 复制请求头，剔除不必要的
+        headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
+        headers['Host'] = urlparse(base_url).netloc
+        headers['Accept-Encoding'] = 'identity'
+        headers['X-Emby-Token'] = user_token  # 确保Token传递
+        
+        params = request.args.to_dict()
+        params['api_key'] = user_token  # 兼容api_key参数
+        
+        resp = requests.get(real_views_url, headers=headers, params=params, timeout=15)
+        resp.raise_for_status()
+        
+        views_data = resp.json()
+        return jsonify(views_data)
+    
+    except requests.exceptions.RequestException as e:
+        logger.error(f"/api/emby/user/{user_id}/views 调用真实Emby失败: {e}")
+        return jsonify({"error": "无法从真实Emby服务器获取数据"}), 502
+    except Exception as e:
+        logger.error(f"/api/emby/user/{user_id}/views 发生未知错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500 
+
 # ★★★ 提供工作室远程搜索的API ★★★
 @media_api_bp.route('/search_studios', methods=['GET'])
 @login_required

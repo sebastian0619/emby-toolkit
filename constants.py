@@ -21,6 +21,9 @@ CONFIG_OPTION_DB_PATH = "db_path"
 CONFIG_SECTION_REVERSE_PROXY = "ReverseProxy"
 CONFIG_OPTION_PROXY_ENABLED = "proxy_enabled"
 CONFIG_OPTION_PROXY_PORT = "proxy_port"
+CONFIG_OPTION_PROXY_MERGE_NATIVE = "proxy_merge_native_libraries"
+CONFIG_OPTION_PROXY_NATIVE_VIEW_SELECTION = "proxy_native_view_selection"  # List[str]
+CONFIG_OPTION_PROXY_NATIVE_VIEW_ORDER = "proxy_native_view_order"  # str, 'before' or 'after'
 
 # ==============================================================================
 # ✨ Emby 服务器连接配置 (Emby Connection)
