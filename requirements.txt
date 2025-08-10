@@ -30,3 +30,4 @@ docker
 # --- 封面生成 ---
 numpy
 PyYAML
+Pillow
