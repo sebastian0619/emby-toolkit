@@ -69,7 +69,6 @@ COPY requirements.txt \
      custom_collection_handler.py \
      scheduler_manager.py \
      reverse_proxy.py \
-     font.ttf \
      ./
 
 COPY services/ ./services/
