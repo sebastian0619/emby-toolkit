@@ -357,23 +357,27 @@ def handle_get_latest_items(user_id, params):
             # 没指定虚拟库，无法获取最新媒体
             return Response(json.dumps([]), mimetype='application/json')
 
-        # 从数据库根据虚拟库ID获取真实Emby合集ID
-        try:
-            virtual_library_db_id = int(virtual_library_id.replace(_MIMICKED_LIBRARY_ID_PREFIX, '')) if virtual_library_id.startswith(_MIMICKED_LIBRARY_ID_PREFIX) else int(virtual_library_id)
-        except Exception:
-            logger.warning(f"无效的虚拟库ID格式：{virtual_library_id}")
-            return Response(json.dumps([]), mimetype='application/json')
+        if virtual_library_id.startswith(_MIMICKED_LIBRARY_ID_PREFIX):
+            # 处理虚拟库ID，自定义合集
+            try:
+                virtual_library_db_id = int(virtual_library_id.replace(_MIMICKED_LIBRARY_ID_PREFIX, ''))
+            except Exception:
+                logger.warning(f"无效的虚拟库ID格式：{virtual_library_id}")
+                return Response(json.dumps([]), mimetype='application/json')
 
-        collection_info = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, virtual_library_db_id)
-        if not collection_info:
-            logger.info(f"未找到虚拟库ID {virtual_library_db_id} 对应的数据")
-            return Response(json.dumps([]), mimetype='application/json')
-        
-        real_emby_collection_id = collection_info.get('emby_collection_id')
-        if not real_emby_collection_id:
-            logger.info(f"虚拟库ID {virtual_library_db_id} 未绑定真实Emby合集ID")
-            return Response(json.dumps([]), mimetype='application/json')
-        
+            collection_info = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, virtual_library_db_id)
+            if not collection_info:
+                logger.info(f"未找到虚拟库ID {virtual_library_db_id} 对应的数据")
+                return Response(json.dumps([]), mimetype='application/json')
+
+            real_emby_collection_id = collection_info.get('emby_collection_id')
+            if not real_emby_collection_id:
+                logger.info(f"虚拟库ID {virtual_library_db_id} 未绑定真实Emby合集ID")
+                return Response(json.dumps([]), mimetype='application/json')
+        else:
+            # 真实Emby库ID，直接使用
+            real_emby_collection_id = virtual_library_id
+
         # 构造参数请求真实Emby最新媒体
         latest_params = {
             "ParentId": real_emby_collection_id, 
