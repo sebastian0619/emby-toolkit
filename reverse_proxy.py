@@ -5,11 +5,15 @@ import requests
 import re
 import json
 from flask import Flask, request, Response
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from concurrent.futures import ThreadPoolExecutor
 import time
 from PIL import Image, ImageDraw, ImageFont
 import io
+import threading  # <-- 新增
+from gevent import spawn
+from geventwebsocket.websocket import WebSocket
+from websocket import create_connection
 
 import config_manager
 import db_handler
@@ -88,7 +92,7 @@ def handle_get_views():
             fake_view = {
                 "Name": coll['name'] + name_suffix, "ServerId": real_server_id, "Id": f"{_MIMICKED_LIBRARY_ID_PREFIX}{coll['id']}",
                 "Type": "View", "CollectionType": collection_type, "IsFolder": True, "ImageTags": image_tags,
-                "BackdropImageTags": [], "PrimaryImageAspectRatio": 0.6666666666666666, "DisplayPreferencesId": "movies",
+                "BackdropImageTags": [], "PrimaryImageAspectRatio": 1.7777777777777777, "DisplayPreferencesId": "movies",
                 "LibraryOptions": {
                     "EnablePhotos": False, "EnableRealtimeMonitor": False, "EnableChapterImageExtraction": False,
                     "ExtractChapterImagesDuringLibraryScan": False, "EnableInternetProviders": True, "SaveLocalMetadata": False,
@@ -169,7 +173,7 @@ def handle_get_mimicked_library_details(mimicked_id):
         fake_library_details = {
             "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id, "Type": "CollectionFolder",
             "CollectionType": collection_type, "IsFolder": True, "ImageTags": image_tags, "BackdropImageTags": [],
-            "PrimaryImageAspectRatio": 0.6666666666666666,
+            "PrimaryImageAspectRatio": 1.7777777777777777,
         }
         return Response(json.dumps(fake_library_details), mimetype='application/json')
     except Exception as e:
@@ -294,49 +298,20 @@ def handle_get_mimicked_library_items(mimicked_id, params):
             if not tmdb_id:
                 continue
             is_in_library = tmdb_id in real_items_map
-
             if is_in_library:
-                # 条件2: 已入库 -> 直接显示真实项目
+                # 条件: 已入库 -> 直接显示真实项目
                 logger.debug(f"-> '{title}' (TMDB: {tmdb_id}): 满足[已入库]，直接显示真实项目。")
                 final_items.append(real_items_map[tmdb_id])
                 processed_real_tmdb_ids.add(tmdb_id)
             else:
-                # 条件3: 未入库 -> 根据状态打“缺失”、“订阅”等水印
-                status = db_item.get('status', 'missing')
-                if status != 'ok':
-                    logger.debug(f"-> '{title}' (TMDB: {tmdb_id}): 满足[未入库]，状态为'{status}'，准备打相应水印。")
-                    poster_path = db_item.get('poster_path')
-                    if poster_path and poster_path.lstrip('/'):
-                        image_tag = f"watermark_{status}_{poster_path.lstrip('/')}"
-                        year = None
-                        release_date = db_item.get('release_date') or db_item.get('first_air_date')
-                        if release_date and isinstance(release_date, str) and len(release_date) >= 4:
-                            year = release_date[:4]
-                        if not year:
-                            year = db_item.get('year')
-                        fake_item = {
-                            "Name": title,
-                            "Id": f"fake_{status}_{tmdb_id}",
-                            "ServerId": real_server_id,
-                            "Type": emby_item_type,
-                            "IsFolder": emby_item_type == "Series",
-                            "ProductionYear": year,
-                            "ImageTags": {"Primary": image_tag},
-                            "BackdropImageTags": [],
-                            "UserData": {},
-                            "ProviderIds": {"Tmdb": tmdb_id}
-                        }
-                        final_items.append(fake_item)
-                    else:
-                        logger.warning(f"-> '{title}' (TMDB: {tmdb_id}): 想打'{status}'水印，但无海报路径，此项将不显示。")
-                else:
-                    logger.debug(f"-> '{title}' (TMDB: {tmdb_id}): 状态为'ok'但未在Emby中找到，此项将不显示。")
+                # 条件: 未入库 -> 不显示任何假项，直接跳过
+                logger.debug(f"-> '{title}' (TMDB: {tmdb_id}): 不在库中，跳过显示。")
+                continue
         # 4. 添加那些在真实合集中存在，但由于某种原因不在我们数据库列表中的项目
         for tmdb_id, real_item in real_items_map.items():
             if tmdb_id not in processed_real_tmdb_ids:
-                logger.trace(f"发现一个在Emby合集中但不在数据库列表的真实项目: '{real_item.get('Name')}' (TMDB: {tmdb_id})，将直接添加。")
+                logger.debug(f"发现一个在Emby合集中但不在数据库列表的真实项目: '{real_item.get('Name')}' (TMDB: {tmdb_id})，将直接添加。")
                 final_items.append(real_item)
-
         logger.debug(f"--- 遍历结束，最终将返回 {len(final_items)} 个项目 ---")
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')
@@ -345,150 +320,202 @@ def handle_get_mimicked_library_items(mimicked_id, params):
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):
+    """
+    【最终修复版】处理最新媒体请求，智能区分虚拟库和原生全局请求。
+    """
     try:
-        base_url, _ = _get_real_emby_url_and_key()
-        user_token = params.get('api_key') or params.get('X-Emby-Token')
-        if not user_token: 
-            return Response(json.dumps([]), mimetype='application/json')
+        base_url, api_key = _get_real_emby_url_and_key()
         
-        # 从请求参数拿虚拟库ID，比如用 ParentId 或自定义参数 customViewId （前端调用时需保证带上）
+        # 尝试从请求参数中获取虚拟库ID
         virtual_library_id = params.get('ParentId') or params.get('customViewId')
-        if not virtual_library_id:
-            # 没指定虚拟库，无法获取最新媒体
-            return Response(json.dumps([]), mimetype='application/json')
 
-        if virtual_library_id.startswith(_MIMICKED_LIBRARY_ID_PREFIX):
-            # 处理虚拟库ID，自定义合集
+        # --- 场景一：为单个虚拟库获取最新媒体 (服务于Web端) ---
+        if virtual_library_id and virtual_library_id.startswith(_MIMICKED_LIBRARY_ID_PREFIX):
+            logger.info(f"处理针对虚拟库 '{virtual_library_id}' 的最新媒体请求...")
+            
             try:
                 virtual_library_db_id = int(virtual_library_id.replace(_MIMICKED_LIBRARY_ID_PREFIX, ''))
-            except Exception:
+            except (ValueError, TypeError):
                 logger.warning(f"无效的虚拟库ID格式：{virtual_library_id}")
                 return Response(json.dumps([]), mimetype='application/json')
 
             collection_info = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, virtual_library_db_id)
-            if not collection_info:
-                logger.info(f"未找到虚拟库ID {virtual_library_db_id} 对应的数据")
+            if not collection_info or not collection_info.get('emby_collection_id'):
+                logger.warning(f"未找到虚拟库 {virtual_library_id} 对应的真实Emby合集ID。")
                 return Response(json.dumps([]), mimetype='application/json')
 
             real_emby_collection_id = collection_info.get('emby_collection_id')
-            if not real_emby_collection_id:
-                logger.info(f"虚拟库ID {virtual_library_db_id} 未绑定真实Emby合集ID")
-                return Response(json.dumps([]), mimetype='application/json')
-        else:
-            # 真实Emby库ID，直接使用
-            real_emby_collection_id = virtual_library_id
+            
+            # 构造请求，从真实合集中获取按日期排序的项目
+            latest_params = {
+                "ParentId": real_emby_collection_id,
+                "Limit": int(params.get('Limit', '20')),
+                "Fields": "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated",
+                "SortBy": "DateCreated", 
+                "SortOrder": "Descending",
+                "Recursive": "true", # 确保能搜索到合集内的内容
+                "IncludeItemTypes": "Movie,Series", # 限定类型
+                'api_key': api_key,
+            }
+            
+            target_url = f"{base_url}/emby/Users/{user_id}/Items"
+            resp = requests.get(target_url, params=latest_params, timeout=15)
+            resp.raise_for_status()
+            
+            # Emby的 /Items 接口返回的是带 "Items" 键的字典
+            items_data = resp.json()
+            return Response(json.dumps(items_data.get("Items", [])), mimetype='application/json')
 
-        # 构造参数请求真实Emby最新媒体
-        latest_params = {
-            "ParentId": real_emby_collection_id, 
-            "Limit": int(params.get('Limit', '20')),
-            "Fields": "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated",
-            "SortBy": "DateCreated", 
-            "SortOrder": "Descending", 
-            "api_key": user_token,
-        }
-        url = f"{base_url}/emby/Users/{user_id}/Items"
-        resp = requests.get(url, params=latest_params, timeout=10)
-        if resp.status_code == 200:
-            items = resp.json().get("Items", [])
-            return Response(json.dumps(items), mimetype='application/json')
+        # --- 场景二：转发原生的全局最新媒体请求 (服务于TV端) ---
         else:
-            logger.warning(f"调用真实Emby失败，状态码: {resp.status_code}")
-            return Response(json.dumps([]), mimetype='application/json')
+            logger.info("未提供虚拟库ID，将请求作为原生全局最新媒体请求转发...")
+            
+            # 直接使用原始请求的路径和参数进行转发
+            target_url = f"{base_url}/{request.path.lstrip('/')}"
+            
+            forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
+            forward_headers['Host'] = urlparse(base_url).netloc
+            
+            forward_params = request.args.copy()
+            forward_params['api_key'] = api_key
+
+            resp = requests.request(
+                method=request.method,
+                url=target_url,
+                headers=forward_headers,
+                params=forward_params,
+                data=request.get_data(),
+                stream=True,
+                timeout=30.0
+            )
+            
+            excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
+            response_headers = [(name, value) for name, value in resp.raw.headers.items()
+                                if name.lower() not in excluded_resp_headers]
+
+            return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
+
     except Exception as e:
-        logger.error(f"处理最新媒体时出错: {e}", exc_info=True)
+        logger.error(f"处理最新媒体时发生未知错误: {e}", exc_info=True)
         return Response(json.dumps([]), mimetype='application/json')
 
 proxy_app = Flask(__name__)
 
-@proxy_app.route('/', defaults={'path': ''}, methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
+@proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
 def proxy_all(path):
+    # --- 1. WebSocket 代理逻辑 (保持不变) ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
+        ws_client = request.environ.get('wsgi.websocket')
+        if not ws_client:
+            logger.error("WebSocket请求，但未找到 wsgi.websocket 对象。请确保以正确的 handler_class 运行。")
+            return "WebSocket upgrade failed", 400
+        try:
+            base_url, _ = _get_real_emby_url_and_key()
+            parsed_url = urlparse(base_url)
+            ws_scheme = 'wss' if parsed_url.scheme == 'https' else 'ws'
+            target_ws_url = urlunparse((ws_scheme, parsed_url.netloc, f'/{path}', '', request.query_string.decode(), ''))
+            logger.info(f"开始代理 WebSocket 连接到: {target_ws_url}")
+            headers = {k: v for k, v in request.headers.items() if k.lower() not in ['host', 'upgrade', 'connection', 'sec-websocket-key', 'sec-websocket-version']}
+            ws_server = create_connection(target_ws_url, header=headers)
+            logger.info("成功连接到远程 Emby WebSocket 服务器。")
+
+            def forward_to_server():
+                try:
+                    while not ws_client.closed:
+                        message = ws_client.receive()
+                        if message is not None:
+                            ws_server.send(message)
+                        else: break
+                finally:
+                    ws_server.close()
+
+            def forward_to_client():
+                try:
+                    while ws_server.connected:
+                        message = ws_server.recv()
+                        if message is not None:
+                            ws_client.send(message)
+                        else: break
+                finally:
+                    ws_client.close()
+            
+            greenlets = [spawn(forward_to_server), spawn(forward_to_client)]
+            from gevent.event import Event
+            exit_event = Event()
+            def on_exit(g): exit_event.set()
+            for g in greenlets: g.link(on_exit)
+            exit_event.wait()
+        except Exception as e:
+            logger.error(f"WebSocket 代理时发生错误: {e}", exc_info=True)
         return Response()
-    
+
+    # --- 2. HTTP 代理逻辑 (包含所有修复) ---
     try:
+        # 【【【 修复点 A: 优先处理虚拟库内容请求 】】】
+        parent_id = request.args.get("ParentId")
+        if parent_id and parent_id.startswith(_MIMICKED_LIBRARY_ID_PREFIX):
+            logger.debug(f"路由匹配：虚拟库内容请求 (ParentId: {parent_id})")
+            return handle_get_mimicked_library_items(parent_id, request.args)
+
+        # 【【【 修复点 B: 优先处理虚拟库封面图片请求 】】】
+        if path.startswith(f'emby/Items/{_MIMICKED_LIBRARY_ID_PREFIX}') and '/Images/' in path:
+            logger.debug(f"路由匹配：虚拟库封面图片请求 (Path: {path})")
+            return handle_get_mimicked_library_image(path)
+
+        # --- 以下是您原有的其他路由判断 ---
         if path.endswith('/Views') and path.startswith('emby/Users/'):
+            logger.debug("路由匹配：获取视图列表 /Views")
             return handle_get_views()
         
         details_match = MIMICKED_ITEM_DETAILS_RE.search(f'/{path}')
         if details_match:
+            logger.debug(f"路由匹配：虚拟库详情 (ID: {details_match.group(1)})")
             return handle_get_mimicked_library_details(details_match.group(1))
+
         if path.endswith('/Items/Latest'):
             user_id_match = re.search(r'/emby/Users/([^/]+)/', f'/{path}')
             if user_id_match:
-                # 这里确保调用时request.args中包含虚拟库标识，前端或客户端请求时需加上ParentId或customViewId参数
+                logger.debug("路由匹配：最新媒体 /Items/Latest")
                 return handle_get_latest_items(user_id_match.group(1), request.args)
         
         tag = request.args.get('tag')
         if tag and tag.startswith('watermark_'):
+            logger.debug(f"路由匹配：水印图片 (Tag: {tag})")
             return handle_get_watermarked_image(tag)
-        parent_id = request.args.get("ParentId")
-        if parent_id and parent_id.startswith(_MIMICKED_LIBRARY_ID_PREFIX):
-            return handle_get_mimicked_library_items(parent_id, request.args)
+
+        # 备用的虚拟库内容匹配 (以防万一)
         items_match = MIMICKED_ITEMS_RE.match(f'/{path}')
         if items_match:
+            logger.debug(f"路由匹配：虚拟库内容请求 (Regex Match: {items_match.group(1)})")
             return handle_get_mimicked_library_items(items_match.group(1), request.args)
-        if path.startswith(f'emby/Items/{_MIMICKED_LIBRARY_ID_PREFIX}') and '/Images/' in path:
-            return handle_get_mimicked_library_image(path)
+
+        # --- 默认转发逻辑 ---
+        logger.trace(f"无特殊路由匹配，执行默认转发: {path}")
         path_to_forward = path
         if path and not path.startswith(('emby/', 'socket.io/')):
              path_to_forward = f'web/{path}'
         
         base_url, api_key = _get_real_emby_url_and_key()
         target_url = f"{base_url}/{path_to_forward}"
+        
         headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
         headers['Host'] = urlparse(base_url).netloc
-        headers['Accept-Encoding'] = 'identity'
+        headers['Accept-Encoding'] = 'identity' # 避免压缩问题
+        
         params = request.args.copy()
         params['api_key'] = api_key
+        
         resp = requests.request(
             method=request.method, url=target_url, headers=headers, params=params,
             data=request.get_data(), cookies=request.cookies, stream=True, timeout=30.0
         )
-        content_type = resp.headers.get('Content-Type', '')
-        if 'text/html' in content_type or 'javascript' in content_type or 'application/json' in content_type:
-            raw_content = resp.content
-            try:
-                text_content = raw_content.decode('utf-8')
-                modified_text = text_content.replace('/web/', '/')
-                modified_content_bytes = modified_text.encode('utf-8')
-                new_resp = Response(modified_content_bytes, resp.status_code, dict(resp.headers))
-                new_resp.headers['Content-Length'] = str(len(modified_content_bytes))
-                return new_resp
-            except UnicodeDecodeError:
-                pass
-        # 处理转发请求的Headers，保留Range等关键头部
-        forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
-        # 明确透传Range头，支持断点续传
-        if 'Range' in request.headers:
-            forward_headers['Range'] = request.headers['Range']
-
-        base_url, api_key = _get_real_emby_url_and_key()
-        target_url = f"{base_url}/{path_to_forward}"
-
-        # 带上api_key参数
-        params = request.args.copy()
-        params['api_key'] = api_key
-
-        # 转发请求
-        resp = requests.request(
-            method=request.method,
-            url=target_url,
-            headers=forward_headers,
-            params=params,
-            data=request.get_data(),
-            cookies=request.cookies,
-            stream=True,
-            timeout=30.0
-        )
-
-        # 关键：返回的响应头，不能删除Content-Length和Transfer-Encoding，否则浏览器识别流失败
-        excluded_resp_headers = ['host', 'accept-encoding', 'connection']  # 不要去除content-length和transfer-encoding
+        
+        excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
         response_headers = [(name, value) for name, value in resp.raw.headers.items()
                             if name.lower() not in excluded_resp_headers]
 
-        return Response(resp.iter_content(chunk_size=8192), status=resp.status_code, headers=response_headers)
+        return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
         
     except Exception as e:
         logger.error(f"[PROXY] 代理时发生未知错误: {e}", exc_info=True)
