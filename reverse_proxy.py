@@ -199,7 +199,7 @@ def handle_get_mimicked_library_image(path):
         return "Internal Proxy Error", 500
 
 def handle_get_watermarked_image(tag):
-    logger.info(f"[PROXY] 开始处理盖章水印图片请求, Tag: '{tag}'")
+    logger.trace(f"[PROXY] 开始处理盖章水印图片请求, Tag: '{tag}'")
     try:
         parts = tag.split('_', 2)
         if len(parts) != 3:
