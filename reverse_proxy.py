@@ -393,7 +393,7 @@ def proxy_all(path):
 
         # --- 默认转发逻辑 (保持不变) ---
         path_to_forward = path
-        if path and not path.startswith(('emby/', 'socket.io/')):
+        if path and not path.startswith(('emby/', 'socket.io/', 'Audio/', 'Videos/', 'Items/')):
              path_to_forward = f'web/{path}'
         base_url, api_key = _get_real_emby_url_and_key()
         target_url = f"{base_url}/{path_to_forward}"
