@@ -141,7 +141,7 @@ def search_logs_with_context():
     if not query:
         return jsonify({"error": "搜索关键词不能为空"}), 400
 
-    START_MARKER = re.compile(r"成功获取Emby项目 '(.+?)' \(ID: .*?\) 的详情")
+    START_MARKER = re.compile(r"开始处理 '(.+?)' \(ID: .*?\) \(TMDb ID:")
     END_MARKER = re.compile(r"(✨✨✨处理完成|最终状态: 处理完成)")
     TIMESTAMP_REGEX = re.compile(r"^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})")
 

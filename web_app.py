@@ -489,8 +489,7 @@ def emby_webhook():
     event_type = data.get("Event") if data else "未知事件"
     logger.info(f"收到Emby Webhook: {event_type}")
     
-    trigger_events = ["item.add", "library.new", "image.update"] 
-
+    trigger_events = ["item.add", "library.new"]  # 删除了 image.update
     if event_type not in trigger_events:
         logger.info(f"Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
         return jsonify({"status": "event_ignored_not_in_trigger_list"}), 200
@@ -500,22 +499,15 @@ def emby_webhook():
     original_item_name = item_from_webhook.get("Name", "未知项目")
     original_item_type = item_from_webhook.get("Type")
     
-    # 我们关心的类型是电影、剧集和分集
     trigger_types = ["Movie", "Series", "Episode"]
-
     if not (original_item_id and original_item_type in trigger_types):
         logger.debug(f"Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略（缺少ID或类型不匹配）。")
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
 
-
-    # --- 分支 A: 处理元数据新增/更新事件 ---
     if event_type in ["item.add", "library.new"]:
-        # 这部分是你原有的核心修复逻辑，保持不变
         id_to_process = original_item_id
         type_to_process = original_item_type
-
         if original_item_type == "Episode":
-            # ... (你原有的向上查找剧集ID的逻辑) ...
             logger.info(f"Webhook 收到分集 '{original_item_name}' (ID: {original_item_id})，正在向上查找其所属剧集...")
             series_id = emby_handler.get_series_id_from_child_id(
                 original_item_id,
@@ -530,22 +522,18 @@ def emby_webhook():
             else:
                 logger.error(f"无法为分集 '{original_item_name}' 找到所属剧集ID，将跳过处理。")
                 return jsonify({"status": "event_ignored_series_not_found"}), 200
-
         full_item_details = emby_handler.get_emby_item_details(
             item_id=id_to_process,
             emby_server_url=extensions.media_processor_instance.emby_url,
             emby_api_key=extensions.media_processor_instance.emby_api_key,
             user_id=extensions.media_processor_instance.emby_user_id
         )
-
         if not full_item_details:
             logger.error(f"无法获取项目 {id_to_process} 的完整详情，处理中止。")
             return jsonify({"status": "event_ignored_details_fetch_failed"}), 200
-
         final_item_name = full_item_details.get("Name", f"未知项目(ID:{id_to_process})")
         provider_ids = full_item_details.get("ProviderIds", {})
         tmdb_id = provider_ids.get("Tmdb")
-
         if not tmdb_id:
             logger.warning(f"项目 '{final_item_name}' (ID: {id_to_process}) 缺少 TMDb ID，无法进行处理。将跳过本次 Webhook 请求。")
             return jsonify({"status": "event_ignored_no_tmdb_id"}), 200
@@ -561,22 +549,6 @@ def emby_webhook():
         
         return jsonify({"status": "metadata_task_queued", "item_id": id_to_process}), 202
 
-    # --- 分支 B: 处理图片更新事件 ---
-    elif event_type == "image.update":
-        # ★★★ 核心修改点 1: 获取 Description 字段 ★★★
-        update_description = data.get("Description", "")
-        logger.info(f"Webhook 图片更新事件触发，项目 '{original_item_name}' (ID: {original_item_id})。描述: '{update_description}'")
-        
-        from tasks import image_update_task # 确保从 tasks 导入
-        task_manager.submit_task(
-            image_update_task,
-            f"精准图片同步: {original_item_name}",
-            item_id=original_item_id,
-            update_description=update_description
-        )
-        
-        return jsonify({"status": "precise_image_task_queued", "item_id": original_item_id}), 202
-    
     return jsonify({"status": "event_unhandled"}), 500
 
 # ★★★ END: 1. ★★★

@@ -697,10 +697,10 @@ class MediaProcessor:
         【V-API-Ready 最终版 - 带跳过功能】
         这个函数是API模式的入口，它会先检查是否需要跳过已处理的项目。
         """
-        # 1. 保安检查：除非强制，否则跳过已处理的
+        # 1. 除非强制，否则跳过已处理的
         if not force_reprocess_this_item and emby_item_id in self.processed_items_cache:
             item_name_from_cache = self.processed_items_cache.get(emby_item_id, f"ID:{emby_item_id}")
-            logger.info(f"媒体 '{item_name_from_cache}' 已在处理记录中，跳过。")
+            logger.info(f"媒体 '{item_name_from_cache}' 跳过已处理记录。")
             return True
 
         # 2. 检查停止信号
@@ -739,9 +739,9 @@ class MediaProcessor:
 
         try:
             # ======================================================================
-            # 阶段 1: Emby 现状数据准备 (永远是第一步)
+            # 阶段 1: Emby 现状数据准备 
             # ======================================================================
-            logger.info(f"【API模式】开始处理 '{item_name_for_log}' (TMDb ID: {tmdb_id})")
+            logger.info(f"  -> 开始处理 '{item_name_for_log}' (TMDb ID: {tmdb_id})")
             
             current_emby_cast_raw = item_details_from_emby.get("People", [])
             enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
@@ -749,7 +749,7 @@ class MediaProcessor:
             logger.info(f"  -> 从 Emby 获取并增强后，得到 {original_emby_actor_count} 位现有演员用于后续所有操作。")
 
             # ======================================================================
-            # 阶段 2: 权威数据源采集 (Authoritative Data Acquisition)
+            # 阶段 2: 权威数据源采集
             # ======================================================================
             authoritative_cast_source = []
 
@@ -773,12 +773,10 @@ class MediaProcessor:
                         all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
                         authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
 
-            # ★★★★★★★★★★★★★★★ 最终的、正确的保底策略 ★★★★★★★★★★★★★★★
             # 如果强制刷新失败，或者没有强制刷新，则使用我们已经增强过的 Emby 列表作为权威数据源
             if not authoritative_cast_source:
                 logger.info("  -> 保底策略: 未强制刷新或刷新失败，将使用增强后的 Emby 演员列表作为权威数据源。")
                 authoritative_cast_source = enriched_emby_cast
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
             logger.info(f"  -> 数据采集阶段完成，最终选定 {len(authoritative_cast_source)} 位权威演员。")
 
@@ -801,9 +799,9 @@ class MediaProcessor:
                 )
 
                 # ======================================================================
-                # 阶段 3: 数据写回 (Data Write-back)
+                # 阶段 4: 数据写回 (Data Write-back)
                 # ======================================================================
-                logger.info("【写回阶段】步骤 1/2: 检查并更新被翻译的演员名字...")
+                logger.info("  -> 写回步骤 1/2: 检查并更新被翻译的演员名字...")
                 # 我们需要原始的 Emby 演员列表来进行名字对比
                 original_names_map = {p.get("Id"): p.get("Name") for p in item_details_from_emby.get("People", []) if p.get("Id")}
                 
@@ -824,10 +822,10 @@ class MediaProcessor:
                             emby_api_key=self.emby_api_key,
                             user_id=self.emby_user_id
                         )
-                logger.info("【写回阶段】演员名字前置更新完成。")
+                logger.info("  -> 写回演员名字前置更新完成。")
 
-                # --- 步骤 3.2: 更新媒体的演员列表 ---
-                logger.info("【写回阶段】步骤 2/2: 准备将最终演员列表更新到媒体项目...")
+                # --- 更新媒体的演员列表 ---
+                logger.info("  -> 写回步骤 2/2: 准备将最终演员列表更新到媒体项目...")
                 cast_for_emby_handler = []
                 for actor in final_processed_cast:
                     cast_for_emby_handler.append({
@@ -859,12 +857,12 @@ class MediaProcessor:
                     return False
 
                 # ======================================================================
-                # ★★★★★★★★★★★★★★★ 阶段 3.5: 调用“锁匠”完成收尾 ★★★★★★★★★★★★★★★
+                # ★★★★★★★★★★★★★★★ 阶段 5: 调用“锁匠”完成收尾 ★★★★★★★★★★★★★★★
                 # ======================================================================
                 auto_lock_enabled = self.config.get(constants.CONFIG_OPTION_AUTO_LOCK_CAST, True)
                 fields_to_lock_on_refresh = ["Cast"] if auto_lock_enabled else None
                 
-                logger.info("API 更新成功，调用“锁匠”函数执行上锁和刷新操作...")
+                logger.info("  -> 更新成功，执行上锁和刷新操作...")
                 emby_handler.refresh_emby_item_metadata(
                     item_emby_id=item_id,
                     emby_server_url=self.emby_url,
@@ -876,7 +874,7 @@ class MediaProcessor:
                 )
 
                 # ======================================================================
-                # 阶段 4: 后续处理 (Post-processing)
+                # 阶段 6: 后续处理 (Post-processing)
                 # ======================================================================
                 genres = item_details_from_emby.get("Genres", [])
                 is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
@@ -895,7 +893,7 @@ class MediaProcessor:
                     self.log_db_manager.save_to_processed_log(cursor, item_id, item_name_for_log, score=processing_score)
                     self.log_db_manager.remove_from_failed_log(cursor, item_id)
                     self.processed_items_cache[item_id] = item_name_for_log
-                    logger.debug(f"已将 '{item_name_for_log}' (ID: {item_id}) 添加到内存缓存，下次将跳过。")
+                    logger.debug(f"已将 '{item_name_for_log}' (ID: {item_id}) 添加到已处理，下次将跳过。")
 
                 conn.commit()
 
@@ -927,26 +925,10 @@ class MediaProcessor:
         然后原封不动地执行你所有经过打磨的核心代码。
         """
         logger.debug("API模式：进入数据适配层...")
-         # ======================= 最终确认日志 =======================
-        logger.info("  [最终确认] 进入 _process_cast_list_from_api 时，emby_cast_people 的第一个元素是:")
-        if emby_cast_people:
-            import json
-            logger.info(f"  {json.dumps(emby_cast_people[0], ensure_ascii=False, indent=2)}")
-        else:
-            logger.warning("  [最终确认] emby_cast_people 为空！")
-        # ==========================================================
-
-        # +++ 新增诊断日志 +++
-        logger.debug(f"诊断：从Emby接收到的原始演员列表 (前2条): {emby_cast_people[:2]}")
-        # +++ 结束新增 +++
-
         emby_tmdb_to_person_id_map = {
             person.get("ProviderIds", {}).get("Tmdb"): person.get("Id")
             for person in emby_cast_people if person.get("ProviderIds", {}).get("Tmdb")
         }
-        # +++ 新增诊断日志 +++
-        logger.debug(f"诊断：构建的 TMDB ID -> Emby Person ID 映射表: {emby_tmdb_to_person_id_map}")
-        # +++ 结束新增 +++
 
         local_cast_list = []
         for person_data in tmdb_cast_people: # tmdb_cast_people 现在是 authoritative_cast_source
@@ -1610,7 +1592,7 @@ class MediaProcessor:
         【V-API-Direct - 直接写入最终版】
         完全信任前端提交的演员列表，直接将其转换为 Emby API 格式并执行更新。
         """
-        logger.info(f"【API模式】手动处理流程启动：ItemID: {item_id} ('{item_name}')")
+        logger.info(f"  -> 手动处理流程启动：ItemID: {item_id} ('{item_name}')")
         
         try:
             # 步骤 1: 将前端数据直接转换为 Emby Handler 需要的格式
@@ -1708,17 +1690,17 @@ class MediaProcessor:
                 self.log_db_manager.save_to_processed_log(cursor, item_id, item_name, score=10.0) # 手动处理直接给满分
                 self.log_db_manager.remove_from_failed_log(cursor, item_id)
 
-            logger.info(f"✅ 【API模式】手动处理 '{item_name}' 流程完成。")
+            logger.info(f"  -> 手动处理 '{item_name}' 流程完成。")
             return True
 
         except Exception as e:
-            logger.error(f"【API模式】手动处理 '{item_name}' 时发生严重错误: {e}", exc_info=True)
+            logger.error(f"  -> 手动处理 '{item_name}' 时发生严重错误: {e}", exc_info=True)
             return False
         finally:
             # 清理内存缓存，无论成功失败
             if item_id in self.manual_edit_cache:
                 del self.manual_edit_cache[item_id]
-                logger.debug(f"已清理 ItemID {item_id} 的手动编辑会话缓存。")
+                logger.trace(f"已清理 ItemID {item_id} 的手动编辑会话缓存。")
     # --- 从本地 cache 文件获取演员列表用于编辑 ---
     def get_cast_for_editing(self, item_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -1726,7 +1708,7 @@ class MediaProcessor:
         1. 演员头像直接从本地数据库缓存的 TMDB 路径拼接，加载速度极快。
         2. 角色名在返回给前端前进行清理，去除“饰 ”等前缀。
         """
-        logger.info(f"【API模式】为编辑页面准备数据：ItemID {item_id}")
+        logger.info(f"  -> 为编辑页面准备数据：ItemID {item_id}")
         
         try:
             # 步骤 1: 获取 Emby 基础详情 (保持不变)
@@ -1811,7 +1793,7 @@ class MediaProcessor:
             return response_data
 
         except Exception as e:
-            logger.error(f"【API模式】获取编辑数据失败 for ItemID {item_id}: {e}", exc_info=True)
+            logger.error(f"  -> 获取编辑数据失败 for ItemID {item_id}: {e}", exc_info=True)
             return None
     # ★★★ 全量备份到覆盖缓存 ★★★
     def sync_all_media_assets(self, update_status_callback: Optional[callable] = None):

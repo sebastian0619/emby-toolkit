@@ -207,7 +207,7 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
         response_get.raise_for_status()
         item_to_update = response_get.json()
         item_name_for_log = item_to_update.get("Name", f"ID:{item_id}")
-        logger.debug(f"成功获取项目 {item_name_for_log} (UserID: {user_id}) 的当前信息用于更新。")
+        logger.trace(f"成功获取项目 {item_name_for_log} (UserID: {user_id}) 的当前信息用于更新。")
     except requests.exceptions.RequestException as e:
         logger.error(
             f"update_emby_item_cast: 获取Emby项目 {item_name_for_log} (UserID: {user_id}) 失败: {e}", exc_info=True)
@@ -487,17 +487,17 @@ def refresh_emby_item_metadata(item_emby_id: str,
     
     try:
         # --- 步骤 1: 获取当前项目详情，这是所有操作的基础 ---
-        logger.debug(f"【锁匠】正在为 {log_identifier} 获取当前详情...")
+        logger.debug(f"  -> 正在为 {log_identifier} 获取当前详情...")
         item_data = get_emby_item_details(item_emby_id, emby_server_url, emby_api_key, user_id_for_ops)
         if not item_data:
-            logger.error(f"【锁匠】无法获取 {log_identifier} 的详情，所有操作中止。")
+            logger.error(f"  -> 无法获取 {log_identifier} 的详情，所有操作中止。")
             return False
 
         item_needs_update = False
         
         # --- 步骤 2: 解锁逻辑 (如果需要强制替换元数据) ---
         if replace_all_metadata_param:
-            logger.debug(f"【锁匠】检测到 ReplaceAllMetadata=True，执行解锁...")
+            logger.debug(f"  -> 检测到 ReplaceAllMetadata=True，执行解锁...")
             if item_data.get("LockData") is True:
                 item_data["LockData"] = False
                 item_needs_update = True
@@ -507,7 +507,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
         
         # --- 步骤 3: 上锁逻辑 (如果调用者指定了要锁定的字段) ---
         if lock_fields:
-            logger.debug(f"【锁匠】检测到需要锁定字段: {lock_fields}...")
+            logger.debug(f"  -> 检测到需要锁定字段: {lock_fields}...")
             current_locked_fields = set(item_data.get("LockedFields", []))
             original_lock_count = len(current_locked_fields)
             
@@ -520,21 +520,21 @@ def refresh_emby_item_metadata(item_emby_id: str,
 
         # --- 步骤 4: 如果有任何变更，一次性 POST 回去 ---
         if item_needs_update:
-            logger.info(f"【锁匠】正在为 {log_identifier} 提交锁状态更新...")
+            logger.debug(f"  -> 正在为 {log_identifier} 提交锁状态更新...")
             update_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}"
             update_params = {"api_key": emby_api_key}
             headers = {'Content-Type': 'application/json'}
             update_response = requests.post(update_url, json=item_data, headers=headers, params=update_params, timeout=15)
             update_response.raise_for_status()
-            logger.info(f"  - 成功更新 {log_identifier} 的锁状态。")
+            logger.debug(f"  -> 成功更新 {log_identifier} 的锁状态。")
         else:
-            logger.debug(f"【锁匠】项目 {log_identifier} 的锁状态无需更新。")
+            logger.debug(f"  -> 项目 {log_identifier} 的锁状态无需更新。")
 
     except Exception as e:
-        logger.warning(f"【锁匠】在刷新前更新锁状态时失败: {e}。刷新将继续，但可能受影响。")
+        logger.warning(f"  -> 在刷新前更新锁状态时失败: {e}。刷新将继续，但可能受影响。")
 
     # --- 步骤 5: 无论如何，都执行最终的刷新操作 ---
-    logger.info(f"【锁匠】正在为 {log_identifier} 发送最终的刷新请求...")
+    logger.debug(f"  -> 正在为 {log_identifier} 发送最终的刷新请求...")
     refresh_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}/Refresh"
     params = {
         "api_key": emby_api_key,
@@ -548,7 +548,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
     try:
         response = requests.post(refresh_url, params=params, timeout=30)
         if response.status_code == 204:
-            logger.info(f"  - 刷新请求已成功发送给 {log_identifier}。")
+            logger.info(f"  -> 刷新请求已成功发送给 {log_identifier}。")
             return True
         else:
             logger.error(f"  - 刷新请求失败: HTTP状态码 {response.status_code}")
@@ -556,78 +556,6 @@ def refresh_emby_item_metadata(item_emby_id: str,
     except requests.exceptions.RequestException as e:
         logger.error(f"  - 刷新请求时发生网络错误: {e}")
         return False
-    
-# --- 获取媒体项所有演员详情 ---
-def enrich_cast_details(
-    cast_list: List[Dict[str, Any]],
-    emby_server_url: str,
-    emby_api_key: str,
-    user_id: str
-) -> List[Dict[str, Any]]:
-    """
-    【V1 - 增强模块】
-    接收一个可能不完整的演员列表，通过他们的 Emby Person ID，
-    批量查询并返回包含完整详情（特别是 ProviderIds）的新列表。
-    """
-    if not cast_list:
-        return []
-    if not all([emby_server_url, emby_api_key, user_id]):
-        logger.error("enrich_cast_details: 参数不足。")
-        return cast_list # 返回原始列表，避免流程中断
-
-    # 1. 提取所有演员的 Emby Person ID
-    person_ids = [str(actor.get("Id")) for actor in cast_list if actor.get("Id")]
-    if not person_ids:
-        logger.warning("enrich_cast_details: 传入的演员列表中没有任何有效的 Emby Person ID，无法增强。")
-        return cast_list
-
-    logger.info(f"🔍 开始二次查询，增强 {len(person_ids)} 位演员的详细信息...")
-
-    # 2. 使用 /Users/{UserId}/Items 端点进行批量查询
-    # 这个端点接受一个用逗号分隔的 Ids 列表
-    url = f"{emby_server_url.rstrip('/')}/Users/{user_id}/Items"
-    params = {
-        "api_key": emby_api_key,
-        "Ids": ",".join(person_ids),
-        "Fields": "ProviderIds,Name,Role,Type,PrimaryImageTag" # 请求我们所有需要的字段
-    }
-
-    try:
-        response = requests.get(url, params=params, timeout=20)
-        response.raise_for_status()
-        full_details_list = response.json().get("Items", [])
-        
-        if not full_details_list:
-            logger.warning("二次查询未能返回任何演员的详细信息。")
-            return cast_list
-
-        # 3. 构建一个以 ID 为键的完整详情映射表，方便查找
-        full_details_map = {str(person.get("Id")): person for person in full_details_list}
-
-        # 4. 遍历原始列表，用完整数据替换，同时保留原始的角色信息
-        enriched_cast = []
-        for original_actor in cast_list:
-            actor_id = str(original_actor.get("Id"))
-            full_detail = full_details_map.get(actor_id)
-            
-            if full_detail:
-                # 使用获取到的完整详情作为基础
-                new_actor_data = full_detail
-                # ★ 关键：将原始的角色信息保留下来，因为批量查询可能不返回角色信息
-                if "Role" in original_actor:
-                    new_actor_data["Role"] = original_actor["Role"]
-                enriched_cast.append(new_actor_data)
-            else:
-                # 如果某个演员在二次查询中没找到，仍然保留原始信息
-                enriched_cast.append(original_actor)
-        
-        logger.info(f"🔍 演员信息增强完成。")
-        return enriched_cast
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"二次查询增强演员详情时发生网络错误: {e}", exc_info=True)
-        return cast_list # 失败时返回原始列表
-
 # ✨✨✨ 分批次地从 Emby 获取所有 Person 条目 ✨✨✨
 def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str], stop_event: Optional[threading.Event] = None) -> Generator[List[Dict[str, Any]], None, None]:
     """
