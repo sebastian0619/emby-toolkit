@@ -469,64 +469,78 @@ def get_emby_library_items(
 def refresh_emby_item_metadata(item_emby_id: str,
                                emby_server_url: str,
                                emby_api_key: str,
-                               recursive: bool = False,
-                               metadata_refresh_mode: str = "Default",
-                               image_refresh_mode: str = "Default",
-                               replace_all_metadata_param: bool = True,
+                               user_id_for_ops: str, # ★ 改名，表示所有操作都用这个ID
+                               lock_fields: Optional[List[str]] = None, # ★ 新增：要锁定的字段列表
+                               replace_all_metadata_param: bool = False,
                                replace_all_images_param: bool = False,
-                               item_name_for_log: Optional[str] = None,
-                               user_id_for_unlock: Optional[str] = None
+                               item_name_for_log: Optional[str] = None
                                ) -> bool:
-    if not all([item_emby_id, emby_server_url, emby_api_key]):
-        logger.error("刷新Emby元数据参数不足：缺少ItemID、服务器URL或API Key。")
+    """
+    【V-Locksmith - 锁匠最终版】
+    一个全能的刷新函数，集成了自动解锁、上锁和刷新的完整流程。
+    """
+    if not all([item_emby_id, emby_server_url, emby_api_key, user_id_for_ops]):
+        logger.error("刷新Emby元数据参数不足：缺少ItemID、服务器URL、API Key或UserID。")
         return False
     
     log_identifier = f"'{item_name_for_log}'" if item_name_for_log else f"ItemID: {item_emby_id}"
     
-    # --- ✨✨✨ 新增：刷新前自动解锁元数据 ✨✨✨ ---
-    if replace_all_metadata_param and user_id_for_unlock:
-        logger.debug(f"检测到 ReplaceAllMetadata=True，尝试在刷新前解锁项目 {log_identifier} 的元数据...")
-        try:
-            item_data = get_emby_item_details(item_emby_id, emby_server_url, emby_api_key, user_id_for_unlock)
+    try:
+        # --- 步骤 1: 获取当前项目详情，这是所有操作的基础 ---
+        logger.debug(f"【锁匠】正在为 {log_identifier} 获取当前详情...")
+        item_data = get_emby_item_details(item_emby_id, emby_server_url, emby_api_key, user_id_for_ops)
+        if not item_data:
+            logger.error(f"【锁匠】无法获取 {log_identifier} 的详情，所有操作中止。")
+            return False
+
+        item_needs_update = False
+        
+        # --- 步骤 2: 解锁逻辑 (如果需要强制替换元数据) ---
+        if replace_all_metadata_param:
+            logger.debug(f"【锁匠】检测到 ReplaceAllMetadata=True，执行解锁...")
+            if item_data.get("LockData") is True:
+                item_data["LockData"] = False
+                item_needs_update = True
+            if item_data.get("LockedFields"):
+                item_data["LockedFields"] = []
+                item_needs_update = True
+        
+        # --- 步骤 3: 上锁逻辑 (如果调用者指定了要锁定的字段) ---
+        if lock_fields:
+            logger.debug(f"【锁匠】检测到需要锁定字段: {lock_fields}...")
+            current_locked_fields = set(item_data.get("LockedFields", []))
+            original_lock_count = len(current_locked_fields)
             
-            item_needs_update = False
-            if item_data:
-                # 1. 检查并解锁全局锁 (LockData)
-                if item_data.get("LockData") is True:
-                    logger.info(f"  - 项目 {log_identifier} 当前被全局锁定,将尝试解锁...")
-                    item_data["LockData"] = False
-                    item_needs_update = True
+            for field in lock_fields:
+                current_locked_fields.add(field)
+            
+            if len(current_locked_fields) > original_lock_count:
+                item_data["LockedFields"] = list(current_locked_fields)
+                item_needs_update = True
 
-                # 2. 检查并解锁字段锁 (LockedFields)
-                if item_data.get("LockedFields"):
-                    original_locks = item_data["LockedFields"]
-                    logger.info(f"  - 项目 {log_identifier} 当前锁定的字段: {original_locks},将尝试解锁...")
-                    item_data["LockedFields"] = []
-                    item_needs_update = True
-                
-                # 3. 如果有任何一种锁被修改，则发送更新请求
-                if item_needs_update:
-                    update_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}"
-                    update_params = {"api_key": emby_api_key}
-                    headers = {'Content-Type': 'application/json'}
-                    update_response = requests.post(update_url, json=item_data, headers=headers, params=update_params, timeout=15)
-                    update_response.raise_for_status()
-                    logger.info(f"  - 成功为 {log_identifier} 发送解锁请求。")
-                else:
-                    logger.debug(f"  - 项目 {log_identifier} 没有任何锁定，无需解锁。")
+        # --- 步骤 4: 如果有任何变更，一次性 POST 回去 ---
+        if item_needs_update:
+            logger.info(f"【锁匠】正在为 {log_identifier} 提交锁状态更新...")
+            update_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}"
+            update_params = {"api_key": emby_api_key}
+            headers = {'Content-Type': 'application/json'}
+            update_response = requests.post(update_url, json=item_data, headers=headers, params=update_params, timeout=15)
+            update_response.raise_for_status()
+            logger.info(f"  - 成功更新 {log_identifier} 的锁状态。")
+        else:
+            logger.debug(f"【锁匠】项目 {log_identifier} 的锁状态无需更新。")
 
-        except Exception as e:
-            logger.warning(f"  - 尝试为 {log_identifier} 解锁元数据时失败: {e}。刷新将继续，但可能受影响。")
-    # --- ✨✨✨ 解锁逻辑结束 ✨✨✨ ---
+    except Exception as e:
+        logger.warning(f"【锁匠】在刷新前更新锁状态时失败: {e}。刷新将继续，但可能受影响。")
 
-    logger.debug(f"开始为 {log_identifier} 通知Emby刷新...")
-
+    # --- 步骤 5: 无论如何，都执行最终的刷新操作 ---
+    logger.info(f"【锁匠】正在为 {log_identifier} 发送最终的刷新请求...")
     refresh_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}/Refresh"
     params = {
         "api_key": emby_api_key,
-        "Recursive": str(recursive).lower(),
-        "MetadataRefreshMode": metadata_refresh_mode,
-        "ImageRefreshMode": image_refresh_mode,
+        "Recursive": str(item_data.get("Type") == "Series").lower(), # 剧集自动递归
+        "MetadataRefreshMode": "Default",
+        "ImageRefreshMode": "Default",
         "ReplaceAllMetadata": str(replace_all_metadata_param).lower(),
         "ReplaceAllImages": str(replace_all_images_param).lower()
     }
@@ -534,24 +548,13 @@ def refresh_emby_item_metadata(item_emby_id: str,
     try:
         response = requests.post(refresh_url, params=params, timeout=30)
         if response.status_code == 204:
-            logger.info(f"  - 刷新请求已成功发送，Emby将在后台处理。")
+            logger.info(f"  - 刷新请求已成功发送给 {log_identifier}。")
             return True
         else:
             logger.error(f"  - 刷新请求失败: HTTP状态码 {response.status_code}")
-            try:
-                logger.error(f"    - 响应内容: {response.text[:500]}")
-            except Exception:
-                pass
             return False
-    except requests.exceptions.Timeout:
-        logger.error(f"  - 刷新请求超时。")
-        return False
     except requests.exceptions.RequestException as e:
         logger.error(f"  - 刷新请求时发生网络错误: {e}")
-        return False
-    except Exception as e:
-        import traceback
-        logger.error(f"  - 刷新请求时发生未知错误: {e}\n{traceback.format_exc()}")
         return False
     
 # --- 获取媒体项所有演员详情 ---

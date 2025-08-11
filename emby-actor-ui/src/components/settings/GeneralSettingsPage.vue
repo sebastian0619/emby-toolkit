@@ -58,9 +58,9 @@
             <n-form-item-grid-item label="更新后刷新 Emby 媒体项">
               <n-switch v-model:value="configModel.refresh_emby_after_update" />
             </n-form-item-grid-item>
-            <n-form-item label="同步图片" path="sync_images">
-              <n-switch v-model:value="configModel.sync_images" />
-              <template #feedback>开启后，处理媒体时会下载海报、横幅图等图片文件。</template>
+            <n-form-item label="自动锁定演员表" path="auto_lock_cast_after_update">
+              <n-switch v-model:value="configModel.auto_lock_cast_after_update" />
+              <template #feedback>【推荐开启】开启后，通过API模式处理完演员表后，会自动将该项目的“演员”字段锁定，防止被Emby的后续刷新操作覆盖。</template>
             </n-form-item>
           </n-card>
           
@@ -69,7 +69,7 @@
             <template #header>
               <span class="card-title">数据源与API</span>
             </template>
-            <n-form-item label="本地数据源路径" path="local_data_path" required>
+            <n-form-item label="本地数据源路径" path="local_data_path">
               <n-input v-model:value="configModel.local_data_path" placeholder="神医TMDB缓存目录 (cache和override的上层)" />
             </n-form-item>
             <n-form-item label="TMDB API Key" path="tmdb_api_key">
@@ -498,11 +498,7 @@ const tableInfo = {
 
 const formRef = ref(null);
 const formRules = {
-  local_data_path: {
-    required: true,
-    message: '本地数据源路径是必填项！',
     trigger: ['input', 'blur']
-  }
 };
 const { configModel, loadingConfig, savingConfig, configError, handleSaveConfig } = useConfig();
 const message = useMessage();

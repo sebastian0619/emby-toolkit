@@ -764,7 +764,7 @@ def task_full_image_sync(processor: MediaProcessor):
     后台任务：调用 processor 的方法来同步所有图片。
     """
     # 直接把回调函数传进去
-    processor.sync_all_images(update_status_callback=task_manager.update_status_from_thread)
+    processor.sync_all_media_assets(update_status_callback=task_manager.update_status_from_thread)
 # --- 精准图片同步后台任务 ---
 def image_update_task(processor: MediaProcessor, item_id: str, update_description: str):
     """
@@ -1418,7 +1418,7 @@ def get_task_registry(context: str = 'all'):
         'full-scan': (task_run_full_scan, "全量处理媒体", True),
         'populate-metadata': (task_populate_metadata_cache, "同步媒体数据", True),
         'sync-person-map': (task_sync_person_map, "同步演员映射", True),
-        'sync-images-map': (task_full_image_sync, "全量同步图片", True),
+        'sync-images-map': (task_full_image_sync, "覆盖缓存备份", True),
         'process-watchlist': (task_process_watchlist, "智能追剧更新", True),
         'enrich-aliases': (task_enrich_aliases, "演员数据补充", True),
         'actor-cleanup': (task_actor_translation_cleanup, "演员姓名翻译", True),

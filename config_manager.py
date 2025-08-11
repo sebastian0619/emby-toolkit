@@ -79,7 +79,7 @@ CONFIG_DEFINITION = {
     # [General]
     "delay_between_items_sec": ("General", 'float', 0.5),
     constants.CONFIG_OPTION_MIN_SCORE_FOR_REVIEW: ("General", 'float', constants.DEFAULT_MIN_SCORE_FOR_REVIEW),
-    constants.CONFIG_OPTION_SYNC_IMAGES: ("General", 'boolean', False),
+    constants.CONFIG_OPTION_AUTO_LOCK_CAST: ("General", 'boolean', True),
     constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS: ("General", 'int', constants.DEFAULT_MAX_ACTORS_TO_PROCESS),
 
     # [Network]
