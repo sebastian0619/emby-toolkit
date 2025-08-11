@@ -1,4 +1,4 @@
-# Emby Actor Processor (Emby 演员管理工具)
+# Emby ToolKit (Emby 演员管理工具)
 
 [![GitHub stars](https://img.shields.io/github/stars/hbq0405/emby-toolkit.svg?style=social&label=Star)](https://github.com/hbq0405/emby-toolkit)
 [![GitHub license](https://img.shields.io/github/license/hbq0405/emby-toolkit.svg)](https://github.com/hbq0405/emby-toolkit/blob/main/LICENSE)

@@ -1,4 +1,4 @@
-name: Docker Image CI & CD for Emby Actor Processor
+name: Docker Image CI & CD for Emby Toolkit
 
 on:
   push:
