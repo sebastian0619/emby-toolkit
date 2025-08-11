@@ -3,6 +3,7 @@
 import requests
 import json
 import os
+import concurrent.futures
 from utils import contains_chinese
 from typing import Optional, List, Dict, Any, Union
 import logging
@@ -156,6 +157,93 @@ def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append
     
     return _tmdb_request(endpoint, api_key, params)
 # +++ 获取集详情 +++
+# --- 并发获取剧集详情 ---
+def aggregate_full_series_data_from_tmdb(
+    tv_id: int,
+    api_key: str,
+    max_workers: int = 5  # ★★★ 并发数，可以从外部配置传入 ★★★
+) -> Optional[Dict[str, Any]]:
+    """
+    【V1 - 并发聚合版】
+    通过并发请求，从 TMDB API 高效地聚合一部剧集的完整元数据（剧集、所有季、所有集）。
+    """
+    if not tv_id or not api_key:
+        return None
+
+    logger.info(f"🚀 开始为剧集 ID {tv_id} 并发聚合 TMDB 数据 (并发数: {max_workers})...")
+    
+    # --- 步骤 1: 获取顶层剧集详情，这是所有后续操作的基础 ---
+    series_details = get_tv_details_tmdb(tv_id, api_key)
+    if not series_details:
+        logger.error(f"  -> 聚合失败：无法获取顶层剧集 {tv_id} 的详情。")
+        return None
+    
+    logger.info(f"  -> 成功获取剧集 '{series_details.get('name')}' 的顶层信息，共 {len(series_details.get('seasons', []))} 季。")
+
+    # --- 步骤 2: 构建所有需要并发执行的“任务” ---
+    tasks = []
+    # 添加获取每一季详情的任务
+    for season in series_details.get("seasons", []):
+        season_number = season.get("season_number")
+        if season_number is not None:
+            # (任务类型, tv_id, season_number)
+            tasks.append(("season", tv_id, season_number))
+            
+            # 添加获取该季下每一集详情的任务
+            episode_count = season.get("episode_count", 0)
+            for episode_number in range(1, episode_count + 1):
+                # (任务类型, tv_id, season_number, episode_number)
+                tasks.append(("episode", tv_id, season_number, episode_number))
+
+    if not tasks:
+        logger.warning("  -> 未找到任何季或集需要获取，聚合结束。")
+        return {"series_details": series_details, "seasons_details": {}, "episodes_details": {}}
+
+    logger.info(f"  -> 共构建了 {len(tasks)} 个并发任务 (获取所有季和集的详情)。")
+
+    # --- 步骤 3: 使用线程池并发执行所有任务 ---
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 使用字典来映射 future 和它的任务描述，方便后续处理
+        future_to_task = {}
+        for task in tasks:
+            if task[0] == "season":
+                _, tvid, s_num = task
+                future = executor.submit(get_season_details_tmdb, tvid, s_num, api_key)
+                future_to_task[future] = f"S{s_num}"
+            elif task[0] == "episode":
+                _, tvid, s_num, e_num = task
+                future = executor.submit(get_episode_details_tmdb, tvid, s_num, e_num, api_key)
+                future_to_task[future] = f"S{s_num}E{e_num}"
+
+        # 收集结果
+        for i, future in enumerate(concurrent.futures.as_completed(future_to_task)):
+            task_key = future_to_task[future]
+            try:
+                result_data = future.result()
+                if result_data:
+                    results[task_key] = result_data
+                logger.debug(f"    ({i+1}/{len(tasks)}) 任务 {task_key} 完成。")
+            except Exception as exc:
+                logger.error(f"    任务 {task_key} 执行时产生错误: {exc}")
+
+    # --- 步骤 4: 将所有结果智能地聚合到一个大字典中 ---
+    final_aggregated_data = {
+        "series_details": series_details,
+        "seasons_details": {}, # key 是季号, e.g., {1: {...}, 2: {...}}
+        "episodes_details": {} # key 是 "S1E1", "S1E2", ...
+    }
+
+    for key, data in results.items():
+        if key.startswith("S") and "E" not in key: # 是季
+            season_num = int(key[1:])
+            final_aggregated_data["seasons_details"][season_num] = data
+        elif key.startswith("S") and "E" in key: # 是集
+            final_aggregated_data["episodes_details"][key] = data
+            
+    logger.info(f"🚀 TMDB 数据并发聚合完成！成功获取 {len(final_aggregated_data['seasons_details'])} 季和 {len(final_aggregated_data['episodes_details'])} 集的详情。")
+    
+    return final_aggregated_data
 def get_episode_details_tmdb(tv_id: int, season_number: int, episode_number: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,external_ids") -> Optional[Dict[str, Any]]:
     """
     【新增】获取电视剧某一集的详细信息。

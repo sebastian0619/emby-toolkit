@@ -553,6 +553,78 @@ def refresh_emby_item_metadata(item_emby_id: str,
         import traceback
         logger.error(f"  - 刷新请求时发生未知错误: {e}\n{traceback.format_exc()}")
         return False
+    
+# --- 获取媒体项所有演员详情 ---
+def enrich_cast_details(
+    cast_list: List[Dict[str, Any]],
+    emby_server_url: str,
+    emby_api_key: str,
+    user_id: str
+) -> List[Dict[str, Any]]:
+    """
+    【V1 - 增强模块】
+    接收一个可能不完整的演员列表，通过他们的 Emby Person ID，
+    批量查询并返回包含完整详情（特别是 ProviderIds）的新列表。
+    """
+    if not cast_list:
+        return []
+    if not all([emby_server_url, emby_api_key, user_id]):
+        logger.error("enrich_cast_details: 参数不足。")
+        return cast_list # 返回原始列表，避免流程中断
+
+    # 1. 提取所有演员的 Emby Person ID
+    person_ids = [str(actor.get("Id")) for actor in cast_list if actor.get("Id")]
+    if not person_ids:
+        logger.warning("enrich_cast_details: 传入的演员列表中没有任何有效的 Emby Person ID，无法增强。")
+        return cast_list
+
+    logger.info(f"🔍 开始二次查询，增强 {len(person_ids)} 位演员的详细信息...")
+
+    # 2. 使用 /Users/{UserId}/Items 端点进行批量查询
+    # 这个端点接受一个用逗号分隔的 Ids 列表
+    url = f"{emby_server_url.rstrip('/')}/Users/{user_id}/Items"
+    params = {
+        "api_key": emby_api_key,
+        "Ids": ",".join(person_ids),
+        "Fields": "ProviderIds,Name,Role,Type,PrimaryImageTag" # 请求我们所有需要的字段
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=20)
+        response.raise_for_status()
+        full_details_list = response.json().get("Items", [])
+        
+        if not full_details_list:
+            logger.warning("二次查询未能返回任何演员的详细信息。")
+            return cast_list
+
+        # 3. 构建一个以 ID 为键的完整详情映射表，方便查找
+        full_details_map = {str(person.get("Id")): person for person in full_details_list}
+
+        # 4. 遍历原始列表，用完整数据替换，同时保留原始的角色信息
+        enriched_cast = []
+        for original_actor in cast_list:
+            actor_id = str(original_actor.get("Id"))
+            full_detail = full_details_map.get(actor_id)
+            
+            if full_detail:
+                # 使用获取到的完整详情作为基础
+                new_actor_data = full_detail
+                # ★ 关键：将原始的角色信息保留下来，因为批量查询可能不返回角色信息
+                if "Role" in original_actor:
+                    new_actor_data["Role"] = original_actor["Role"]
+                enriched_cast.append(new_actor_data)
+            else:
+                # 如果某个演员在二次查询中没找到，仍然保留原始信息
+                enriched_cast.append(original_actor)
+        
+        logger.info(f"🔍 演员信息增强完成。")
+        return enriched_cast
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"二次查询增强演员详情时发生网络错误: {e}", exc_info=True)
+        return cast_list # 失败时返回原始列表
+
 # ✨✨✨ 分批次地从 Emby 获取所有 Person 条目 ✨✨✨
 def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str], stop_event: Optional[threading.Event] = None) -> Generator[List[Dict[str, Any]], None, None]:
     """
@@ -624,11 +696,18 @@ def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str
             logger.error(f"处理 Emby 响应时发生未知错误 (批次 StartIndex={start_index}): {e}", exc_info=True)
             return
 # ✨✨✨ 获取剧集下所有剧集的函数 ✨✨✨
-def get_series_children(series_id: str, base_url: str, api_key: str, user_id: str, series_name_for_log: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+def get_series_children(
+    series_id: str,
+    base_url: str,
+    api_key: str,
+    user_id: str,
+    series_name_for_log: Optional[str] = None,
+    # ★★★★★★★★★★★★★★★ 新增参数 ★★★★★★★★★★★★★★★
+    include_item_types: str = "Season,Episode" # 默认同时获取季和集
+) -> Optional[List[Dict[str, Any]]]:
     """
-    【修改】获取指定剧集 (Series) ID 下的所有子项目 (季和集)。
+    【V2 - 灵活版】获取指定剧集下的子项目，可以指定类型。
     """
-    # ✨ 1. 定义一个日志标识符，优先用片名 ✨
     log_identifier = f"'{series_name_for_log}' (ID: {series_id})" if series_name_for_log else f"ID {series_id}"
 
     if not all([series_id, base_url, api_key, user_id]):
@@ -639,12 +718,13 @@ def get_series_children(series_id: str, base_url: str, api_key: str, user_id: st
     params = {
         "api_key": api_key,
         "ParentId": series_id,
-        "IncludeItemTypes": "Season,Episode", # ✨ 同时获取季和集 ✨
+        # ★★★★★★★★★★★★★★★ 使用新参数 ★★★★★★★★★★★★★★★
+        "IncludeItemTypes": include_item_types,
         "Recursive": "true",
-        "Fields": "ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,ParentIndexNumber,IndexNumber", # 确保有季号和集号
+        "Fields": "Id,Name,ParentIndexNumber,IndexNumber", # 只请求必要的字段
     }
     
-    logger.debug(f"准备获取剧集 {series_id} 的所有子项目 (季和集)...")
+    logger.debug(f"准备获取剧集 {log_identifier} 的子项目 (类型: {include_item_types})...")
     try:
         response = requests.get(api_url, params=params, timeout=30)
         response.raise_for_status()
