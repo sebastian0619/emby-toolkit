@@ -51,67 +51,62 @@ def _save_metadata_to_cache(
     cursor: sqlite3.Cursor,
     tmdb_id: str,
     item_type: str,
-    item_details: Dict[str, Any],
-    processed_cast: List[Dict[str, Any]],
-    raw_tmdb_json: Dict[str, Any]
+    item_details_from_emby: Dict[str, Any], # ★ Emby 的详情
+    final_processed_cast: List[Dict[str, Any]], # ★ 我们最终处理好的演员表
+    tmdb_details_for_extra: Optional[Dict[str, Any]] # ★ 可选的、用于补充导演和国家的 TMDB 详情
 ):
     """
-    【V5.3 - 终极版】
-    确保所有 TMDB 元数据均从 raw_tmdb_json 提取，并兼容所有已知键值差异。
+    【V-API-Native - API原生版】
+    直接从处理好的数据（Emby详情、最终演员表、可选的TMDB详情）组装并缓存元数据。
     """
     try:
-        # --- 统一从 raw_tmdb_json (权威数据源) 中提取所有信息 ---
+        logger.debug(f"【实时缓存-API原生版】正在为 '{item_details_from_emby.get('Name')}' 组装元数据...")
         
-        # 导演
-        actor_data_container = raw_tmdb_json.get("casts") or raw_tmdb_json.get("credits", {})
-        crew = actor_data_container.get("crew", [])
-        directors = [{"id": m.get("id"), "name": m.get("name")} for m in crew if m.get("job") == "Director"]
-
-        # 国家 (兼容 'production_countries' 和 'origin_country')
-        countries_to_translate = []
-        if 'production_countries' in raw_tmdb_json and raw_tmdb_json['production_countries']:
-            countries_to_translate = [c.get('name') for c in raw_tmdb_json['production_countries'] if c.get('name')]
-        elif 'origin_country' in raw_tmdb_json:
-            countries_to_translate = raw_tmdb_json.get('origin_country', [])
-        translated_countries = translate_country_list(countries_to_translate)
-
-        # 【【【最终手术：工作室/电视网络】】】
-        # 兼容 'production_companies' (电影/在线电视剧) 和 'networks' (本地电视剧缓存)
-        studios_list = raw_tmdb_json.get("production_companies")
-        if not studios_list:
-            studios_list = raw_tmdb_json.get("networks", [])
+        # --- 从我们已有的、最可靠的数据源中组装所有信息 ---
         
-        studios = [s.get("name") for s in studios_list if s.get("name")]
-        logger.trace(f"从权威数据源提取到工作室/电视网络: {studios}")
-        # 【【【手术结束】】】
+        # 1. 演员 (来自我们最终处理好的演员表)
+        actors = [
+            {"id": p.get("id"), "name": p.get("name"), "original_name": p.get("original_name")}
+            for p in final_processed_cast
+        ]
 
-        # 类型
-        genres = [g.get("name") for g in raw_tmdb_json.get("genres", []) if g.get("name")]
-
-        # 标题、年份、评分等 (兼容电影和电视剧)
-        title = raw_tmdb_json.get('title') or raw_tmdb_json.get('name')
-        original_title = raw_tmdb_json.get('original_title') or raw_tmdb_json.get('original_name')
-        release_date_str = raw_tmdb_json.get('release_date') or raw_tmdb_json.get('first_air_date')
-        release_year = int(release_date_str.split('-')[0]) if release_date_str and '-' in release_date_str else None
-        rating = raw_tmdb_json.get('vote_average')
+        # 2. 导演和国家 (优先从补充的 TMDB 详情中获取)
+        directors, countries = [], []
+        if tmdb_details_for_extra:
+            if item_type == 'Movie':
+                credits_data = tmdb_details_for_extra.get("credits", {}) or tmdb_details_for_extra.get("casts", {})
+                if credits_data:
+                    directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_data.get('crew', []) if p.get('job') == 'Director']
+                country_names = [c['name'] for c in tmdb_details_for_extra.get('production_countries', [])]
+                countries = translate_country_list(country_names)
+            elif item_type == 'Series':
+                credits_data = tmdb_details_for_extra.get("credits", {})
+                if credits_data:
+                    directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_data.get('crew', []) if p.get('job') == 'Director']
+                if not directors:
+                    directors = [{'id': c.get('id'), 'name': c.get('name')} for c in tmdb_details_for_extra.get('created_by', [])]
+                country_codes = tmdb_details_for_extra.get('origin_country', [])
+                countries = translate_country_list(country_codes)
+        
+        # 3. 其他信息 (主要从 Emby 详情中获取，因为这是最实时的)
+        studios = [s['Name'] for s in item_details_from_emby.get('Studios', [])]
+        genres = item_details_from_emby.get('Genres', [])
+        release_date_str = (item_details_from_emby.get('PremiereDate') or '0000-01-01T00:00:00.000Z').split('T')[0]
         
         # --- 准备要存入数据库的数据 ---
         metadata = {
             "tmdb_id": tmdb_id,
             "item_type": item_type,
-            "title": title,
-            "original_title": original_title,
-            "release_year": release_year,
-            "rating": rating,
+            "title": item_details_from_emby.get('Name'),
+            "original_title": item_details_from_emby.get('OriginalTitle'),
+            "release_year": item_details_from_emby.get('ProductionYear'),
+            "rating": item_details_from_emby.get('CommunityRating'),
             "genres_json": json.dumps(genres, ensure_ascii=False),
-            "actors_json": json.dumps([
-                {"id": p.get("id"), "name": p.get("name"), "original_name": p.get("original_name") or p.get("name")}
-                for p in processed_cast
-            ], ensure_ascii=False),
+            "actors_json": json.dumps(actors, ensure_ascii=False),
             "directors_json": json.dumps(directors, ensure_ascii=False),
-            "studios_json": json.dumps(studios, ensure_ascii=False), # <--- 现在来源绝对可靠
-            "countries_json": json.dumps(translated_countries, ensure_ascii=False),
-            "date_added": item_details.get("DateCreated", "").split("T")[0] if item_details.get("DateCreated") else None,
+            "studios_json": json.dumps(studios, ensure_ascii=False),
+            "countries_json": json.dumps(countries, ensure_ascii=False),
+            "date_added": (item_details_from_emby.get("DateCreated") or '').split('T')[0] or None,
             "release_date": release_date_str,
         }
         
@@ -120,7 +115,7 @@ def _save_metadata_to_cache(
         placeholders = ', '.join('?' for _ in metadata)
         sql = f"INSERT OR REPLACE INTO media_metadata ({columns}) VALUES ({placeholders})"
         cursor.execute(sql, tuple(metadata.values()))
-        logger.debug(f"成功将《{metadata.get('title', '未知标题')}》的元数据缓存到数据库。")
+        logger.debug(f"  -> 成功将《{metadata.get('title')}》的元数据缓存到数据库。")
 
     except Exception as e:
         logger.error(f"保存元数据到缓存表时失败: {e}", exc_info=True)
@@ -736,6 +731,7 @@ class MediaProcessor:
             return False
 
         try:
+            tmdb_details_for_cache = None
             # ======================================================================
             # 阶段 1: Emby 现状数据准备 
             # ======================================================================
@@ -751,25 +747,37 @@ class MediaProcessor:
             # ======================================================================
             authoritative_cast_source = []
 
-            # --- 电影处理逻辑 ---
-            if item_type == "Movie":
-                if force_fetch_from_tmdb and self.tmdb_api_key:
-                    logger.info("  -> 电影策略: 强制从 TMDB API 获取元数据...")
-                    movie_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
-                    if movie_details:
-                        credits_data = movie_details.get("credits") or movie_details.get("casts")
-                        if credits_data: authoritative_cast_source = credits_data.get("cast", [])
-            
-            # --- 剧集处理逻辑 ---
-            elif item_type == "Series":
-                if force_fetch_from_tmdb and self.tmdb_api_key:
-                    logger.info("  -> 剧集策略: 强制从 TMDB API 并发聚合...")
-                    aggregated_tmdb_data = tmdb_handler.aggregate_full_series_data_from_tmdb(
-                        tv_id=int(tmdb_id), api_key=self.tmdb_api_key, max_workers=5
-                    )
-                    if aggregated_tmdb_data:
-                        all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
-                        authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
+            # ★★★★★★★★★★★★★★★ 核心改造：确保总是获取 TMDB 详情 ★★★★★★★★★★★★★★★
+            # 无论是什么策略，我们都尝试获取一次 TMDB 详情，以便后续缓存
+            if self.tmdb_api_key:
+                logger.debug("【实时缓存】正在为补充数据（导演/国家）获取 TMDB 详情...")
+                if item_type == "Movie":
+                    tmdb_details_for_cache = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
+                elif item_type == "Series":
+                    tmdb_details_for_cache = tmdb_handler.get_tv_details_tmdb(tmdb_id, self.tmdb_api_key)
+
+            # 现在才开始根据策略决定 authoritative_cast_source
+            if force_fetch_from_tmdb and tmdb_details_for_cache:
+                logger.info("  -> 策略: 强制刷新，使用刚从 TMDB 获取的数据作为权威数据源。")
+                # --- 电影处理逻辑 ---
+                if item_type == "Movie":
+                    if force_fetch_from_tmdb and self.tmdb_api_key:
+                        logger.info("  -> 电影策略: 强制从 TMDB API 获取元数据...")
+                        movie_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
+                        if movie_details:
+                            credits_data = movie_details.get("credits") or movie_details.get("casts")
+                            if credits_data: authoritative_cast_source = credits_data.get("cast", [])
+                
+                # --- 剧集处理逻辑 ---
+                elif item_type == "Series":
+                    if force_fetch_from_tmdb and self.tmdb_api_key:
+                        logger.info("  -> 剧集策略: 强制从 TMDB API 并发聚合...")
+                        aggregated_tmdb_data = tmdb_handler.aggregate_full_series_data_from_tmdb(
+                            tv_id=int(tmdb_id), api_key=self.tmdb_api_key, max_workers=5
+                        )
+                        if aggregated_tmdb_data:
+                            all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
+                            authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
 
             # 如果强制刷新失败，或者没有强制刷新，则使用我们已经增强过的 Emby 列表作为权威数据源
             if not authoritative_cast_source:
@@ -872,6 +880,19 @@ class MediaProcessor:
                     lock_fields=fields_to_lock_on_refresh, # ★ 把要锁定的字段传进去
                     replace_all_metadata_param=False, # 轻量级刷新
                     item_name_for_log=item_name_for_log
+                )
+
+                # ======================================================================
+                # 阶段 4: 实时元数据缓存 (现在总是能执行了)
+                # ======================================================================
+                logger.info(f"【实时缓存】准备将 '{item_name_for_log}' 的元数据写入本地数据库...")
+                _save_metadata_to_cache(
+                    cursor=cursor,
+                    tmdb_id=tmdb_id,
+                    item_type=item_type,
+                    item_details_from_emby=item_details_from_emby,
+                    final_processed_cast=final_processed_cast,
+                    tmdb_details_for_extra=tmdb_details_for_cache # ★ 把我们获取到的补充数据传进去
                 )
 
                 # ======================================================================

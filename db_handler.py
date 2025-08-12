@@ -1004,7 +1004,7 @@ def delete_custom_collection(db_path: str, collection_id: int) -> bool:
         logger.error(f"删除自定义合集 (ID: {collection_id}) 时发生数据库错误: {e}", exc_info=True)
         raise # 向上抛出异常，让API层可以捕获并返回500错误
 
-# ★★★ 新增：更新自定义合集排序的函数 ★★★
+# ★★★ 更新自定义合集排序的函数 ★★★
 def update_custom_collections_order(db_path: str, ordered_ids: List[int]) -> bool:
     """
     根据提供的ID列表，批量更新自定义合集的 sort_order。
@@ -1047,7 +1047,7 @@ def get_media_metadata_by_tmdb_id(db_path: str, tmdb_id: str) -> Optional[Dict[s
         logger.error(f"根据TMDb ID {tmdb_id} 获取媒体元数据时出错: {e}", exc_info=True)
         return None
     
-# ★★★ 新增：获取所有媒体元数据 ★★★
+# ★★★ 获取所有媒体元数据 ★★★
 def get_all_media_metadata(db_path: str, item_type: str = 'Movie') -> List[Dict[str, Any]]:
     """
     从媒体元数据缓存表中获取指定类型的所有记录。
@@ -1115,6 +1115,7 @@ def bulk_replace_media_metadata(db_path: str, metadata_list: List[Dict[str, Any]
     except sqlite3.Error as e:
         logger.error(f"替换媒体元数据时发生数据库错误: {e}", exc_info=True)
         raise
+
 # ★★★ 从元数据表中提取所有唯一的类型 ★★★
 def get_unique_genres(db_path: str) -> List[str]:
     """
@@ -1220,6 +1221,7 @@ def search_unique_studios(db_path: str, search_term: str, limit: int = 20) -> Li
     
     # 只返回限定数量的结果
     return final_matches[:limit]
+
 # --- 搜索演员 ---
 def search_unique_actors(db_path: str, search_term: str, limit: int = 20) -> List[str]:
     """
@@ -1282,6 +1284,7 @@ def search_unique_actors(db_path: str, search_term: str, limit: int = 20) -> Lis
     except sqlite3.Error as e:
         logger.error(f"提取并搜索唯一演员时发生数据库错误: {e}", exc_info=True)
         return []
+
 # ★★★ 新增：写入或更新一条完整的合集检查信息 ★★★
 def upsert_collection_info(db_path: str, collection_data: Dict[str, Any]):
     """

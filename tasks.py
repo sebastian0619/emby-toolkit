@@ -1879,10 +1879,9 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def task_populate_metadata_cache(processor: 'MediaProcessor'):
     """
-    【V-Batch-Performance-Complete - 完整性能最终版】
     通过批量预加载和并发处理，大幅提升元数据缓存的速度。
     """
-    task_name = "高性能实时同步Emby元数据"
+    task_name = "同步媒体数据"
     logger.info(f"--- 开始执行 '{task_name}' 任务 (完整性能最终版) ---")
     
     task_manager = getattr(processor, 'task_manager', None)
@@ -1916,13 +1915,13 @@ def task_populate_metadata_cache(processor: 'MediaProcessor'):
         # ======================================================================
         # 步骤 2: 一次性增强所有演员
         # ======================================================================
-        task_manager.update_status_from_thread(25, f"阶段2/4: 批量增强所有演员信息...")
+        task_manager.update_status_from_thread(25, f"阶段2/4: 批量同步所有演员信息...")
         
         all_people_to_enrich = [person for item in all_emby_items for person in item.get("People", [])]
-        logger.info(f"共找到 {len(all_people_to_enrich)} 个演员条目需要进行增强处理...")
+        logger.info(f"共找到 {len(all_people_to_enrich)} 个演员条目需要进行同步处理...")
         enriched_people_list = processor._enrich_cast_from_db_and_api(all_people_to_enrich)
         enriched_people_map = {str(p.get("Id")): p for p in enriched_people_list}
-        logger.info("所有演员信息增强完成，等待在线获取导演元数据...")
+        logger.info("所有演员信息同步完成，等待在线获取导演元数据...")
 
         # ======================================================================
         # 步骤 3: 并发获取所有 TMDB 补充数据
