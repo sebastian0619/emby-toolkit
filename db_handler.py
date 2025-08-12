@@ -1063,59 +1063,6 @@ def get_all_media_metadata(db_path: str, item_type: str = 'Movie') -> List[Dict[
         logger.error(f"获取所有媒体元数据时出错 (类型: {item_type}): {e}", exc_info=True)
         return []
     
-# ★★★ 批量更新媒体元数据 ★★★
-def bulk_replace_media_metadata(db_path: str, metadata_list: List[Dict[str, Any]]):
-    """
-    完整替换 media_metadata 表数据：
-    1. 清空表中所有旧数据
-    2. 批量写入新数据
-    """
-    if not metadata_list:
-        # 先清空表，数据库为空
-        try:
-            with get_db_connection(db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM media_metadata;")
-                conn.commit()
-                logger.info("无新数据，同步时清空了 media_metadata 表。")
-        except sqlite3.Error as e:
-            logger.error(f"清空 media_metadata 表时发生数据库错误: {e}", exc_info=True)
-            raise
-        return
-
-    sql = """
-        INSERT INTO media_metadata (
-            tmdb_id, item_type, title, original_title, release_year, rating,
-            release_date, date_added,
-            genres_json, actors_json, directors_json, studios_json, countries_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """
-
-    data_to_insert = [
-        (
-            item.get('tmdb_id'), item.get('item_type'), item.get('title'),
-            item.get('original_title'), item.get('release_year'), item.get('rating'),
-            item.get('release_date'), item.get('date_added'),
-            item.get('genres_json'), item.get('actors_json'), item.get('directors_json'),
-            item.get('studios_json'), item.get('countries_json')
-        )
-        for item in metadata_list
-    ]
-
-    try:
-        with get_db_connection(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("BEGIN TRANSACTION;")
-            # 先清空表
-            cursor.execute("DELETE FROM media_metadata;")
-            # 再批量插入新数据
-            cursor.executemany(sql, data_to_insert)
-            conn.commit()
-            logger.info(f"成功清空并重新写入 {len(data_to_insert)} 条媒体元数据。")
-    except sqlite3.Error as e:
-        logger.error(f"替换媒体元数据时发生数据库错误: {e}", exc_info=True)
-        raise
-
 # ★★★ 从元数据表中提取所有唯一的类型 ★★★
 def get_unique_genres(db_path: str) -> List[str]:
     """
