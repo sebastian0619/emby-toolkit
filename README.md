@@ -53,7 +53,8 @@
         container_name: emby-toolkit
         network_mode: bridge
         ports:
-          - "5257:5257"                               # 将容器的 5257 端口映射到宿主机的 5257 端口 (左边可以改成你希望的宿主机端口)
+          - "8096:8096"                               # 反代端口
+          - "5257:5257"                               # 管理端口
         volumes:
           - /path/config:/config                      # 将宿主机的数据目录挂载到容器的 /config 目录
           - /path/tmdb:/tmdb                          # 映射神医本地TMDB目录，非神医Pro用户可以留空

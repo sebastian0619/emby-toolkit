@@ -1899,7 +1899,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
         emby_items_index = emby_handler.get_emby_library_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
-            fields="Id,Name,Type,ProviderIds,People" # 获取后续需要的所有基础信息
+            fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,People"
         ) or []
         
         emby_tmdb_ids = {item.get("ProviderIds", {}).get("Tmdb") for item in emby_items_index if item.get("ProviderIds", {}).get("Tmdb")}
