@@ -99,10 +99,10 @@
               <n-statistic label="翻译缓存条目" class="centered-statistic" :value="stats.system?.translation_cache_count" />
             </n-gi>
             <n-gi span="2 s:1">
-              <n-statistic label="成功处理日志" class="centered-statistic" :value="stats.system?.processed_log_count" />
+              <n-statistic label="已处理" class="centered-statistic" :value="stats.system?.processed_log_count" />
             </n-gi>
             <n-gi span="2 s:1">
-              <n-statistic label="失败处理日志" class="centered-statistic" :value="stats.system?.failed_log_count" />
+              <n-statistic label="待复核" class="centered-statistic" :value="stats.system?.failed_log_count" />
             </n-gi>
           </n-grid>
         </n-card>

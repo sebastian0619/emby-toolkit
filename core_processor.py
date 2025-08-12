@@ -1646,7 +1646,7 @@ class MediaProcessor:
             # ======================================================================
             
             # --- 步骤 2.1: 前置更新演员名 ---
-            logger.info("【手动处理】步骤 1/2: 检查并更新演员名字...")
+            logger.info("  -> 手动处理：步骤 1/2: 检查并更新演员名字...")
             item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
             if not item_details:
                 raise ValueError(f"无法获取项目 {item_id} 的详情。")
@@ -1667,10 +1667,10 @@ class MediaProcessor:
                         emby_api_key=self.emby_api_key,
                         user_id=self.emby_user_id
                     )
-            logger.info("【手动处理】演员名字前置更新完成。")
+            logger.info("  -> 手动处理：演员名字前置更新完成。")
 
             # --- 步骤 2.2: 更新媒体的演员列表 ---
-            logger.info(f"【手动处理】步骤 2/2: 准备将 {len(cast_for_emby_handler)} 位演员更新到媒体项目...")
+            logger.info(f"  -> 手动处理：步骤 2/2: 准备将 {len(cast_for_emby_handler)} 位演员更新到媒体项目...")
             update_success = emby_handler.update_emby_item_cast(
                 item_id=item_id,
                 new_cast_list_for_handler=cast_for_emby_handler,
@@ -1680,7 +1680,7 @@ class MediaProcessor:
             )
 
             if not update_success:
-                logger.error(f"手动处理失败：更新 Emby 项目 '{item_name}' 演员信息时失败。")
+                logger.error(f"  -> 手动处理失败：更新 Emby 项目 '{item_name}' 演员信息时失败。")
                 # 记录到失败日志
                 with get_central_db_connection(self.db_path) as conn:
                     self.log_db_manager.save_to_failed_log(conn.cursor(), item_id, item_name, "手动API更新演员信息失败", item_details.get("Type"))
@@ -1689,7 +1689,7 @@ class MediaProcessor:
             # ======================================================================
             # 步骤 3: 调用“锁匠”完成上锁和刷新
             # ======================================================================
-            logger.info("手动更新成功，调用“锁匠”函数执行上锁和刷新操作...")
+            logger.info("  -> 手动更新成功")
             
             # 手动处理后，我们总是希望锁定结果
             fields_to_lock = ["Cast"] if self.auto_lock_cast_enabled else None
