@@ -576,6 +576,37 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(actions_bp)
 app.register_blueprint(cover_generator_config_bp)
 app.register_blueprint(tasks_bp)
+def ensure_cover_generator_fonts():
+    """
+    启动时检查 cover_generator/fonts 目录下是否有指定字体文件，
+    若缺少则从项目根目录的 fonts 目录拷贝过去。
+    """
+    cover_fonts_dir = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'cover_generator', 'fonts')
+    project_fonts_dir = os.path.join(os.getcwd(), 'fonts')  # 项目根目录fonts
+
+    required_fonts = [
+        "en_font.ttf",
+        "en_font_multi_1.otf",
+        "zh_font.ttf",
+        "zh_font_multi_1.ttf",
+    ]
+
+    if not os.path.exists(cover_fonts_dir):
+        os.makedirs(cover_fonts_dir, exist_ok=True)
+        logger.info(f"已创建字体目录：{cover_fonts_dir}")
+
+    for font_name in required_fonts:
+        dest_path = os.path.join(cover_fonts_dir, font_name)
+        if not os.path.isfile(dest_path):
+            src_path = os.path.join(project_fonts_dir, font_name)
+            if os.path.isfile(src_path):
+                try:
+                    shutil.copy2(src_path, dest_path)
+                    logger.info(f"已拷贝缺失字体文件 {font_name} 到 {cover_fonts_dir}")
+                except Exception as e:
+                    logger.error(f"拷贝字体文件 {font_name} 失败: {e}", exc_info=True)
+            else:
+                logger.warning(f"项目根目录缺少字体文件 {font_name}，无法拷贝至 {cover_fonts_dir}")
 if __name__ == '__main__':
     # ★★★ 猴子补丁已经移到文件顶部，这里不再需要 ★★★
     from gevent.pywsgi import WSGIServer
@@ -595,6 +626,8 @@ if __name__ == '__main__':
     add_file_handler(log_directory=config_manager.LOG_DIRECTORY, log_size_mb=log_size, log_backups=log_backups)
     
     init_db()
+    # 新增字体文件检测和拷贝
+    ensure_cover_generator_fonts()
     init_auth_from_blueprint()
     initialize_processors()
     task_manager.start_task_worker_if_not_running()

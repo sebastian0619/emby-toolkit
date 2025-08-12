@@ -71,6 +71,7 @@ COPY requirements.txt \
      reverse_proxy.py \
      ./
 
+COPY fonts/ ./fonts/
 COPY services/ ./services/
 COPY routes/ ./routes/
 COPY templates/ ./templates/
