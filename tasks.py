@@ -217,13 +217,13 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
     
     # --- ★★★ 步骤 D: 新增的实时合集匹配逻辑 ★★★ ---
     if not processed_successfully:
-        logger.warning(f"项目 {item_id} 的元数据处理未成功完成，跳过自定义合集匹配。")
+        logger.warning(f"  -> 项目 {item_id} 的元数据处理未成功完成，跳过自定义合集匹配。")
         return
 
     try:
         tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
         if not tmdb_id:
-            logger.debug("项目缺少TMDb ID，无法进行自定义合集匹配。")
+            logger.debug("  -> 媒体项缺少TMDb ID，无法进行自定义合集匹配。")
             return
 
         # 1. 从我们的缓存表中获取刚刚存入的元数据
@@ -237,7 +237,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
         matching_collections = engine.find_matching_collections(item_metadata)
 
         if matching_collections:
-            logger.info(f"影片《{item_metadata.get('title')}》匹配到 {len(matching_collections)} 个自定义合集，正在处理...")
+            logger.info(f"  -> 《{item_metadata.get('title')}》匹配到 {len(matching_collections)} 个自定义合集，正在处理...")
             # 3. 遍历所有匹配的合集，并向其中追加当前项目
             for collection in matching_collections:
                 emby_handler.append_item_to_collection(
@@ -249,7 +249,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
                 )
         else:
             # 如果没有匹配到，只记录日志，然后函数会自然地继续往下执行
-            logger.info(f"影片《{item_metadata.get('title')}》没有匹配到任何自定义合集。")
+            logger.info(f"  -> 《{item_metadata.get('title')}》没有匹配到任何自定义合集。")
     except Exception as e:
         logger.error(f"为新入库项目 {item_id} 匹配自定义合集时发生意外错误: {e}", exc_info=True)
 
@@ -269,7 +269,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
             # 确保在获取 item_details 之后再记录日志
             item_details = emby_handler.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
             if not item_details:
-                logger.error(f"Webhook 任务：无法获取项目 {item_id} 的详情，无法继续封面生成。")
+                logger.error(f"  -> Webhook 任务：无法获取项目 {item_id} 的详情，无法继续封面生成。")
                 return
 
             logger.info(f"  -> 检测到 '{item_details.get('Name')}' 入库，将为其所属媒体库生成新封面...")
@@ -280,7 +280,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
             )
             
             if not library_info:
-                logger.warning(f"无法为项目 {item_id} 定位到其所属的媒体库根，跳过封面生成。")
+                logger.warning(f"  -> 无法为项目 {item_id} 定位到其所属的媒体库根，跳过封面生成。")
                 return
 
             library_id = library_info.get("Id")
@@ -288,13 +288,13 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
             
             # 4. 检查是否需要处理
             if library_info.get('CollectionType') not in ['movies', 'tvshows', 'boxsets', 'mixed', 'music']:
-                logger.debug(f"父级 '{library_name}' 不是一个常规媒体库，跳过封面生成。")
+                logger.debug(f"  -> 父级 '{library_name}' 不是一个常规媒体库，跳过封面生成。")
                 return
 
             server_id = 'main_emby'
             library_unique_id = f"{server_id}-{library_id}"
             if library_unique_id in cover_config.get("exclude_libraries", []):
-                logger.info(f"媒体库 '{library_name}' 在忽略列表中，跳过。")
+                logger.info(f"  -> 媒体库 '{library_name}' 在忽略列表中，跳过。")
                 return
             
             # 【【【核心修复：在这里也使用实时计数API】】】
@@ -308,7 +308,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
             
             item_count = 0
             if library_id and item_type_to_query:
-                logger.debug(f"正在为媒体库 '{library_name}' (ID: {library_id}) 实时查询 '{item_type_to_query}' 的总数...")
+                logger.debug(f"  -> 正在为媒体库 '{library_name}' (ID: {library_id}) 实时查询 '{item_type_to_query}' 的总数...")
                 # 调用我们之前增强过的、最可靠的计数函数
                 item_count = emby_handler.get_item_count(
                     base_url=processor.emby_url,
@@ -328,12 +328,12 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
             )
 
         else:
-            logger.debug("封面生成器或入库监控未启用，跳过封面生成。")
+            logger.debug("  -> 封面生成器或入库监控未启用，跳过封面生成。")
 
     except Exception as e:
-        logger.error(f"在新入库后执行精准封面生成时发生错误: {e}", exc_info=True)
+        logger.error(f"  -> 在新入库后执行精准封面生成时发生错误: {e}", exc_info=True)
 
-    logger.trace(f"Webhook 任务及所有后续流程完成: {item_id}")
+    logger.trace(f"  -> Webhook 任务及所有后续流程完成: {item_id}")
 # --- 追剧 ---    
 def task_process_watchlist(processor: WatchlistProcessor, item_id: Optional[str] = None):
     """
@@ -1877,158 +1877,196 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 # ★★★ 新增：轻量级的元数据缓存填充任务 ★★★
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-def task_populate_metadata_cache(processor: 'MediaProcessor'):
+def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 50):
     """
-    通过批量预加载和并发处理，大幅提升元数据缓存的速度。
+    采用分批处理和写入的机制，通过差异检查自然实现断点续传。
     """
-    task_name = "同步媒体数据"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (完整性能最终版) ---")
+    task_name = "同步Emby元数据"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (分批大小: {batch_size}) ---")
     
-    task_manager = getattr(processor, 'task_manager', None)
-    if not task_manager:
-        # ... (FakeTaskManager fallback logic) ...
-        class FakeTaskManager:
-            def update_status_from_thread(self, *args, **kwargs): pass
-        task_manager = FakeTaskManager()
 
     try:
-        task_manager.update_status_from_thread(0, "阶段1/4: 批量获取Emby媒体索引...")
+        # ======================================================================
+        # 步骤 1: 计算差异
+        # ======================================================================
+        task_manager.update_status_from_thread(0, "阶段1/2: 计算媒体库差异...")
         
-        # ======================================================================
-        # 步骤 1: 一次性获取所有 Emby 媒体项的完整详情
-        # ======================================================================
+        # --- 从 Emby 获取 ---
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
         if not libs_to_process_ids:
             raise ValueError("未在配置中指定要处理的媒体库。")
 
-        all_emby_items = emby_handler.get_emby_library_items(
+        emby_items_index = emby_handler.get_emby_library_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
-            fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,People"
+            fields="Id,Name,Type,ProviderIds,People" # 获取后续需要的所有基础信息
         ) or []
         
-        total = len(all_emby_items)
-        if total == 0:
-            task_manager.update_status_from_thread(100, "未找到任何媒体项。")
+        emby_tmdb_ids = {item.get("ProviderIds", {}).get("Tmdb") for item in emby_items_index if item.get("ProviderIds", {}).get("Tmdb")}
+        logger.info(f"  -> 从 Emby 获取到 {len(emby_tmdb_ids)} 个有效的媒体项 (基于TMDb ID)。")
+
+        # --- 从本地数据库获取 ---
+        db_tmdb_ids = set()
+        with db_handler.get_db_connection(processor.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT tmdb_id FROM media_metadata")
+            rows = cursor.fetchall()
+            db_tmdb_ids = {row["tmdb_id"] for row in rows}
+        logger.info(f"  -> 从本地数据库 media_metadata 表中获取到 {len(db_tmdb_ids)} 个媒体项。")
+
+        # --- 计算差异 ---
+        items_to_add_tmdb_ids = emby_tmdb_ids - db_tmdb_ids
+        items_to_delete_tmdb_ids = db_tmdb_ids - emby_tmdb_ids
+
+        logger.info(f"  -> 计算差异完成：需要新增 {len(items_to_add_tmdb_ids)} 项，需要删除 {len(items_to_delete_tmdb_ids)} 项。")
+
+        # --- 执行删除操作 ---
+        if items_to_delete_tmdb_ids:
+            logger.info(f"  -> 正在从数据库中删除 {len(items_to_delete_tmdb_ids)} 个已不存在的媒体项...")
+            with db_handler.get_db_connection(processor.db_path) as conn:
+                cursor = conn.cursor()
+                # 为了安全，分批删除
+                ids_to_delete_list = list(items_to_delete_tmdb_ids)
+                for i in range(0, len(ids_to_delete_list), 500):
+                    batch_ids = ids_to_delete_list[i:i+500]
+                    placeholders = ','.join('?' for _ in batch_ids)
+                    sql = f"DELETE FROM media_metadata WHERE tmdb_id IN ({placeholders})"
+                    cursor.execute(sql, batch_ids)
+                conn.commit()
+            logger.info("  -> 冗余数据清理完成。")
+        
+        # --- 准备新增操作 ---
+        items_to_process = [
+            item for item in emby_items_index 
+            if item.get("ProviderIds", {}).get("Tmdb") in items_to_add_tmdb_ids
+        ]
+        
+        total_to_add = len(items_to_process)
+        if total_to_add == 0:
+            task_manager.update_status_from_thread(100, "数据库已是最新，无需同步。")
+            logger.info("--- '{task_name}' 任务成功完成 (数据库已是最新) ---")
             return
 
-        # ======================================================================
-        # 步骤 2: 一次性增强所有演员
-        # ======================================================================
-        task_manager.update_status_from_thread(25, f"阶段2/4: 批量同步所有演员信息...")
-        
-        all_people_to_enrich = [person for item in all_emby_items for person in item.get("People", [])]
-        logger.info(f"共找到 {len(all_people_to_enrich)} 个演员条目需要进行同步处理...")
-        enriched_people_list = processor._enrich_cast_from_db_and_api(all_people_to_enrich)
-        enriched_people_map = {str(p.get("Id")): p for p in enriched_people_list}
-        logger.info("所有演员信息同步完成，等待在线获取导演元数据...")
+        logger.info(f"  -> 需要新增 {total_to_add} 项，将分 { (total_to_add + batch_size - 1) // batch_size } 个批次处理。")
 
         # ======================================================================
-        # 步骤 3: 并发获取所有 TMDB 补充数据
+        # 步骤 2: 分批循环处理需要新增的媒体项
         # ======================================================================
-        task_manager.update_status_from_thread(50, f"阶段3/4: 并发获取TMDB补充数据...")
         
-        tmdb_details_map = {}
-        
-        def fetch_tmdb_details(item):
-            tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
-            item_type = item.get("Type")
-            if not tmdb_id: return None, None
+        processed_count = 0
+        for i in range(0, total_to_add, batch_size):
+            if processor.is_stop_requested():
+                logger.info("任务在批次处理前被中止。")
+                break
+
+            batch_items = items_to_process[i:i + batch_size]
+            batch_number = (i // batch_size) + 1
+            total_batches = (total_to_add + batch_size - 1) // batch_size
             
-            details = None
-            if item_type == 'Movie':
-                details = tmdb_handler.get_movie_details(tmdb_id, processor.tmdb_api_key)
-            elif item_type == 'Series':
-                details = tmdb_handler.get_tv_details_tmdb(tmdb_id, processor.tmdb_api_key)
-            
-            return tmdb_id, details
+            logger.info(f"--- 开始处理批次 {batch_number}/{total_batches} (包含 {len(batch_items)} 个项目) ---")
+            task_manager.update_status_from_thread(
+                10 + int((processed_count / total_to_add) * 90), 
+                f"处理批次 {batch_number}/{total_batches}..."
+            )
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_tmdb_id = {executor.submit(fetch_tmdb_details, item): item.get("ProviderIds", {}).get("Tmdb") for item in all_emby_items}
-            for future in concurrent.futures.as_completed(future_to_tmdb_id):
-                tmdb_id, details = future.result()
-                if tmdb_id and details:
-                    tmdb_details_map[tmdb_id] = details
-        
-        logger.info(f"成功并发获取了 {len(tmdb_details_map)} 个媒体项的TMDB详情。")
+            # --- 2.1 批量增强本批次的演员 ---
+            batch_people_to_enrich = [p for item in batch_items for p in item.get("People", [])]
+            enriched_people_list = processor._enrich_cast_from_db_and_api(batch_people_to_enrich)
+            enriched_people_map = {str(p.get("Id")): p for p in enriched_people_list}
 
-        # ======================================================================
-        # 步骤 4: 在内存中组装数据并准备批量写入
-        # ======================================================================
-        task_manager.update_status_from_thread(75, f"阶段4/4: 组装数据并写入数据库...")
-        
-        metadata_batch = []
-        for item in all_emby_items:
-            tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
-            if not tmdb_id: continue
-
-            full_details_emby = item
-            tmdb_details = tmdb_details_map.get(tmdb_id)
-
-            # --- 组装演员 ---
-            actors = []
-            for person in full_details_emby.get("People", []):
-                person_id = str(person.get("Id"))
-                enriched_person = enriched_people_map.get(person_id)
-                if enriched_person and enriched_person.get("ProviderIds", {}).get("Tmdb"):
-                    actors.append({
-                        'id': enriched_person["ProviderIds"]["Tmdb"],
-                        'name': enriched_person.get('Name')
-                    })
-            
-            # --- 组装导演和国家 ---
-            directors, countries = [], []
-            if tmdb_details:
-                item_type = full_details_emby.get("Type")
+            # --- 2.2 并发获取本批次的 TMDB 详情 ---
+            logger.info(f"  -> 开始从Tmdb补充导演/国家数据...")
+            tmdb_details_map = {}
+            def fetch_tmdb_details(item):
+                tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
+                item_type = item.get("Type")
+                if not tmdb_id: return None, None
+                details = None
                 if item_type == 'Movie':
-                    credits_data = tmdb_details.get("credits", {}) or tmdb_details.get("casts", {})
-                    if credits_data:
-                        directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_data.get('crew', []) if p.get('job') == 'Director']
-                    countries = translate_country_list([c['name'] for c in tmdb_details.get('production_countries', [])])
+                    details = tmdb_handler.get_movie_details(tmdb_id, processor.tmdb_api_key)
                 elif item_type == 'Series':
-                    credits_data = tmdb_details.get("credits", {})
-                    if credits_data:
-                        directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_data.get('crew', []) if p.get('job') == 'Director']
-                    if not directors: directors = [{'id': c.get('id'), 'name': c.get('name')} for c in tmdb_details.get('created_by', [])]
-                    countries = translate_country_list(tmdb_details.get('origin_country', []))
+                    details = tmdb_handler.get_tv_details_tmdb(tmdb_id, processor.tmdb_api_key)
+                return tmdb_id, details
 
-            # ★★★★★★★★★★★★★★★ 变量定义修复 START ★★★★★★★★★★★★★★★
-            # 提取工作室 (从 Emby 获取)
-            studios = [s['Name'] for s in full_details_emby.get('Studios', []) if s.get('Name')]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_tmdb_id = {executor.submit(fetch_tmdb_details, item): item.get("ProviderIds", {}).get("Tmdb") for item in batch_items}
+                for future in concurrent.futures.as_completed(future_to_tmdb_id):
+                    tmdb_id, details = future.result()
+                    if tmdb_id and details:
+                        tmdb_details_map[tmdb_id] = details
             
-            # 提取上映日期 (从 Emby 获取)
-            release_date_str = (full_details_emby.get('PremiereDate') or '0000-01-01T00:00:00.000Z').split('T')[0]
-            # ★★★★★★★★★★★★★★★ 变量定义修复 END ★★★★★★★★★★★★★★★
+            # --- 2.3 组装本批次的数据 ---
+            metadata_batch = []
+            for item in batch_items:
+                tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
+                if not tmdb_id: continue
 
-            metadata_to_save = {
-                "tmdb_id": tmdb_id,
-                "item_type": full_details_emby.get("Type"),
-                "title": full_details_emby.get('Name'),
-                "original_title": full_details_emby.get('OriginalTitle'),
-                "release_year": full_details_emby.get('ProductionYear'),
-                "rating": full_details_emby.get('CommunityRating'),
-                "release_date": release_date_str,
-                "date_added": (full_details_emby.get("DateCreated") or '').split('T')[0] or None,
-                "genres_json": json.dumps(full_details_emby.get('Genres', []), ensure_ascii=False),
-                "actors_json": json.dumps(actors, ensure_ascii=False),
-                "directors_json": json.dumps(directors, ensure_ascii=False),
-                "studios_json": json.dumps(studios, ensure_ascii=False),
-                "countries_json": json.dumps(countries, ensure_ascii=False),
-            }
-            metadata_batch.append(metadata_to_save)
+                full_details_emby = item
+                tmdb_details = tmdb_details_map.get(tmdb_id)
 
-        # 步骤 4: 批量写入数据库
-        if metadata_batch:
-            task_manager.update_status_from_thread(95, f"提取完成，正在将 {len(metadata_batch)} 条数据写入数据库...")
-            db_handler.bulk_replace_media_metadata(config_manager.DB_PATH, metadata_batch)
+                actors = []
+                for person in full_details_emby.get("People", []):
+                    person_id = str(person.get("Id"))
+                    enriched_person = enriched_people_map.get(person_id)
+                    if enriched_person and enriched_person.get("ProviderIds", {}).get("Tmdb"):
+                        actors.append({'id': enriched_person["ProviderIds"]["Tmdb"], 'name': enriched_person.get('Name')})
+                
+                directors, countries = [], []
+                if tmdb_details:
+                    item_type = full_details_emby.get("Type")
+                    if item_type == 'Movie':
+                        credits_data = tmdb_details.get("credits", {}) or tmdb_details.get("casts", {})
+                        if credits_data:
+                            directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_data.get('crew', []) if p.get('job') == 'Director']
+                        countries = translate_country_list([c['name'] for c in tmdb_details.get('production_countries', [])])
+                    elif item_type == 'Series':
+                        credits_data = tmdb_details.get("credits", {})
+                        if credits_data:
+                            directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_data.get('crew', []) if p.get('job') == 'Director']
+                        if not directors: directors = [{'id': c.get('id'), 'name': c.get('name')} for c in tmdb_details.get('created_by', [])]
+                        countries = translate_country_list(tmdb_details.get('origin_country', []))
 
-        task_manager.update_status_from_thread(100, f"元数据同步完成！共处理 {len(metadata_batch)} 条。")
+                studios = [s['Name'] for s in full_details_emby.get('Studios', []) if s.get('Name')]
+                release_date_str = (full_details_emby.get('PremiereDate') or '0000-01-01T00:00:00.000Z').split('T')[0]
+
+                metadata_to_save = {
+                    "tmdb_id": tmdb_id, "item_type": full_details_emby.get("Type"),
+                    "title": full_details_emby.get('Name'), "original_title": full_details_emby.get('OriginalTitle'),
+                    "release_year": full_details_emby.get('ProductionYear'), "rating": full_details_emby.get('CommunityRating'),
+                    "release_date": release_date_str, "date_added": (full_details_emby.get("DateCreated") or '').split('T')[0] or None,
+                    "genres_json": json.dumps(full_details_emby.get('Genres', []), ensure_ascii=False),
+                    "actors_json": json.dumps(actors, ensure_ascii=False),
+                    "directors_json": json.dumps(directors, ensure_ascii=False),
+                    "studios_json": json.dumps(studios, ensure_ascii=False),
+                    "countries_json": json.dumps(countries, ensure_ascii=False),
+                }
+                metadata_batch.append(metadata_to_save)
+
+            # --- 2.4 写入本批次的数据 ---
+            if metadata_batch:
+                with db_handler.get_db_connection(processor.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("BEGIN TRANSACTION;")
+                    for metadata in metadata_batch:
+                        try:
+                            columns = ', '.join(metadata.keys())
+                            placeholders = ', '.join('?' for _ in metadata)
+                            sql = f"INSERT OR REPLACE INTO media_metadata ({columns}) VALUES ({placeholders})"
+                            cursor.execute(sql, tuple(metadata.values()))
+                        except sqlite3.Error as e:
+                            logger.error(f"写入 TMDB ID {metadata.get('tmdb_id')} 的元数据时发生数据库错误: {e}")
+                    conn.commit()
+                logger.info(f"--- 批次 {batch_number}/{total_batches} 已成功写入数据库。---")
+            
+            processed_count += len(batch_items)
+
+        final_message = f"同步完成！本次处理 {processed_count}/{total_to_add} 项, 删除 {len(items_to_delete_tmdb_ids)} 项。"
+        task_manager.update_status_from_thread(100, final_message)
         logger.info(f"--- '{task_name}' 任务成功完成 ---")
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
-
         
 
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★

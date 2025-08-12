@@ -60,7 +60,7 @@
             </n-form-item-grid-item>
             <n-form-item label="自动锁定演员表" path="auto_lock_cast_after_update">
               <n-switch v-model:value="configModel.auto_lock_cast_after_update" />
-              <template #feedback>【酌情开启】开启后，通过API模式处理完演员表后，会自动将该项目的“演员”字段锁定，防止被后续刷新操作覆盖，也可能会造成新增的演员来不及刷新。</template>
+              <template #feedback>【酌情开启】开启后，处理完演员表后，会自动将该项目的“演员”字段锁定，防止被后续刷新操作覆盖，也可能会造成新增的演员来不及刷新。</template>
             </n-form-item>
           </n-card>
           
@@ -230,7 +230,7 @@
               />
               <template #feedback>
                 <n-text depth="3" style="font-size:0.8em;">
-                  开启后，将在虚拟库列表的顶部显示您在 Emby 中配置的原生媒体库（如音乐、电影等）。
+                  开启后，将在虚拟库列表合并显示您在 Emby 中配置的原生媒体库（如音乐、电影等）。
                 </n-text>
               </template>
             </n-form-item-grid-item>

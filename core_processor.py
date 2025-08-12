@@ -750,7 +750,7 @@ class MediaProcessor:
             # ★★★★★★★★★★★★★★★ 核心改造：确保总是获取 TMDB 详情 ★★★★★★★★★★★★★★★
             # 无论是什么策略，我们都尝试获取一次 TMDB 详情，以便后续缓存
             if self.tmdb_api_key:
-                logger.debug("【实时缓存】正在为补充数据（导演/国家）获取 TMDB 详情...")
+                logger.debug("  -> 实时缓存：正在为补充数据（导演/国家）获取 TMDB 详情...")
                 if item_type == "Movie":
                     tmdb_details_for_cache = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
                 elif item_type == "Series":
@@ -885,7 +885,7 @@ class MediaProcessor:
                 # ======================================================================
                 # 阶段 4: 实时元数据缓存 (现在总是能执行了)
                 # ======================================================================
-                logger.info(f"【实时缓存】准备将 '{item_name_for_log}' 的元数据写入本地数据库...")
+                logger.info(f"  -> 实时缓存：准备将 '{item_name_for_log}' 的元数据写入本地数据库...")
                 _save_metadata_to_cache(
                     cursor=cursor,
                     tmdb_id=tmdb_id,
