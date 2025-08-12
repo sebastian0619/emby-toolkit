@@ -125,44 +125,43 @@ def init_db():
             cursor.execute("CREATE TABLE IF NOT EXISTS failed_log (item_id TEXT PRIMARY KEY, item_name TEXT, reason TEXT, failed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, error_message TEXT, item_type TEXT, score REAL)")
             cursor.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             cursor.execute("CREATE TABLE IF NOT EXISTS translation_cache (original_text TEXT PRIMARY KEY, translated_text TEXT, engine_used TEXT, last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            
             # --- 3. 创建核心功能表 ---
             # 电影合集检查
-            logger.trace("  -> 正在创建 'collections_info' 表...")
+            logger.trace("  -> 正在创建/升级 'collections_info' 表...")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS collections_info (
                     emby_collection_id TEXT PRIMARY KEY,
                     name TEXT,
                     tmdb_collection_id TEXT,
-                    item_type TEXT DEFAULT 'Movie' NOT NULL,
                     status TEXT,
                     has_missing BOOLEAN, 
                     missing_movies_json TEXT,
                     last_checked_at TIMESTAMP,
-                    poster_path TEXT,
-                    in_library_count INTEGER DEFAULT 0 
+                    poster_path TEXT
                 )
             """)
 
-            # ✨ 为老用户平滑升级数据库结构的逻辑
+            # ✨ 为老用户平滑升级 'collections_info' 表的统一逻辑
             try:
                 cursor.execute("PRAGMA table_info(collections_info)")
-                columns = [row[1] for row in cursor.fetchall()]
-                if 'in_library_count' not in columns:
-                    logger.info("    -> 检测到旧版 'collections_info' 表，正在添加 'in_library_count' 字段...")
-                    cursor.execute("ALTER TABLE collections_info ADD COLUMN in_library_count INTEGER DEFAULT 0;")
-                    logger.info("    -> 'in_library_count' 字段添加成功。")
-                if 'item_type' not in columns:
-                        logger.info("    -> 检测到旧版 'collections_info' 表，正在添加 'item_type' 字段...")
-                        cursor.execute("ALTER TABLE collections_info ADD COLUMN item_type TEXT DEFAULT 'Movie' NOT NULL;")
-                        logger.info("    -> 'item_type' 字段添加成功。")
+                existing_columns = {row[1] for row in cursor.fetchall()}
+                
+                new_columns_to_add = {
+                    "item_type": "TEXT DEFAULT 'Movie' NOT NULL",
+                    "in_library_count": "INTEGER DEFAULT 0"
+                }
+
+                for col_name, col_type in new_columns_to_add.items():
+                    if col_name not in existing_columns:
+                        logger.info(f"    -> 检测到旧版 'collections_info' 表，正在添加 '{col_name}' 字段...")
+                        cursor.execute(f"ALTER TABLE collections_info ADD COLUMN {col_name} {col_type};")
+                        logger.info(f"    -> '{col_name}' 字段添加成功。")
             except Exception as e_alter:
                 logger.error(f"  -> 为 'collections_info' 表添加新字段时出错: {e_alter}")
 
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★★★ 新增: 'custom_collections' 表 (自定义合集) ★★★
-            # ★★★ 这是实现你新功能的核心地基。                ★★★
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            logger.trace("  -> 正在创建/升级 'custom_collections' 表 (自建合集)...")
+            # 自定义合集
+            logger.trace("  -> 正在创建/升级 'custom_collections' 表...")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS custom_collections (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,7 +175,7 @@ def init_db():
                 )
             """)
             
-            # ★★★ 为老用户平滑升级 custom_collections 表的逻辑 ★★★
+            # ✨ 为老用户平滑升级 'custom_collections' 表的统一逻辑
             try:
                 cursor.execute("PRAGMA table_info(custom_collections)")
                 existing_columns = {row[1] for row in cursor.fetchall()}
@@ -199,15 +198,12 @@ def init_db():
             except Exception as e_alter_cc:
                 logger.error(f"  -> 为 'custom_collections' 表添加新字段时出错: {e_alter_cc}")
 
-
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_type ON custom_collections (type)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_status ON custom_collections (status)")
             cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_name_unique ON custom_collections (name)")
 
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★★★ 新增: 'media_metadata' 表 (筛选引擎的数据源) ★★★
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            logger.trace("  -> 正在创建/升级 'media_metadata' 表 (用于自定义筛选)...")
+            # 媒体元数据表 (筛选引擎数据源)
+            logger.trace("  -> 正在创建/升级 'media_metadata' 表...")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS media_metadata (
                     tmdb_id TEXT,
@@ -215,37 +211,37 @@ def init_db():
                     title TEXT,
                     original_title TEXT,
                     release_year INTEGER,
-                    rating REAL,                       -- 评分 (例如 CommunityRating)
-                    release_date TEXT,                 -- ★ 新增: 上映日期 (格式: YYYY-MM-DD)
-                    date_added TEXT,                   -- ★ 新增: 入库日期 (格式: YYYY-MM-DD)
-                    
-                    -- 使用JSON存储列表数据...
+                    rating REAL,
                     genres_json TEXT,
                     actors_json TEXT,
                     directors_json TEXT,
                     studios_json TEXT,
                     countries_json TEXT,
-                    
                     last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (tmdb_id, item_type) -- ★ 优化: 使用复合主键
+                    PRIMARY KEY (tmdb_id, item_type)
                 )
             """)
 
-            # ★★★ 新增：为老用户平滑升级 media_metadata 表的逻辑 ★★★
+            # ✨ 为老用户平滑升级 'media_metadata' 表的统一逻辑
             try:
                 cursor.execute("PRAGMA table_info(media_metadata)")
-                columns = {row[1] for row in cursor.fetchall()}
-                if 'release_date' not in columns:
-                    logger.info("    -> 检测到旧版 'media_metadata' 表，正在添加 'release_date' 字段...")
-                    cursor.execute("ALTER TABLE media_metadata ADD COLUMN release_date TEXT;")
-                if 'date_added' not in columns:
-                    logger.info("    -> 检测到旧版 'media_metadata' 表，正在添加 'date_added' 字段...")
-                    cursor.execute("ALTER TABLE media_metadata ADD COLUMN date_added TEXT;")
+                existing_columns = {row[1] for row in cursor.fetchall()}
+                
+                new_columns_to_add = {
+                    "release_date": "TEXT",
+                    "date_added": "TEXT"
+                }
+
+                for col_name, col_type in new_columns_to_add.items():
+                    if col_name not in existing_columns:
+                        logger.info(f"    -> 检测到旧版 'media_metadata' 表，正在添加 '{col_name}' 字段...")
+                        cursor.execute(f"ALTER TABLE media_metadata ADD COLUMN {col_name} {col_type};")
+                        logger.info(f"    -> '{col_name}' 字段添加成功。")
             except Exception as e_alter_mm:
                 logger.error(f"  -> 为 'media_metadata' 表添加新字段时出错: {e_alter_mm}")
 
             # 剧集追踪 (追剧列表) 
-            logger.trace("  -> 正在创建/更新 'watchlist' 表...")
+            logger.trace("  -> 正在创建/升级 'watchlist' 表...")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS watchlist (
                     item_id TEXT PRIMARY KEY,
@@ -257,29 +253,29 @@ def init_db():
                     last_checked_at TIMESTAMP,
                     tmdb_status TEXT,
                     next_episode_to_air_json TEXT,
-                    missing_info_json TEXT,
-                    paused_until DATE DEFAULT NULL,
-                    force_ended BOOLEAN DEFAULT 0 NOT NULL 
+                    missing_info_json TEXT
                 )
             """)
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
 
-            # ★★★ 新增：为现有数据库平滑升级的逻辑 ★★★
-            # 这种方式可以确保老用户更新程序后，数据库结构也能自动更新而不会报错。
+            # ✨ 为老用户平滑升级 'watchlist' 表的统一逻辑
             try:
                 cursor.execute("PRAGMA table_info(watchlist)")
-                columns = [row[1] for row in cursor.fetchall()]
-                if 'paused_until' not in columns:
-                    logger.info("    -> 检测到旧版 'watchlist' 表，正在添加 'paused_until' 字段...")
-                    cursor.execute("ALTER TABLE watchlist ADD COLUMN paused_until DATE DEFAULT NULL;")
-                    logger.info("    -> 'paused_until' 字段添加成功。")
-                # 【新增】为 force_ended 字段添加升级逻辑
-                if 'force_ended' not in columns:
-                    logger.info("    -> 检测到旧版 'watchlist' 表，正在添加 'force_ended' 字段...")
-                    cursor.execute("ALTER TABLE watchlist ADD COLUMN force_ended BOOLEAN DEFAULT 0 NOT NULL;")
-                    logger.info("    -> 'force_ended' 字段添加成功。")
+                existing_columns = {row[1] for row in cursor.fetchall()}
+                
+                new_columns_to_add = {
+                    "paused_until": "DATE DEFAULT NULL",
+                    "force_ended": "BOOLEAN DEFAULT 0 NOT NULL"
+                }
+
+                for col_name, col_type in new_columns_to_add.items():
+                    if col_name not in existing_columns:
+                        logger.info(f"    -> 检测到旧版 'watchlist' 表，正在添加 '{col_name}' 字段...")
+                        cursor.execute(f"ALTER TABLE watchlist ADD COLUMN {col_name} {col_type};")
+                        logger.info(f"    -> '{col_name}' 字段添加成功。")
             except Exception as e_alter:
                 logger.error(f"  -> 为 'watchlist' 表添加新字段时出错: {e_alter}")
+            
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
 
             # 演员身份映射
             logger.trace("  -> 正在创建 'person_identity_map' 表...")
@@ -306,61 +302,59 @@ def init_db():
             """)
 
             # 演员订阅功能表
-            logger.trace("  -> 正在创建 'actor_subscriptions' 表 (演员订阅)...")
+            logger.trace("  -> 正在创建/升级 'actor_subscriptions' 表...")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS actor_subscriptions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tmdb_person_id INTEGER NOT NULL UNIQUE,      -- 演员在TMDb的唯一ID，这是关联的核心
-                    actor_name TEXT NOT NULL,                    -- 演员名字 (用于UI显示)
-                    profile_path TEXT,                           -- 演员头像路径 (用于UI显示)
-
-                    -- 订阅配置 --
-                    config_start_year INTEGER DEFAULT 1900,      -- 起始年份筛选
-                    config_media_types TEXT DEFAULT 'Movie,TV',  -- 订阅的媒体类型 (逗号分隔, e.g., "Movie,TV")
-                    config_genres_include_json TEXT,             -- 包含的类型ID (JSON数组, e.g., "[28, 12]")
-                    config_genres_exclude_json TEXT,             -- 排除的类型ID (JSON数组, e.g., "[99]")
-                    config_min_rating REAL DEFAULT 6.0,          -- 最低评分筛选，0表示不筛选
-
-                    -- 状态与维护 --
-                    status TEXT DEFAULT 'active',                -- 订阅状态 ('active', 'paused')
-                    last_checked_at TIMESTAMP,                   -- 上次计划任务检查的时间
-                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- 添加订阅的时间
+                    tmdb_person_id INTEGER NOT NULL UNIQUE,
+                    actor_name TEXT NOT NULL,
+                    profile_path TEXT,
+                    config_start_year INTEGER DEFAULT 1900,
+                    config_media_types TEXT DEFAULT 'Movie,TV',
+                    config_genres_include_json TEXT,
+                    config_genres_exclude_json TEXT,
+                    status TEXT DEFAULT 'active',
+                    last_checked_at TIMESTAMP,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # ★★★ 新增：为老用户平滑升级数据库结构 ★★★
+            
+            # ✨ 为老用户平滑升级 'actor_subscriptions' 表的统一逻辑
             try:
                 cursor.execute("PRAGMA table_info(actor_subscriptions)")
-                columns = [row[1] for row in cursor.fetchall()]
-                if 'config_min_rating' not in columns:
-                    logger.info("    -> 检测到旧版 'actor_subscriptions' 表，正在添加 'config_min_rating' 字段...")
-                    cursor.execute("ALTER TABLE actor_subscriptions ADD COLUMN config_min_rating REAL DEFAULT 6.0;")
-                    logger.info("    -> 'config_min_rating' 字段添加成功。")
+                existing_columns = {row[1] for row in cursor.fetchall()}
+                
+                new_columns_to_add = {
+                    "config_min_rating": "REAL DEFAULT 6.0"
+                }
+
+                for col_name, col_type in new_columns_to_add.items():
+                    if col_name not in existing_columns:
+                        logger.info(f"    -> 检测到旧版 'actor_subscriptions' 表，正在添加 '{col_name}' 字段...")
+                        cursor.execute(f"ALTER TABLE actor_subscriptions ADD COLUMN {col_name} {col_type};")
+                        logger.info(f"    -> '{col_name}' 字段添加成功。")
             except Exception as e_alter:
                 logger.error(f"  -> 为 'actor_subscriptions' 表添加新字段时出错: {e_alter}")
-            # ★★★ 升级逻辑结束 ★★★
+            
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_tmdb_person_id ON actor_subscriptions (tmdb_person_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_status ON actor_subscriptions (status)")
 
-            logger.trace("  -> 正在创建 'tracked_actor_media' 表 (追踪的演员媒体)...")
+            # 追踪的演员媒体表
+            logger.trace("  -> 正在创建 'tracked_actor_media' 表...")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tracked_actor_media (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    subscription_id INTEGER NOT NULL,            -- 外键，关联到 actor_subscriptions.id
-                    tmdb_media_id INTEGER NOT NULL,              -- 影视项目在TMDb的ID (电影或剧集)
-                    media_type TEXT NOT NULL,                    -- 'Movie' 或 'Series'
-
-                    -- 用于UI显示和筛选的基本信息 --
+                    subscription_id INTEGER NOT NULL,
+                    tmdb_media_id INTEGER NOT NULL,
+                    media_type TEXT NOT NULL,
                     title TEXT NOT NULL,
                     release_date TEXT,
                     poster_path TEXT,
-
-                    -- 核心状态字段 --
-                    status TEXT NOT NULL,                        -- 'IN_LIBRARY', 'PENDING_RELEASE', 'SUBSCRIBED', 'MISSING'
-                    emby_item_id TEXT,                           -- 如果已入库，其在Emby中的ID
+                    status TEXT NOT NULL,
+                    emby_item_id TEXT,
                     last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
                     FOREIGN KEY(subscription_id) REFERENCES actor_subscriptions(id) ON DELETE CASCADE,
-                    UNIQUE(subscription_id, tmdb_media_id) -- 确保每个订阅下，一个媒体项只被追踪一次
+                    UNIQUE(subscription_id, tmdb_media_id)
                 )
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_subscription_id ON tracked_actor_media (subscription_id)")
