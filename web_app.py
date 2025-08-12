@@ -91,6 +91,7 @@ JOB_ID_REVIVAL_CHECK = "scheduled_revival_check"
 def task_process_single_item(processor: MediaProcessor, item_id: str, force_reprocess: bool):
     """任务：处理单个媒体项"""
     processor.process_single_item(item_id, force_reprocess)
+
 # --- 初始化数据库 ---
 def init_db():
     """
@@ -380,6 +381,7 @@ def init_db():
             try: conn.rollback()
             except Exception as e_rb: logger.error(f"未知错误后回滚失败: {e_rb}")
         raise # 重新抛出异常，让程序停止
+
 # --- 保存配置并重新加载的函数 ---
 def save_config_and_reload(new_config: Dict[str, Any]):
     """
@@ -401,7 +403,8 @@ def save_config_and_reload(new_config: Dict[str, Any]):
         logger.error(f"保存配置文件或重新初始化时失败: {e}", exc_info=True)
         # 向上抛出异常，让 API 端点可以捕获它并返回错误信息
         raise
-# --- 始化所有需要的处理器实例 ---
+
+# --- 初始化所有需要的处理器实例 ---
 def initialize_processors():
     """初始化所有处理器，并将实例赋值给 extensions 模块中的全局变量。"""
     if not config_manager.APP_CONFIG:
@@ -456,7 +459,40 @@ def initialize_processors():
     extensions.watchlist_processor_instance = watchlist_processor_instance_local
     extensions.actor_subscription_processor_instance = actor_subscription_processor_instance_local
     extensions.EMBY_SERVER_ID = server_id_local
-    
+
+# --- 检查字体文件 ---
+def ensure_cover_generator_fonts():
+    """
+    启动时检查 cover_generator/fonts 目录下是否有指定字体文件，
+    若缺少则从项目根目录的 fonts 目录拷贝过去。
+    """
+    cover_fonts_dir = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'cover_generator', 'fonts')
+    project_fonts_dir = os.path.join(os.getcwd(), 'fonts')  # 项目根目录fonts
+
+    required_fonts = [
+        "en_font.ttf",
+        "en_font_multi_1.otf",
+        "zh_font.ttf",
+        "zh_font_multi_1.ttf",
+    ]
+
+    if not os.path.exists(cover_fonts_dir):
+        os.makedirs(cover_fonts_dir, exist_ok=True)
+        logger.trace(f"已创建字体目录：{cover_fonts_dir}")
+
+    for font_name in required_fonts:
+        dest_path = os.path.join(cover_fonts_dir, font_name)
+        if not os.path.isfile(dest_path):
+            src_path = os.path.join(project_fonts_dir, font_name)
+            if os.path.isfile(src_path):
+                try:
+                    shutil.copy2(src_path, dest_path)
+                    logger.trace(f"已拷贝缺失字体文件 {font_name} 到 {cover_fonts_dir}")
+                except Exception as e:
+                    logger.error(f"拷贝字体文件 {font_name} 失败: {e}", exc_info=True)
+            else:
+                logger.warning(f"项目根目录缺少字体文件 {font_name}，无法拷贝至 {cover_fonts_dir}")
+
 # --- 应用退出处理 ---
 def application_exit_handler():
     # global media_processor_instance, scheduler, task_worker_thread # 不再需要 scheduler
@@ -576,37 +612,7 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(actions_bp)
 app.register_blueprint(cover_generator_config_bp)
 app.register_blueprint(tasks_bp)
-def ensure_cover_generator_fonts():
-    """
-    启动时检查 cover_generator/fonts 目录下是否有指定字体文件，
-    若缺少则从项目根目录的 fonts 目录拷贝过去。
-    """
-    cover_fonts_dir = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'cover_generator', 'fonts')
-    project_fonts_dir = os.path.join(os.getcwd(), 'fonts')  # 项目根目录fonts
 
-    required_fonts = [
-        "en_font.ttf",
-        "en_font_multi_1.otf",
-        "zh_font.ttf",
-        "zh_font_multi_1.ttf",
-    ]
-
-    if not os.path.exists(cover_fonts_dir):
-        os.makedirs(cover_fonts_dir, exist_ok=True)
-        logger.info(f"已创建字体目录：{cover_fonts_dir}")
-
-    for font_name in required_fonts:
-        dest_path = os.path.join(cover_fonts_dir, font_name)
-        if not os.path.isfile(dest_path):
-            src_path = os.path.join(project_fonts_dir, font_name)
-            if os.path.isfile(src_path):
-                try:
-                    shutil.copy2(src_path, dest_path)
-                    logger.info(f"已拷贝缺失字体文件 {font_name} 到 {cover_fonts_dir}")
-                except Exception as e:
-                    logger.error(f"拷贝字体文件 {font_name} 失败: {e}", exc_info=True)
-            else:
-                logger.warning(f"项目根目录缺少字体文件 {font_name}，无法拷贝至 {cover_fonts_dir}")
 if __name__ == '__main__':
     # ★★★ 猴子补丁已经移到文件顶部，这里不再需要 ★★★
     from gevent.pywsgi import WSGIServer

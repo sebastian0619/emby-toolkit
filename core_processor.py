@@ -119,118 +119,6 @@ def _save_metadata_to_cache(
 
     except Exception as e:
         logger.error(f"保存元数据到缓存表时失败: {e}", exc_info=True)
-        
-# ==========================================================================================
-# +++ 新增：JSON 构建器函数 (JSON Builders) +++
-# 这些函数严格按照您提供的最小化模板来构建新的JSON对象，确保结构纯净。
-# ==========================================================================================
-
-def _build_movie_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    【V-Rebuild - 重建版】根据最小化模板构建电影 all.json。
-    无论输入数据结构如何，都强制输出干净、统一的格式。
-    """
-    # 1. 从原始数据中安全地提取所有必需的字段
-    #    使用 .get() 并提供默认值，确保即使原始数据缺少某些键也不会出错。
-    final_json = {
-      "id": source_data.get("id"),
-      "imdb_id": source_data.get("imdb_id"),
-      "title": source_data.get("title", ""),
-      "original_title": source_data.get("original_title", ""),
-      "overview": source_data.get("overview", ""),
-      "tagline": source_data.get("tagline", ""),
-      "release_date": source_data.get("release_date", ""),
-      "vote_average": source_data.get("vote_average", 0.0),
-      "production_countries": source_data.get("production_countries", []),
-      "production_companies": source_data.get("production_companies", []),
-      "genres": source_data.get("genres", []),
-      # 以下字段是为了兼容性，即使模板中没有也建议保留
-      "belongs_to_collection": source_data.get("belongs_to_collection"),
-      "videos": source_data.get("videos", {"results": []}),
-      "external_ids": source_data.get("external_ids", {})
-    }
-
-    # 2. ★★★ 核心：强制创建 "casts" 键，并填入处理好的演员和职员数据 ★★★
-    final_json["casts"] = {
-        "cast": processed_cast,
-        "crew": processed_crew
-    }
-    
-    # 3. (可选但推荐) 清理一下可能为空的ID
-    if not final_json.get("imdb_id"):
-        final_json["imdb_id"] = final_json.get("external_ids", {}).get("imdb_id", "")
-
-    return final_json
-
-def _build_series_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    【V-Final Emby-Native】根据 Emby 友好格式构建 series.json。
-    此版本假设输入数据已被上游归一化。
-    """
-    final_json = {
-        "id": source_data.get("id"),
-        "name": source_data.get("name", ""),
-        "original_name": source_data.get("original_name", ""),
-        "overview": source_data.get("overview", ""),
-        "vote_average": source_data.get("vote_average", 0.0),
-        "episode_run_time": source_data.get("episode_run_time", []),
-        "first_air_date": source_data.get("first_air_date"),
-        "last_air_date": source_data.get("last_air_date"),
-        "status": source_data.get("status", ""),
-        "genres": source_data.get("genres", []),
-        "external_ids": source_data.get("external_ids", {}),
-        "videos": source_data.get("videos", {"results": []}),
-        "content_ratings": source_data.get("content_ratings", {"results": []}),
-        
-        # 【关键】: 现在只从归一化后的键取值
-        "networks": source_data.get("networks", []),
-        "origin_country": source_data.get("origin_country", [])
-    }
-
-    # 创建 credits 键
-    final_json["credits"] = {
-        "cast": processed_cast,
-        "crew": processed_crew
-    }
-    
-    return final_json
-
-def _build_season_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """【V3 最终修复版】根据最小化模板构建季 season-X.json，确保Emby兼容性。"""
-    return {
-      # "id" 和 "_id" 都不会被包含，因为模板里没有
-      "name": source_data.get("name", ""),
-      "overview": source_data.get("overview", ""),
-      "air_date": source_data.get("air_date", "1970-01-01T00:00:00.000Z"),
-      "external_ids": source_data.get("external_ids", {"tvdb_id": None}),
-      "credits": {
-        "cast": processed_cast,
-        "crew": processed_crew
-      }
-      # "episodes" 数组不会被包含，因为模板里没有
-    }
-
-def _build_episode_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """【V3 最终修复版】根据最小化模板构建集 season-X-episode-Y.json，确保Emby兼容性。"""
-    return {
-      # "id" 和 "_id" 都不会被包含
-      "name": source_data.get("name", ""),
-      "overview": source_data.get("overview", ""),
-      "videos": source_data.get("videos", {"results": []}),
-      "external_ids": source_data.get("external_ids", {"tvdb_id": None, "tvrage_id": None, "imdb_id": ""}),
-      "air_date": source_data.get("air_date", "1970-01-01T00:00:00.000Z"),
-      "vote_average": source_data.get("vote_average", 0.0),
-      "credits": {
-        "cast": processed_cast,
-        "guest_stars": [], # 保持清空
-        "crew": processed_crew
-      }
-    }
-
-# ==========================================================================================
-# +++ 新增：演员聚合函数 +++
-# 从内存中的TMDB数据聚合演员，而不是从文件
-# ==========================================================================================
 def _aggregate_series_cast_from_tmdb_data(series_data: Dict[str, Any], all_episodes_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     【新】从内存中的TMDB数据聚合一个剧集的所有演员。
@@ -1373,7 +1261,6 @@ class MediaProcessor:
 
         return final_cast_perfect
 
-    
     def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False, force_fetch_from_tmdb: bool = False):
         """
         【V3 - 最终完整版】
