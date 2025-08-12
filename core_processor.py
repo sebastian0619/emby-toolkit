@@ -353,13 +353,12 @@ class MediaProcessor:
     # ★★★★★★★★★★★★★★★ 新增的、优雅的内部辅助方法 ★★★★★★★★★★★★★★★
     def _enrich_cast_from_db_and_api(self, cast_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        【V-Final Hybrid with Dict Conversion】终极混合动力增强模块。
         在内部处理 sqlite3.Row，但对外返回标准的 dict 列表，确保下游兼容性。
         """
         if not cast_list:
             return []
         
-        logger.info(f"🚀 混合动力增强模块启动，处理 {len(cast_list)} 位演员...")
+        logger.info(f"  -> 处理 {len(cast_list)} 位演员...")
 
         original_actor_map = {str(actor.get("Id")): actor for actor in cast_list if actor.get("Id")}
         
@@ -396,7 +395,7 @@ class MediaProcessor:
                         enriched_actor["ProviderIds"] = provider_ids
                         enriched_actors_map[actor_id] = enriched_actor
         except Exception as e:
-            logger.error(f"混合动力增强：数据库查询阶段失败: {e}", exc_info=True)
+            logger.error(f"  -> 数据库查询阶段失败: {e}", exc_info=True)
 
         logger.info(f"  -> 阶段一 (数据库) 完成：找到了 {len(ids_found_in_db)} 位演员的缓存信息。")
 
@@ -429,7 +428,6 @@ class MediaProcessor:
             actor_id = str(original_actor.get("Id"))
             final_enriched_cast.append(enriched_actors_map.get(actor_id, original_actor))
 
-        logger.info("🚀 混合动力增强模块完成。")
         return final_enriched_cast
     # ★★★ 公开的、独立的追剧判断方法 ★★★
     def check_and_add_to_watchlist(self, item_details: Dict[str, Any]):
@@ -746,7 +744,7 @@ class MediaProcessor:
             current_emby_cast_raw = item_details_from_emby.get("People", [])
             enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
             original_emby_actor_count = len(enriched_emby_cast)
-            logger.info(f"  -> 从 Emby 获取并增强后，得到 {original_emby_actor_count} 位现有演员用于后续所有操作。")
+            logger.info(f"  -> 从 Emby 获取后，得到 {original_emby_actor_count} 位现有演员用于后续所有操作。")
 
             # ======================================================================
             # 阶段 2: 权威数据源采集
@@ -775,7 +773,7 @@ class MediaProcessor:
 
             # 如果强制刷新失败，或者没有强制刷新，则使用我们已经增强过的 Emby 列表作为权威数据源
             if not authoritative_cast_source:
-                logger.info("  -> 保底策略: 未强制刷新或刷新失败，将使用增强后的 Emby 演员列表作为权威数据源。")
+                logger.info("  -> 保底策略: 未强制刷新或刷新失败，将使用 Emby 演员列表作为权威数据源。")
                 authoritative_cast_source = enriched_emby_cast
 
             logger.info(f"  -> 数据采集阶段完成，最终选定 {len(authoritative_cast_source)} 位权威演员。")
@@ -862,7 +860,10 @@ class MediaProcessor:
                 auto_lock_enabled = self.config.get(constants.CONFIG_OPTION_AUTO_LOCK_CAST, True)
                 fields_to_lock_on_refresh = ["Cast"] if auto_lock_enabled else None
                 
-                logger.info("  -> 更新成功，执行上锁和刷新操作...")
+                if auto_lock_enabled:
+                    logger.info("  -> 更新成功，将执行刷新和锁定操作...")
+                else:
+                    logger.info("  -> 更新成功，将执行刷新和解锁操作...")
                 emby_handler.refresh_emby_item_metadata(
                     item_emby_id=item_id,
                     emby_server_url=self.emby_url,
@@ -1701,7 +1702,7 @@ class MediaProcessor:
             if item_id in self.manual_edit_cache:
                 del self.manual_edit_cache[item_id]
                 logger.trace(f"已清理 ItemID {item_id} 的手动编辑会话缓存。")
-    # --- 从本地 cache 文件获取演员列表用于编辑 ---
+    # --- 为前端准备演员列表用于编辑 ---
     def get_cast_for_editing(self, item_id: str) -> Optional[Dict[str, Any]]:
         """
         【V-API-Optimized - 性能与展示优化最终版】
@@ -1718,13 +1719,13 @@ class MediaProcessor:
 
             item_name_for_log = emby_details.get("Name", f"未知(ID:{item_id})")
             
-            # 步骤 2: 获取并增强演员列表 (保持不变)
-            logger.debug(f"  -> 正在为 '{item_name_for_log}' 获取并增强演员列表...")
+            # 步骤 2: 获取演员列表 (保持不变)
+            logger.debug(f"  -> 正在为 '{item_name_for_log}' 获取演员列表...")
             raw_emby_people = emby_details.get("People", [])
             full_cast_enhanced = self._enrich_cast_from_db_and_api(raw_emby_people)
             
             if not full_cast_enhanced:
-                logger.warning(f"项目 '{item_name_for_log}' 没有演员信息或增强失败。")
+                logger.warning(f"项目 '{item_name_for_log}' 没有演员信息失败。")
 
             # 步骤 3: 缓存完整数据 (保持不变)
             cast_for_cache = []
@@ -1795,6 +1796,7 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"  -> 获取编辑数据失败 for ItemID {item_id}: {e}", exc_info=True)
             return None
+    
     # ★★★ 全量备份到覆盖缓存 ★★★
     def sync_all_media_assets(self, update_status_callback: Optional[callable] = None):
         """
@@ -1904,6 +1906,7 @@ class MediaProcessor:
         logger.info(final_message)
         if update_status_callback:
             update_status_callback(100, final_message)
+   
     # --- 图片同步 ---
     def sync_item_images(self, item_details: Dict[str, Any], update_description: Optional[str] = None) -> bool:
         """
@@ -2003,95 +2006,6 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"{log_prefix} 为 '{item_name_for_log}' 同步图片时发生未知错误: {e}", exc_info=True)
             return False
-    # --- 聚合演员表 ---
-    def _aggregate_series_cast_from_cache(self, base_cache_dir: str, item_name_for_log: str) -> List[Dict[str, Any]]:
-        """
-        【V3 - 最终修复版】聚合一个剧集所有本地缓存JSON文件中的演员列表。
-
-        此函数会扫描指定TMDb缓存目录，读取series.json、所有season-*.json和
-        season-*-episode-*.json文件，提取其中的演员和客串演员，
-        然后去重并形成一个完整的演员列表。
-
-        Args:
-            base_cache_dir (str): 剧集的TMDb缓存根目录路径。
-            item_name_for_log (str): 用于日志记录的媒体项目名称。
-
-        Returns:
-            List[Dict[str, Any]]: 聚合、去重并排序后的完整演员列表。
-        """
-        logger.info(f"【演员聚合】开始为 '{item_name_for_log}' 聚合所有JSON文件中的演员...")
-        
-        aggregated_cast_map = {}
-        
-        # 1. 优先处理主文件
-        base_json_filename = "series.json"
-        main_series_json_path = os.path.join(base_cache_dir, base_json_filename)
-        
-        main_data = _read_local_json(main_series_json_path)
-        if main_data:
-            # 主演列表的优先级最高
-            main_cast = main_data.get("credits", {}).get("cast", [])
-            for actor in main_cast:
-                actor_id = actor.get("id")
-                if actor_id:
-                    aggregated_cast_map[actor_id] = actor
-            logger.debug(f"  -> 从 {base_json_filename} 中加载了 {len(aggregated_cast_map)} 位主演员。")
-        else:
-            logger.warning(f"  -> 未找到主剧集文件: {main_series_json_path}，将只处理子文件。")
-
-        # 2. 扫描并聚合所有子文件（分季、分集）
-        try:
-            # 获取所有需要处理的子文件名
-            child_json_files = [
-                f for f in os.listdir(base_cache_dir) 
-                if f != base_json_filename and f.startswith("season-") and f.lower().endswith(".json")
-            ]
-            
-            if child_json_files:
-                logger.debug(f"  -> 发现 {len(child_json_files)} 个额外的季/集JSON文件需要处理。")
-
-                for json_filename in sorted(child_json_files):
-                    file_path = os.path.join(base_cache_dir, json_filename)
-                    child_data = _read_local_json(file_path)
-                    if not child_data:
-                        continue
-
-                    # ✨✨✨ 核心修复：从 "credits" 对象中安全地获取 cast 和 guest_stars ✨✨✨
-                    credits_data = child_data.get("credits", {})
-                    
-                    # 将两个列表安全地合并成一个待处理列表
-                    actors_to_process = credits_data.get("cast", []) + credits_data.get("guest_stars", [])
-                    
-                    if not actors_to_process:
-                        continue
-
-                    # 遍历并添加新演员
-                    for actor in actors_to_process:
-                        actor_id = actor.get("id")
-                        # 确保演员有ID
-                        if not actor_id:
-                            continue
-                        
-                        # 如果演员ID还未记录，就添加他/她
-                        if actor_id not in aggregated_cast_map:
-                            # ✨ 新增调试日志，用于追踪
-                            logger.trace(f"    -> 新增演员 (ID: {actor_id}): {actor.get('name')}")
-                            
-                            # 为客串演员设置一个默认的高 'order' 值，确保他们排在主演后面
-                            if 'order' not in actor:
-                                actor['order'] = 999 
-                            aggregated_cast_map[actor_id] = actor
-
-        except FileNotFoundError:
-            logger.warning(f"  -> 缓存目录 {base_cache_dir} 不存在，无法聚合子项目演员。")
-        
-        # 3. 将最终结果从字典转为列表并排序
-        full_aggregated_cast = list(aggregated_cast_map.values())
-        full_aggregated_cast.sort(key=lambda x: x.get('order', 999))
-        
-        logger.info(f"【演员聚合】完成。共为 '{item_name_for_log}' 聚合了 {len(full_aggregated_cast)} 位独立演员。")
-        
-        return full_aggregated_cast
     
     def close(self):
         if self.douban_api: self.douban_api.close()

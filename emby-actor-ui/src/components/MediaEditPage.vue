@@ -360,7 +360,7 @@ const translateAllFields = async () => {
 const fetchMediaDetails = async () => {
   isLoading.value = true;
   try {
-    const response = await axios.get(`/api/media_for_editing_sa/${itemId.value}`);
+    const response = await axios.get(`/api/media_for_editing/${itemId.value}`);
     itemDetails.value = response.data;
 
     // ★★★ 核心修复：在这里添加下面这行代码 ★★★

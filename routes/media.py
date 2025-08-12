@@ -74,10 +74,10 @@ def api_search_emby_library():
         logger.error(f"API /api/search_emby_library Error: {e}", exc_info=True)
         return jsonify({"error": "搜索时发生未知服务器错误"}), 500
 
-@media_api_bp.route('/media_for_editing_sa/<item_id>', methods=['GET'])
+@media_api_bp.route('/media_for_editing/<item_id>', methods=['GET'])
 @login_required
 @processor_ready_required
-def api_get_media_for_editing_sa(item_id):
+def api_get_media_for_editing(item_id):
     # 直接调用 core_processor 的新方法
     data_for_editing = extensions.media_processor_instance.get_cast_for_editing(item_id)
     

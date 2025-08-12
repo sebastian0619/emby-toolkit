@@ -765,34 +765,6 @@ def task_full_image_sync(processor: MediaProcessor):
     """
     # 直接把回调函数传进去
     processor.sync_all_media_assets(update_status_callback=task_manager.update_status_from_thread)
-# --- 精准图片同步后台任务 ---
-def image_update_task(processor: MediaProcessor, item_id: str, update_description: str):
-    """
-    【升级版】这是一个轻量级的后台任务，专门用于处理图片更新事件。
-    它现在可以接收一个描述，以实现精准同步。
-    """
-    logger.debug(f"图片更新任务启动，处理项目: {item_id}，描述: '{update_description}'")
-
-    item_details = emby_handler.get_emby_item_details(
-        item_id, 
-        processor.emby_url, 
-        processor.emby_api_key, 
-        processor.emby_user_id
-    )
-    if not item_details:
-        logger.error(f"图片更新任务：无法获取项目 {item_id} 的详情，任务中止。")
-        return
-
-    item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
-
-    # ★★★ 修改点 4: 将 description 传递给核心同步方法 ★★★
-    sync_success = processor.sync_item_images(item_details, update_description=update_description)
-    
-    if not sync_success:
-        logger.error(f"为 '{item_name_for_log}' 同步图片时失败。")
-        return
-
-    logger.debug(f"图片更新任务完成: {item_id}")
 # ✨ 辅助函数，并发刷新合集使用
 def _process_single_collection_concurrently(collection_data: dict, db_path: str, tmdb_api_key: str) -> dict:
     """

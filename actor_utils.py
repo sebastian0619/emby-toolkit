@@ -415,7 +415,7 @@ def enrich_all_actor_aliases_task(
     【V3 - 元数据增强版】
     在补充IMDb ID的同时，从TMDb获取演员的详细元数据（头像、性别等）并存入 ActorMetadata 表。
     """
-    logger.info("--- 开始执行“演员元数据增强”计划任务 ---")
+    logger.info("--- 开始执行“演员数据补充”计划任务 ---")
     
     start_time = time.time()
     if run_duration_minutes > 0:

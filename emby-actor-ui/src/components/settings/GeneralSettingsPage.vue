@@ -60,7 +60,7 @@
             </n-form-item-grid-item>
             <n-form-item label="自动锁定演员表" path="auto_lock_cast_after_update">
               <n-switch v-model:value="configModel.auto_lock_cast_after_update" />
-              <template #feedback>【推荐开启】开启后，通过API模式处理完演员表后，会自动将该项目的“演员”字段锁定，防止被Emby的后续刷新操作覆盖。</template>
+              <template #feedback>【酌情开启】开启后，通过API模式处理完演员表后，会自动将该项目的“演员”字段锁定，防止被后续刷新操作覆盖，也可能会造成新增的演员来不及刷新。</template>
             </n-form-item>
           </n-card>
           

@@ -80,7 +80,6 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 logging.getLogger("docker").setLevel(logging.WARNING)
 logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("geventwebsocket").setLevel(logging.WARNING)
-logging.getLogger("werkzeug").setLevel(logging.WARNING)
 # --- 全局变量 ---
 
 JOB_ID_FULL_SCAN = "scheduled_full_scan"
@@ -625,9 +624,15 @@ if __name__ == '__main__':
     main_app_port = int(constants.WEB_APP_PORT)
     logger.info(f"🚀 [GEVENT] 主应用服务器即将启动，监听端口: {main_app_port}")
     
+    class NullLogger:
+        def write(self, data):
+            pass
+        def flush(self):
+            pass
+
     main_server = WSGIServer(
         ('0.0.0.0', main_app_port), 
-        app
+        app, log=NullLogger()
     )
     main_server.serve_forever()
 
