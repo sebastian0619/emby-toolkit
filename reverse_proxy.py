@@ -187,8 +187,8 @@ def handle_get_mimicked_library_image(path):
 # --- ★★★ 核心修复 #1：用下面这个通用的“万能翻译”函数，替换掉旧的 a_prefixes 函数 ★★★ ---
 def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     """
-    【V2 - 通用版】
-    智能处理所有针对虚拟库的元数据类请求 (如 /Genres, /Studios, /Years, /Prefixes 等)。
+    【V3 - URL修正版】
+    智能处理所有针对虚拟库的元数据类请求。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -199,20 +199,20 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
         real_emby_collection_id = collection_info.get('emby_collection_id')
         
         base_url, api_key = _get_real_emby_url_and_key()
-        # 直接使用原始请求的路径，确保我们请求的是正确的端点 (e.g., /Genres)
-        target_url = f"{base_url}{path}"
+        
+        # ★★★ 核心修复：在这里加上一个至关重要的斜杠！ ★★★
+        target_url = f"{base_url}/{path}"
         
         headers = {k: v for k, v in request.headers if k.lower() not in ['host']}
         headers['Host'] = urlparse(base_url).netloc
         
         new_params = params.copy()
-        new_params['ParentId'] = real_emby_collection_id # “翻译”ParentId
+        new_params['ParentId'] = real_emby_collection_id
         new_params['api_key'] = api_key
         
         resp = requests.get(target_url, headers=headers, params=new_params, timeout=15)
         resp.raise_for_status()
         
-        # 原封不动地返回从真实服务器获取到的数据
         return Response(resp.content, resp.status_code, content_type=resp.headers.get('Content-Type'))
 
     except Exception as e:
@@ -448,7 +448,7 @@ def proxy_all(path):
             else:
                 # 这条日志现在只会在极少数未知情况下出现，是我们的最后防线
                 logger.warning(f"无法从路径 '{request.path}' 中为虚拟库请求提取user_id。")
-                
+
         if path.startswith('emby/Items/') and '/Images/' in path and is_mimicked_id(path.split('/')[2]):
              return handle_get_mimicked_library_image(path)
 
