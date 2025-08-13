@@ -1745,12 +1745,12 @@ class MediaProcessor:
 
         total = len(items_to_process)
         if total == 0:
-            logger.info("没有需要新增同步的媒体资产。")
+            logger.info("没有需要新增同步的媒体项。")
             if update_status_callback:
                 update_status_callback(100, "没有需要新增同步的项目")
             return
 
-        logger.info(f"共找到 {total} 个新项目需要同步资产。")
+        logger.info(f"共找到 {total} 个新项目需要备份。")
         
         stats = {"newly_synced": 0, "skipped": 0}
 
@@ -1783,11 +1783,11 @@ class MediaProcessor:
                         continue
 
                     # --- 任务一：同步图片 ---
-                    logger.info(f"  -> 正在为 '{item_name_from_db}' 同步图片...")
+                    logger.info(f"  -> 正在为 '{item_name_from_db}' 备份图片...")
                     self.sync_item_images(item_details)
                     
                     # --- 任务二：复制元数据 ---
-                    logger.info(f"  -> 正在为 '{item_name_from_db}' 迁移元数据...")
+                    logger.info(f"  -> 正在为 '{item_name_from_db}' 备份元数据...")
                     cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
                     source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
                     target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
@@ -1795,9 +1795,9 @@ class MediaProcessor:
                     if os.path.exists(source_cache_dir):
                         os.makedirs(target_override_dir, exist_ok=True)
                         shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-                        logger.info(f"    ✅ 成功将元数据从 '{source_cache_dir}' 迁移到 '{target_override_dir}'。")
+                        logger.info(f"    ✅ 成功将元数据从 '{source_cache_dir}' 备份到 '{target_override_dir}'。")
                     else:
-                        logger.debug(f"    - 跳过元数据迁移，因为源缓存目录不存在: {source_cache_dir}")
+                        logger.debug(f"    - 跳过元数据备份，因为源缓存目录不存在: {source_cache_dir}")
 
                     # ✨ 核心修改：如果所有操作都成功，更新数据库中的标记
                     from datetime import datetime
@@ -1806,7 +1806,7 @@ class MediaProcessor:
                         (datetime.now().isoformat(), item_id)
                     )
                     conn_sync.commit()
-                    logger.info(f"    ✅ 成功标记 '{item_name_from_db}' 的资产为已同步。")
+                    logger.info(f"    ✅ 成功标记 '{item_name_from_db}' 为已备份。")
                     stats["newly_synced"] += 1
 
                 except Exception as e:
@@ -1815,7 +1815,7 @@ class MediaProcessor:
                 
                 time.sleep(0.1)
 
-        logger.info("--- 增量媒体资产同步任务结束 ---")
+        logger.info("--- 覆盖缓存备份任务结束 ---")
         final_message = f"同步完成！新增同步: {stats['newly_synced']}, 跳过: {stats['skipped']}。"
         logger.info(final_message)
         if update_status_callback:
@@ -1832,12 +1832,12 @@ class MediaProcessor:
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
         
         if not all([item_id, item_type, self.local_data_path]):
-            logger.error(f"[图片同步] 跳过 '{item_name_for_log}'，因为缺少ID、类型或未配置本地数据路径。")
+            logger.error(f"[图片备份] 跳过 '{item_name_for_log}'，因为缺少ID、类型或未配置本地数据路径。")
             return False
 
         try:
             # --- 准备工作 (目录、TMDb ID等) ---
-            log_prefix = "[图片同步]"
+            log_prefix = "[图片备份]"
             tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
             if not tmdb_id:
                 logger.warning(f"{log_prefix} 项目 '{item_name_for_log}' 缺少TMDb ID，无法确定覆盖目录，跳过。")
@@ -1885,7 +1885,7 @@ class MediaProcessor:
             
             # 模式二：完全同步 (默认或回退)
             else:
-                log_prefix = "[完整图片同步]"
+                log_prefix = "[图片备份]"
                 logger.debug(f"{log_prefix} 未提供更新描述，将同步所有类型的图片。")
                 images_to_sync = full_image_map
 
@@ -1915,10 +1915,10 @@ class MediaProcessor:
                         if season_number is not None and episode_number is not None:
                             emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
             
-            logger.info(f"{log_prefix} ✅ 成功完成 '{item_name_for_log}' 的图片同步。")
+            logger.info(f"{log_prefix} ✅ 成功完成 '{item_name_for_log}' 的图片备份。")
             return True
         except Exception as e:
-            logger.error(f"{log_prefix} 为 '{item_name_for_log}' 同步图片时发生未知错误: {e}", exc_info=True)
+            logger.error(f"{log_prefix} 为 '{item_name_for_log}' 备份图片时发生未知错误: {e}", exc_info=True)
             return False
     
     def close(self):
