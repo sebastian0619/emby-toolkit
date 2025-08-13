@@ -1708,109 +1708,115 @@ class MediaProcessor:
     # ★★★ 全量备份到覆盖缓存 ★★★
     def sync_all_media_assets(self, update_status_callback: Optional[callable] = None):
         """
-        【V-Final Migration Tool - 最终迁移版】
-        遍历所有已处理的媒体项，执行两大任务：
+        【V-Incremental - 增量同步版】
+        遍历所有已处理但尚未同步过资产的媒体项，执行资产同步，并记录状态。
         1. 将 Emby 中的当前图片下载到本地 override/images 目录。
         2. 将 cache 目录中的 JSON 元数据文件复制到 override 目录。
         """
-        task_name = "全量同步媒体资产 (图片+元数据)"
+        task_name = "覆盖缓存备份"
         logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
-        
-        # 检查本地数据路径是否已配置，这是此功能的基础
+
         if not self.local_data_path:
             logger.error(f"'{task_name}' 失败：未在配置中设置“本地数据源路径”。")
             if update_status_callback:
                 update_status_callback(-1, "未配置本地数据源路径")
             return
 
+        items_to_process = []
         try:
             with get_central_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT item_id, item_name FROM processed_log")
+                # ✨ 核心修改：只查询尚未同步过资产的项目
+                cursor.execute("SELECT item_id, item_name FROM processed_log WHERE assets_synced_at IS NULL")
                 items_to_process = cursor.fetchall()
+        except sqlite3.OperationalError as e:
+            if "no such column: assets_synced_at" in str(e):
+                error_msg = "数据库缺少 'assets_synced_at' 字段，请先更新表结构！"
+                logger.error(error_msg)
+                if update_status_callback: update_status_callback(-1, error_msg)
+            else:
+                logger.error(f"获取待同步项目列表时发生数据库错误: {e}", exc_info=True)
+                if update_status_callback: update_status_callback(-1, "数据库错误")
+            return
         except Exception as e:
-            logger.error(f"获取已处理项目列表时发生数据库错误: {e}", exc_info=True)
-            if update_status_callback:
-                update_status_callback(-1, "数据库错误")
+            logger.error(f"获取待同步项目列表时发生未知错误: {e}", exc_info=True)
+            if update_status_callback: update_status_callback(-1, "数据库未知错误")
             return
 
         total = len(items_to_process)
         if total == 0:
-            logger.info("没有已处理的项目，无需同步。")
+            logger.info("没有需要新增同步的媒体资产。")
             if update_status_callback:
-                update_status_callback(100, "没有项目")
+                update_status_callback(100, "没有需要新增同步的项目")
             return
 
-        logger.info(f"共找到 {total} 个已处理项目需要同步资产。")
+        logger.info(f"共找到 {total} 个新项目需要同步资产。")
         
-        stats = {"images_synced": 0, "metadata_copied": 0, "skipped": 0}
+        stats = {"newly_synced": 0, "skipped": 0}
 
-        for i, db_row in enumerate(items_to_process):
-            if self.is_stop_requested():
-                logger.info(f"'{task_name}' 任务被中止。")
-                break
+        # ✨ 使用新的连接进行循环，以便在循环内提交
+        with get_central_db_connection(self.db_path) as conn_sync:
+            cursor_sync = conn_sync.cursor()
+            for i, db_row in enumerate(items_to_process):
+                if self.is_stop_requested():
+                    logger.info(f"'{task_name}' 任务被中止。")
+                    break
 
-            item_id = db_row['item_id']
-            item_name_from_db = db_row['item_name']
-            
-            if update_status_callback:
-                update_status_callback(int((i / total) * 100), f"({i+1}/{total}): {item_name_from_db}")
-
-            try:
-                item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
-                if not item_details:
-                    logger.warning(f"跳过 '{item_name_from_db}' (ID: {item_id})，无法从 Emby 获取其详情。")
-                    stats["skipped"] += 1
-                    continue
-
-                tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-                item_type = item_details.get("Type")
-                if not tmdb_id:
-                    logger.warning(f"跳过 '{item_name_from_db}'，因为它缺少 TMDb ID。")
-                    stats["skipped"] += 1
-                    continue
-
-                # ======================================================================
-                # ★★★★★★★★★★★★★★★ 任务一：同步图片 ★★★★★★★★★★★★★★★
-                # ======================================================================
-                # (这部分逻辑直接调用我们之前重构好的 sync_item_images 函数，非常优雅)
-                logger.info(f"  -> 正在为 '{item_name_from_db}' 同步图片...")
-                self.sync_item_images(item_details)
-                stats["images_synced"] += 1
+                item_id = db_row['item_id']
+                item_name_from_db = db_row['item_name']
                 
-                # ======================================================================
-                # ★★★★★★★★★★★★★★★ 任务二：复制元数据 ★★★★★★★★★★★★★★★
-                # ======================================================================
-                logger.info(f"  -> 正在为 '{item_name_from_db}' 迁移元数据...")
-                
-                cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-                source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
-                target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+                if update_status_callback:
+                    update_status_callback(int((i / total) * 100), f"({i+1}/{total}): {item_name_from_db}")
 
-                if os.path.exists(source_cache_dir):
-                    try:
-                        # 确保目标目录存在
+                try:
+                    item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+                    if not item_details:
+                        logger.warning(f"跳过 '{item_name_from_db}' (ID: {item_id})，无法从 Emby 获取其详情。")
+                        stats["skipped"] += 1
+                        continue
+
+                    tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+                    item_type = item_details.get("Type")
+                    if not tmdb_id:
+                        logger.warning(f"跳过 '{item_name_from_db}'，因为它缺少 TMDb ID。")
+                        stats["skipped"] += 1
+                        continue
+
+                    # --- 任务一：同步图片 ---
+                    logger.info(f"  -> 正在为 '{item_name_from_db}' 同步图片...")
+                    self.sync_item_images(item_details)
+                    
+                    # --- 任务二：复制元数据 ---
+                    logger.info(f"  -> 正在为 '{item_name_from_db}' 迁移元数据...")
+                    cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+                    source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
+                    target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+
+                    if os.path.exists(source_cache_dir):
                         os.makedirs(target_override_dir, exist_ok=True)
-                        
-                        # 使用 shutil.copytree 来递归复制整个目录
-                        # dirs_exist_ok=True (Python 3.8+) 可以覆盖现有文件
                         shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-                        
                         logger.info(f"    ✅ 成功将元数据从 '{source_cache_dir}' 迁移到 '{target_override_dir}'。")
-                        stats["metadata_copied"] += 1
-                    except Exception as e_copy:
-                        logger.error(f"    ❌ 迁移元数据时发生错误: {e_copy}", exc_info=True)
-                else:
-                    logger.debug(f"    - 跳过元数据迁移，因为源缓存目录不存在: {source_cache_dir}")
+                    else:
+                        logger.debug(f"    - 跳过元数据迁移，因为源缓存目录不存在: {source_cache_dir}")
 
-            except Exception as e:
-                logger.error(f"处理项目 '{item_name_from_db}' (ID: {item_id}) 时发生错误: {e}", exc_info=True)
-                stats["skipped"] += 1
-            
-            time.sleep(0.1) # 避免请求过于频繁
+                    # ✨ 核心修改：如果所有操作都成功，更新数据库中的标记
+                    from datetime import datetime
+                    cursor_sync.execute(
+                        "UPDATE processed_log SET assets_synced_at = ? WHERE item_id = ?",
+                        (datetime.now().isoformat(), item_id)
+                    )
+                    conn_sync.commit()
+                    logger.info(f"    ✅ 成功标记 '{item_name_from_db}' 的资产为已同步。")
+                    stats["newly_synced"] += 1
 
-        logger.info("--- 全量媒体资产同步任务结束 ---")
-        final_message = f"同步完成！图片: {stats['images_synced']}, 元数据: {stats['metadata_copied']}, 跳过: {stats['skipped']}。"
+                except Exception as e:
+                    logger.error(f"处理项目 '{item_name_from_db}' (ID: {item_id}) 时发生错误: {e}", exc_info=True)
+                    stats["skipped"] += 1
+                
+                time.sleep(0.1)
+
+        logger.info("--- 增量媒体资产同步任务结束 ---")
+        final_message = f"同步完成！新增同步: {stats['newly_synced']}, 跳过: {stats['skipped']}。"
         logger.info(final_message)
         if update_status_callback:
             update_status_callback(100, final_message)

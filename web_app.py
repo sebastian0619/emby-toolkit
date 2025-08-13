@@ -126,6 +126,24 @@ def init_db():
             cursor.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             cursor.execute("CREATE TABLE IF NOT EXISTS translation_cache (original_text TEXT PRIMARY KEY, translated_text TEXT, engine_used TEXT, last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             
+            # ✨ 为老用户平滑升级 'processed_log' 表 (使用可扩展模式)
+            try:
+                cursor.execute("PRAGMA table_info(processed_log)")
+                existing_columns = {row[1] for row in cursor.fetchall()}
+                
+                # 定义需要检查和添加的字段。未来增加新字段，只需在此处添加键值对。
+                new_columns_to_add_processed = {
+                    "assets_synced_at": "TEXT"
+                }
+
+                for col_name, col_type in new_columns_to_add_processed.items():
+                    if col_name not in existing_columns:
+                        logger.info(f"    -> 检测到旧版 'processed_log' 表，正在添加 '{col_name}' 字段...")
+                        cursor.execute(f"ALTER TABLE processed_log ADD COLUMN {col_name} {col_type};")
+                        logger.info(f"    -> '{col_name}' 字段添加成功。")
+            except Exception as e_alter_processed:
+                logger.error(f"  -> 为 'processed_log' 表添加新字段时出错: {e_alter_processed}")
+            
             # --- 3. 创建核心功能表 ---
             # 电影合集检查
             logger.trace("  -> 正在创建/升级 'collections_info' 表...")

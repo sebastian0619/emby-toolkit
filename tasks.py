@@ -758,7 +758,7 @@ def task_reprocess_all_review_items(processor: MediaProcessor):
     except Exception as e:
         logger.error(f"重新处理所有待复核项时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, "任务失败")
-# ★★★ 全量图片同步的任务函数 ★★★
+# ★★★ 同步覆盖缓存的任务函数 ★★★
 def task_full_image_sync(processor: MediaProcessor):
     """
     后台任务：调用 processor 的方法来同步所有图片。
