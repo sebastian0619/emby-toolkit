@@ -1708,10 +1708,9 @@ class MediaProcessor:
     # ★★★ 全量备份到覆盖缓存 ★★★
     def sync_all_media_assets(self, update_status_callback: Optional[callable] = None):
         """
-        【V-Incremental - 增量同步版】
-        遍历所有已处理但尚未同步过资产的媒体项，执行资产同步，并记录状态。
-        1. 将 Emby 中的当前图片下载到本地 override/images 目录。
-        2. 将 cache 目录中的 JSON 元数据文件复制到 override 目录。
+        【V-Final - 增量同步且带自我清理】
+        遍历所有已处理但尚未同步过资产的媒体项。
+        如果发现某个项目在Emby中已不存在，则自动从已处理日志中移除该记录。
         """
         task_name = "覆盖缓存备份"
         logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
@@ -1726,7 +1725,6 @@ class MediaProcessor:
         try:
             with get_central_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
-                # ✨ 核心修改：只查询尚未同步过资产的项目
                 cursor.execute("SELECT item_id, item_name FROM processed_log WHERE assets_synced_at IS NULL")
                 items_to_process = cursor.fetchall()
         except sqlite3.OperationalError as e:
@@ -1745,16 +1743,15 @@ class MediaProcessor:
 
         total = len(items_to_process)
         if total == 0:
-            logger.info("没有需要新增同步的媒体项。")
+            logger.info("  -> 没有需要新增备份的媒体资产。")
             if update_status_callback:
-                update_status_callback(100, "没有需要新增同步的项目")
+                update_status_callback(100, "没有需要新增备份的项目")
             return
 
         logger.info(f"  -> 共找到 {total} 个新项目需要备份。")
         
-        stats = {"newly_synced": 0, "skipped": 0}
+        stats = {"newly_synced": 0, "skipped": 0, "cleaned": 0} # ✨ 新增一个清理计数器
 
-        # ✨ 使用新的连接进行循环，以便在循环内提交
         with get_central_db_connection(self.db_path) as conn_sync:
             cursor_sync = conn_sync.cursor()
             for i, db_row in enumerate(items_to_process):
@@ -1769,16 +1766,19 @@ class MediaProcessor:
                     update_status_callback(int((i / total) * 100), f"({i+1}/{total}): {item_name_from_db}")
 
                 try:
+                    # ✨✨✨【核心修改】✨✨✨
+                    # 将获取详情的操作放在 try 块中，以便捕获失败
                     item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+                    
+                    # 如果获取失败（例如，返回None），emby_handler会打印错误，我们在这里处理后续
                     if not item_details:
-                        logger.warning(f"  -> 跳过 '{item_name_from_db}' (ID: {item_id})，无法从 Emby 获取其详情。")
-                        stats["skipped"] += 1
-                        continue
+                        # 抛出一个特定的异常，由下面的 except 块捕获并处理
+                        raise ValueError(f"项目在Emby中已不存在或无法访问 (ID: {item_id})")
 
                     tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
                     item_type = item_details.get("Type")
                     if not tmdb_id:
-                        logger.warning(f"  -> 跳过 '{item_name_from_db}'，因为它缺少 TMDb ID。")
+                        logger.warning(f"跳过 '{item_name_from_db}'，因为它缺少 TMDb ID。")
                         stats["skipped"] += 1
                         continue
 
@@ -1795,25 +1795,32 @@ class MediaProcessor:
                     if os.path.exists(source_cache_dir):
                         os.makedirs(target_override_dir, exist_ok=True)
                         shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-                        logger.info(f"  -> 成功将元数据从 '{source_cache_dir}' 备份到 '{target_override_dir}'。")
+                        logger.info(f"    ✅ 成功将元数据从 '{source_cache_dir}' 备份到 '{target_override_dir}'。")
                     else:
-                        logger.debug(f"  -> 跳过元数据备份，因为源缓存目录不存在: {source_cache_dir}")
+                        logger.debug(f"    - 跳过元数据备份，因为源缓存目录不存在: {source_cache_dir}")
 
-                    # ✨ 核心修改：如果所有操作都成功，更新数据库中的标记
-                    from datetime import datetime
                     self.log_db_manager.mark_assets_as_synced(cursor_sync, item_id)
+                    
                     conn_sync.commit()
-                    logger.info(f"  -> 成功标记 '{item_name_from_db}' 为已备份。")
                     stats["newly_synced"] += 1
 
+                except ValueError as e:
+                    # ✨✨✨【核心修改】✨✨✨
+                    # 捕获我们自己抛出的 ValueError，说明项目在 Emby 中找不到了
+                    logger.warning(f"项目 '{item_name_from_db}' (ID: {item_id}) 在 Emby 中已无法访问，将从已处理日志中清理该记录。")
+                    self.log_db_manager.remove_from_processed_log(cursor_sync, item_id)
+                    conn_sync.commit() # 提交删除操作
+                    stats["cleaned"] += 1 # 清理计数+1
+
                 except Exception as e:
-                    logger.error(f"  -> 处理项目 '{item_name_from_db}' (ID: {item_id}) 时发生错误: {e}", exc_info=True)
+                    logger.error(f"处理项目 '{item_name_from_db}' (ID: {item_id}) 时发生未知错误: {e}", exc_info=True)
                     stats["skipped"] += 1
                 
                 time.sleep(0.1)
 
         logger.info("--- 覆盖缓存备份任务结束 ---")
-        final_message = f"同步完成！新增同步: {stats['newly_synced']}, 跳过: {stats['skipped']}。"
+        # ✨ 更新最终的日志消息
+        final_message = f"备份完成！新增: {stats['newly_synced']}, 清理无效记录: {stats['cleaned']}, 跳过: {stats['skipped']}。"
         logger.info(final_message)
         if update_status_callback:
             update_status_callback(100, final_message)
