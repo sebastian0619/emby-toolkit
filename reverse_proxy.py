@@ -266,7 +266,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if sort_by_field and sort_by_field != 'none':
             sort_order = definition.get('default_sort_order', 'Ascending')
             is_descending = (sort_order == 'Descending')
-            logger.debug(f"执行服务器端排序劫持: '{sort_by_field}' ({sort_order})")
+            logger.trace(f"执行服务器端排序劫持: '{sort_by_field}' ({sort_order})")
             
             default_sort_value = 0 if sort_by_field in ['CommunityRating', 'ProductionYear'] else "0"
             try:

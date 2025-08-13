@@ -60,7 +60,7 @@ def _save_metadata_to_cache(
     直接从处理好的数据（Emby详情、最终演员表、可选的TMDB详情）组装并缓存元数据。
     """
     try:
-        logger.debug(f"【实时缓存-API原生版】正在为 '{item_details_from_emby.get('Name')}' 组装元数据...")
+        logger.trace(f"【实时缓存】正在为 '{item_details_from_emby.get('Name')}' 组装元数据...")
         
         # --- 从我们已有的、最可靠的数据源中组装所有信息 ---
         
@@ -677,7 +677,7 @@ class MediaProcessor:
             # ======================================================================
             # 阶段 3: 豆瓣及后续处理
             # ======================================================================
-            douban_cast_raw, _ = self._get_douban_data_with_local_cache(item_details_from_emby)
+            douban_cast_raw, douban_rating = self._get_douban_data_with_local_cache(item_details_from_emby)
 
             with get_central_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -734,7 +734,8 @@ class MediaProcessor:
                     new_cast_list_for_handler=cast_for_emby_handler,
                     emby_server_url=self.emby_url,
                     emby_api_key=self.emby_api_key,
-                    user_id=self.emby_user_id
+                    user_id=self.emby_user_id,
+                    new_rating=douban_rating
                 )
 
                 if item_type == "Series" and update_success:
@@ -819,7 +820,7 @@ class MediaProcessor:
                 logger.error(f"写入失败日志时再次发生错误: {log_e}")
             return False
 
-        logger.info(f"✨✨✨ API 模式处理完成 '{item_name_for_log}' ✨✨✨")
+        logger.info(f"✨✨✨ 处理完成 '{item_name_for_log}' ✨✨✨")
         return True
 
     # --- 核心处理器 ---
@@ -1239,7 +1240,7 @@ class MediaProcessor:
                 logger.warning("AI批量翻译失败，将保留演员和角色名原文。")
 
         # 3.1 【助理上场】在格式化前，备份所有工牌 (emby_person_id)
-        logger.debug("调用 actor_utils.format_and_complete_cast_list 进行最终格式化...")
+        logger.trace("进行最终格式化...")
         is_animation = "Animation" in item_details_from_emby.get("Genres", [])
         final_cast_perfect = actor_utils.format_and_complete_cast_list(
             cast_to_process, is_animation, self.config, mode='auto'
@@ -1247,7 +1248,7 @@ class MediaProcessor:
 
         # 3.2 【助理收尾】直接准备 provider_ids
         # emby_person_id 已经由上一步函数完整地保留下来了
-        logger.debug("格式化完成，准备最终的 provider_ids...")
+        logger.trace("格式化完成，准备最终的 provider_ids...")
         for actor in final_cast_perfect:
             # 顺便把 provider_ids 准备好，下游函数会用到
             actor["provider_ids"] = {
