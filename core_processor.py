@@ -1750,7 +1750,7 @@ class MediaProcessor:
                 update_status_callback(100, "没有需要新增同步的项目")
             return
 
-        logger.info(f"共找到 {total} 个新项目需要备份。")
+        logger.info(f"  -> 共找到 {total} 个新项目需要备份。")
         
         stats = {"newly_synced": 0, "skipped": 0}
 
@@ -1771,14 +1771,14 @@ class MediaProcessor:
                 try:
                     item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
                     if not item_details:
-                        logger.warning(f"跳过 '{item_name_from_db}' (ID: {item_id})，无法从 Emby 获取其详情。")
+                        logger.warning(f"  -> 跳过 '{item_name_from_db}' (ID: {item_id})，无法从 Emby 获取其详情。")
                         stats["skipped"] += 1
                         continue
 
                     tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
                     item_type = item_details.get("Type")
                     if not tmdb_id:
-                        logger.warning(f"跳过 '{item_name_from_db}'，因为它缺少 TMDb ID。")
+                        logger.warning(f"  -> 跳过 '{item_name_from_db}'，因为它缺少 TMDb ID。")
                         stats["skipped"] += 1
                         continue
 
@@ -1795,19 +1795,19 @@ class MediaProcessor:
                     if os.path.exists(source_cache_dir):
                         os.makedirs(target_override_dir, exist_ok=True)
                         shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-                        logger.info(f"    ✅ 成功将元数据从 '{source_cache_dir}' 备份到 '{target_override_dir}'。")
+                        logger.info(f"  -> 成功将元数据从 '{source_cache_dir}' 备份到 '{target_override_dir}'。")
                     else:
-                        logger.debug(f"    - 跳过元数据备份，因为源缓存目录不存在: {source_cache_dir}")
+                        logger.debug(f"  -> 跳过元数据备份，因为源缓存目录不存在: {source_cache_dir}")
 
                     # ✨ 核心修改：如果所有操作都成功，更新数据库中的标记
                     from datetime import datetime
                     self.log_db_manager.mark_assets_as_synced(cursor_sync, item_id)
                     conn_sync.commit()
-                    logger.info(f"    ✅ 成功标记 '{item_name_from_db}' 为已备份。")
+                    logger.info(f"  -> 成功标记 '{item_name_from_db}' 为已备份。")
                     stats["newly_synced"] += 1
 
                 except Exception as e:
-                    logger.error(f"处理项目 '{item_name_from_db}' (ID: {item_id}) 时发生错误: {e}", exc_info=True)
+                    logger.error(f"  -> 处理项目 '{item_name_from_db}' (ID: {item_id}) 时发生错误: {e}", exc_info=True)
                     stats["skipped"] += 1
                 
                 time.sleep(0.1)
@@ -1829,15 +1829,15 @@ class MediaProcessor:
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
         
         if not all([item_id, item_type, self.local_data_path]):
-            logger.error(f"[图片备份] 跳过 '{item_name_for_log}'，因为缺少ID、类型或未配置本地数据路径。")
+            logger.error(f"  -> 跳过 '{item_name_for_log}'，因为缺少ID、类型或未配置本地数据路径。")
             return False
 
         try:
             # --- 准备工作 (目录、TMDb ID等) ---
-            log_prefix = "[图片备份]"
+            log_prefix = "图片备份："
             tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
             if not tmdb_id:
-                logger.warning(f"{log_prefix} 项目 '{item_name_for_log}' 缺少TMDb ID，无法确定覆盖目录，跳过。")
+                logger.warning(f"  -> {log_prefix} 项目 '{item_name_for_log}' 缺少TMDb ID，无法确定覆盖目录，跳过。")
                 return False
             
             cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
@@ -1882,15 +1882,15 @@ class MediaProcessor:
             
             # 模式二：完全同步 (默认或回退)
             else:
-                log_prefix = "[图片备份]"
-                logger.debug(f"{log_prefix} 未提供更新描述，将同步所有类型的图片。")
+                log_prefix = "图片备份:"
+                logger.debug(f"  -> {log_prefix} 未提供更新描述，将同步所有类型的图片。")
                 images_to_sync = full_image_map
 
             # --- 执行下载 ---
-            logger.info(f"{log_prefix} 开始为 '{item_name_for_log}' 下载 {len(images_to_sync)} 张图片至 {image_override_dir}...")
+            logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 下载 {len(images_to_sync)} 张图片至 {image_override_dir}...")
             for image_type, filename in images_to_sync.items():
                 if self.is_stop_requested():
-                    logger.warning(f"{log_prefix} 收到停止信号，中止图片下载。")
+                    logger.warning(f"  -> {log_prefix} 收到停止信号，中止图片下载。")
                     return False
                 emby_handler.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
             
@@ -1900,7 +1900,7 @@ class MediaProcessor:
                 children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name_for_log) or []
                 for child in children:
                     if self.is_stop_requested():
-                        logger.warning(f"{log_prefix} 收到停止信号，中止子项目图片下载。")
+                        logger.warning(f"  -> {log_prefix} 收到停止信号，中止子项目图片下载。")
                         return False
                     child_type, child_id = child.get("Type"), child.get("Id")
                     if child_type == "Season":
@@ -1912,7 +1912,7 @@ class MediaProcessor:
                         if season_number is not None and episode_number is not None:
                             emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
             
-            logger.info(f"{log_prefix} ✅ 成功完成 '{item_name_for_log}' 的图片备份。")
+            logger.info(f"  -> {log_prefix} ✅ 成功完成 '{item_name_for_log}' 的图片备份。")
             return True
         except Exception as e:
             logger.error(f"{log_prefix} 为 '{item_name_for_log}' 备份图片时发生未知错误: {e}", exc_info=True)
