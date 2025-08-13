@@ -59,7 +59,11 @@
               <n-switch v-model:value="configModel.refresh_emby_after_update" />
             </n-form-item-grid-item>
             <n-form-item label="自动锁定演员表" path="auto_lock_cast_after_update">
-              <n-switch v-model:value="configModel.auto_lock_cast_after_update" />
+              <!-- ★★★ 修改点：添加 :disabled 属性 ★★★ -->
+              <n-switch 
+                v-model:value="configModel.auto_lock_cast_after_update" 
+                :disabled="!configModel.refresh_emby_after_update"
+              />
               <template #feedback>【酌情开启】开启后，处理完演员表后，会自动将该项目的“演员”字段锁定，防止被后续刷新操作覆盖，也可能会造成新增的演员来不及刷新。</template>
             </n-form-item>
           </n-card>
@@ -562,6 +566,21 @@ const fetchNativeViewsSimple = async () => {
     loadingNativeLibraries.value = false;
   }
 };
+
+// ★★★ 新增代码：添加这个 watch 监听 ★★★
+watch(
+  () => configModel.value?.refresh_emby_after_update,
+  (isRefreshEnabled) => {
+    // 确保 configModel 已经加载
+    if (configModel.value) {
+      // 如果“刷新”开关被关闭了
+      if (!isRefreshEnabled) {
+        // 自动将“锁定”开关也关闭
+        configModel.value.auto_lock_cast_after_update = false;
+      }
+    }
+  }
+);
 
 watch(
   () => [

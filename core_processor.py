@@ -752,24 +752,33 @@ class MediaProcessor:
                     return False
 
                 # ======================================================================
-                # ★★★★★★★★★★★★★★★ 阶段 5: 调用“锁匠”完成收尾 ★★★★★★★★★★★★★★★
+                # ★★★★★★★★★★★★★★★ 阶段 5: 通知Emby刷新完成收尾 ★★★★★★★★★★★★★★★
                 # ======================================================================
-                auto_lock_enabled = self.config.get(constants.CONFIG_OPTION_AUTO_LOCK_CAST, True)
-                fields_to_lock_on_refresh = ["Cast"] if auto_lock_enabled else None
-                
-                if auto_lock_enabled:
-                    logger.info("  -> 更新成功，将执行刷新和锁定操作...")
+                # ★★★ 1. 读取您已经存在的、正确的配置开关 ★★★
+                auto_refresh_enabled = self.config.get(constants.CONFIG_OPTION_REFRESH_AFTER_UPDATE, True)
+
+                # ★★★ 2. 使用 if 语句包裹整个“刷新”逻辑 ★★★
+                if auto_refresh_enabled:
+                    auto_lock_enabled = self.config.get(constants.CONFIG_OPTION_AUTO_LOCK_CAST, True)
+                    fields_to_lock_on_refresh = ["Cast"] if auto_lock_enabled else None
+                    
+                    if auto_lock_enabled:
+                        logger.info("  -> 更新成功，将执行刷新和锁定操作...")
+                    else:
+                        logger.info("  -> 更新成功，将执行刷新和解锁操作...")
+                        
+                    emby_handler.refresh_emby_item_metadata(
+                        item_emby_id=item_id,
+                        emby_server_url=self.emby_url,
+                        emby_api_key=self.emby_api_key,
+                        user_id_for_ops=self.emby_user_id,
+                        lock_fields=fields_to_lock_on_refresh,
+                        replace_all_metadata_param=False,
+                        item_name_for_log=item_name_for_log
+                    )
                 else:
-                    logger.info("  -> 更新成功，将执行刷新和解锁操作...")
-                emby_handler.refresh_emby_item_metadata(
-                    item_emby_id=item_id,
-                    emby_server_url=self.emby_url,
-                    emby_api_key=self.emby_api_key,
-                    user_id_for_ops=self.emby_user_id,
-                    lock_fields=fields_to_lock_on_refresh, # ★ 把要锁定的字段传进去
-                    replace_all_metadata_param=False, # 轻量级刷新
-                    item_name_for_log=item_name_for_log
-                )
+                    # ★★★ 3. 如果禁用了刷新，打印日志告知用户 ★★★
+                    logger.info(f"  -> 没有启用自动刷新，跳过刷新和锁定步骤。")
 
                 # ======================================================================
                 # 阶段 4: 实时元数据缓存 (现在总是能执行了)
