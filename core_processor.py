@@ -1801,10 +1801,7 @@ class MediaProcessor:
 
                     # ✨ 核心修改：如果所有操作都成功，更新数据库中的标记
                     from datetime import datetime
-                    cursor_sync.execute(
-                        "UPDATE processed_log SET assets_synced_at = ? WHERE item_id = ?",
-                        (datetime.now().isoformat(), item_id)
-                    )
+                    self.log_db_manager.mark_assets_as_synced(cursor_sync, item_id)
                     conn_sync.commit()
                     logger.info(f"    ✅ 成功标记 '{item_name_from_db}' 为已备份。")
                     stats["newly_synced"] += 1

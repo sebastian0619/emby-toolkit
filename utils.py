@@ -2,6 +2,7 @@
 
 import re
 import os
+from datetime import datetime
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
 import unicodedata
@@ -197,6 +198,18 @@ class LogDBManager:
             logger.error(f"写入 failed_log 失败 (Item ID: {item_id}): {e}")
             raise
     
+    def mark_assets_as_synced(self, cursor: sqlite3.Cursor, item_id: str):
+        """
+        【新增】更新 processed_log 表，标记指定项目的资产已同步。
+        """
+        try:
+            logger.debug(f"正在标记 Item ID {item_id} 的为已备份...")
+            cursor.execute(
+                "UPDATE processed_log SET assets_synced_at = ? WHERE item_id = ?",
+                (datetime.now().isoformat(), item_id)
+            )
+        except Exception as e:
+            logger.error(f"标记备份状态失败 for item {item_id}: {e}", exc_info=True)
     # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
 
 # --- 国家/地区名称映射功能 ---
