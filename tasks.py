@@ -2096,8 +2096,8 @@ def task_generate_all_covers(processor: MediaProcessor):
         # 2. 获取媒体库列表
         task_manager.update_status_from_thread(5, "正在获取所有媒体库列表...")
         all_libraries = emby_handler.get_emby_libraries(
-            base_url=processor.emby_url,
-            api_key=processor.emby_api_key,
+            emby_server_url=processor.emby_url,
+            emby_api_key=processor.emby_api_key,
             user_id=processor.emby_user_id
         )
         if not all_libraries:
