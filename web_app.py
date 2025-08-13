@@ -551,6 +551,21 @@ def emby_webhook():
         logger.debug(f"Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略（缺少ID或类型不匹配）。")
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
 
+    # ✨ 3. 新增删除事件的处理逻辑
+    if event_type == "item.remove":
+        logger.info(f"Webhook 收到删除事件，将从已处理日志中移除项目 '{original_item_name}' (ID: {original_item_id})。")
+        try:
+            with get_central_db_connection(config_manager.DB_PATH) as conn:
+                cursor = conn.cursor()
+                log_manager = LogDBManager(config_manager.DB_PATH)
+                log_manager.remove_from_processed_log(cursor, original_item_id)
+                conn.commit()
+            logger.info(f"成功从已处理日志中删除记录: {original_item_id}")
+            return jsonify({"status": "processed_log_entry_removed", "item_id": original_item_id}), 200
+        except Exception as e:
+            logger.error(f"处理删除事件时发生数据库错误: {e}", exc_info=True)
+            return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
+    
     if event_type in ["item.add", "library.new"]:
         id_to_process = original_item_id
         type_to_process = original_item_type

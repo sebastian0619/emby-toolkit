@@ -176,6 +176,16 @@ class LogDBManager:
             logger.error(f"写入已处理 失败 (Item ID: {item_id}): {e}")
             raise # 重新抛出异常，让事务管理器处理
     
+    def remove_from_processed_log(self, cursor: sqlite3.Cursor, item_id: str):
+        """
+        【新增】从已处理日志 (processed_log) 中删除一个项目记录。
+        """
+        try:
+            logger.debug(f"正在从已处理日志中删除 Item ID: {item_id}...")
+            cursor.execute("DELETE FROM processed_log WHERE item_id = ?", (item_id,))
+        except Exception as e:
+            logger.error(f"从已处理日志删除失败 for item {item_id}: {e}", exc_info=True)
+
     def remove_from_failed_log(self, cursor: sqlite3.Cursor, item_id: str):
         """在一个外部事务中，从 failed_log 中删除记录。"""
         try:
