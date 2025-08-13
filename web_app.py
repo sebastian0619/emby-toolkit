@@ -536,7 +536,7 @@ def emby_webhook():
     event_type = data.get("Event") if data else "未知事件"
     logger.info(f"收到Emby Webhook: {event_type}")
     
-    trigger_events = ["item.add", "library.new"]  # 删除了 image.update
+    trigger_events = ["item.add", "library.new", "library.deleted"]  # 删除了 image.update
     if event_type not in trigger_events:
         logger.info(f"Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
         return jsonify({"status": "event_ignored_not_in_trigger_list"}), 200
