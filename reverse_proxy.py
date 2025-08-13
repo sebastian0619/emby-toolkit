@@ -227,15 +227,9 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
-        # --- 1. 从数据库定义中提取排序规则 ---
+        # --- 1. 获取媒体内容的逻辑保持不变 ---
+        # ... (这部分获取 real_items_map 和合并 final_items 的代码完全不变) ...
         definition = json.loads(collection_info.get('definition_json', '{}'))
-        sort_by_field = definition.get('default_sort_by', 'SortName')
-        sort_order = definition.get('default_sort_order', 'Ascending')
-        is_descending = (sort_order == 'Descending')
-        
-        logger.trace(f"虚拟库 '{collection_info['name']}' 将按 '{sort_by_field}' ({sort_order}) 排序。")
-
-        # --- 2. 获取媒体内容的逻辑保持不变 ---
         real_items_map = {}
         real_emby_collection_id = collection_info.get('emby_collection_id')
         if real_emby_collection_id:
@@ -246,17 +240,14 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             if isinstance(item_type_from_db, list) and len(item_type_from_db) > 1:
                 new_params.pop('IncludeItemTypes', None)
             new_params["ParentId"] = real_emby_collection_id
-            new_params['Fields'] = new_params.get('Fields', '') + ',ProviderIds,UserData,DateCreated,PremiereDate,CommunityRating,ProductionYear' # 确保请求了所有可能的排序字段
+            new_params['Fields'] = new_params.get('Fields', '') + ',ProviderIds,UserData,DateCreated,PremiereDate,CommunityRating,ProductionYear'
             new_params['api_key'] = api_key
             new_params['Limit'] = 5000
             resp = requests.get(target_url, params=new_params, timeout=30.0)
             resp.raise_for_status()
             for item in resp.json().get("Items", []):
                 tmdb_id = str(item.get('ProviderIds', {}).get('Tmdb'))
-                if tmdb_id:
-                    real_items_map[tmdb_id] = item
-
-        # --- 3. 合并媒体列表的逻辑保持不变 ---
+                if tmdb_id: real_items_map[tmdb_id] = item
         all_db_items = json.loads(collection_info.get('generated_media_info_json', '[]'))
         final_items = []
         processed_real_tmdb_ids = set()
@@ -267,23 +258,31 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 final_items.append(real_items_map[tmdb_id])
                 processed_real_tmdb_ids.add(tmdb_id)
         for tmdb_id, real_item in real_items_map.items():
-            if tmdb_id not in processed_real_tmdb_ids:
-                final_items.append(real_item)
+            if tmdb_id not in processed_real_tmdb_ids: final_items.append(real_item)
         
-        # --- 4. ★★★ 在返回前，执行服务器端排序 ★★★ ---
-        # 定义一个安全的默认值，以防某些项目缺少排序字段
-        default_sort_value = 0 if sort_by_field in ['CommunityRating', 'ProductionYear'] else "0" # 使用字符串0以兼容日期
+        # --- 2. ★★★ 核心修改：加入“是否劫持”的判断开关 ★★★ ---
+        sort_by_field = definition.get('default_sort_by')
 
-        try:
-            final_items.sort(
-                key=lambda item: item.get(sort_by_field, default_sort_value),
-                reverse=is_descending
-            )
-        except TypeError:
-            logger.warning(f"排序时遇到类型不匹配问题，已回退到按名称排序。")
-            final_items.sort(key=lambda item: item.get('SortName', ''))
+        # 只有当用户明确选择了排序字段 (且不是'none') 时，才执行劫持
+        if sort_by_field and sort_by_field != 'none':
+            sort_order = definition.get('default_sort_order', 'Ascending')
+            is_descending = (sort_order == 'Descending')
+            logger.debug(f"执行服务器端排序劫持: '{sort_by_field}' ({sort_order})")
+            
+            default_sort_value = 0 if sort_by_field in ['CommunityRating', 'ProductionYear'] else "0"
+            try:
+                final_items.sort(
+                    key=lambda item: item.get(sort_by_field, default_sort_value),
+                    reverse=is_descending
+                )
+            except TypeError:
+                logger.warning(f"排序时遇到类型不匹配问题，已回退到按名称排序。")
+                final_items.sort(key=lambda item: item.get('SortName', ''))
+        else:
+            # 如果用户选择'none'或未设置，则不执行任何排序，直接放行
+            logger.debug("未设置服务器端排序，将使用Emby原生排序。")
 
-        # --- 5. 返回已排序的列表 ---
+        # --- 3. 返回最终的列表 (可能是排好序的，也可能是原生的) ---
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')
 
