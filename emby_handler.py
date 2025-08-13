@@ -311,56 +311,35 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
     except Exception as e:  # 捕获其他所有未知异常
         logger.error(f"更新Emby项目 {item_name_for_log} 演员信息时发生未知错误: {e}", exc_info=True)
         return False
-# ✨✨✨ 获取 Emby 用户可见的所有顶层媒体库列表 ✨✨✨
-def get_emby_libraries(base_url: str, api_key: str, user_id: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+# ✨✨✨ 获取 Emby 用户可见媒体库列表 ✨✨✨
+def get_emby_libraries(emby_server_url, emby_api_key, user_id):
     """
-    【V2 - 修复版】获取 Emby 用户可见的所有顶层媒体库列表。
-    使用 /Users/{UserId}/Views 端点，这通常更准确。
+    【最终版】从Emby服务器获取指定用户可见的所有媒体库和合集 (Views)。
+    返回从Emby API获取的原始、完整的 "Items" 列表，以供调用者灵活使用。
     """
-    if not user_id:
-        logger.error("get_emby_libraries: 必须提供 user_id 才能准确获取用户可见的媒体库。")
-        return None
-    if not base_url or not api_key:
-        logger.error("get_emby_libraries: 缺少 base_url 或 api_key。")
+    if not all([emby_server_url, emby_api_key, user_id]):
+        logger.error("get_emby_libraries: 缺少必要的Emby配置信息。")
         return None
 
-    # ★★★ 核心修复：使用更可靠的 /Users/{UserId}/Views API 端点 ★★★
-    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Views"
-    params = {"api_key": api_key}
-
-    logger.trace(f"get_emby_libraries: 正在从 URL 请求用户视图: {api_url}")
+    target_url = f"{emby_server_url.rstrip('/')}/emby/Users/{user_id}/Views"
+    params = {'api_key': emby_api_key}
+    
     try:
-        response = requests.get(api_url, params=params, timeout=15)
+        logger.debug(f"正在从 {target_url} 获取媒体库和合集...")
+        response = requests.get(target_url, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
+        
+        # ★★★ 核心修改：返回原始的、完整的Items列表 ★★★
+        items = data.get('Items', [])
+        logger.info(f"成功获取到 {len(items)} 个媒体库/合集。")
+        return items
 
-        libraries = []
-        # 这个端点返回的 Items 就是用户的主屏幕视图
-        items_to_check = data.get("Items", [])
-
-        for item in items_to_check:
-            # 真正的媒体库通常有 CollectionType 字段
-            collection_type = item.get("CollectionType")
-            if item.get("Name") and item.get("Id") and collection_type:
-                logger.trace(f"  发现媒体库: '{item.get('Name')}' (ID: {item.get('Id')}, 类型: {collection_type})")
-                libraries.append({
-                    "Name": item.get("Name"),
-                    "Id": item.get("Id"),
-                    "CollectionType": collection_type
-                })
-        
-        if not libraries:
-            logger.warning("未能找到任何有效的媒体库,请检查Emby设置。")
-        else:
-            logger.debug(f"成功获取到 {len(libraries)} 个媒体库。")
-        
-        return libraries
-        
     except requests.exceptions.RequestException as e:
-        logger.error(f"get_emby_libraries: 请求 Emby 用户视图失败: {e}", exc_info=True)
+        logger.error(f"连接Emby服务器获取媒体库/合集时失败: {e}", exc_info=True)
         return None
-    except json.JSONDecodeError as e:
-        logger.error(f"get_emby_libraries: 解析 Emby 用户视图响应失败: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"处理Emby媒体库/合集数据时发生未知错误: {e}", exc_info=True)
         return None
 # ✨✨✨ 获取项目，并为每个项目添加来源库ID ✨✨✨
 def get_emby_library_items(

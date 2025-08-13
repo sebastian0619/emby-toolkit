@@ -266,24 +266,28 @@ def api_preview_processed_cast(item_id):
 # --- 获取emby媒体库 ---
 @media_api_bp.route('/emby_libraries')
 def api_get_emby_libraries():
-    # 确保 media_processor_instance 已初始化并且 Emby 配置有效
     if not extensions.media_processor_instance or \
        not extensions.media_processor_instance.emby_url or \
        not extensions.media_processor_instance.emby_api_key:
-        logger.warning("/api/emby_libraries: Emby配置不完整或服务未就绪。")
         return jsonify({"error": "Emby配置不完整或服务未就绪"}), 500
 
-    libraries = emby_handler.get_emby_libraries(
+    # 调用通用的函数，它会返回完整的列表
+    full_libraries_list = emby_handler.get_emby_libraries(
         extensions.media_processor_instance.emby_url,
         extensions.media_processor_instance.emby_api_key,
-        extensions.media_processor_instance.emby_user_id # 传递 user_id
+        extensions.media_processor_instance.emby_user_id
     )
 
-    if libraries is not None: # get_emby_libraries 成功返回列表 (可能为空列表)
-        return jsonify(libraries)
-    else: # get_emby_libraries 返回了 None，表示获取失败
-        logger.error("/api/emby_libraries: 无法获取Emby媒体库列表 (emby_handler返回None)。")
-        return jsonify({"error": "无法获取Emby媒体库列表，请检查Emby连接和日志"}), 500
+    if full_libraries_list is not None:
+        # ★★★ 核心修改：在这里进行数据精简，以满足前端UI的需求 ★★★
+        simplified_libraries = [
+            {'Name': item.get('Name'), 'Id': item.get('Id')}
+            for item in full_libraries_list
+            if item.get('Name') and item.get('Id')
+        ]
+        return jsonify(simplified_libraries)
+    else:
+        return jsonify({"error": "无法获取Emby媒体库列表，请检查连接和日志"}), 500
     
 # --- 获取emby媒体库（反代用） ---
 @media_api_bp.route('/emby/user/<user_id>/views', methods=['GET'])

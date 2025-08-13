@@ -17,7 +17,7 @@ from websocket import create_connection
 import config_manager
 import db_handler
 import extensions
-
+import emby_handler
 logger = logging.getLogger(__name__)
 
 # --- 【核心修改】---
@@ -53,24 +53,6 @@ def _get_real_emby_url_and_key():
     if not base_url or not api_key:
         raise ValueError("Emby服务器地址或API Key未配置")
     return base_url, api_key
-
-def _get_native_emby_views(user_id):
-    try:
-        base_url, api_key = _get_real_emby_url_and_key()
-        target_url = f"{base_url}/emby/Users/{user_id}/Views"
-        params = {'api_key': api_key}
-        headers = {'Accept': 'application/json'}
-        resp = requests.get(target_url, params=params, headers=headers, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        logger.info(f"成功从Emby获取到 {len(data.get('Items', []))} 个原生媒体库视图。")
-        return data.get('Items', [])
-    except requests.exceptions.RequestException as e:
-        logger.error(f"连接真实Emby服务器获取原生媒体库失败: {e}", exc_info=True)
-        return []
-    except Exception as e:
-        logger.error(f"处理原生Emby媒体库数据时发生未知错误: {e}", exc_info=True)
-        return []
 
 def handle_get_views():
     real_server_id = extensions.EMBY_SERVER_ID
@@ -121,12 +103,24 @@ def handle_get_views():
             user_id_match = re.search(r'/emby/Users/([^/]+)/Views', request.path)
             if user_id_match:
                 user_id = user_id_match.group(1)
-                all_native_views = _get_native_emby_views(user_id)
+                
+                # ★★★ 核心修改：调用统一的、强大的函数 ★★★
+                all_native_views = emby_handler.get_emby_libraries(
+                    config_manager.APP_CONFIG.get("emby_server_url", ""),
+                    config_manager.APP_CONFIG.get("emby_api_key", ""),
+                    user_id
+                )
+                # 如果获取失败，给一个空列表以防止崩溃
+                if all_native_views is None:
+                    all_native_views = []
+
                 raw_selection = config_manager.APP_CONFIG.get('proxy_native_view_selection', '')
                 selected_native_view_ids = [x.strip() for x in raw_selection.split(',') if x.strip()] if isinstance(raw_selection, str) else raw_selection
+                
                 if not selected_native_view_ids:
                     native_views_items = all_native_views
                 else:
+                    # 这里的过滤逻辑可以完美地工作，因为我们现在拥有完整的项目列表
                     native_views_items = [view for view in all_native_views if view.get("Id") in selected_native_view_ids]
         
         final_items = []
@@ -146,65 +140,30 @@ def handle_get_views():
         return "Internal Proxy Error", 500
 
 def handle_get_mimicked_library_details(user_id, mimicked_id):
+    ### UI回退点 ###
+    # 不再尝试“偷天换日”，而是创建一个简单、稳定、有效的详情对象。
     try:
         real_db_id = from_mimicked_id(mimicked_id)
         coll = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, real_db_id)
-        if not coll: 
-            return "Not Found", 404
+        if not coll: return "Not Found", 404
 
-        real_emby_collection_id = coll.get('emby_collection_id')
-
-        # 核心逻辑：如果存在一个后端的真实物理合集，就去获取它的完整数据
-        if real_emby_collection_id:
-            try:
-                base_url, api_key = _get_real_emby_url_and_key()
-                # 使用 user_id 向后端请求真实合集的完整详情
-                target_url = f"{base_url}/emby/Users/{user_id}/Items/{real_emby_collection_id}"
-                params = {'api_key': api_key}
-                
-                resp = requests.get(target_url, params=params, timeout=15)
-                resp.raise_for_status()
-                real_details = resp.json()
-                
-                # “偷梁换柱”：用我们虚拟库的信息覆盖真实信息
-                real_details['Id'] = mimicked_id
-                real_details['ServerId'] = extensions.EMBY_SERVER_ID
-                real_details['Name'] = coll['name'] # 使用我们自定义的名称
-
-                # 确保混合内容的类型是正确的
-                definition = json.loads(coll.get('definition_json', '{}'))
-                item_type_from_db = definition.get('item_type', [])
-                if isinstance(item_type_from_db, list) and len(item_type_from_db) > 1:
-                    real_details['CollectionType'] = "mixed"
-
-                real_details['DisplayPreferencesId'] = 'livetv'
-
-                # 返回这个被修改过的、但字段齐全的“真实”对象
-                return Response(json.dumps(real_details), mimetype='application/json')
-
-            except requests.exceptions.RequestException as e:
-                logger.error(f"无法获取后端真实合集 {real_emby_collection_id} 的详情，将回退到手动生成: {e}")
-                # 如果请求失败，则继续执行下面的手动创建逻辑作为后备方案
-
-        # 后备方案：如果上面失败或没有真实合集ID，则手动创建一个（可能UI依然简陋）
-        logger.warning(f"正在为虚拟库 '{coll['name']}' 手动生成详情，UI可能不完整。")
         real_server_id = extensions.EMBY_SERVER_ID
+        real_emby_collection_id = coll.get('emby_collection_id')
         image_tags = {"Primary": real_emby_collection_id} if real_emby_collection_id else {}
+        
         definition = json.loads(coll.get('definition_json', '{}'))
         item_type_from_db = definition.get('item_type', 'Movie')
-        
         collection_type = "mixed"
         if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
              authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
              collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
         fake_library_details = {
-            "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id, "Type": "Collection",
-            "CollectionType": collection_type, "IsFolder": True, "ImageTags": image_tags, "BackdropImageTags": [],
-            "PrimaryImageAspectRatio": 1.7777777777777777,
+            "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id,
+            "Type": "CollectionFolder", # 确保稳定性的关键
+            "CollectionType": collection_type, "IsFolder": True, "ImageTags": image_tags,
         }
         return Response(json.dumps(fake_library_details), mimetype='application/json')
-
     except Exception as e:
         logger.error(f"获取伪造库详情时出错: {e}", exc_info=True)
         return "Internal Server Error", 500
@@ -270,7 +229,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             tmdb_id = str(db_item.get('tmdb_id', ''))
             if not tmdb_id: continue
             if tmdb_id in real_items_map:
-                final_items.append(real_items_map[tm_id])
+                final_items.append(real_items_map[tmdb_id])
                 processed_real_tmdb_ids.add(tmdb_id)
             else:
                 continue
