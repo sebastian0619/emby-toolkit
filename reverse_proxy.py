@@ -184,10 +184,11 @@ def handle_get_mimicked_library_image(path):
     except Exception as e:
         return "Internal Proxy Error", 500
 
-# --- ★★★ 核心修复 #1：为“索引”请求创建专属的绿色通道函数 ★★★ ---
-def handle_get_mimicked_library_prefixes(mimicked_id, params):
+# --- ★★★ 核心修复 #1：用下面这个通用的“万能翻译”函数，替换掉旧的 a_prefixes 函数 ★★★ ---
+def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     """
-    专门处理对虚拟库的首字母索引 (/Items/Prefixes) 请求。
+    【V2 - 通用版】
+    智能处理所有针对虚拟库的元数据类请求 (如 /Genres, /Studios, /Years, /Prefixes 等)。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -197,29 +198,27 @@ def handle_get_mimicked_library_prefixes(mimicked_id, params):
 
         real_emby_collection_id = collection_info.get('emby_collection_id')
         
-        # 准备向真实Emby服务器请求“真实合集”的索引
         base_url, api_key = _get_real_emby_url_and_key()
-        target_url = f"{base_url}/emby/Items/Prefixes"
+        # 直接使用原始请求的路径，确保我们请求的是正确的端点 (e.g., /Genres)
+        target_url = f"{base_url}{path}"
         
-        # 完美克隆请求头
         headers = {k: v for k, v in request.headers if k.lower() not in ['host']}
         headers['Host'] = urlparse(base_url).netloc
         
-        # “翻译”请求参数：使用真实的ParentId
         new_params = params.copy()
-        new_params['ParentId'] = real_emby_collection_id
+        new_params['ParentId'] = real_emby_collection_id # “翻译”ParentId
         new_params['api_key'] = api_key
         
         resp = requests.get(target_url, headers=headers, params=new_params, timeout=15)
         resp.raise_for_status()
         
-        # 原封不动地返回从真实服务器获取到的索引数据
-        return Response(resp.content, resp.status_code, content_type=resp.headers['Content-Type'])
+        # 原封不动地返回从真实服务器获取到的数据
+        return Response(resp.content, resp.status_code, content_type=resp.headers.get('Content-Type'))
 
     except Exception as e:
-        logger.error(f"处理虚拟库索引请求时出错: {e}", exc_info=True)
+        logger.error(f"处理虚拟库元数据请求 '{path}' 时出错: {e}", exc_info=True)
         return Response(json.dumps([]), mimetype='application/json')
-
+    
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -426,23 +425,30 @@ def proxy_all(path):
 
     # --- 2. HTTP 代理逻辑 (保持不变) ---
     try:
-        # --- ★★★ 核心修复 #2：在所有其他判断之前，优先捕获“索引”请求 ★★★ ---
-        if path.endswith('/Items/Prefixes'):
+        # 1. 定义所有需要“翻译”ParentId的元数据端点
+        METADATA_ENDPOINTS = [
+            '/Items/Prefixes', '/Genres', '/Studios', 
+            '/Tags', '/OfficialRatings', '/Years'
+        ]
+
+        # 2. 优先处理所有元数据请求
+        if any(path.endswith(endpoint) for endpoint in METADATA_ENDPOINTS):
             parent_id = request.args.get("ParentId")
             if parent_id and is_mimicked_id(parent_id):
-                # 如果是针对虚拟库的索引请求，就交给新的专属函数处理
-                return handle_get_mimicked_library_prefixes(parent_id, request.args)
+                # 所有这类请求，都交给我们的“万能翻译”函数处理
+                return handle_mimicked_library_metadata_endpoint(path, parent_id, request.args)
 
+        # 3. 其次，处理获取库“内容”的请求 (这个逻辑我们之前已经修复好了)
         parent_id = request.args.get("ParentId")
         if parent_id and is_mimicked_id(parent_id):
-            # 从请求路径中提取user_id, e.g., /emby/Users/{user_id}/Items
             user_id_match = re.search(r'/emby/Users/([^/]+)/Items', request.path)
             if user_id_match:
                 user_id = user_id_match.group(1)
-                # 使用正确的三个参数进行调用
                 return handle_get_mimicked_library_items(user_id, parent_id, request.args)
             else:
+                # 这条日志现在只会在极少数未知情况下出现，是我们的最后防线
                 logger.warning(f"无法从路径 '{request.path}' 中为虚拟库请求提取user_id。")
+                
         if path.startswith('emby/Items/') and '/Images/' in path and is_mimicked_id(path.split('/')[2]):
              return handle_get_mimicked_library_image(path)
 
