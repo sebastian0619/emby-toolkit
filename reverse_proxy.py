@@ -43,8 +43,8 @@ def is_mimicked_id(item_id):
 
 # --- 【核心修改】---
 # 更新正则表达式以匹配新的数字ID格式（负数）
-MIMICKED_ITEMS_RE = re.compile(r'/emby/Users/[^/]+/Items/(-(\d+))')
-MIMICKED_ITEM_DETAILS_RE = re.compile(r'emby/Users/[^/]+/Items/(-(\d+))$')
+MIMICKED_ITEMS_RE = re.compile(r'/emby/Users/([^/]+)/Items/(-(\d+))')
+MIMICKED_ITEM_DETAILS_RE = re.compile(r'emby/Users/([^/]+)/Items/(-(\d+))$')
 
 
 def _get_real_emby_url_and_key():
@@ -94,15 +94,18 @@ def handle_get_views():
             name_suffix = f" (合并库: {len(merged_libraries)}个)" if merged_libraries else ""
             
             item_type_from_db = definition.get('item_type', 'Movie')
-            authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
-            collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
+            if isinstance(item_type_from_db, list) and len(item_type_from_db) > 1:
+                collection_type = "mixed"
+            else:
+                authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
+                collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
             fake_view = {
                 "Name": coll['name'] + name_suffix, "ServerId": real_server_id, "Id": mimicked_id, # <-- 【核心修改】使用数字ID
                 "Guid": str(uuid.uuid4()), "Etag": f"{db_id}{int(time.time())}",
                 "DateCreated": "2025-01-01T00:00:00.0000000Z", "CanDelete": False, "CanDownload": False,
                 "SortName": coll['name'], "ExternalUrls": [], "ProviderIds": {}, "IsFolder": True,
-                "ParentId": "2", "Type": "CollectionFolder",
+                "ParentId": "2", "Type": "Collection",
                 "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
                 "ChildCount": 1, "DisplayPreferencesId": f"custom-{db_id}",
                 "PrimaryImageAspectRatio": 1.7777777777777777, "CollectionType": collection_type,
@@ -142,27 +145,66 @@ def handle_get_views():
         logger.error(f"[PROXY] 获取视图数据时出错: {e}", exc_info=True)
         return "Internal Proxy Error", 500
 
-def handle_get_mimicked_library_details(mimicked_id):
+def handle_get_mimicked_library_details(user_id, mimicked_id):
     try:
-        real_db_id = from_mimicked_id(mimicked_id) # <-- 【核心修改】
+        real_db_id = from_mimicked_id(mimicked_id)
         coll = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, real_db_id)
-        if not coll: return "Not Found", 404
+        if not coll: 
+            return "Not Found", 404
 
-        real_server_id = extensions.EMBY_SERVER_ID
         real_emby_collection_id = coll.get('emby_collection_id')
+
+        # 核心逻辑：如果存在一个后端的真实物理合集，就去获取它的完整数据
+        if real_emby_collection_id:
+            try:
+                base_url, api_key = _get_real_emby_url_and_key()
+                # 使用 user_id 向后端请求真实合集的完整详情
+                target_url = f"{base_url}/emby/Users/{user_id}/Items/{real_emby_collection_id}"
+                params = {'api_key': api_key}
+                
+                resp = requests.get(target_url, params=params, timeout=15)
+                resp.raise_for_status()
+                real_details = resp.json()
+                
+                # “偷梁换柱”：用我们虚拟库的信息覆盖真实信息
+                real_details['Id'] = mimicked_id
+                real_details['ServerId'] = extensions.EMBY_SERVER_ID
+                real_details['Name'] = coll['name'] # 使用我们自定义的名称
+
+                # 确保混合内容的类型是正确的
+                definition = json.loads(coll.get('definition_json', '{}'))
+                item_type_from_db = definition.get('item_type', [])
+                if isinstance(item_type_from_db, list) and len(item_type_from_db) > 1:
+                    real_details['CollectionType'] = "mixed"
+
+                real_details['DisplayPreferencesId'] = 'livetv'
+
+                # 返回这个被修改过的、但字段齐全的“真实”对象
+                return Response(json.dumps(real_details), mimetype='application/json')
+
+            except requests.exceptions.RequestException as e:
+                logger.error(f"无法获取后端真实合集 {real_emby_collection_id} 的详情，将回退到手动生成: {e}")
+                # 如果请求失败，则继续执行下面的手动创建逻辑作为后备方案
+
+        # 后备方案：如果上面失败或没有真实合集ID，则手动创建一个（可能UI依然简陋）
+        logger.warning(f"正在为虚拟库 '{coll['name']}' 手动生成详情，UI可能不完整。")
+        real_server_id = extensions.EMBY_SERVER_ID
         image_tags = {"Primary": real_emby_collection_id} if real_emby_collection_id else {}
-        
         definition = json.loads(coll.get('definition_json', '{}'))
         item_type_from_db = definition.get('item_type', 'Movie')
-        authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
-        collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
+        
+        collection_type = "mixed"
+        if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
+             authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
+             collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
         fake_library_details = {
-            "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id, "Type": "CollectionFolder",
+            "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id, "Type": "Collection",
             "CollectionType": collection_type, "IsFolder": True, "ImageTags": image_tags, "BackdropImageTags": [],
             "PrimaryImageAspectRatio": 1.7777777777777777,
         }
         return Response(json.dumps(fake_library_details), mimetype='application/json')
+
     except Exception as e:
         logger.error(f"获取伪造库详情时出错: {e}", exc_info=True)
         return "Internal Server Error", 500
@@ -183,27 +225,44 @@ def handle_get_mimicked_library_image(path):
     except Exception as e:
         return "Internal Proxy Error", 500
 
-def handle_get_mimicked_library_items(mimicked_id, params):
+def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     try:
-        real_db_id = from_mimicked_id(mimicked_id) # <-- 【核心修改】
+        real_db_id = from_mimicked_id(mimicked_id)
         collection_info = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, real_db_id)
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
+
         real_items_map = {}
         real_emby_collection_id = collection_info.get('emby_collection_id')
+
         if real_emby_collection_id:
             base_url, api_key = _get_real_emby_url_and_key()
-            target_url = f"{base_url}/emby/Items"
+            target_url = f"{base_url}/emby/Users/{user_id}/Items"
+            
             new_params = params.copy()
+
+            # --- 核心修改：智能判断是否为混合库 ---
+            definition = json.loads(collection_info.get('definition_json', '{}'))
+            item_type_from_db = definition.get('item_type', [])
+            # 只有当数据库定义为包含多个类型时，才移除客户端的类型过滤器
+            if isinstance(item_type_from_db, list) and len(item_type_from_db) > 1:
+                logger.debug(f"检测到混合库 '{collection_info['name']}'，将移除客户端的IncludeItemTypes过滤器。")
+                new_params.pop('IncludeItemTypes', None)
+            # 对于单一类型库，则保留客户端正确的过滤器，不做任何操作
+
             new_params["ParentId"] = real_emby_collection_id
+            new_params['Fields'] = new_params.get('Fields', '') + ',ProviderIds,UserData'
             new_params['api_key'] = api_key
-            new_params['Fields'] = new_params.get('Fields', '') + ',ProviderIds'
-            new_params['Limit'] = 1000
+            new_params['Limit'] = 5000
+
             resp = requests.get(target_url, params=new_params, timeout=30.0)
             resp.raise_for_status()
             for item in resp.json().get("Items", []):
                 tmdb_id = str(item.get('ProviderIds', {}).get('Tmdb'))
-                if tmdb_id: real_items_map[tmdb_id] = item
+                if tmdb_id:
+                    real_items_map[tmdb_id] = item
+
+        # --- 后续的合并逻辑保持不变 ---
         all_db_items = json.loads(collection_info.get('generated_media_info_json', '[]'))
         final_items = []
         processed_real_tmdb_ids = set()
@@ -211,15 +270,17 @@ def handle_get_mimicked_library_items(mimicked_id, params):
             tmdb_id = str(db_item.get('tmdb_id', ''))
             if not tmdb_id: continue
             if tmdb_id in real_items_map:
-                final_items.append(real_items_map[tmdb_id])
+                final_items.append(real_items_map[tm_id])
                 processed_real_tmdb_ids.add(tmdb_id)
             else:
                 continue
         for tmdb_id, real_item in real_items_map.items():
             if tmdb_id not in processed_real_tmdb_ids:
                 final_items.append(real_item)
+        
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')
+
     except Exception as e:
         logger.error(f"处理伪造库内容时发生严重错误: {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
@@ -360,14 +421,16 @@ def proxy_all(path):
 
     # --- 2. HTTP 代理逻辑 (保持不变) ---
     try:
-        # 检查是否是请求虚拟库的内容
         parent_id = request.args.get("ParentId")
-        if parent_id and is_mimicked_id(parent_id): # <-- 【核心修改】
-            return handle_get_mimicked_library_items(parent_id, request.args)
-
-        # 检查是否是请求虚拟库的图片
-        # 注意：图片请求的ID在tag里，不在路径里，所以这条路由规则可能需要调整或依赖其他逻辑
-        # 保持原有逻辑，因为它似乎是转发到真实collectionID，不受影响
+        if parent_id and is_mimicked_id(parent_id):
+            # 从请求路径中提取user_id, e.g., /emby/Users/{user_id}/Items
+            user_id_match = re.search(r'/emby/Users/([^/]+)/Items', request.path)
+            if user_id_match:
+                user_id = user_id_match.group(1)
+                # 使用正确的三个参数进行调用
+                return handle_get_mimicked_library_items(user_id, parent_id, request.args)
+            else:
+                logger.warning(f"无法从路径 '{request.path}' 中为虚拟库请求提取user_id。")
         if path.startswith('emby/Items/') and '/Images/' in path and is_mimicked_id(path.split('/')[2]):
              return handle_get_mimicked_library_image(path)
 
@@ -378,7 +441,9 @@ def proxy_all(path):
         # 检查是否是请求虚拟库的详情
         details_match = MIMICKED_ITEM_DETAILS_RE.search(f'/{path}')
         if details_match:
-            return handle_get_mimicked_library_details(details_match.group(1))
+            user_id = details_match.group(1)
+            mimicked_id = details_match.group(2) # 注意，这里是 group(2)
+            return handle_get_mimicked_library_details(user_id, mimicked_id)
 
         # 检查是否是请求最新项目
         if path.endswith('/Items/Latest'):
@@ -389,7 +454,9 @@ def proxy_all(path):
         # 捕获所有对虚拟库内容的请求
         items_match = MIMICKED_ITEMS_RE.match(f'/{path}')
         if items_match:
-            return handle_get_mimicked_library_items(items_match.group(1), request.args)
+            user_id = items_match.group(1)
+            mimicked_id = items_match.group(2) # 注意，这里是 group(2)
+            return handle_get_mimicked_library_items(user_id, mimicked_id, request.args)
 
         # --- 默认转发逻辑 (保持不变) ---
         path_to_forward = path

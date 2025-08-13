@@ -1708,7 +1708,6 @@ class MediaProcessor:
     # ★★★ 全量备份到覆盖缓存 ★★★
     def sync_all_media_assets(self, update_status_callback: Optional[callable] = None):
         """
-        【V-Final - 增量同步且带自我清理】
         遍历所有已处理但尚未同步过资产的媒体项。
         如果发现某个项目在Emby中已不存在，则自动从已处理日志中移除该记录。
         """
@@ -1743,12 +1742,12 @@ class MediaProcessor:
 
         total = len(items_to_process)
         if total == 0:
-            logger.info("  -> 没有需要新增备份的媒体资产。")
+            logger.info("  -> 没有需要新增备份的媒体项。")
             if update_status_callback:
                 update_status_callback(100, "没有需要新增备份的项目")
             return
 
-        logger.info(f"  -> 共找到 {total} 个新项目需要备份。")
+        logger.info(f"  -> 共找到 {total} 个新媒体项需要备份。")
         
         stats = {"newly_synced": 0, "skipped": 0, "cleaned": 0} # ✨ 新增一个清理计数器
 
