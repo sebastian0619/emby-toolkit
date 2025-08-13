@@ -191,29 +191,28 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
+        # --- 1. 从数据库定义中提取排序规则 ---
+        definition = json.loads(collection_info.get('definition_json', '{}'))
+        sort_by_field = definition.get('default_sort_by', 'SortName')
+        sort_order = definition.get('default_sort_order', 'Ascending')
+        is_descending = (sort_order == 'Descending')
+        
+        logger.debug(f"虚拟库 '{collection_info['name']}' 将按 '{sort_by_field}' ({sort_order}) 排序。")
+
+        # --- 2. 获取媒体内容的逻辑保持不变 ---
         real_items_map = {}
         real_emby_collection_id = collection_info.get('emby_collection_id')
-
         if real_emby_collection_id:
             base_url, api_key = _get_real_emby_url_and_key()
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
-            
             new_params = params.copy()
-
-            # --- 核心修改：智能判断是否为混合库 ---
-            definition = json.loads(collection_info.get('definition_json', '{}'))
             item_type_from_db = definition.get('item_type', [])
-            # 只有当数据库定义为包含多个类型时，才移除客户端的类型过滤器
             if isinstance(item_type_from_db, list) and len(item_type_from_db) > 1:
-                logger.debug(f"检测到混合库 '{collection_info['name']}'，将移除客户端的IncludeItemTypes过滤器。")
                 new_params.pop('IncludeItemTypes', None)
-            # 对于单一类型库，则保留客户端正确的过滤器，不做任何操作
-
             new_params["ParentId"] = real_emby_collection_id
-            new_params['Fields'] = new_params.get('Fields', '') + ',ProviderIds,UserData'
+            new_params['Fields'] = new_params.get('Fields', '') + ',ProviderIds,UserData,DateCreated,PremiereDate,CommunityRating,ProductionYear' # 确保请求了所有可能的排序字段
             new_params['api_key'] = api_key
             new_params['Limit'] = 5000
-
             resp = requests.get(target_url, params=new_params, timeout=30.0)
             resp.raise_for_status()
             for item in resp.json().get("Items", []):
@@ -221,7 +220,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 if tmdb_id:
                     real_items_map[tmdb_id] = item
 
-        # --- 后续的合并逻辑保持不变 ---
+        # --- 3. 合并媒体列表的逻辑保持不变 ---
         all_db_items = json.loads(collection_info.get('generated_media_info_json', '[]'))
         final_items = []
         processed_real_tmdb_ids = set()
@@ -231,12 +230,24 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             if tmdb_id in real_items_map:
                 final_items.append(real_items_map[tmdb_id])
                 processed_real_tmdb_ids.add(tmdb_id)
-            else:
-                continue
         for tmdb_id, real_item in real_items_map.items():
             if tmdb_id not in processed_real_tmdb_ids:
                 final_items.append(real_item)
         
+        # --- 4. ★★★ 在返回前，执行服务器端排序 ★★★ ---
+        # 定义一个安全的默认值，以防某些项目缺少排序字段
+        default_sort_value = 0 if sort_by_field in ['CommunityRating', 'ProductionYear'] else "0" # 使用字符串0以兼容日期
+
+        try:
+            final_items.sort(
+                key=lambda item: item.get(sort_by_field, default_sort_value),
+                reverse=is_descending
+            )
+        except TypeError:
+            logger.warning(f"排序时遇到类型不匹配问题，已回退到按名称排序。")
+            final_items.sort(key=lambda item: item.get('SortName', ''))
+
+        # --- 5. 返回已排序的列表 ---
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')
 

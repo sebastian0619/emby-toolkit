@@ -93,30 +93,36 @@ def save_cover_generator_config():
         logger.error(f"保存封面生成器配置失败: {e}", exc_info=True)
         return jsonify({"error": "保存配置失败"}), 500
     
-# --- 获取所有已配置的 Emby/Jellyfin 服务器列表 ---
+# --- 获取媒体库列表 ---
 @cover_generator_config_bp.route('/libraries', methods=['GET'])
 @login_required
 def get_all_libraries():
-    """获取所有媒体库，用于UI勾选"""
+    """
+    【V3 - 参数修正版】获取所有媒体库和合集，用于UI勾选。
+    """
     try:
-        libraries = emby_handler.get_emby_libraries(
-            base_url=config_manager.APP_CONFIG.get('emby_server_url'),
-            api_key=config_manager.APP_CONFIG.get('emby_api_key'),
+        # ★★★ 核心修复：使用正确的参数名来调用函数 ★★★
+        full_libraries_list = emby_handler.get_emby_libraries(
+            emby_server_url=config_manager.APP_CONFIG.get('emby_server_url'), # 将 base_url 修改为 emby_server_url
+            emby_api_key=config_manager.APP_CONFIG.get('emby_api_key'),       # 将 api_key 修改为 emby_api_key
             user_id=config_manager.APP_CONFIG.get('emby_user_id')
         )
-        if libraries:
-            # 格式化为勾选框组需要的数据格式
+        
+        if full_libraries_list:
             formatted_libs = [
                 {
                     'label': lib.get('Name'), 
-                    'value': lib.get('Id') # 使用库ID作为唯一值
+                    'value': lib.get('Id')
                 } 
-                for lib in libraries
+                for lib in full_libraries_list
+                if lib.get('Name') and lib.get('Id')
             ]
             return jsonify(formatted_libs)
+            
         return jsonify([])
+
     except Exception as e:
-        logger.error(f"获取媒体库列表失败: {e}", exc_info=True)
+        logger.error(f"为封面生成器获取媒体库列表失败: {e}", exc_info=True)
         return jsonify({"error": "获取媒体库列表失败"}), 500
 
 # --- 创建实时预览 ---

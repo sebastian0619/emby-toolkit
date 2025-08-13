@@ -269,7 +269,23 @@
             </div>
           </n-form-item>
         </div>
-        
+        <!-- ★★★ 新增：内容默认排序规则 ★★★ -->
+          <n-form-item label="内容排序">
+            <n-input-group>
+              <n-select
+                v-model:value="currentCollection.definition.default_sort_by"
+                :options="sortFieldOptions"
+                placeholder="排序字段"
+                style="width: 50%"
+              />
+              <n-select
+                v-model:value="currentCollection.definition.default_sort_order"
+                :options="sortOrderOptions"
+                placeholder="排序顺序"
+                style="width: 50%"
+              />
+            </n-input-group>
+          </n-form-item>
         <n-form-item label="状态" path="status" v-if="isEditing">
             <n-radio-group v-model:value="currentCollection.status">
                 <n-space>
@@ -411,6 +427,20 @@ const isSearchingActors = ref(false);
 const isSavingOrder = ref(false); // ★ 新增：保存排序时的加载状态
 let sortableInstance = null; // ★ 新增：保存Sortable实例
 
+// ★★★ 新增：为排序规则定义选项 ★★★
+const sortFieldOptions = ref([
+  { label: '名称', value: 'SortName' },
+  { label: '添加日期', value: 'DateCreated' },
+  { label: '上映日期', value: 'PremiereDate' },
+  { label: '社区评分', value: 'CommunityRating' },
+  { label: '制作年份', value: 'ProductionYear' },
+]);
+
+const sortOrderOptions = ref([
+  { label: '升序', value: 'Ascending' },
+  { label: '降序', value: 'Descending' },
+]);
+
 const getInitialFormModel = () => ({
   id: null,
   name: '',
@@ -418,7 +448,9 @@ const getInitialFormModel = () => ({
   status: 'active',
   definition: {
     item_type: ['Movie'],
-    url: '' 
+    url: '',
+    default_sort_by: 'SortName',
+    default_sort_order: 'Ascending' 
   }
 });
 const currentCollection = ref(getInitialFormModel());
@@ -427,14 +459,20 @@ watch(() => currentCollection.value.type, (newType) => {
   if (isEditing.value) { return; }
   if (newType === 'filter') {
     currentCollection.value.definition = {
-      item_type: 'Movie', 
+      item_type: ['Movie'], // 注意这里也改成了数组
       logic: 'AND',
-      rules: [{ field: null, operator: null, value: '' }]
+      rules: [{ field: null, operator: null, value: '' }],
+      // ★★★ 新增：为筛选类型也初始化排序字段 ★★★
+      default_sort_by: 'SortName',
+      default_sort_order: 'Ascending'
     };
   } else if (newType === 'list') {
     currentCollection.value.definition = { 
-      item_type: 'Movie',
-      url: '' 
+      item_type: ['Movie'], // 注意这里也改成了数组
+      url: '',
+      // ★★★ 新增：为榜单类型也初始化排序字段 ★★★
+      default_sort_by: 'SortName',
+      default_sort_order: 'Ascending'
     };
   }
 });
