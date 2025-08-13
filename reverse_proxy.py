@@ -184,6 +184,42 @@ def handle_get_mimicked_library_image(path):
     except Exception as e:
         return "Internal Proxy Error", 500
 
+# --- ★★★ 核心修复 #1：为“索引”请求创建专属的绿色通道函数 ★★★ ---
+def handle_get_mimicked_library_prefixes(mimicked_id, params):
+    """
+    专门处理对虚拟库的首字母索引 (/Items/Prefixes) 请求。
+    """
+    try:
+        real_db_id = from_mimicked_id(mimicked_id)
+        collection_info = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, real_db_id)
+        if not collection_info or not collection_info.get('emby_collection_id'):
+            return Response(json.dumps([]), mimetype='application/json')
+
+        real_emby_collection_id = collection_info.get('emby_collection_id')
+        
+        # 准备向真实Emby服务器请求“真实合集”的索引
+        base_url, api_key = _get_real_emby_url_and_key()
+        target_url = f"{base_url}/emby/Items/Prefixes"
+        
+        # 完美克隆请求头
+        headers = {k: v for k, v in request.headers if k.lower() not in ['host']}
+        headers['Host'] = urlparse(base_url).netloc
+        
+        # “翻译”请求参数：使用真实的ParentId
+        new_params = params.copy()
+        new_params['ParentId'] = real_emby_collection_id
+        new_params['api_key'] = api_key
+        
+        resp = requests.get(target_url, headers=headers, params=new_params, timeout=15)
+        resp.raise_for_status()
+        
+        # 原封不动地返回从真实服务器获取到的索引数据
+        return Response(resp.content, resp.status_code, content_type=resp.headers['Content-Type'])
+
+    except Exception as e:
+        logger.error(f"处理虚拟库索引请求时出错: {e}", exc_info=True)
+        return Response(json.dumps([]), mimetype='application/json')
+
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -197,7 +233,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         sort_order = definition.get('default_sort_order', 'Ascending')
         is_descending = (sort_order == 'Descending')
         
-        logger.debug(f"虚拟库 '{collection_info['name']}' 将按 '{sort_by_field}' ({sort_order}) 排序。")
+        logger.trace(f"虚拟库 '{collection_info['name']}' 将按 '{sort_by_field}' ({sort_order}) 排序。")
 
         # --- 2. 获取媒体内容的逻辑保持不变 ---
         real_items_map = {}
@@ -391,6 +427,13 @@ def proxy_all(path):
 
     # --- 2. HTTP 代理逻辑 (保持不变) ---
     try:
+        # --- ★★★ 核心修复 #2：在所有其他判断之前，优先捕获“索引”请求 ★★★ ---
+        if path.endswith('/Items/Prefixes'):
+            parent_id = request.args.get("ParentId")
+            if parent_id and is_mimicked_id(parent_id):
+                # 如果是针对虚拟库的索引请求，就交给新的专属函数处理
+                return handle_get_mimicked_library_prefixes(parent_id, request.args)
+
         parent_id = request.args.get("ParentId")
         if parent_id and is_mimicked_id(parent_id):
             # 从请求路径中提取user_id, e.g., /emby/Users/{user_id}/Items
