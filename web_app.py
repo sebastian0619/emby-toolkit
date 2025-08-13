@@ -552,7 +552,7 @@ def emby_webhook():
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
 
     # ✨ 3. 新增删除事件的处理逻辑
-    if event_type == "item.remove":
+    if event_type == "library.deleted":
         logger.info(f"Webhook 收到删除事件，将从已处理日志中移除项目 '{original_item_name}' (ID: {original_item_id})。")
         try:
             with get_central_db_connection(config_manager.DB_PATH) as conn:
