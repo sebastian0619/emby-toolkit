@@ -560,7 +560,7 @@ def emby_webhook():
                 log_manager = LogDBManager(config_manager.DB_PATH)
                 log_manager.remove_from_processed_log(cursor, original_item_id)
                 conn.commit()
-            logger.info(f"成功从已处理日志中删除记录: {original_item_id}")
+            logger.info(f"成功从已处理日志中删除记录: {original_item_name}")
             return jsonify({"status": "processed_log_entry_removed", "item_id": original_item_id}), 200
         except Exception as e:
             logger.error(f"处理删除事件时发生数据库错误: {e}", exc_info=True)
