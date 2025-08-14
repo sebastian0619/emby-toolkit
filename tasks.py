@@ -2103,15 +2103,22 @@ def task_generate_all_covers(processor: MediaProcessor):
         if not all_libraries:
             task_manager.update_status_from_thread(-1, "错误：未能从Emby获取到任何媒体库。")
             return
-
+        
         # 3. 筛选媒体库
         # ★★★ 核心修复：直接使用原始ID进行比较 ★★★
         exclude_ids = set(cover_config.get("exclude_libraries", []))
-        
+        # 允许处理的媒体库类型列表，增加了 'audiobooks'
+        ALLOWED_COLLECTION_TYPES = ['movies', 'tvshows', 'boxsets', 'mixed', 'music', 'audiobooks']
+
         libraries_to_process = [
             lib for lib in all_libraries 
-            if lib.get('Id') not in exclude_ids  # <-- 修正了这里的判断逻辑
-            and lib.get('CollectionType') in ['movies', 'tvshows', 'boxsets', 'mixed', 'music']
+            if lib.get('Id') not in exclude_ids
+            and (
+                # 条件1：满足常规的 CollectionType
+                lib.get('CollectionType') in ALLOWED_COLLECTION_TYPES
+                # 条件2：或者，是“混合库测试”这种特殊的 CollectionFolder
+                or lib.get('Type') == 'CollectionFolder' 
+            )
         ]
         
         total = len(libraries_to_process)
@@ -2125,8 +2132,12 @@ def task_generate_all_covers(processor: MediaProcessor):
         cover_service = CoverGeneratorService(config=cover_config)
         
         TYPE_MAP = {
-            'movies': 'Movie', 'tvshows': 'Series', 'music': 'MusicAlbum',
-            'boxsets': 'BoxSet', 'mixed': 'Movie,Series'
+            'movies': 'Movie', 
+            'tvshows': 'Series', 
+            'music': 'MusicAlbum',
+            'boxsets': 'BoxSet', 
+            'mixed': 'Movie,Series',
+            'audiobooks': 'AudioBook'  # <-- 增加有声读物的映射
         }
 
         for i, library in enumerate(libraries_to_process):
@@ -2138,7 +2149,19 @@ def task_generate_all_covers(processor: MediaProcessor):
             try:
                 library_id = library.get('Id')
                 collection_type = library.get('CollectionType')
-                item_type_to_query = TYPE_MAP.get(collection_type)
+                item_type_to_query = None # 先重置
+
+                # --- ★★★ 核心修复 3：使用更精确的 if/elif 逻辑判断查询类型 ★★★ ---
+                # 优先使用 CollectionType 进行判断，这是最准确的
+                if collection_type:
+                    item_type_to_query = TYPE_MAP.get(collection_type)
+                
+                # 如果 CollectionType 不存在，再使用 Type == 'CollectionFolder' 作为备用方案
+                # 这专门用于处理像“混合库测试”那样的特殊库
+                elif library.get('Type') == 'CollectionFolder':
+                    logger.info(f"媒体库 '{library.get('Name')}' 是一个特殊的 CollectionFolder，将查询电影和剧集。")
+                    item_type_to_query = 'Movie,Series'
+                # --- 修复结束 ---
 
                 item_count = 0
                 if library_id and item_type_to_query:

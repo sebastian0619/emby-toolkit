@@ -146,22 +146,56 @@ class CoverGeneratorService:
             return self.__generate_image_from_path(library['Name'], title, image_paths, item_count)
 
     def __get_valid_items_from_library(self, server_id: str, library: Dict[str, Any], limit: int) -> List[Dict]:
-        """从媒体库中获取足够数量的、包含有效图片的媒体项 (已修复排序逻辑)"""
+        """
+        【最终修正版】从媒体库中获取足够数量的、包含有效图片的媒体项。
+        此版本会根据媒体库的类型动态确定要获取的媒体项类型。
+        """
         library_id = library.get("Id") or library.get("ItemId")
+        library_name = library.get("Name")
         
         base_url = config_manager.APP_CONFIG.get('emby_server_url')
         api_key = config_manager.APP_CONFIG.get('emby_api_key')
         user_id = config_manager.APP_CONFIG.get('emby_user_id')
 
-        # ★★★ 核心修改：在请求中加入 DateCreated 字段，用于排序 ★★★
+        # --- ★★★ 核心修复：动态确定要获取的媒体类型 ★★★ ---
+        
+        # 1. 定义完整的类型映射
+        TYPE_MAP = {
+            'movies': 'Movie', 
+            'tvshows': 'Series', 
+            'music': 'MusicAlbum',
+            'boxsets': 'BoxSet', 
+            'mixed': 'Movie,Series',
+            'audiobooks': 'AudioBook'
+        }
+
+        # 2. 使用 if/elif 逻辑来确定正确的查询类型
+        item_types_to_fetch = None
+        collection_type = library.get('CollectionType')
+
+        if collection_type:
+            item_types_to_fetch = TYPE_MAP.get(collection_type)
+        elif library.get('Type') == 'CollectionFolder':
+            logger.info(f"媒体库 '{library_name}' 是一个特殊的 CollectionFolder，将按混合库处理。")
+            item_types_to_fetch = 'Movie,Series'
+
+        # 3. 如果经过判断后仍然无法确定类型，提供一个最终的备用方案并记录警告
+        if not item_types_to_fetch:
+            logger.warning(f"无法为媒体库 '{library_name}' 确定媒体类型，将使用默认值 'Movie,Series,MusicAlbum' 进行尝试。")
+            item_types_to_fetch = 'Movie,Series,MusicAlbum'
+            
+        logger.debug(f"正在为媒体库 '{library_name}' 获取类型为 '{item_types_to_fetch}' 的项目...")
+
+        # 4. 使用动态确定的类型去调用 emby_handler
         all_items = emby_handler.get_emby_library_items(
             base_url=base_url,
             api_key=api_key,
             user_id=user_id,
             library_ids=[library_id],
-            media_type_filter="Movie,Series,MusicAlbum",
-            fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated" # 确保请求了 DateCreated
+            media_type_filter=item_types_to_fetch,  # <-- 使用我们动态生成的变量！
+            fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated"
         )
+        # --- 修复结束 ---
         
         if not all_items:
             return []
@@ -171,17 +205,12 @@ class CoverGeneratorService:
         if not valid_items:
             return []
 
-        # ★★★ 核心修改：实现更完善的排序逻辑 ★★★
         if self._sort_by == "Latest":
             logger.debug(f"正在对 {len(valid_items)} 个有效项目按'最新添加'进行排序...")
-            # 使用 get 获取 DateCreated，并提供一个很早的默认值以防数据缺失
             valid_items.sort(key=lambda x: x.get('DateCreated', '1970-01-01T00:00:00.000Z'), reverse=True)
         elif self._sort_by == "Random":
             logger.debug(f"正在对 {len(valid_items)} 个有效项目进行'随机'排序...")
             random.shuffle(valid_items)
-        # else:
-            # 可以在此添加其他排序方式，如 "PremiereDate"
-            # logger.debug(f"正在对 {len(valid_items)} 个有效项目按默认方式排序...")
 
         return valid_items[:limit]
 
