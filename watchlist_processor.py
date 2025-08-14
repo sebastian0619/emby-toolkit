@@ -1,11 +1,11 @@
 # watchlist_processor.py
-from __future__ import annotations
+
 import sqlite3
 import time
 import json
 import os
 import copy
-from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
+from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timedelta
 import threading
 import db_handler
@@ -13,8 +13,6 @@ from db_handler import get_db_connection as get_central_db_connection
 # 导入我们需要的辅助模块
 import tmdb_handler
 import emby_handler
-if TYPE_CHECKING:
-    from core_processor import MediaProcessor
 import logging
 
 logger = logging.getLogger(__name__)
@@ -49,7 +47,7 @@ class WatchlistProcessor:
     并包含一个独立的、用于低频检查已完结剧集“复活”的方法。
     新增对 `force_ended` 标志的支持。
     """
-    def __init__(self, config: Dict[str, Any], core_processor: 'MediaProcessor'):
+    def __init__(self, config: Dict[str, Any]):
         if not isinstance(config, dict):
             raise TypeError(f"配置参数(config)必须是一个字典，但收到了 {type(config).__name__} 类型。")
         self.config = config
@@ -61,7 +59,6 @@ class WatchlistProcessor:
         self.emby_api_key = self.config.get("emby_api_key")
         self.emby_user_id = self.config.get("emby_user_id")
         self.local_data_path = self.config.get("local_data_path", "")
-        self.core_processor = core_processor
         self._stop_event = threading.Event()
         self.progress_callback = None
         logger.trace("WatchlistProcessor 初始化完成。")
@@ -281,12 +278,18 @@ class WatchlistProcessor:
             logger.warning("未配置TMDb API Key，跳过。")
             return
 
-        # 步骤2: 从TMDb获取权威数据 (在内存中)
+        # ======================================================================
+        # ★★★ 核心改造区域 START ★★★
+        # ======================================================================
+
+        # 步骤2: 从TMDb获取权威数据 (在内存中，不再读写文件)
+        logger.debug(f"  -> 正在从TMDb API获取 '{item_name}' 的最新详情...")
         latest_series_data = tmdb_handler.get_tv_details_tmdb(tmdb_id, self.tmdb_api_key)
         if not latest_series_data:
             logger.error(f"  -> 无法获取 '{item_name}' 的TMDb详情，本次处理中止。")
             return
         
+        # 直接在内存中聚合所有分集信息
         all_tmdb_episodes = []
         for season_summary in latest_series_data.get("seasons", []):
             season_num = season_summary.get("season_number")
@@ -294,7 +297,7 @@ class WatchlistProcessor:
             season_details = tmdb_handler.get_season_details_tmdb(tmdb_id, season_num, self.tmdb_api_key)
             if season_details and season_details.get("episodes"):
                 all_tmdb_episodes.extend(season_details.get("episodes", []))
-            time.sleep(0.1)
+            time.sleep(0.1) # 保持对API的尊重
 
         # 步骤3: 获取Emby本地数据 (保持不变)
         emby_children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
@@ -308,9 +311,11 @@ class WatchlistProcessor:
         # 步骤4: 计算状态和缺失信息 (逻辑保持不变)
         new_tmdb_status = latest_series_data.get("status")
         is_ended_on_tmdb = new_tmdb_status in ["Ended", "Canceled"]
+        
         real_next_episode_to_air = self._calculate_real_next_episode(all_tmdb_episodes, emby_seasons)
         missing_info = self._calculate_missing_info(latest_series_data.get('seasons', []), all_tmdb_episodes, emby_seasons)
         has_missing_media = bool(missing_info["missing_seasons"] or missing_info["missing_episodes"])
+
         final_status = STATUS_WATCHING
         paused_until_date = None
 
@@ -349,24 +354,43 @@ class WatchlistProcessor:
         }
         self._update_watchlist_entry(item_id, item_name, updates_to_db)
 
-        # ======================================================================
-        # ★★★ 步骤6: 【最终动作】如果需要，通知核心处理器来干活 ★★★
-        # ======================================================================
-        if final_status == STATUS_WATCHING:
-            logger.info(f"  -> 剧集状态为 '追剧中'，将通知核心处理器进行一次完整的元数据和演员更新...")
-            try:
-                # 调用我们保存在 self.core_processor 中的实例
-                self.core_processor.process_single_item(
-                    emby_item_id=item_id,
-                    # 强制处理，因为它刚被追剧模块唤醒，需要绕过“已处理”的跳过逻辑
-                    force_reprocess_this_item=True, 
-                    # 强制从TMDb获取数据，确保核心处理器拿到最新的分集信息
-                    force_fetch_from_tmdb=True
-                )
-            except Exception as e:
-                logger.error(f"  -> 调用核心处理器处理 '{item_name}' 时失败: {e}", exc_info=True)
+        # 步骤6: 【最终动作】如果需要，命令Emby刷新自己
+        # 只有当剧集状态是“追剧中”（意味着有新内容或缺失内容）时，才有必要触发刷新
+        # 只有当剧集状态是“追剧中”并且有缺失媒体时，才执行手术
+        if final_status == STATUS_WATCHING and has_missing_media:
+            logger.info("  -> 检测到剧集有缺失，开始执行元数据更新...")
+            
+            # 我们只关心那些在TMDb上存在，但在Emby中缺失的分集
+            for missing_ep_tmdb_data in missing_info.get("missing_episodes", []):
+                s_num = missing_ep_tmdb_data.get("season_number")
+                e_num = missing_ep_tmdb_data.get("episode_number")
+
+                # 在Emby的所有子项目中找到这个刚刚出现的分集
+                found_emby_episode = next((ep for ep in emby_children if ep.get("ParentIndexNumber") == s_num and ep.get("IndexNumber") == e_num), None)
+
+                # 如果在Emby中找到了对应的“空壳”分集，我们就为它注入元数据
+                if found_emby_episode:
+                    emby_episode_id = found_emby_episode.get("Id")
+                    ep_name_for_log = f"S{s_num:02d}E{e_num:02d}"
+                    logger.info(f"  -> 发现新分集 '{ep_name_for_log}' (ID: {emby_episode_id}) 已在Emby中，准备为其注入元数据...")
+                    
+                    # 准备要注入的数据 (简介、标题等)
+                    data_to_inject = {
+                        "Name": missing_ep_tmdb_data.get("name"),
+                        "Overview": missing_ep_tmdb_data.get("overview")
+                        # 未来可以扩展，注入更多字段，如评分、播出日期等
+                    }
+                    
+                    # 调用我们的“注射器”函数
+                    emby_handler.update_emby_item_details(
+                        item_id=emby_episode_id,
+                        new_data=data_to_inject,
+                        emby_server_url=self.emby_url,
+                        emby_api_key=self.emby_api_key,
+                        user_id=self.emby_user_id
+                    )
         else:
-            logger.info(f"  -> 剧集状态为 '{translate_internal_status(final_status)}'，无需触发核心处理器。")
+            logger.info(f"  -> 剧集状态为 '{translate_internal_status(final_status)}' 或本地文件完整，无需执行分集更新。")
 
     # ★★★ 统一的、公开的追剧处理入口 ★★★
     def process_watching_list(self, item_id: Optional[str] = None):

@@ -1282,3 +1282,45 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
     except Exception as e:
         logger.error(f"定位媒体库时发生未知严重错误: {e}", exc_info=True)
         return None
+    
+# --- 更新集简介 ---
+def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
+    """
+    【新增】“外科手术式”更新一个Emby项目的指定字段。
+    它会先获取项目的当前状态，然后只修改传入的字段，最后再写回去。
+    """
+    if not all([item_id, new_data, emby_server_url, emby_api_key, user_id]):
+        logger.error("update_emby_item_details: 参数不足。")
+        return False
+
+    try:
+        # 步骤 1: 获取项目的当前完整信息
+        current_item_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id)
+        if not current_item_details:
+            logger.error(f"更新前无法获取项目 {item_id} 的详情，操作中止。")
+            return False
+        
+        item_name_for_log = current_item_details.get("Name", f"ID:{item_id}")
+
+        # 步骤 2: 将新数据合并到获取到的对象中
+        logger.debug(f"准备将以下新数据合并到 '{item_name_for_log}': {new_data}")
+        item_to_update = current_item_details.copy()
+        item_to_update.update(new_data)
+        
+        # 步骤 3: 使用 POST /Items/{ItemId} (不带UserID) 来更新，这是最通用的更新方式
+        update_url = f"{emby_server_url.rstrip('/')}/Items/{item_id}"
+        params = {"api_key": emby_api_key}
+        headers = {'Content-Type': 'application/json'}
+
+        response_post = requests.post(update_url, json=item_to_update, headers=headers, params=params, timeout=15)
+        response_post.raise_for_status()
+        
+        logger.info(f"✅ 成功更新项目 '{item_name_for_log}' 的详情。")
+        return True
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"更新项目详情时发生网络错误 (ID: {item_id}): {e}")
+        return False
+    except Exception as e:
+        logger.error(f"更新项目详情时发生未知错误 (ID: {item_id}): {e}", exc_info=True)
+        return False

@@ -207,7 +207,6 @@ class MediaProcessor:
         self._stop_event = threading.Event()
         self.processed_items_cache = self._load_processed_log_from_db()
         self.manual_edit_cache = TTLCache(maxsize=10, ttl=600)
-        self.watchlist_processor = WatchlistProcessor(self.config, self)
         logger.trace("核心处理器初始化完成。")
     # --- 清除已处理记录 ---
     def clear_processed_log(self):

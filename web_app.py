@@ -450,10 +450,7 @@ def initialize_processors():
 
     # 初始化 watchlist_processor_instance_local
     try:
-        watchlist_processor_instance_local = WatchlistProcessor(
-            config=current_config, 
-            core_processor=media_processor_instance_local  # <--- 把核心处理器实例作为参数传进去
-        )
+        watchlist_processor_instance_local = WatchlistProcessor(config=current_config)
         logger.trace("WatchlistProcessor 实例已成功初始化。")
     except Exception as e:
         logger.error(f"创建 WatchlistProcessor 实例失败: {e}", exc_info=True)

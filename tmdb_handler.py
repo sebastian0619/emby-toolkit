@@ -156,7 +156,6 @@ def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append
     logger.debug(f"TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) 第 {season_number} 季的详情...")
     
     return _tmdb_request(endpoint, api_key, params)
-# +++ 获取集详情 +++
 # --- 并发获取剧集详情 ---
 def aggregate_full_series_data_from_tmdb(
     tv_id: int,
@@ -244,6 +243,7 @@ def aggregate_full_series_data_from_tmdb(
     logger.info(f"🚀 TMDB 数据并发聚合完成！成功获取 {len(final_aggregated_data['seasons_details'])} 季和 {len(final_aggregated_data['episodes_details'])} 集的详情。")
     
     return final_aggregated_data
+# +++ 获取集详情 +++
 def get_episode_details_tmdb(tv_id: int, season_number: int, episode_number: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,external_ids") -> Optional[Dict[str, Any]]:
     """
     【新增】获取电视剧某一集的详细信息。
