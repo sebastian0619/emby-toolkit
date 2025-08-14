@@ -429,6 +429,7 @@ let sortableInstance = null; // ★ 新增：保存Sortable实例
 
 // ★★★ 新增：为排序规则定义选项 ★★★
 const sortFieldOptions = ref([
+  { label: '不设置 (使用Emby原生排序)', value: 'none' },
   { label: '名称', value: 'SortName' },
   { label: '添加日期', value: 'DateCreated' },
   { label: '上映日期', value: 'PremiereDate' },
@@ -449,7 +450,7 @@ const getInitialFormModel = () => ({
   definition: {
     item_type: ['Movie'],
     url: '',
-    default_sort_by: 'SortName',
+    default_sort_by: 'none',
     default_sort_order: 'Ascending' 
   }
 });
@@ -463,7 +464,7 @@ watch(() => currentCollection.value.type, (newType) => {
       logic: 'AND',
       rules: [{ field: null, operator: null, value: '' }],
       // ★★★ 新增：为筛选类型也初始化排序字段 ★★★
-      default_sort_by: 'SortName',
+      default_sort_by: 'none',
       default_sort_order: 'Ascending'
     };
   } else if (newType === 'list') {
@@ -471,7 +472,7 @@ watch(() => currentCollection.value.type, (newType) => {
       item_type: ['Movie'], // 注意这里也改成了数组
       url: '',
       // ★★★ 新增：为榜单类型也初始化排序字段 ★★★
-      default_sort_by: 'SortName',
+      default_sort_by: 'none',
       default_sort_order: 'Ascending'
     };
   }
