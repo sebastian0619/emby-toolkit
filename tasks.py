@@ -96,9 +96,9 @@ def task_enrich_aliases(processor: MediaProcessor):
     【V3 - 后台任务】演员数据补充任务的入口点。
     - 核心逻辑：内置了30天的固定冷却时间，无需任何外部配置。
     """
-    task_name = "演员元数据补充"
+    task_name = "演员数据补充"
     logger.info(f"后台任务 '{task_name}' 开始执行...")
-    task_manager.update_status_from_thread(0, "准备开始演员元数据补充...")
+    task_manager.update_status_from_thread(0, "准备开始演员数据补充...")
 
     try:
         # 从传入的 processor 对象中获取配置字典
@@ -126,7 +126,7 @@ def task_enrich_aliases(processor: MediaProcessor):
         # 直接将冷却时间硬编码为 30 天。
         cooldown_days = 30
         
-        logger.trace(f"演员元数据补充任务将使用固定的 {cooldown_days} 天冷却期。")
+        logger.trace(f"演员数据补充任务将使用固定的 {cooldown_days} 天冷却期。")
 
         # 调用核心函数，并传递写死的值
         enrich_all_actor_aliases_task(
@@ -139,7 +139,7 @@ def task_enrich_aliases(processor: MediaProcessor):
         # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
         logger.info(f"'{task_name}' 任务执行完毕。")
-        task_manager.update_status_from_thread(100, "演员元数据补充任务完成。")
+        task_manager.update_status_from_thread(100, "演员数据补充任务完成。")
 
     except Exception as e:
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
