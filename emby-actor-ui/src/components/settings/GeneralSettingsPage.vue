@@ -225,6 +225,11 @@
 
             <n-form-item-grid-item label="启用反向代理" path="proxy_enabled">
               <n-switch v-model:value="configModel.proxy_enabled" />
+              <template #feedback>
+                <n-text depth="3" style="font-size:0.8em;">
+                  开启后，自动将自建合集虚拟成媒体库，用反代的端口访问。
+                </n-text>
+              </template>
             </n-form-item-grid-item>
 
             <n-form-item-grid-item label="合并原生媒体库" path="proxy_merge_native_libraries">
