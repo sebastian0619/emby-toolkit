@@ -90,10 +90,10 @@ def task_sync_person_map(processor):
     except Exception as e:
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"错误：同步失败 ({str(e)[:50]}...)")
-# ✨✨✨ 演员元数据增强函数 ✨✨✨
+# ✨✨✨ 演员数据补充函数 ✨✨✨
 def task_enrich_aliases(processor: MediaProcessor):
     """
-    【V3 - 后台任务】演员元数据增强任务的入口点。
+    【V3 - 后台任务】演员数据补充任务的入口点。
     - 核心逻辑：内置了30天的固定冷却时间，无需任何外部配置。
     """
     task_name = "演员元数据补充"
@@ -126,7 +126,7 @@ def task_enrich_aliases(processor: MediaProcessor):
         # 直接将冷却时间硬编码为 30 天。
         cooldown_days = 30
         
-        logger.info(f"演员元数据补充任务将使用固定的 {cooldown_days} 天冷却期。")
+        logger.trace(f"演员元数据补充任务将使用固定的 {cooldown_days} 天冷却期。")
 
         # 调用核心函数，并传递写死的值
         enrich_all_actor_aliases_task(
@@ -1342,7 +1342,7 @@ def task_run_chain(processor: MediaProcessor, task_sequence: list):
             # 根据任务的唯一标识符 (key) 来判断使用哪个处理器
             if task_key in ['process-watchlist', 'refresh-single-watchlist-item']:
                 processor_to_use = extensions.watchlist_processor_instance
-                logger.debug(f"任务 '{task_description}' 将使用 WatchlistProcessor。")
+                logger.trace(f"任务 '{task_description}' 将使用 WatchlistProcessor。")
             elif task_key in ['actor-tracking', 'scan-actor-media']:
                 processor_to_use = extensions.actor_subscription_processor_instance
                 logger.debug(f"任务 '{task_description}' 将使用 ActorSubscriptionProcessor。")

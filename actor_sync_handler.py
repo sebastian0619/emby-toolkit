@@ -107,7 +107,7 @@ class UnifiedSyncHandler:
                 conn.commit() # 每处理完一批就提交一次事务
 
         # ... (最终的统计日志) ...
-        logger.info("--- 演员映射表同步完成 ---")
+        logger.info("--- 同步演员映射完成 ---")
         logger.info(f"从 Emby API 共获取: {stats['total']} 条")
         logger.info(f"已处理: {stats['processed']} 条")
         logger.info(f"成功写入/更新: {stats['success']} 条")

@@ -647,13 +647,13 @@ def get_series_children(
         "Fields": "Id,Name,ParentIndexNumber,IndexNumber", # 只请求必要的字段
     }
     
-    logger.debug(f"准备获取剧集 {log_identifier} 的子项目 (类型: {include_item_types})...")
+    logger.debug(f"  -> 准备获取剧集 {log_identifier} 的子项目 (类型: {include_item_types})...")
     try:
         response = requests.get(api_url, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
         children = data.get("Items", [])
-        logger.debug(f"成功为剧集 {log_identifier} 获取到 {len(children)} 个子项目。")
+        logger.debug(f"  -> 成功为剧集 {log_identifier} 获取到 {len(children)} 个子项目。")
         return children
     except requests.exceptions.RequestException as e:
         logger.error(f"获取剧集 {log_identifier} 的子项目列表时发生错误: {e}", exc_info=True)

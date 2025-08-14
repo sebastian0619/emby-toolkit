@@ -403,7 +403,7 @@ def fetch_tmdb_details_for_actor(actor_info: Dict, tmdb_api_key: str) -> Optiona
         # 其他API错误（如网络问题），记录日志并返回失败状态
         logger.warning(f"获取演员 {tmdb_id} 详情时遇到API错误: {e}")
         return {"tmdb_id": tmdb_id, "status": "failed"}
-# --- 演员元数据增强 ---
+# --- 演员数据补充 ---
 def enrich_all_actor_aliases_task(
     db_path: str, 
     tmdb_api_key: str, 
@@ -424,10 +424,10 @@ def enrich_all_actor_aliases_task(
         logger.info(f"任务将运行 {run_duration_minutes} 分钟，预计在 {end_time_str} 左右自动停止。")
     else:
         end_time = float('inf')
-        logger.info("任务未设置运行时长，将持续运行。")
+        logger.trace("任务未设置运行时长，将持续运行。")
 
     SYNC_INTERVAL_DAYS = sync_interval_days
-    logger.info(f"同步冷却时间设置为 {SYNC_INTERVAL_DAYS} 天。")
+    logger.info(f"  -> 同步冷却时间为 {SYNC_INTERVAL_DAYS} 天。")
 
     try:
         with db_handler.get_db_connection(db_path) as conn:
@@ -466,7 +466,7 @@ def enrich_all_actor_aliases_task(
             
             if actors_for_tmdb:
                 total_tmdb = len(actors_for_tmdb)
-                logger.info(f"找到 {total_tmdb} 位演员需要从 TMDb 补充元数据。")
+                logger.info(f"  -> 找到 {total_tmdb} 位演员需要从 TMDb 补充元数据。")
                 
                 CHUNK_SIZE = 200
                 MAX_TMDB_WORKERS = 5
@@ -477,7 +477,7 @@ def enrich_all_actor_aliases_task(
                         break
 
                     chunk = actors_for_tmdb[i:i + CHUNK_SIZE]
-                    logger.info(f"--- 开始处理 TMDb 第 {i//CHUNK_SIZE + 1} 批次，共 {len(chunk)} 个演员 ---")
+                    logger.info(f"  -> 开始处理 TMDb 第 {i//CHUNK_SIZE + 1} 批次，共 {len(chunk)} 个演员 ---")
 
                     # ★★★ 2. 改造数据容器：我们需要为两个表准备数据 ★★★
                     imdb_updates_to_commit = []      # 存储 (imdb_id, tmdb_id)
@@ -597,7 +597,7 @@ def enrich_all_actor_aliases_task(
 
             if actors_for_douban:
                 total_douban = len(actors_for_douban)
-                logger.info(f"找到 {total_douban} 位演员需要从豆瓣补充 IMDb ID。")
+                logger.info(f"  -> 找到 {total_douban} 位演员需要从豆瓣补充 IMDb ID。")
                 
                 processed_count = 0
                 for i, actor in enumerate(actors_for_douban):
@@ -671,16 +671,16 @@ def enrich_all_actor_aliases_task(
                 conn.commit()
                 logger.info(f"豆瓣信息补充完成，本轮共处理 {processed_count} 个。")
             else:
-                logger.info("没有需要从豆瓣补充 IMDb ID 的演员。")
+                logger.info("  -> 没有需要从豆瓣补充 IMDb ID 的演员。")
             
             if douban_api:
                 douban_api.close()
 
     except InterruptedError:
-        logger.info("演员元数据增强任务被中止。")
+        logger.info("演员数据补充任务被中止。")
         if conn and conn.in_transaction: conn.rollback()
     except Exception as e:
-        logger.error(f"演员元数据增强任务发生严重错误: {e}", exc_info=True)
+        logger.error(f"演员数据补充任务发生严重错误: {e}", exc_info=True)
         if conn and conn.in_transaction: conn.rollback()
     finally:
-        logger.info("--- “演员元数据增强”计划任务已退出 ---")
+        logger.trace("--- “演员数据补充”计划任务已退出 ---")

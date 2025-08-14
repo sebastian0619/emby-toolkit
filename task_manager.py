@@ -154,20 +154,20 @@ def task_worker_function():
             # +++ 核心修改：添加最高优先级的“特赦令” +++
             if task_function.__name__ == 'task_add_all_series_to_watchlist':
                 processor_to_use = extensions.media_processor_instance
-                logger.debug(f"任务 '{task_name}' [特例] 将使用 MediaProcessor。")
+                logger.trace(f"任务 '{task_name}' [特例] 将使用 MediaProcessor。")
             
             # --- 老顽固的旧逻辑，现在是第二优先级 ---
             elif "追剧" in task_name or "watchlist" in task_function.__name__:
                 processor_to_use = extensions.watchlist_processor_instance
-                logger.debug(f"任务 '{task_name}' 将使用 WatchlistProcessor。")
+                logger.trace(f"任务 '{task_name}' 将使用 WatchlistProcessor。")
             
             elif task_function.__name__ in ['task_process_actor_subscriptions', 'task_scan_actor_media']:
                 processor_to_use = extensions.actor_subscription_processor_instance
-                logger.debug(f"任务 '{task_name}' 将使用 ActorSubscriptionProcessor。")
+                logger.trace(f"任务 '{task_name}' 将使用 ActorSubscriptionProcessor。")
             
             else:
                 processor_to_use = extensions.media_processor_instance
-                logger.debug(f"任务 '{task_name}' 将使用 MediaProcessor。")
+                logger.trace(f"任务 '{task_name}' 将使用 MediaProcessor。")
 
             if not processor_to_use:
                 logger.error(f"任务 '{task_name}' 无法执行：对应的处理器未初始化。")
