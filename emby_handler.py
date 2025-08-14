@@ -338,14 +338,14 @@ def get_emby_libraries(emby_server_url, emby_api_key, user_id):
     params = {'api_key': emby_api_key}
     
     try:
-        logger.debug(f"正在从 {target_url} 获取媒体库和合集...")
+        logger.trace(f"  -> 正在从 {target_url} 获取媒体库和合集...")
         response = requests.get(target_url, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
         
         # ★★★ 核心修改：返回原始的、完整的Items列表 ★★★
         items = data.get('Items', [])
-        logger.info(f"成功获取到 {len(items)} 个媒体库/合集。")
+        logger.trace(f"  -> 成功获取到 {len(items)} 个媒体库/合集。")
         return items
 
     except requests.exceptions.RequestException as e:

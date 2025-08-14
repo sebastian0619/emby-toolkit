@@ -934,7 +934,7 @@ def get_all_active_custom_collections(db_path: str) -> List[Dict[str, Any]]:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM custom_collections WHERE status = 'active' ORDER BY sort_order ASC, id ASC")
             rows = cursor.fetchall()
-            logger.info(f"从数据库找到 {len(rows)} 个已启用的自定义合集。")
+            logger.trace(f"  -> 从数据库找到 {len(rows)} 个已启用的自定义合集。")
             return [dict(row) for row in rows]
     except sqlite3.Error as e:
         logger.error(f"获取所有已启用的自定义合集时发生数据库错误: {e}", exc_info=True)

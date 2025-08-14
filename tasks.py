@@ -993,7 +993,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                 cursor.execute(sql_query)
                 series_to_check = cursor.fetchall()
                 
-                logger.info(f"【智能订阅-剧集】从数据库找到 {len(series_to_check)} 部状态为'在追'或'暂停'且有缺失信息的剧集需要检查。")
+                logger.trace(f"【智能订阅-剧集】从数据库找到 {len(series_to_check)} 部状态为'在追'或'暂停'且有缺失信息的剧集需要检查。")
 
                 for series in series_to_check:
                     if processor.is_stop_requested(): break
