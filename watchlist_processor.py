@@ -375,7 +375,7 @@ class WatchlistProcessor:
             # 注意：我们在这里不修改 force_ended 标志，它的重置只在“复活检查”时发生
         }
         self._update_watchlist_entry(item_id, item_name, updates_to_db)
-        emby_handler.refresh_emby_item_metadata(item_id, self.emby_url, self.emby_api_key, item_name_for_log=item_name)
+        emby_handler.refresh_emby_item_metadata(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, item_name_for_log=item_name)
 
     # ★★★ 统一的、公开的追剧处理入口 ★★★
     def process_watching_list(self, item_id: Optional[str] = None):

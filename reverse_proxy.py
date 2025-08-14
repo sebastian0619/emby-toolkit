@@ -292,30 +292,73 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 def handle_get_latest_items(user_id, params):
     try:
         base_url, api_key = _get_real_emby_url_and_key()
+        # 客户端可能使用 ParentId (网页) 或 customViewId (部分App) 来指定虚拟库
         virtual_library_id = params.get('ParentId') or params.get('customViewId')
 
-        if virtual_library_id and is_mimicked_id(virtual_library_id): # <-- 【核心修改】
+        # 检查是否是针对我们虚拟库的请求
+        if virtual_library_id and is_mimicked_id(virtual_library_id):
             logger.info(f"处理针对虚拟库 '{virtual_library_id}' 的最新媒体请求...")
+            
             try:
-                virtual_library_db_id = from_mimicked_id(virtual_library_id) # <-- 【核心修改】
+                virtual_library_db_id = from_mimicked_id(virtual_library_id)
             except (ValueError, TypeError):
+                logger.warning(f"无法解析虚拟库ID: {virtual_library_id}")
                 return Response(json.dumps([]), mimetype='application/json')
 
             collection_info = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, virtual_library_db_id)
             if not collection_info or not collection_info.get('emby_collection_id'):
+                logger.warning(f"找不到虚拟库 {virtual_library_db_id} 或其对应的Emby合集ID。")
                 return Response(json.dumps([]), mimetype='application/json')
 
-            real_emby_collection_id = collection_info.get('emby_collection_id')
-            latest_params = {
-                "ParentId": real_emby_collection_id, "Limit": int(params.get('Limit', '20')),
-                "Fields": "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated", "SortBy": "DateCreated", 
-                "SortOrder": "Descending", "Recursive": "true", "IncludeItemTypes": "Movie,Series",
-                'api_key': api_key,
-            }
+            # --- ★★★ 核心修复逻辑开始 ★★★ ---
+            
+            # 1. 从虚拟库定义中动态获取媒体类型
+            definition = json.loads(collection_info.get('definition_json', '{}'))
+            # 从定义中读取 item_type，若无则默认为电影和剧集
+            item_types_from_def = definition.get('item_type', ['Movie', 'Series'])
+            # 确保它是一个列表，以防万一数据库存的是单个字符串
+            if isinstance(item_types_from_def, str):
+                item_types_from_def = [item_types_from_def]
+            
+            # 2. 准备转发给真实Emby服务器的参数
+            # 继承客户端发来的大部分参数，但覆盖关键部分，这样更灵活
+            forward_params = params.copy()
+            
+            # 2a. 替换为真实的父ID (即我们后台管理的Emby合集ID)
+            forward_params["ParentId"] = collection_info.get('emby_collection_id')
+            
+            # 2b. 【关键修复】强制使用我们从定义中得到的媒体类型，而不是硬编码
+            forward_params["IncludeItemTypes"] = ",".join(item_types_from_def)
+            
+            # 2c. 确保排序方式正确，以模拟“最新添加”的行为
+            forward_params["SortBy"] = "DateCreated"
+            forward_params["SortOrder"] = "Descending"
+            
+            # 2d. 确保有足够的字段供客户端显示
+            existing_fields = set((forward_params.get('Fields', '') or '').split(','))
+            required_fields = {"PrimaryImageAspectRatio", "BasicSyncInfo", "DateCreated"}
+            existing_fields.update(required_fields)
+            if '' in existing_fields: existing_fields.remove('') # 移除可能存在的空字符串
+            forward_params['Fields'] = ",".join(list(existing_fields))
+            
+            # 2e. 确保API Key存在
+            forward_params['api_key'] = api_key
+            
+            # 2f. 移除可能引起冲突的虚拟库ID参数
+            forward_params.pop('customViewId', None)
+
+            # 3. 构造请求并发送
+            # 注意：Emby的 /Items/Latest 端点不接受 ParentId，所以我们必须请求 /Items 端点来实现相同功能
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
-            resp = requests.get(target_url, params=latest_params, timeout=15)
+            
+            logger.debug(f"转发 '最新添加' 请求到 {target_url}，参数: {forward_params}")
+            
+            resp = requests.get(target_url, params=forward_params, timeout=15)
             resp.raise_for_status()
             items_data = resp.json()
+            
+            # 4. 返回结果
+            # /Items/Latest 端点期望一个纯粹的 Item 数组，而不是带TotalRecordCount的对象
             return Response(json.dumps(items_data.get("Items", [])), mimetype='application/json')
         else:
             target_url = f"{base_url}/{request.path.lstrip('/')}"
