@@ -91,9 +91,7 @@
           </template>
           <n-grid :x-gap="12" :y-gap="16" :cols="4" item-responsive>
             <n-gi span="2 s:1">
-              <n-statistic label="数据库大小" class="centered-statistic">
-                {{ stats.system?.db_size_mb }} MB
-              </n-statistic>
+              <n-statistic label="演员映射条目" class="centered-statistic" :value="stats.system?.actor_mappings_count" />
             </n-gi>
             <n-gi span="2 s:1">
               <n-statistic label="翻译缓存条目" class="centered-statistic" :value="stats.system?.translation_cache_count" />

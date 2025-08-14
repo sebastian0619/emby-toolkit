@@ -216,7 +216,7 @@ def api_get_database_stats():
             # --- 4. 系统与缓存统计 ---
             db_size_bytes = os.path.getsize(config_manager.DB_PATH)
             stats['system'] = {
-                "db_size_mb": round(db_size_bytes / (1024 * 1024), 2),
+                "actor_mappings_count": _count_table_rows(cursor, "person_identity_map"),
                 "translation_cache_count": _count_table_rows(cursor, "translation_cache"),
                 "processed_log_count": _count_table_rows(cursor, "processed_log"),
                 "failed_log_count": _count_table_rows(cursor, "failed_log"),
