@@ -1605,7 +1605,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                     cover_config = json.load(f)
 
             if cover_config.get("enabled"):
-                logger.info("检测到封面生成器已启用，将为所有已处理的合集生成封面...")
+                logger.info("  -> 检测到封面生成器已启用，将为所有已处理的合集生成封面...")
                 task_manager.update_status_from_thread(95, "合集同步完成，开始生成封面...")
                 
                 cover_service = CoverGeneratorService(config=cover_config)
@@ -1818,7 +1818,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
 
         # --- 步骤 3: 统一更新数据库 ---
         db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, custom_collection_id, update_data)
-        logger.info(f"已更新自定义合集 '{collection_name}' (ID: {custom_collection_id}) 的同步状态和健康信息。")
+        logger.info(f"  -> 已更新自定义合集 '{collection_name}' (ID: {custom_collection_id}) 的同步状态和健康信息。")
 
 
         # --- 封面生成逻辑 ---
@@ -1831,7 +1831,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
 
             # 检查插件是否在配置中启用
             if cover_config.get("enabled"):
-                logger.info(f"检测到封面生成器已启用，将为合集 '{collection_name}' 生成封面...")
+                logger.info(f"  -> 检测到封面生成器已启用，将为合集 '{collection_name}' 生成封面...")
                 
                 # 实例化服务
                 cover_service = CoverGeneratorService(config=cover_config)

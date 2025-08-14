@@ -181,10 +181,10 @@ class CoverGeneratorService:
 
         # 3. 如果经过判断后仍然无法确定类型，提供一个最终的备用方案并记录警告
         if not item_types_to_fetch:
-            logger.warning(f"无法为媒体库 '{library_name}' 确定媒体类型，将使用默认值 'Movie,Series,MusicAlbum' 进行尝试。")
+            logger.trace(f"无法为媒体库 '{library_name}' 确定媒体类型，将使用默认值 'Movie,Series,MusicAlbum' 进行尝试。")
             item_types_to_fetch = 'Movie,Series,MusicAlbum'
             
-        logger.debug(f"正在为媒体库 '{library_name}' 获取类型为 '{item_types_to_fetch}' 的项目...")
+        logger.debug(f"  -> 正在为媒体库 '{library_name}' 获取类型为 '{item_types_to_fetch}' 的项目...")
 
         # 4. 使用动态确定的类型去调用 emby_handler
         all_items = emby_handler.get_emby_library_items(
@@ -206,10 +206,10 @@ class CoverGeneratorService:
             return []
 
         if self._sort_by == "Latest":
-            logger.debug(f"正在对 {len(valid_items)} 个有效项目按'最新添加'进行排序...")
+            logger.debug(f"  -> 正在对 {len(valid_items)} 个有效项目按'最新添加'进行排序...")
             valid_items.sort(key=lambda x: x.get('DateCreated', '1970-01-01T00:00:00.000Z'), reverse=True)
         elif self._sort_by == "Random":
-            logger.debug(f"正在对 {len(valid_items)} 个有效项目进行'随机'排序...")
+            logger.debug(f"  -> 正在对 {len(valid_items)} 个有效项目进行'随机'排序...")
             random.shuffle(valid_items)
 
         return valid_items[:limit]

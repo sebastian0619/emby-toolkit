@@ -454,7 +454,7 @@ def get_emby_library_items(
         # 如果 media_type_filter 未提供，则为“所有”
         media_type_in_chinese = '所有'
 
-    logger.debug(f"总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
+    logger.debug(f"  -> 总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
     
     return all_items_from_selected_libraries
 # ✨✨✨ 刷新Emby元数据 ✨✨✨
@@ -860,7 +860,7 @@ def get_all_collections_from_emby_generic(base_url: str, api_key: str, user_id: 
         response = requests.get(api_url, params=params, timeout=60)
         response.raise_for_status()
         all_collections = response.json().get("Items", [])
-        logger.debug(f"通用函数成功从 Emby 获取到 {len(all_collections)} 个BoxSet合集。")
+        logger.debug(f"  -> 成功从 Emby 获取到 {len(all_collections)} 个合集。")
         return all_collections
     except Exception as e:
         logger.error(f"通用函数在获取所有Emby合集时发生错误: {e}", exc_info=True)
@@ -984,7 +984,7 @@ def get_collection_by_name(name: str, base_url: str, api_key: str, user_id: str)
     
     for collection in all_collections:
         if collection.get('Name', '').lower() == name.lower():
-            logger.debug(f"根据名称 '{name}' 找到了已存在的合集 (ID: {collection.get('Id')})。")
+            logger.debug(f"  -> 根据名称 '{name}' 找到了已存在的合集 (ID: {collection.get('Id')})。")
             return collection
     
     logger.debug(f"未找到名为 '{name}' 的合集。")
@@ -1077,7 +1077,7 @@ def create_or_update_collection_with_tmdb_ids(
     # ★★★ 核心修复 2: 根据 item_types 列表生成日志信息 ★★★
     type_map = {'Movie': '电影', 'Series': '电视剧'}
     log_item_types = "、".join([type_map.get(t, t) for t in item_types])
-    logger.info(f"开始在Emby中处理名为 '{collection_name}' 的{log_item_types}合集...")
+    logger.info(f"  -> 开始在Emby中处理名为 '{collection_name}' 的{log_item_types}合集...")
     
     try:
         # 1. & 2. 获取媒体项并计算出“应该有”的成员列表 (desired_emby_ids)
@@ -1111,7 +1111,7 @@ def create_or_update_collection_with_tmdb_ids(
         if collection:
             # --- 更新逻辑 (保持不变) ---
             emby_collection_id = collection['Id']
-            logger.info(f"发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，开始同步...")
+            logger.info(f"  -> 发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，开始同步...")
             
             current_emby_ids = get_collection_members(emby_collection_id, base_url, api_key, user_id)
             if current_emby_ids is None:
@@ -1124,7 +1124,7 @@ def create_or_update_collection_with_tmdb_ids(
             ids_to_add = list(set_desired - set_current)
 
             if ids_to_remove:
-                logger.info(f"  - 发现 {len(ids_to_remove)} 个项目需要移除...")
+                logger.info(f"  -> 发现 {len(ids_to_remove)} 个项目需要移除...")
                 remove_items_from_collection(emby_collection_id, ids_to_remove, base_url, api_key)
             
             if ids_to_add:

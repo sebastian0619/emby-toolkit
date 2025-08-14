@@ -275,7 +275,7 @@ class FilterEngine:
         【拨乱反正最终版】根据规则，从整个媒体库中筛选出所有匹配的电影或剧集。
         此版本确保永远只返回一个纯粹的 TMDb ID 字符串列表。
         """
-        logger.info("筛选引擎：开始执行全库扫描以生成合集...")
+        logger.info("  -> 筛选引擎：开始执行全库扫描以生成合集...")
         
         rules = definition.get('rules', [])
         logic = definition.get('logic', 'AND')
@@ -298,7 +298,7 @@ class FilterEngine:
                 logger.warning(f"本地媒体元数据缓存中没有找到任何 {log_item_type_cn} 类型的项目。")
                 continue # 继续检查下一种类型
             
-            logger.info(f"已加载 {len(all_media_metadata)} 条{log_item_type_cn}元数据，开始应用筛选规则...")
+            logger.info(f"  -> 已加载 {len(all_media_metadata)} 条{log_item_type_cn}元数据，开始应用筛选规则...")
 
             for media_metadata in all_media_metadata:
                 if self._item_matches_rules(media_metadata, rules, logic):
@@ -309,7 +309,7 @@ class FilterEngine:
 
         # 使用字典去重，确保 "Movie-123" 和 "Series-123" 可以共存
         unique_items = list({f"{item['type']}-{item['id']}": item for item in matched_items}.values())
-        logger.info(f"筛选完成！共找到 {len(unique_items)} 部匹配的媒体项目。")
+        logger.info(f"  -> 筛选完成！共找到 {len(unique_items)} 部匹配的媒体项目。")
         return unique_items
     
     def find_matching_collections(self, item_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
