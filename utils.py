@@ -208,16 +208,29 @@ class LogDBManager:
             logger.error(f"写入 failed_log 失败 (Item ID: {item_id}): {e}")
             raise
     
-    def mark_assets_as_synced(self, cursor: sqlite3.Cursor, item_id: str):
+    def mark_assets_as_synced(self, cursor: sqlite3.Cursor, item_id: str, emby_modified_at: str):
         """
-        【新增】更新 processed_log 表，标记指定项目的资产已同步。
+        【最终修正版】更新 processed_log 表，标记指定项目的资产已同步。
+        同时记录当前的同步时间和从Emby获取的最后修改时间。
+        
+        Args:
+            cursor: 数据库游标对象。
+            item_id: 要更新的媒体项ID。
+            emby_modified_at: 从Emby API获取的该项目的 'DateModified' 时间戳。
         """
         try:
-            logger.debug(f"正在标记 Item ID {item_id} 的为已备份...")
+            # 准备要写入数据库的两个时间戳
+            current_sync_time = datetime.now().isoformat()
+            
+            logger.debug(f"正在更新 Item ID {item_id} 的备份状态和时间戳...")
+            
+            # ★★★ 核心修复：修正SQL语句和参数 ★★★
             cursor.execute(
-                "UPDATE processed_log SET assets_synced_at = ? WHERE item_id = ?",
-                (datetime.now().isoformat(), item_id)
+                "UPDATE processed_log SET assets_synced_at = ?, last_emby_modified_at = ? WHERE item_id = ?",
+                (current_sync_time, emby_modified_at, item_id)
             )
+            logger.trace(f"  -> 成功执行对 Item ID {item_id} 的数据库更新。")
+
         except Exception as e:
             logger.error(f"标记备份状态失败 for item {item_id}: {e}", exc_info=True)
     # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼

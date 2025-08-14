@@ -1718,123 +1718,115 @@ class MediaProcessor:
     # ★★★ 全量备份到覆盖缓存 ★★★
     def sync_all_media_assets(self, update_status_callback: Optional[callable] = None):
         """
-        遍历所有已处理但尚未同步过资产的媒体项。
-        如果发现某个项目在Emby中已不存在，则自动从已处理日志中移除该记录。
+        此版本通过比较Emby中的最后修改时间来智能判断是否需要更新备份，
+        从而支持对连载中剧集的持续备份。
         """
         task_name = "覆盖缓存备份"
         logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
 
         if not self.local_data_path:
             logger.error(f"'{task_name}' 失败：未在配置中设置“本地数据源路径”。")
-            if update_status_callback:
-                update_status_callback(-1, "未配置本地数据源路径")
+            if update_status_callback: update_status_callback(-1, "未配置本地数据源路径")
             return
 
-        items_to_process = []
+        items_to_check = []
         try:
             with get_central_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT item_id, item_name FROM processed_log WHERE assets_synced_at IS NULL")
-                items_to_process = cursor.fetchall()
+                # ★★★ 核心修改 1：获取所有已处理的项目，以及它们上次备份时记录的修改时间 ★★★
+                cursor.execute("SELECT item_id, item_name, last_emby_modified_at FROM processed_log")
+                items_to_check = cursor.fetchall()
         except sqlite3.OperationalError as e:
-            if "no such column: assets_synced_at" in str(e):
-                error_msg = "数据库缺少 'assets_synced_at' 字段，请先更新表结构！"
+            if "no such column: last_emby_modified_at" in str(e):
+                error_msg = "数据库缺少 'last_emby_modified_at' 字段，请先更新表结构！"
                 logger.error(error_msg)
                 if update_status_callback: update_status_callback(-1, error_msg)
             else:
-                logger.error(f"获取待同步项目列表时发生数据库错误: {e}", exc_info=True)
+                logger.error(f"获取待检查项目列表时发生数据库错误: {e}", exc_info=True)
                 if update_status_callback: update_status_callback(-1, "数据库错误")
             return
         except Exception as e:
-            logger.error(f"获取待同步项目列表时发生未知错误: {e}", exc_info=True)
+            logger.error(f"获取待检查项目列表时发生未知错误: {e}", exc_info=True)
             if update_status_callback: update_status_callback(-1, "数据库未知错误")
             return
 
-        total = len(items_to_process)
+        total = len(items_to_check)
         if total == 0:
-            logger.info("  -> 没有需要新增备份的媒体项。")
-            if update_status_callback:
-                update_status_callback(100, "没有需要新增备份的项目")
+            logger.info("  -> 日志中没有任何项目，任务结束。")
+            if update_status_callback: update_status_callback(100, "没有任何已处理的项目")
             return
 
-        logger.info(f"  -> 共找到 {total} 个新媒体项需要备份。")
+        logger.info(f"  -> 将检查 {total} 个已处理的媒体项是否有更新。")
         
-        stats = {"newly_synced": 0, "skipped": 0, "cleaned": 0} # ✨ 新增一个清理计数器
+        stats = {"updated": 0, "skipped_no_change": 0, "skipped_other": 0, "cleaned": 0}
 
         with get_central_db_connection(self.db_path) as conn_sync:
             cursor_sync = conn_sync.cursor()
-            for i, db_row in enumerate(items_to_process):
+            for i, db_row in enumerate(items_to_check):
                 if self.is_stop_requested():
                     logger.info(f"'{task_name}' 任务被中止。")
                     break
 
                 item_id = db_row['item_id']
                 item_name_from_db = db_row['item_name']
+                last_known_modified_at = db_row['last_emby_modified_at']
                 
                 if update_status_callback:
-                    update_status_callback(int((i / total) * 100), f"({i+1}/{total}): {item_name_from_db}")
+                    update_status_callback(int((i / total) * 100), f"({i+1}/{total}): 正在检查 {item_name_from_db}")
 
                 try:
-                    # ✨✨✨【核心修改】✨✨✨
-                    # 将获取详情的操作放在 try 块中，以便捕获失败
-                    item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+                    # 步骤A: 获取项目最新的详细信息
+                    item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields="ProviderIds,Type,DateModified")
                     
-                    # 如果获取失败（例如，返回None），emby_handler会打印错误，我们在这里处理后续
                     if not item_details:
-                        # 抛出一个特定的异常，由下面的 except 块捕获并处理
                         raise ValueError(f"项目在Emby中已不存在或无法访问 (ID: {item_id})")
 
-                    tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-                    item_type = item_details.get("Type")
-                    if not tmdb_id:
-                        logger.warning(f"跳过 '{item_name_from_db}'，因为它缺少 TMDb ID。")
-                        stats["skipped"] += 1
-                        continue
+                    current_emby_modified_at = item_details.get("DateModified")
 
-                    # --- 任务一：同步图片 ---
-                    logger.info(f"  -> 正在为 '{item_name_from_db}' 备份图片...")
-                    self.sync_item_images(item_details)
-                    
-                    # --- 任务二：复制元数据 ---
-                    logger.info(f"  -> 正在为 '{item_name_from_db}' 备份元数据...")
-                    cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-                    source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
-                    target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+                    # ★★★ 核心修改 2：比较修改时间，决定是否需要更新 ★★★
+                    # 如果是首次备份(last_known_modified_at is None)，或者Emby中的修改时间更新了，则执行备份
+                    if not last_known_modified_at or (current_emby_modified_at and current_emby_modified_at > last_known_modified_at):
+                        logger.info(f"  -> 发现更新 '{item_name_from_db}'，准备执行备份...")
+                        
+                        tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+                        item_type = item_details.get("Type")
+                        if not tmdb_id:
+                            logger.warning(f"跳过 '{item_name_from_db}'，因为它缺少 TMDb ID。")
+                            stats["skipped_other"] += 1
+                            continue
 
-                    if os.path.exists(source_cache_dir):
-                        os.makedirs(target_override_dir, exist_ok=True)
-                        shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-                        logger.info(f"    ✅ 成功将元数据从 '{source_cache_dir}' 备份到 '{target_override_dir}'。")
+                        # --- 执行备份任务 ---
+                        self.sync_item_images(item_details)
+                        self.sync_item_metadata(item_details, tmdb_id) # 将元数据备份逻辑封装一下
+
+                        # ★★★ 核心修改 3：更新数据库中的时间戳 ★★★
+                        self.log_db_manager.mark_assets_as_synced(cursor_sync, item_id, current_emby_modified_at)
+                        conn_sync.commit()
+                        stats["updated"] += 1
                     else:
-                        logger.debug(f"    - 跳过元数据备份，因为源缓存目录不存在: {source_cache_dir}")
-
-                    self.log_db_manager.mark_assets_as_synced(cursor_sync, item_id)
-                    
-                    conn_sync.commit()
-                    stats["newly_synced"] += 1
+                        # 如果时间戳相同，说明无变化，直接跳过
+                        logger.trace(f"'{item_name_from_db}' 未发生变化，跳过备份。")
+                        stats["skipped_no_change"] += 1
 
                 except ValueError as e:
-                    # ✨✨✨【核心修改】✨✨✨
-                    # 捕获我们自己抛出的 ValueError，说明项目在 Emby 中找不到了
-                    logger.warning(f"项目 '{item_name_from_db}' (ID: {item_id}) 在 Emby 中已无法访问，将从已处理日志中清理该记录。")
+                    logger.warning(f"项目 '{item_name_from_db}' (ID: {item_id}) 在 Emby 中已无法访问，将从日志中清理。")
                     self.log_db_manager.remove_from_processed_log(cursor_sync, item_id)
-                    conn_sync.commit() # 提交删除操作
-                    stats["cleaned"] += 1 # 清理计数+1
+                    conn_sync.commit()
+                    stats["cleaned"] += 1
 
                 except Exception as e:
                     logger.error(f"处理项目 '{item_name_from_db}' (ID: {item_id}) 时发生未知错误: {e}", exc_info=True)
-                    stats["skipped"] += 1
+                    stats["skipped_other"] += 1
                 
                 time.sleep(0.1)
 
         logger.info("--- 覆盖缓存备份任务结束 ---")
-        # ✨ 更新最终的日志消息
-        final_message = f"备份完成！新增: {stats['newly_synced']}, 清理无效记录: {stats['cleaned']}, 跳过: {stats['skipped']}。"
+        final_message = f"检查完成！更新: {stats['updated']}, 无变化跳过: {stats['skipped_no_change']}, 清理: {stats['cleaned']}, 其他跳过: {stats['skipped_other']}。"
         logger.info(final_message)
         if update_status_callback:
             update_status_callback(100, final_message)
    
-    # --- 图片同步 ---
+    # --- 备份图片 ---
     def sync_item_images(self, item_details: Dict[str, Any], update_description: Optional[str] = None) -> bool:
         """
         【新增-重构】这个方法负责同步一个媒体项目的所有相关图片。
@@ -1934,5 +1926,18 @@ class MediaProcessor:
             logger.error(f"{log_prefix} 为 '{item_name_for_log}' 备份图片时发生未知错误: {e}", exc_info=True)
             return False
     
+    # --- 备份元数据 ---
+    def sync_item_metadata(self, item_details, tmdb_id):
+        item_type = item_details.get("Type")
+        cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+        source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
+        target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+        if os.path.exists(source_cache_dir):
+            os.makedirs(target_override_dir, exist_ok=True)
+            shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
+            logger.info(f"    ✅ 成功将元数据从 '{source_cache_dir}' 备份到 '{target_override_dir}'。")
+        else:
+            logger.debug(f"    - 跳过元数据备份，因为源缓存目录不存在: {source_cache_dir}")
+
     def close(self):
         if self.douban_api: self.douban_api.close()

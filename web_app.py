@@ -133,7 +133,8 @@ def init_db():
                 
                 # 定义需要检查和添加的字段。未来增加新字段，只需在此处添加键值对。
                 new_columns_to_add_processed = {
-                    "assets_synced_at": "TEXT"
+                    "assets_synced_at": "TEXT",
+                    "last_emby_modified_at": "TEXT"
                 }
 
                 for col_name, col_type in new_columns_to_add_processed.items():
