@@ -52,7 +52,7 @@ jobs:
         run: |
           # 在这里，我们让 GitHub Actions 先执行 startsWith 函数，并将其结果（'true' 或 'false'）插入到脚本中
           if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
-            echo "platforms=linux/amd64,linux/arm64" >> $GITHUB_OUTPUT
+            echo "platforms=linux/amd64" >> $GITHUB_OUTPUT
           else
             echo "platforms=linux/amd64" >> $GITHUB_OUTPUT
           fi
