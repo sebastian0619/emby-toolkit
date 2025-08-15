@@ -1884,7 +1884,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
     采用分批处理和写入的机制，通过差异检查自然实现断点续传。
     """
     task_name = "同步媒体数据"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (分批大小: {batch_size}) ---")
+    logger.info(f"--- (分批大小: {batch_size}) ---")
     
 
     try:
@@ -1946,7 +1946,6 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
         total_to_add = len(items_to_process)
         if total_to_add == 0:
             task_manager.update_status_from_thread(100, "数据库已是最新，无需同步。")
-            logger.info(f"--- '{task_name}' 任务成功完成 (数据库已是最新) ---")
             return
 
         logger.info(f"  -> 需要新增 {total_to_add} 项，将分 { (total_to_add + batch_size - 1) // batch_size } 个批次处理。")

@@ -56,7 +56,7 @@ class ActorSubscriptionProcessor:
                 safe_progress = max(0, min(100, int(progress)))
                 update_status_callback(safe_progress, message)
 
-        logger.info("--- 开始执行定时演员订阅扫描任务 ---")
+        logger.trace("--- 开始执行定时演员订阅扫描任务 ---")
         _update_status(0, "正在准备订阅列表...")
         
         try:

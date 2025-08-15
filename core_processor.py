@@ -585,7 +585,7 @@ class MediaProcessor:
             # 加入一个微小的延迟，避免请求过于密集
             time.sleep(0.2)
 
-        logger.info(f"🚀 剧集 '{series_name}' 的分集批量更新完成。")
+        logger.info(f"  -> 剧集 '{series_name}' 的分集批量更新完成。")
     # --- 核心处理总管 ---
     def process_single_item(self, emby_item_id: str,
                             force_reprocess_this_item: bool = False,
@@ -1804,7 +1804,7 @@ class MediaProcessor:
         从而支持对连载中剧集的持续备份。
         """
         task_name = "覆盖缓存备份"
-        logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+        logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
 
         if not self.local_data_path:
             logger.error(f"'{task_name}' 失败：未在配置中设置“本地数据源路径”。")
@@ -1902,8 +1902,8 @@ class MediaProcessor:
                 
                 time.sleep(0.1)
 
-        logger.info("--- 覆盖缓存备份任务结束 ---")
-        final_message = f"检查完成！更新: {stats['updated']}, 无变化跳过: {stats['skipped_no_change']}, 清理: {stats['cleaned']}, 其他跳过: {stats['skipped_other']}。"
+        logger.trace("--- 覆盖缓存备份任务结束 ---")
+        final_message = f"✅ 更新: {stats['updated']}, 无变化跳过: {stats['skipped_no_change']}, 清理: {stats['cleaned']}, 其他跳过: {stats['skipped_other']}。"
         logger.info(final_message)
         if update_status_callback:
             update_status_callback(100, final_message)

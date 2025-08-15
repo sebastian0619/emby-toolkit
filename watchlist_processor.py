@@ -397,7 +397,7 @@ class WatchlistProcessor:
         if item_id:
             logger.info(f"--- 开始执行单项追剧更新任务 (ItemID: {item_id}) ---")
         else:
-            logger.info("--- 开始执行全量追剧列表更新任务 ---")
+            logger.trace("--- 开始执行全量追剧列表更新任务 ---")
         
         series_to_process = []
         try:

@@ -418,7 +418,7 @@ def enrich_all_actor_aliases_task(
     在补充IMDb ID的同时，从TMDb获取演员的详细元数据（头像、性别、original_name等）并存入 ActorMetadata 表。
     彻底修复了因代码重复导致 original_name 写入失败的问题。
     """
-    logger.info("--- 开始执行“演员数据补充”计划任务 ---")
+    logger.trace("--- 开始执行“演员数据补充”计划任务 ---")
     
     start_time = time.time()
     end_time = float('inf')
