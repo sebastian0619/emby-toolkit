@@ -187,13 +187,12 @@ def task_process_actor_subscriptions(processor: ActorSubscriptionProcessor):
 # ★★★ 处理webhook、用于编排任务的函数 ★★★
 def webhook_processing_task(processor: MediaProcessor, item_id: str, force_reprocess: bool):
     """
-    【修复版】这个函数编排了处理新入库项目的完整流程。
-    它的第一个参数现在是 MediaProcessor 实例，以匹配任务执行器的调用方式。
+    【V3 - 职责分离最终版】
+    编排处理新入库项目的完整流程，所有数据库操作均委托给 db_handler。
     """
     logger.info(f"Webhook 任务启动，处理项目: {item_id}")
 
     # 步骤 A: 获取完整的项目详情
-    # ★★★ 修复：不再使用全局的 media_processor_instance，而是使用传入的 processor ★★★
     item_details = emby_handler.get_emby_item_details(
         item_id, 
         processor.emby_url, 
@@ -205,76 +204,86 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
         return
 
     # 步骤 B: 调用追剧判断
-    # ★★★ 修复：使用传入的 processor ★★★
     processor.check_and_add_to_watchlist(item_details)
 
     # 步骤 C: 执行通用的元数据处理流程
-    # ★★★ 修复：使用传入的 processor ★★★
     processed_successfully = processor.process_single_item(
         item_id, 
         force_reprocess_this_item=force_reprocess 
     )
     
-    # --- ★★★ 步骤 D: 新增的实时合集匹配逻辑 ★★★ ---
+    # --- 步骤 D: 实时合集匹配逻辑 ---
     if not processed_successfully:
         logger.warning(f"  -> 项目 {item_id} 的元数据处理未成功完成，跳过自定义合集匹配。")
         return
 
     try:
         tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+        item_name = item_details.get("Name", f"ID:{item_id}")
         if not tmdb_id:
             logger.debug("  -> 媒体项缺少TMDb ID，无法进行自定义合集匹配。")
             return
 
         # 1. 从我们的缓存表中获取刚刚存入的元数据
-        item_metadata = db_handler.get_media_metadata_by_tmdb_id(config_manager.DB_PATH, tmdb_id) # (需要添加这个db函数)
+        item_metadata = db_handler.get_media_metadata_by_tmdb_id(config_manager.DB_PATH, tmdb_id)
         if not item_metadata:
             logger.warning(f"无法从本地缓存中找到TMDb ID为 {tmdb_id} 的元数据，无法匹配合集。")
             return
 
-        # 2. 初始化筛选引擎并查找匹配的合集
+        # --- 2. 匹配 Filter (筛选) 类型的合集 ---
         engine = FilterEngine(db_path=config_manager.DB_PATH)
-        matching_collections = engine.find_matching_collections(item_metadata)
+        matching_filter_collections = engine.find_matching_collections(item_metadata)
 
-        if matching_collections:
-            logger.info(f"  -> 《{item_metadata.get('title')}》匹配到 {len(matching_collections)} 个自定义合集，正在处理...")
-            # 3. 遍历所有匹配的合集，并向其中追加当前项目
-            for collection in matching_collections:
+        if matching_filter_collections:
+            logger.info(f"  -> 《{item_name}》匹配到 {len(matching_filter_collections)} 个筛选类合集，正在追加...")
+            for collection in matching_filter_collections:
                 emby_handler.append_item_to_collection(
                     collection_id=collection['emby_collection_id'],
-                    item_emby_id=item_id, # 这是新入库项目的Emby ID
+                    item_emby_id=item_id,
                     base_url=processor.emby_url,
                     api_key=processor.emby_api_key,
                     user_id=processor.emby_user_id
                 )
         else:
-            # 如果没有匹配到，只记录日志，然后函数会自然地继续往下执行
-            logger.info(f"  -> 《{item_metadata.get('title')}》没有匹配到任何自定义合集。")
+            logger.info(f"  -> 《{item_name}》没有匹配到任何筛选类合集。")
+
+        # --- 3. 匹配 List (榜单) 类型的合集 ---
+        # 调用 db_handler 中的新函数来处理所有数据库逻辑
+        updated_list_collections = db_handler.match_and_update_list_collections_on_item_add(
+            db_path=config_manager.DB_PATH,
+            new_item_tmdb_id=tmdb_id,
+            new_item_name=item_name
+        )
+        
+        if updated_list_collections:
+            logger.info(f"  -> 《{item_name}》匹配到 {len(updated_list_collections)} 个榜单类合集，正在追加...")
+            # 遍历返回的结果，执行 Emby API 调用
+            for collection_info in updated_list_collections:
+                emby_handler.append_item_to_collection(
+                    collection_id=collection_info['emby_collection_id'],
+                    item_emby_id=item_id,
+                    base_url=processor.emby_url,
+                    api_key=processor.emby_api_key,
+                    user_id=processor.emby_user_id
+                )
+        else:
+             logger.info(f"  -> 《{item_name}》没有匹配到任何需要更新状态的榜单类合集。")
+
     except Exception as e:
         logger.error(f"为新入库项目 {item_id} 匹配自定义合集时发生意外错误: {e}", exc_info=True)
 
-    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
     # --- 步骤 E - 为所属的常规媒体库生成封面 ---
-    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
     try:
-        # 1. 读取配置
+        # (这部分代码无需修改，保持原样即可)
         cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, "cover_generator.json")
         cover_config = {}
         if os.path.exists(cover_config_path):
             with open(cover_config_path, 'r', encoding='utf-8') as f:
                 cover_config = json.load(f)
 
-        # 2. 检查开关
         if cover_config.get("enabled") and cover_config.get("transfer_monitor"):
-            # 确保在获取 item_details 之后再记录日志
-            item_details = emby_handler.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-            if not item_details:
-                logger.error(f"  -> Webhook 任务：无法获取项目 {item_id} 的详情，无法继续封面生成。")
-                return
-
             logger.info(f"  -> 检测到 '{item_details.get('Name')}' 入库，将为其所属媒体库生成新封面...")
             
-            # 3. 定位媒体库
             library_info = emby_handler.get_library_root_for_item(
                 item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
             )
@@ -286,7 +295,6 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
             library_id = library_info.get("Id")
             library_name = library_info.get("Name", library_id)
             
-            # 4. 检查是否需要处理
             if library_info.get('CollectionType') not in ['movies', 'tvshows', 'boxsets', 'mixed', 'music']:
                 logger.debug(f"  -> 父级 '{library_name}' 不是一个常规媒体库，跳过封面生成。")
                 return
@@ -297,8 +305,6 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
                 logger.info(f"  -> 媒体库 '{library_name}' 在忽略列表中，跳过。")
                 return
             
-            # 【【【核心修复：在这里也使用实时计数API】】】
-            # 5. 定义类型映射
             TYPE_MAP = {
                 'movies': 'Movie', 'tvshows': 'Series', 'music': 'MusicAlbum',
                 'boxsets': 'BoxSet', 'mixed': 'Movie,Series'
@@ -308,8 +314,6 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
             
             item_count = 0
             if library_id and item_type_to_query:
-                logger.debug(f"  -> 正在为媒体库 '{library_name}' (ID: {library_id}) 实时查询 '{item_type_to_query}' 的总数...")
-                # 调用我们之前增强过的、最可靠的计数函数
                 item_count = emby_handler.get_item_count(
                     base_url=processor.emby_url,
                     api_key=processor.emby_api_key,
@@ -318,7 +322,6 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
                     item_type=item_type_to_query
                 ) or 0
             
-            # 6. 实例化服务并生成封面
             logger.info(f"  -> 正在为媒体库 '{library_name}' 生成封面 (当前实时数量: {item_count}) ---")
             cover_service = CoverGeneratorService(config=cover_config)
             cover_service.generate_for_library(
@@ -326,7 +329,6 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
                 library=library_info,
                 item_count=item_count 
             )
-
         else:
             logger.debug("  -> 封面生成器或入库监控未启用，跳过封面生成。")
 
