@@ -842,8 +842,10 @@ class MediaProcessor:
                                     stop_event: Optional[threading.Event]) -> List[Dict[str, Any]]:
         """
         在函数开头增加一个“数据适配层”，将API数据转换为你现有逻辑期望的格式，
-        然后原封不动地执行你所有经过打磨的核心代码。
         """
+        # ======================================================================
+        # 步骤 1: ★★★ 数据适配 ★★★
+        # ======================================================================
         logger.debug("API模式：进入数据适配层...")
         emby_tmdb_to_person_id_map = {
             person.get("ProviderIds", {}).get("Tmdb"): person.get("Id")
@@ -879,21 +881,18 @@ class MediaProcessor:
                 new_actor_entry["character"] = new_actor_entry.get("Role")
 
             local_cast_list.append(new_actor_entry)
-        # ★★★★★★★★★★★★★★★ 全新的、更智能的数据适配层 END ★★★★★★★★★★★★★★★
 
         logger.debug(f"数据适配完成，生成了 {len(local_cast_list)} 条基准演员数据。")
         # ======================================================================
-        # 步骤 2: ★★★ 原封不动地执行你所有的“原厂逻辑” ★★★
-        # (下面的代码，是我根据你上次发的函数，整理出的最接近你原版的逻辑)
+        # 步骤 2: ★★★ “一对一匹配”逻辑 ★★★
         # ======================================================================
 
         douban_candidates = actor_utils.format_douban_cast(douban_cast_list)
 
-        # --- 你的“一对一匹配”逻辑 ---
         unmatched_local_actors = list(local_cast_list)  # ★★★ 使用我们适配好的数据源 ★★★
         merged_actors = []
         unmatched_douban_actors = []
-        # 3. 遍历豆瓣演员，尝试在“未匹配”的本地演员中寻找配对
+        #  遍历豆瓣演员，尝试在“未匹配”的本地演员中寻找配对
         for d_actor in douban_candidates:
             douban_name_zh = d_actor.get("Name", "").lower().strip()
             douban_name_en = d_actor.get("OriginalName", "").lower().strip()
@@ -974,6 +973,7 @@ class MediaProcessor:
                                 "order": 999,
                                 "imdb_id": entry["imdb_id"] if "imdb_id" in entry else None,
                                 "douban_id": d_douban_id,
+                                "emby_person_id": entry["emby_person_id"] if "emby_person_id" in entry else None, # ★★★ 核心修复 1 ★★★
                                 "_is_newly_added": True
                             }
                             final_cast_map[tmdb_id_from_map] = new_actor_entry
@@ -982,8 +982,10 @@ class MediaProcessor:
                     still_unmatched.append(d_actor)
             unmatched_douban_actors = still_unmatched
 
-            # --- 步骤 3 & 4: IMDb ID 反查 新增操作 ---
-            logger.debug(f"--- 匹配阶段 3 & 4: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员) ---")
+            # ======================================================================
+            # 步骤 3: ★★★ 映射表匹配以及Tmdb反查 ★★★
+            # ======================================================================
+            logger.debug(f"--- 匹配阶段: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员) ---")
             still_unmatched_final = []
             for i, d_actor in enumerate(unmatched_douban_actors):
                 if self.is_stop_requested():
@@ -1040,6 +1042,7 @@ class MediaProcessor:
                                     "order": 999,
                                     "imdb_id": d_imdb_id,
                                     "douban_id": d_douban_id,
+                                    "emby_person_id": entry_from_map["emby_person_id"] if "emby_person_id" in entry_from_map else None, # ★★★ 核心修复 2 ★★★
                                     "_is_newly_added": True
                                 }
                                 final_cast_map[tmdb_id_from_map] = new_actor_entry
@@ -1107,7 +1110,7 @@ class MediaProcessor:
         # 将最终演员列表取自 final_cast_map，包含所有旧＋新演员
         current_cast_list = list(final_cast_map.values())
 
-        # ★★★ 在截断前进行一次全量反哺 ★★★
+        # ★★★ 在截断前进行一次全量反哺映射表 ★★★
         logger.debug(f"截断前：将 {len(current_cast_list)} 位演员的完整映射关系反哺到数据库...")
         for actor_data in current_cast_list:
             self.actor_db_manager.upsert_person(
@@ -1121,7 +1124,7 @@ class MediaProcessor:
             )
         logger.trace("所有演员的ID映射关系已保存。")
 
-        # 步骤 演员列表截断 (先截断！)
+        # 演员列表截断 (先截断！)
         max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
         try:
             limit = int(max_actors)
@@ -1142,7 +1145,7 @@ class MediaProcessor:
         logger.info(f"将对 {len(cast_to_process)} 位演员进行最终的翻译和格式化处理...")
 
         # ======================================================================
-        # 步骤 B: 翻译准备与执行 (后收集，并检查缓存！)
+        # 步骤 4: 翻译准备与执行 (后收集，并检查缓存！)
         # ======================================================================
         ai_translation_succeeded = False
         translation_cache = {}  # ★★★ 核心修正1：将缓存初始化在最外面
@@ -1248,14 +1251,13 @@ class MediaProcessor:
             if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False):
                 logger.warning("AI批量翻译失败，将保留演员和角色名原文。")
 
-        # 3.1 【助理上场】在格式化前，备份所有工牌 (emby_person_id)
+        # 在格式化前，备份所有 (emby_person_id)
         logger.trace("进行最终格式化...")
         is_animation = "Animation" in item_details_from_emby.get("Genres", [])
         final_cast_perfect = actor_utils.format_and_complete_cast_list(
             cast_to_process, is_animation, self.config, mode='auto'
         )
 
-        # 3.2 【助理收尾】直接准备 provider_ids
         # emby_person_id 已经由上一步函数完整地保留下来了
         logger.trace("格式化完成，准备最终的 provider_ids...")
         for actor in final_cast_perfect:
