@@ -98,7 +98,6 @@ def task_enrich_aliases(processor: MediaProcessor):
     """
     task_name = "演员数据补充"
     logger.info(f"后台任务 '{task_name}' 开始执行...")
-    task_manager.update_status_from_thread(0, "准备开始演员数据补充...")
 
     try:
         # 从传入的 processor 对象中获取配置字典
@@ -134,7 +133,8 @@ def task_enrich_aliases(processor: MediaProcessor):
             tmdb_api_key=tmdb_api_key,
             run_duration_minutes=duration_minutes,
             sync_interval_days=cooldown_days, # <--- 使用我们硬编码的冷却时间
-            stop_event=processor.get_stop_event()
+            stop_event=processor.get_stop_event(),
+            update_status_callback=task_manager.update_status_from_thread
         )
         # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         

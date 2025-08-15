@@ -7,7 +7,7 @@ import concurrent.futures
 import time
 import constants
 from datetime import datetime
-from typing import Optional, Dict, Any, List, Tuple, Set
+from typing import Optional, Dict, Any, List, Tuple, Set, Callable
 # 导入底层工具箱和日志
 import logging
 import db_handler
@@ -410,7 +410,8 @@ def enrich_all_actor_aliases_task(
     tmdb_api_key: str, 
     run_duration_minutes: int,
     sync_interval_days: int,
-    stop_event: Optional[threading.Event] = None
+    stop_event: Optional[threading.Event] = None,
+    update_status_callback: Optional[Callable] = None
 ):
     """
     【V5 - 逻辑重构最终版】
@@ -457,8 +458,15 @@ def enrich_all_actor_aliases_task(
                         logger.info("达到运行时长或收到停止信号，在 TMDb 下批次开始前结束。")
                         break
 
+                    # --- 报告TMDb阶段的进度 ---
+                    progress = 5 + int((i / total_tmdb) * 65)
+                    chunk_num = i//CHUNK_SIZE + 1
+                    total_chunks = (total_tmdb + CHUNK_SIZE - 1) // CHUNK_SIZE
+                    if update_status_callback:
+                        update_status_callback(progress, f"阶段1/2 (TMDb): 处理批次 {chunk_num}/{total_chunks}")
+
                     chunk = actors_for_tmdb[i:i + CHUNK_SIZE]
-                    logger.info(f"  -> 开始处理 TMDb 第 {i//CHUNK_SIZE + 1} 批次，共 {len(chunk)} 个演员 ---")
+                    logger.info(f"  -> 开始处理 TMDb 第 {chunk_num} 批次，共 {len(chunk)} 个演员 ---")
 
                     # 数据容器：准备最终要写入数据库的数据
                     imdb_updates_to_commit = []
@@ -582,6 +590,12 @@ def enrich_all_actor_aliases_task(
                     actor_map_id = actor['map_id']
                     actor_douban_id = actor['douban_celebrity_id']
                     actor_primary_name = actor['primary_name']
+                    
+                    # --- 核心修改：报告豆瓣阶段的进度 ---
+                    # 假设豆瓣阶段占总进度的30%
+                    progress = 70 + int(((i + 1) / total_douban) * 30)
+                    if update_status_callback:
+                        update_status_callback(progress, f"阶段2/2 (豆瓣): {i+1}/{total_douban} - {actor_primary_name}")
                     
                     try:
                         # 无论如何，先更新同步时间，避免因任何错误导致反复请求

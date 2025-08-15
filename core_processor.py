@@ -1013,7 +1013,7 @@ class MediaProcessor:
             # ======================================================================
             # 步骤 3: ★★★ 映射表匹配以及Tmdb反查 ★★★
             # ======================================================================
-            logger.debug(f"  -> 匹配阶段 3: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员) ---")
+            logger.debug(f" --- 匹配阶段 3: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员) ---")
             still_unmatched_final = []
             for i, d_actor in enumerate(unmatched_douban_actors):
                 if self.is_stop_requested():
@@ -1089,11 +1089,27 @@ class MediaProcessor:
                                 logger.info("  -> 任务在处理豆瓣演员时被中止 (TMDb API调用前)。")
                                 raise InterruptedError("任务中止")
 
-                            # 优先使用外文名 (OriginalName)，因为它更可能与TMDb的英文名匹配
+                            # --- ✨✨✨ 核心修改 START ✨✨✨ ---
+                            # 优先从本地数据库缓存中获取最准确的 original_name 用于验证
+                            name_for_verification = d_actor.get("OriginalName") # 默认使用豆瓣的外文名作为后备
+                            log_source = "豆瓣"
+
+                            # 即使之前的映射不完整(比如没有emby_person_id)，我们仍然可以尝试利用它来获取更准确的元数据
+                            if entry_from_map and entry_from_map.get("tmdb_person_id"):
+                                tmdb_id_from_map = str(entry_from_map.get("tmdb_person_id"))
+                                cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_map, cursor)
+                                if cached_metadata and cached_metadata.get("original_name"):
+                                    name_for_verification = cached_metadata.get("original_name")
+                                    log_source = "本地数据库"
+                                    logger.debug(f"  -> [验证准备] 成功从本地数据库为 TMDb ID {tmdb_id_from_map} 找到用于验证的 original_name: '{name_for_verification}'")
+
+                            logger.debug(f"  -> 将使用来自 [{log_source}] 的外文名 '{name_for_verification}' 进行 TMDb API 匹配验证。")
+
                             names_to_verify = {
                                 "chinese_name": d_actor.get("Name"),
-                                "original_name": d_actor.get("OriginalName")
+                                "original_name": name_for_verification # 使用我们优先获取到的名字
                             }
+                            # --- ✨✨✨ 核心修改 END ✨✨✨ ---
                             
                             person_from_tmdb = tmdb_handler.find_person_by_external_id(
                                 external_id=d_imdb_id, 
