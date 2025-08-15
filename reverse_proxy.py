@@ -70,7 +70,7 @@ def handle_get_views():
             # 因此，我们不应为其生成虚拟库封面。
             real_emby_collection_id = coll.get('emby_collection_id')
             if not real_emby_collection_id:
-                logger.info(f"虚拟库 '{coll['name']}' (ID: {coll['id']}) 因无对应的真实Emby合集而被隐藏。")
+                logger.debug(f"  -> 虚拟库 '{coll['name']}' (ID: {coll['id']}) 因无对应的真实Emby合集而被隐藏。")
                 continue  # <-- 直接跳过，不生成任何视图项目
 
             # --- 只有拥有真实 Emby 合集 ID 的库才会执行到这里 ---
@@ -109,7 +109,7 @@ def handle_get_views():
             }
             fake_views_items.append(fake_view)
         
-        logger.debug(f"已生成 {len(fake_views_items)} 个拥有真实Emby合集的自定义视图。")
+        logger.debug(f"已生成 {len(fake_views_items)} 个虚拟库。")
 
         # --- 原生库合并逻辑 (保持不变) ---
         native_views_items = []
