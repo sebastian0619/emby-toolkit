@@ -1089,16 +1089,17 @@ class MediaProcessor:
                                 logger.info("  -> 任务在处理豆瓣演员时被中止 (TMDb API调用前)。")
                                 raise InterruptedError("任务中止")
 
-                            # --- ✨✨✨ 核心修改 START ✨✨✨ ---
-                            # 优先从本地数据库缓存中获取最准确的 original_name 用于验证
-                            name_for_verification = d_actor.get("OriginalName") # 默认使用豆瓣的外文名作为后备
+                            # 1. 默认使用豆瓣提供的外文名作为后备
+                            name_for_verification = d_actor.get("OriginalName")
                             log_source = "豆瓣"
 
-                            # 即使之前的映射不完整(比如没有emby_person_id)，我们仍然可以尝试利用它来获取更准确的元数据
+                            # 2. 尝试从可能存在的、不完整的本地映射中获取更权威的名字
                             if entry_from_map and entry_from_map.get("tmdb_person_id"):
                                 tmdb_id_from_map = str(entry_from_map.get("tmdb_person_id"))
+                                # 使用这个 tmdb_id 去查询元数据缓存
                                 cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_map, cursor)
                                 if cached_metadata and cached_metadata.get("original_name"):
+                                    # 如果成功获取，就覆盖掉来自豆瓣的名字
                                     name_for_verification = cached_metadata.get("original_name")
                                     log_source = "本地数据库"
                                     logger.debug(f"  -> [验证准备] 成功从本地数据库为 TMDb ID {tmdb_id_from_map} 找到用于验证的 original_name: '{name_for_verification}'")
@@ -1107,9 +1108,8 @@ class MediaProcessor:
 
                             names_to_verify = {
                                 "chinese_name": d_actor.get("Name"),
-                                "original_name": name_for_verification # 使用我们优先获取到的名字
+                                "original_name": name_for_verification 
                             }
-                            # --- ✨✨✨ 核心修改 END ✨✨✨ ---
                             
                             person_from_tmdb = tmdb_handler.find_person_by_external_id(
                                 external_id=d_imdb_id, 
