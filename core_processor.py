@@ -484,6 +484,22 @@ class MediaProcessor:
         except sqlite3.Error as e:
             logger.error(f"通过豆瓣ID '{douban_id}' 查询 person_identity_map 时出错: {e}")
             return None
+    # --- 通过TmdbID查找映射表 ---
+    def _find_person_in_map_by_tmdb_id(self, tmdb_id: str, cursor: sqlite3.Cursor) -> Optional[sqlite3.Row]:
+        """
+        根据 TMDB ID 在 person_identity_map 表中查找对应的记录。
+        """
+        if not tmdb_id:
+            return None
+        try:
+            cursor.execute(
+                "SELECT * FROM person_identity_map WHERE tmdb_person_id = ?",
+                (tmdb_id,)
+            )
+            return cursor.fetchone()
+        except sqlite3.Error as e:
+            logger.error(f"通过 TMDB ID '{tmdb_id}' 查询 person_identity_map 时出错: {e}")
+            return None
     # --- 通过ImbdID查找映射表 ---
     def _find_person_in_map_by_imdb_id(self, imdb_id: str, cursor: sqlite3.Cursor) -> Optional[sqlite3.Row]:
         """
@@ -1077,6 +1093,14 @@ class MediaProcessor:
 
                                 if tmdb_id_from_find not in final_cast_map:
                                     logger.debug(f"  -> 匹配成功 (通过 TMDb反查): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
+                                    # 用新找到的TMDB ID，对本地数据库进行最后一次检查，看是否已有关联的Emby ID
+                                    emby_pid_from_final_check = None
+                                    final_check_row = self._find_person_in_map_by_tmdb_id(tmdb_id_from_find, cursor)
+                                    if final_check_row:
+                                        final_check_entry = dict(final_check_row)
+                                        emby_pid_from_final_check = final_check_entry.get("emby_person_id")
+                                        if emby_pid_from_final_check:
+                                            logger.debug(f"  -> [最终检查] 发现该TMDB ID已关联Emby Person ID: {emby_pid_from_final_check}")
                                     cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_find, cursor) or {}
                                     new_actor_entry = {
                                         "id": tmdb_id_from_find,
@@ -1093,6 +1117,7 @@ class MediaProcessor:
                                         "order": 999,
                                         "imdb_id": d_imdb_id,
                                         "douban_id": d_douban_id,
+                                        "emby_person_id": emby_pid_from_final_check,
                                         "_is_newly_added": True
                                     }
                                     final_cast_map[tmdb_id_from_find] = new_actor_entry
