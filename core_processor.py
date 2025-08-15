@@ -887,7 +887,9 @@ class MediaProcessor:
             
             # 3. 如果临时映射中没有（说明这个演员不是当前电影的成员），则查询全局数据库
             if not emby_pid:
-                db_entry = self._find_person_in_map_by_tmdb_id(tmdb_id, cursor)
+                db_entry_row = self._find_person_in_map_by_tmdb_id(tmdb_id, cursor)
+                # 2. 立即将其转换为标准的 dict 字典
+                db_entry = dict(db_entry_row) if db_entry_row else None
                 if db_entry and db_entry.get("emby_person_id"):
                     emby_pid = db_entry["emby_person_id"]
                     logger.trace(f"  -> 为演员 '{new_actor_entry.get('name')}' (TMDB ID: {tmdb_id}) 从全局数据库中找到了 Emby Person ID: {emby_pid}")
@@ -1087,7 +1089,19 @@ class MediaProcessor:
                                 logger.info("  -> 任务在处理豆瓣演员时被中止 (TMDb API调用前)。")
                                 raise InterruptedError("任务中止")
 
-                            person_from_tmdb = tmdb_handler.find_person_by_external_id(d_imdb_id, self.tmdb_api_key, "imdb_id")
+                            # 优先使用外文名 (OriginalName)，因为它更可能与TMDb的英文名匹配
+                            names_to_verify = {
+                                "chinese_name": d_actor.get("Name"),
+                                "original_name": d_actor.get("OriginalName")
+                            }
+                            
+                            person_from_tmdb = tmdb_handler.find_person_by_external_id(
+                                external_id=d_imdb_id, 
+                                api_key=self.tmdb_api_key, 
+                                source="imdb_id",
+                                names_for_verification=names_to_verify
+                            )
+                            
                             if person_from_tmdb and person_from_tmdb.get("id"):
                                 tmdb_id_from_find = str(person_from_tmdb.get("id"))
 

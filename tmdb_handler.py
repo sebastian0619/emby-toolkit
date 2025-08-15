@@ -4,7 +4,7 @@ import requests
 import json
 import os
 import concurrent.futures
-from utils import contains_chinese
+from utils import contains_chinese, normalize_name_for_matching
 from typing import Optional, List, Dict, Any, Union
 import logging
 logger = logging.getLogger(__name__)
@@ -14,6 +14,7 @@ TMDB_API_BASE_URL = "https://api.themoviedb.org/3"
 # 默认语言设置
 DEFAULT_LANGUAGE = "zh-CN"
 DEFAULT_REGION = "CN"
+
 
 def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     if not api_key:
@@ -256,9 +257,11 @@ def get_episode_details_tmdb(tv_id: int, season_number: int, episode_number: int
     logger.trace(f"  -> TMDb API: 获取电视剧 (ID: {tv_id}) S{season_number}E{episode_number} 的详情...")
     return _tmdb_request(endpoint, api_key, params)
 # --- 通过外部ID (如 IMDb ID) 在 TMDb 上查找人物 ---
-def find_person_by_external_id(external_id: str, api_key: str, source: str = "imdb_id") -> Optional[Dict[str, Any]]:
+def find_person_by_external_id(external_id: str, api_key: str, source: str = "imdb_id",
+                               names_for_verification: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
     """
-    【新】通过外部ID (如 IMDb ID) 在 TMDb 上查找人物。
+    【V5 - 精确匹配版】通过外部ID查找TMDb名人信息。
+    只使用最可靠的外文名 (original_name) 进行精确匹配验证。
     """
     if not all([external_id, api_key, source]):
         return None
@@ -270,13 +273,48 @@ def find_person_by_external_id(external_id: str, api_key: str, source: str = "im
         response.raise_for_status()
         data = response.json()
         person_results = data.get("person_results", [])
-        if person_results:
-            person_found = person_results[0]
-            logger.debug(f"  -> 查找成功: 找到了 '{person_found.get('name')}' (TMDb ID: {person_found.get('id')})")
-            return person_found
-        else:
+        if not person_results:
             logger.debug(f"  -> 未能通过 {source} '{external_id}' 找到任何人物。")
             return None
+
+        person_found = person_results[0]
+        tmdb_name = person_found.get('name')
+        logger.debug(f"  -> 查找成功: 找到了 '{tmdb_name}' (TMDb ID: {person_found.get('id')})")
+
+        # ★★★★★★★★★★★★★★★ 精简后的精确验证逻辑 ★★★★★★★★★★★★★★★
+        if names_for_verification:
+            # 1. 标准化 TMDb 返回的英文名
+            normalized_tmdb_name = normalize_name_for_matching(tmdb_name)
+            
+            # 2. 获取我们期望的外文名 (通常来自豆瓣的 OriginalName)
+            expected_original_name = names_for_verification.get("original_name")
+            
+            # 3. 只有在期望的外文名存在时，才进行验证
+            if expected_original_name:
+                normalized_expected_name = normalize_name_for_matching(expected_original_name)
+                
+                # 4. 进行精确比较
+                if normalized_tmdb_name == normalized_expected_name:
+                    logger.debug(f"  -> [验证成功 - 精确匹配] TMDb name '{tmdb_name}' 与期望的 original_name '{expected_original_name}' 匹配。")
+                else:
+                    # 如果不匹配，检查一下姓和名颠倒的情况
+                    parts = expected_original_name.split()
+                    if len(parts) > 1:
+                        reversed_name = " ".join(reversed(parts))
+                        if normalize_name_for_matching(reversed_name) == normalized_tmdb_name:
+                            logger.debug(f"  -> [验证成功 - 精确匹配] 名字为颠倒顺序匹配。")
+                            return person_found # 颠倒匹配也算成功
+
+                    # 如果精确匹配和颠倒匹配都失败，则拒绝
+                    logger.error(f"  -> [验证失败] TMDb返回的名字 '{tmdb_name}' 与期望的 '{expected_original_name}' 不符。拒绝此结果！")
+                    return None
+            else:
+                # 如果豆瓣没有提供外文名，我们无法进行精确验证，可以选择信任或拒绝
+                # 当前选择信任，但打印一条警告
+                logger.warning(f"  -> [验证跳过] 未提供用于精确匹配的 original_name，将直接接受TMDb结果。")
+        
+        return person_found
+
     except requests.exceptions.RequestException as e:
         logger.error(f"TMDb: 通过外部ID查找时发生网络错误: {e}")
         return None
