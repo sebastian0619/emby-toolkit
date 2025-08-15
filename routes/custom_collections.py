@@ -282,7 +282,12 @@ def api_subscribe_media_from_custom_collection():
                 return jsonify({"error": "订阅失败: 数据库中的媒体信息不完整（缺少标题）。"}), 500
 
         # --- 步骤 2: 使用“权威类型”和“具体标题”执行订阅 ---
-        logger.info(f"依据合集定义，使用类型 '{authoritative_type}' 为《{authoritative_title}》(TMDb ID: {tmdb_id}) 发起订阅...")
+        type_map = {
+            'Movie': '电影',
+            'Series': '电视剧'
+        }
+
+        logger.info(f"  -> 依据合集定义，使用类型 '{type_map.get(authoritative_type, authoritative_type)}' 为《{authoritative_title}》(TMDb ID: {tmdb_id}) 发起订阅...")
         
         success = False
         if authoritative_type == 'Movie':
@@ -309,7 +314,7 @@ def api_subscribe_media_from_custom_collection():
                 (new_media_info_json, new_health_status, new_missing_count, collection_id)
             )
             conn.commit()
-            logger.info(f"已成功更新合集 {collection_id} 中《{authoritative_title}》的状态为 'subscribed'。")
+            logger.info(f"  -> 已成功更新合集 {collection_id} 中《{authoritative_title}》的状态为 '订阅中'。")
 
         return jsonify({"message": f"《{authoritative_title}》已成功提交订阅，并已更新本地状态。"}), 200
 

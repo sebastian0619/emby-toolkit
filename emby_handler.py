@@ -440,7 +440,7 @@ def get_emby_library_items(
             logger.error(f"请求库 '{library_name}' 中的项目失败: {e}", exc_info=True)
             continue
 
-    type_to_chinese = {"Movie": "电影", "Series": "电视剧", "Video": "视频"}
+    type_to_chinese = {"Movie": "电影", "Series": "电视剧", "Video": "视频", "MusicAlbum": "音乐专辑"}
     media_type_in_chinese = ""
 
     if media_type_filter:

@@ -184,7 +184,7 @@ class CoverGeneratorService:
             logger.trace(f"无法为媒体库 '{library_name}' 确定媒体类型，将使用默认值 'Movie,Series,MusicAlbum' 进行尝试。")
             item_types_to_fetch = 'Movie,Series,MusicAlbum'
             
-        logger.debug(f"  -> 正在为媒体库 '{library_name}' 获取类型为 '{item_types_to_fetch}' 的项目...")
+        logger.trace(f"  -> 正在为媒体库 '{library_name}' 获取类型为 '{item_types_to_fetch}' 的项目...")
 
         # 4. 使用动态确定的类型去调用 emby_handler
         all_items = emby_handler.get_emby_library_items(

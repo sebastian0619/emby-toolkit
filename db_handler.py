@@ -1330,7 +1330,7 @@ def update_single_media_status_in_custom_collection(db_path: str, collection_id:
             
             cursor.execute(sql, tuple(values))
             conn.commit()
-            logger.info(f"DB: 已更新自定义合集 {collection_id} 中媒体 {media_tmdb_id} 的状态为 '{new_status}'。")
+            logger.trace(f"已更新自定义合集 {collection_id} 中媒体 {media_tmdb_id} 的状态为 '{new_status}'。")
             return True
     except Exception as e:
         logger.error(f"DB: 更新自定义合集中媒体状态时发生数据库错误: {e}", exc_info=True)
