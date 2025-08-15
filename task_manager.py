@@ -95,7 +95,7 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
         background_task_status["last_action"] = task_name
         background_task_status["progress"] = 0
         background_task_status["message"] = f"{task_name} 初始化..."
-        logger.info(f"后台任务 '{task_name}' 开始执行。")
+        logger.info(f"--- 后台任务 '{task_name}' 开始执行 ---")
 
         task_completed_normally = False
         try:
@@ -117,7 +117,7 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
                 current_progress = 100
             
             update_status_from_thread(current_progress, final_message_for_status)
-            logger.info(f"后台任务 '{task_name}' 结束，最终状态: {final_message_for_status}")
+            logger.info(f"--- 后台任务 '{task_name}' 结束，最终状态: {final_message_for_status} ---")
 
             # 注意：这里的 close() 逻辑可能需要根据实际情况调整
             # 如果处理器是单例，我们可能不应该在这里关闭它，而是在应用退出时关闭

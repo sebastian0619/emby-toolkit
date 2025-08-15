@@ -66,7 +66,7 @@ def task_sync_person_map(processor):
     task_name = "同步演员映射"
     # 我们不再需要根据 is_full_sync 来改变任务名了，因为逻辑已经统一
     
-    logger.info(f"开始执行 '{task_name}'...")
+    logger.trace(f"开始执行 '{task_name}'...")
     
     try:
         # ★★★ 从传入的 processor 对象中获取 config 字典 ★★★
@@ -85,7 +85,7 @@ def task_sync_person_map(processor):
             update_status_callback=task_manager.update_status_from_thread
         )
         
-        logger.info(f"'{task_name}' 成功完成。")
+        logger.trace(f"'{task_name}' 成功完成。")
 
     except Exception as e:
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
@@ -722,7 +722,7 @@ def task_reprocess_all_review_items(processor: MediaProcessor):
     """
     【已升级】后台任务：遍历所有待复核项并逐一以“强制在线获取”模式重新处理。
     """
-    logger.info("--- 开始执行“重新处理所有待复核项”任务 [强制在线获取模式] ---")
+    logger.trace("--- 开始执行“重新处理所有待复核项”任务 [强制在线获取模式] ---")
     try:
         # +++ 核心修改 1：同时查询 item_id 和 item_name +++
         with db_handler.get_db_connection(processor.db_path) as conn:
@@ -1167,7 +1167,7 @@ def task_add_all_series_to_watchlist(processor: MediaProcessor):
     后台任务：获取 Emby 中所有剧集，并批量添加到追剧列表。
     """
     task_name = "一键扫描全库剧集"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
         # 1. 从 processor 获取必要的配置
@@ -1422,7 +1422,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
     不仅在Emby中创建/更新，还为每个合集执行完整的健康状态分析并写入数据库。
     """
     task_name = "生成所有自建合集"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
 
     try:
         # --- 步骤 1: 获取所有启用的自定义合集定义 ---
@@ -1589,7 +1589,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                 
                 # 3c. ★★★ 核心改造：调用新的、功能更全的数据库更新函数 ★★★
                 db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, collection_id, update_data)
-                logger.info(f"合集 '{collection_name}' 处理完成，并已更新数据库状态。")
+                logger.info(f"  -> 合集 '{collection_name}' 处理完成，并已更新数据库状态。")
 
             except Exception as e_coll:
                 logger.error(f"处理合集 '{collection_name}' (ID: {collection_id}) 时发生错误: {e_coll}", exc_info=True)
@@ -1666,7 +1666,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
     - 修正了状态判断逻辑，确保在重新生成时能正确保留 'subscribed' 状态。
     """
     task_name = f"处理自定义合集 (ID: {custom_collection_id})"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
         # --- 步骤 1: 获取定义并生成TMDb ID列表 ---
@@ -2079,7 +2079,7 @@ def task_generate_all_covers(processor: MediaProcessor):
     后台任务：为所有（未被忽略的）媒体库生成封面。
     """
     task_name = "一键生成所有媒体库封面"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
         # 1. 读取配置

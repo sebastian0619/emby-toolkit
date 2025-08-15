@@ -27,7 +27,7 @@ class UnifiedSyncHandler:
         """
         【流式处理版】分批次地获取、处理和汇报进度。
         """
-        logger.info("开始统一的演员映射表同步任务 (流式处理)...")
+        logger.trace("开始统一的演员映射表同步任务 (流式处理)...")
         if update_status_callback: update_status_callback(0, "正在计算演员总数...")
 
         # 1. 先获取总数，用于计算进度百分比
@@ -42,7 +42,7 @@ class UnifiedSyncHandler:
             return
 
         stats = {"total": total_from_emby, "processed": 0, "success": 0, "skipped": 0, "errors": 0}
-        logger.info(f"Emby中共有约 {total_from_emby} 个演员条目，开始同步...")
+        logger.info(f"  -> Emby中共有约 {total_from_emby} 个演员条目，开始同步...")
         if update_status_callback: update_status_callback(0, f"开始同步 {total_from_emby} 位演员...")
 
         # ✨ 使用带有合并逻辑的 upsert_person，但关闭在线丰富功能
@@ -108,11 +108,11 @@ class UnifiedSyncHandler:
 
         # ... (最终的统计日志) ...
         logger.info("--- 同步演员映射完成 ---")
-        logger.info(f"从 Emby API 共获取: {stats['total']} 条")
-        logger.info(f"已处理: {stats['processed']} 条")
-        logger.info(f"成功写入/更新: {stats['success']} 条")
-        logger.info(f"跳过/错误/冲突: {stats['skipped'] + stats['errors']} 条")
-        logger.info("-------------------------")
+        logger.info(f"✅ 从 Emby API 共获取: {stats['total']} 条")
+        logger.info(f"✅ 已处理: {stats['processed']} 条")
+        logger.info(f"✅ 成功写入/更新: {stats['success']} 条")
+        logger.info(f"✅ 跳过/错误/冲突: {stats['skipped'] + stats['errors']} 条")
+        logger.info("----------------------")
 
         if update_status_callback:
             update_status_callback(100, f"同步完成！共处理 {stats['total']} 条记录。")

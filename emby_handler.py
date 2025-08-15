@@ -576,7 +576,7 @@ def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str
     start_index = 0
     batch_size = 5000 # 使用更稳定的 endpoint，可以适当调大批次大小，提高效率
 
-    logger.info(f"开始从 Emby 分批次获取所有演员数据 (每批: {batch_size})...")
+    logger.info(f"  -> 开始从 Emby 分批次获取所有演员数据 (每批: {batch_size})...")
     
     while True:
         if stop_event and stop_event.is_set():
@@ -588,7 +588,7 @@ def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str
         request_params["StartIndex"] = start_index
         request_params["Limit"] = batch_size
         
-        logger.debug(f"  获取 Person 批次: StartIndex={start_index}, Limit={batch_size}")
+        logger.debug(f"  -> 获取 Person 批次: StartIndex={start_index}, Limit={batch_size}")
         
         try:
             # 注意：使用 headers 传递 token，而不是作为 URL 参数
@@ -599,7 +599,7 @@ def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str
             
             # ★★★ 核心修复 2: 只保留这一个最可靠的退出条件 ★★★
             if not items:
-                logger.info("API 返回空列表，已获取所有 Person 数据。")
+                logger.trace("API 返回空列表，已获取所有 Person 数据。")
                 break # 没有更多数据了，正常结束循环
 
             # 使用 yield 返回这一批数据

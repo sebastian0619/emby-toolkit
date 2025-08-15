@@ -533,7 +533,7 @@ class MediaProcessor:
         【V1 - 批量写入模块】
         将一个最终处理好的演员列表，高效地写入指定剧集下的所有分集。
         """
-        logger.info(f"🚀 开始为剧集 '{series_name}' (ID: {series_id}) 批量更新所有分集的演员表...")
+        logger.info(f"  -> 开始为剧集 '{series_name}' (ID: {series_id}) 批量更新所有分集的演员表...")
         
         # 1. 获取所有分集的 ID
         # 我们只需要 ID，所以可以请求更少的字段以提高效率

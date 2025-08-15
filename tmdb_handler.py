@@ -170,7 +170,7 @@ def aggregate_full_series_data_from_tmdb(
     if not tv_id or not api_key:
         return None
 
-    logger.info(f"🚀 开始为剧集 ID {tv_id} 并发聚合 TMDB 数据 (并发数: {max_workers})...")
+    logger.info(f"  -> 开始为剧集 ID {tv_id} 并发聚合 TMDB 数据 (并发数: {max_workers})...")
     
     # --- 步骤 1: 获取顶层剧集详情，这是所有后续操作的基础 ---
     series_details = get_tv_details_tmdb(tv_id, api_key)
