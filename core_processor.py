@@ -1069,14 +1069,14 @@ class MediaProcessor:
                                 }
                                 final_cast_map[tmdb_id_from_map] = new_actor_entry
 
-                            logger.debug(f"    -> [实时反哺] 将新发现的映射关系 (Douban ID: {d_douban_id}) 保存回数据库...")
+                            logger.debug(f"  -> [实时反哺] 将新发现的映射关系 (Douban ID: {d_douban_id}) 保存回演员映射表...")
                             self.actor_db_manager.upsert_person(
                                 cursor,
                                 {
                                     "tmdb_id": tmdb_id_from_map,
                                     "imdb_id": d_imdb_id,
                                     "douban_id": d_douban_id,
-                                     "name": d_actor.get("Name") or (entry_from_map["primary_name"] if "primary_name" in entry_from_map else None)
+                                    "name": d_actor.get("Name") or (entry_from_map["primary_name"] if "primary_name" in entry_from_map else None)
                                 }
                             )
                             match_found = True
@@ -1100,7 +1100,7 @@ class MediaProcessor:
                                         final_check_entry = dict(final_check_row)
                                         emby_pid_from_final_check = final_check_entry.get("emby_person_id")
                                         if emby_pid_from_final_check:
-                                            logger.debug(f"  -> [最终检查] 发现该TMDB ID已关联Emby Person ID: {emby_pid_from_final_check}")
+                                            logger.trace(f"  -> [最终检查] 发现该TMDB ID已关联Emby Person ID: {emby_pid_from_final_check}")
                                     cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_find, cursor) or {}
                                     new_actor_entry = {
                                         "id": tmdb_id_from_find,
