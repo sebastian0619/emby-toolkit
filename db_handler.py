@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 # 模块 1: 数据库管理器 (The Unified Data Access Layer)
 # ======================================================================
 
-# 数据库表结构。
+# --- 数据库表结构 ---
 TABLE_PRIMARY_KEYS = {
     "person_identity_map": "tmdb_person_id",
     "ActorMetadata": "tmdb_id",
@@ -27,7 +27,13 @@ TABLE_PRIMARY_KEYS = {
     "custom_collections": "name", 
     "media_metadata": ("tmdb_id", "item_type"),
 }
-
+# --- 状态中文翻译字典 ---
+STATUS_TRANSLATION_MAP = {
+    'in_library': '已入库',
+    'subscribed': '已订阅',
+    'missing': '缺失',
+    'unreleased': '未上映'
+}
 def get_db_connection(db_path: str) -> sqlite3.Connection:
     """
     【中央函数】获取一个配置好 WAL 模式和 row_factory 的数据库连接。
@@ -1338,7 +1344,7 @@ def update_single_media_status_in_custom_collection(db_path: str, collection_id:
             conn.rollback()
         raise
 
-# --- 更新榜单合集的函数 ---
+# --- 更新榜单合集 ---
 def match_and_update_list_collections_on_item_add(db_path: str, new_item_tmdb_id: str, new_item_name: str) -> List[Dict[str, Any]]:
     """
     【V2 - 自动化闭环核心】
@@ -1361,13 +1367,11 @@ def match_and_update_list_collections_on_item_add(db_path: str, new_item_tmdb_id
             cursor = conn.cursor()
             
             # 1. 查找所有可能相关的合集
-            # 优化查询：只查找包含该TMDb ID的榜单合集
             sql_find = """
                 SELECT * FROM custom_collections 
                 WHERE type = 'list' AND status = 'active' AND emby_collection_id IS NOT NULL
                 AND generated_media_info_json LIKE ?
             """
-            # 使用通配符进行模糊匹配，效率可能不高，但对于JSON字符串是有效的方法
             cursor.execute(sql_find, (f'%"tmdb_id": "{new_item_tmdb_id}"%',))
             candidate_collections = cursor.fetchall()
 
@@ -1390,8 +1394,17 @@ def match_and_update_list_collections_on_item_add(db_path: str, new_item_tmdb_id
                         # 在合集的媒体列表中查找新入库的项目
                         for media_item in media_list:
                             if str(media_item.get('tmdb_id')) == str(new_item_tmdb_id) and media_item.get('status') != 'in_library':
-                                logger.info(f"  -> 数据库状态更新：项目《{new_item_name}》在合集《{collection_name}》中的状态将从 '{media_item.get('status')}' 更新为 'in_library'。")
-                                media_item['status'] = 'in_library'
+                                
+                                # --- ✨✨✨ 核心修改：使用翻译字典生成日志 ✨✨✨ ---
+                                old_status_key = media_item.get('status', 'unknown')
+                                new_status_key = 'in_library'
+                                
+                                old_status_cn = STATUS_TRANSLATION_MAP.get(old_status_key, old_status_key)
+                                new_status_cn = STATUS_TRANSLATION_MAP.get(new_status_key, new_status_key)
+
+                                logger.info(f"  -> 数据库状态更新：项目《{new_item_name}》在合集《{collection_name}》中的状态将从【{old_status_cn}】更新为【{new_status_cn}】。")
+                                
+                                media_item['status'] = new_status_key # 数据库中仍然存储英文key
                                 item_found_and_updated = True
                                 break
                         
