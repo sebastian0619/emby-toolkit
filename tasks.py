@@ -138,7 +138,7 @@ def task_enrich_aliases(processor: MediaProcessor):
         )
         # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
-        logger.info(f"'{task_name}' 任务执行完毕。")
+        logger.info(f" --- '{task_name}' 任务执行完毕。 ---")
         task_manager.update_status_from_thread(100, "演员数据补充任务完成。")
 
     except Exception as e:

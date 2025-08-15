@@ -562,7 +562,7 @@ def enrich_all_actor_aliases_task(
                             logger.error(f"数据库操作失败: {db_e}", exc_info=True)
                             conn.rollback()
             else:
-                logger.info("没有需要从 TMDb 补充或清理的演员。")
+                logger.info("  -> 没有需要从 TMDb 补充或清理的演员。")
 
             # --- 阶段二：从 豆瓣 补充 IMDb ID (串行执行) ---
             if (stop_event and stop_event.is_set()) or (time.time() >= end_time): raise InterruptedError("任务中止")
