@@ -1429,12 +1429,12 @@ def task_process_all_custom_collections(processor: MediaProcessor):
         task_manager.update_status_from_thread(0, "正在获取所有启用的合集定义...")
         active_collections = db_handler.get_all_active_custom_collections(config_manager.DB_PATH)
         if not active_collections:
-            logger.info("没有找到任何已启用的自定义合集，任务结束。")
+            logger.info("  -> 没有找到任何已启用的自定义合集，任务结束。")
             task_manager.update_status_from_thread(100, "没有已启用的合集。")
             return
         
         total = len(active_collections)
-        logger.info(f"共找到 {total} 个已启用的自定义合集需要处理。")
+        logger.info(f"  -> 共找到 {total} 个已启用的自定义合集需要处理。")
 
         # --- 步骤 2: 【核心优化】一次性获取所有需要的数据 ---
         task_manager.update_status_from_thread(2, "正在从Emby获取全库媒体数据...")
@@ -1444,7 +1444,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
         movies = emby_handler.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter="Movie", library_ids=libs_to_process_ids) or []
         series = emby_handler.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter="Series", library_ids=libs_to_process_ids) or []
         all_emby_items = movies + series
-        logger.info(f"已从Emby获取 {len(all_emby_items)} 个媒体项目。")
+        logger.info(f"  -> 已从Emby获取 {len(all_emby_items)} 个媒体项目。")
 
         task_manager.update_status_from_thread(5, "正在从Emby获取现有合集列表...")
         all_emby_collections = emby_handler.get_all_collections_from_emby_generic(
@@ -1452,7 +1452,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
         ) or []
         
         prefetched_collection_map = {coll.get('Name', '').lower(): coll for coll in all_emby_collections}
-        logger.info(f"已预加载 {len(prefetched_collection_map)} 个现有合集的信息。")
+        logger.info(f"  -> 已预加载 {len(prefetched_collection_map)} 个现有合集的信息。")
 
         # --- 步骤 3: 遍历所有合集，在内存中进行处理 ---
         for i, collection in enumerate(active_collections):
@@ -1653,7 +1653,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
         if processor.is_stop_requested(): final_message = "任务已中止。"
         
         task_manager.update_status_from_thread(100, final_message)
-        logger.info(f"--- '{task_name}' 任务成功完成 ---")
+        logger.trace(f"--- '{task_name}' 任务成功完成 ---")
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
@@ -2063,7 +2063,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
 
         final_message = f"同步完成！本次处理 {processed_count}/{total_to_add} 项, 删除 {len(items_to_delete_tmdb_ids)} 项。"
         task_manager.update_status_from_thread(100, final_message)
-        logger.info(f"--- '{task_name}' 任务成功完成 ---")
+        logger.trace(f"--- '{task_name}' 任务成功完成 ---")
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)

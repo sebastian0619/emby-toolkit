@@ -458,7 +458,7 @@ class WatchlistProcessor:
                 return episode
         
         # 3. 如果循环完成，说明本地拥有TMDb上所有的剧集
-        logger.info("  本地媒体库已拥有TMDb上所有剧集，无待播信息。")
+        logger.info("  -> 本地媒体库已拥有TMDb上所有剧集，无待播信息。")
         return None
     # --- 计算缺失的季和集 ---
     def _calculate_missing_info(self, tmdb_seasons: List[Dict], all_tmdb_episodes: List[Dict], emby_seasons: Dict) -> Dict:

@@ -770,10 +770,8 @@ def prepare_actor_translation_data(
              1. translation_map (Dict[str, str]): {'英文名': '中文名', ...}
              2. name_to_persons_map (Dict[str, List[Dict[str, Any]]]): {'英文名': [演员信息字典, ...], ...}
     """
-    logger.info("【演员数据准备】开始采集、筛选和翻译...")
-
     # --- 阶段一：数据采集 ---
-    logger.info("【演员数据准备】正在从Emby获取所有演员列表...")
+    logger.info("  -> 正在从Emby获取所有演员列表...")
     all_persons = []
     try:
         # 使用现有的、高效的 get_all_persons_from_emby 生成器
@@ -787,7 +785,7 @@ def prepare_actor_translation_data(
         for person_batch in person_generator:
             # 在处理每批次后检查是否需要停止
             if stop_event and stop_event.is_set():
-                logger.info("【演员数据准备】在获取演员阶段任务被中止。")
+                logger.info("  -> 在获取演员阶段任务被中止。")
                 return {}, {} # 返回空结果
 
             all_persons.extend(person_batch)
@@ -797,7 +795,7 @@ def prepare_actor_translation_data(
         return {}, {} # 发生错误时返回空结果
 
     # --- 阶段二：数据筛选 ---
-    logger.info(f"【演员数据准备】已获取 {len(all_persons)} 位演员，正在筛选需要翻译的名字...")
+    logger.info(f"  -> 已获取 {len(all_persons)} 位演员，正在筛选需要翻译的名字...")
     names_to_translate: Set[str] = set()
     name_to_persons_map: Dict[str, List[Dict[str, Any]]] = {}
     
@@ -812,13 +810,13 @@ def prepare_actor_translation_data(
             name_to_persons_map[name].append(person)
 
     if not names_to_translate:
-        logger.info("【演员数据准备】任务完成，没有发现需要翻译的演员名。")
+        logger.info("  -> 任务完成，没有发现需要翻译的演员名。")
         return {}, {}
 
-    logger.info(f"【演员数据准备】筛选出 {len(names_to_translate)} 个外文名需要翻译。")
+    logger.info(f"  -> 筛选出 {len(names_to_translate)} 个外文名需要翻译。")
 
     # --- 阶段三：批量翻译 ---
-    logger.info(f"【演员数据准备】正在调用AI批量翻译 {len(names_to_translate)} 个名字...")
+    logger.info(f"  -> 正在调用AI批量翻译 {len(names_to_translate)} 个名字...")
     translation_map: Dict[str, str] = {}
     try:
         # 调用AI翻译模块
@@ -834,7 +832,7 @@ def prepare_actor_translation_data(
         logger.error(f"【演员数据准备】批量翻译时发生错误: {e}", exc_info=True)
         return {}, name_to_persons_map # 翻译失败
 
-    logger.info("所有演员名翻译完毕，正在写回Emby数据库...")
+    logger.info("  -> 所有演员名翻译完毕，正在写回Emby数据库...")
     
     # --- 核心修改：返回两个关键的数据结构，而不是执行写回 ---
     return translation_map, name_to_persons_map
@@ -876,7 +874,7 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
         logger.error("get_all_collections_with_items: 缺少必要的参数。")
         return None
 
-    logger.info("正在从 Emby 获取所有合集...")
+    logger.info("  -> 正在从 Emby 获取所有合集...")
     
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
     params = {
@@ -898,9 +896,9 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
             if coll.get("ProviderIds", {}).get("Tmdb"):
                 regular_collections.append(coll)
             else:
-                logger.debug(f"  - 已跳过自建合集: '{coll.get('Name')}' (ID: {coll.get('Id')})。")
+                logger.debug(f"  -> 已跳过自建合集: '{coll.get('Name')}' (ID: {coll.get('Id')})。")
 
-        logger.info(f"成功从 Emby 获取到 {len(regular_collections)} 个合集，准备获取其内容...")
+        logger.info(f"  -> 成功从 Emby 获取到 {len(regular_collections)} 个合集，准备获取其内容...")
 
         detailed_collections = []
         
@@ -908,7 +906,7 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
             collection_id = collection.get("Id")
             if not collection_id: return None
             
-            logger.debug(f"  (线程) 正在获取合集 '{collection.get('Name')}' (ID: {collection_id}) 的内容...")
+            logger.debug(f"  -> 正在获取合集 '{collection.get('Name')}' (ID: {collection_id}) 的内容...")
             children_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
             children_params = {
                 "api_key": api_key, "ParentId": collection_id,
@@ -927,7 +925,7 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
                 collection['ExistingMovieTmdbIds'] = existing_media_tmdb_ids
                 return collection
             except requests.exceptions.RequestException as e:
-                logger.error(f"  (线程) 获取合集 '{collection.get('Name')}' 内容时失败: {e}")
+                logger.error(f"  -> 获取合集 '{collection.get('Name')}' 内容时失败: {e}")
                 collection['ExistingMovieTmdbIds'] = []
                 return collection
 
@@ -944,7 +942,7 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
                 if result:
                     detailed_collections.append(result)
 
-        logger.info(f"所有合集内容获取完成，共成功处理 {len(detailed_collections)} 个合集。")
+        logger.info(f"  -> 所有合集内容获取完成，共成功处理 {len(detailed_collections)} 个合集。")
         return detailed_collections
 
     except Exception as e:
@@ -1128,11 +1126,11 @@ def create_or_update_collection_with_tmdb_ids(
                 remove_items_from_collection(emby_collection_id, ids_to_remove, base_url, api_key)
             
             if ids_to_add:
-                logger.info(f"  - 发现 {len(ids_to_add)} 个新项目需要添加...")
+                logger.info(f"  -> 发现 {len(ids_to_add)} 个新项目需要添加...")
                 add_items_to_collection(emby_collection_id, ids_to_add, base_url, api_key)
 
             if not ids_to_remove and not ids_to_add:
-                logger.info("  - 完成，合集内容已是最新，无需改动。")
+                logger.info("  -> 合集内容已是最新，无需改动。")
 
             return (emby_collection_id, tmdb_ids_in_library)
         else:
