@@ -43,7 +43,7 @@ def select_best_role(current_role: str, candidate_role: str) -> str:
     candidate_role = str(candidate_role or '').strip()
 
     # --- 步骤 2: 准备日志和判断标志 ---
-    logger.debug(f"  备选角色名: 当前='{current_role}', 豆瓣='{candidate_role}'")
+    logger.debug(f"  -> 备选角色名: 当前='{current_role}', 豆瓣='{candidate_role}'")
 
     current_is_chinese = utils.contains_chinese(current_role)
     candidate_is_chinese = utils.contains_chinese(candidate_role)
@@ -57,41 +57,41 @@ def select_best_role(current_role: str, candidate_role: str) -> str:
 
     # 优先级 1: 豆瓣角色是有效的中文名
     if candidate_is_chinese and not candidate_is_placeholder:
-        logger.trace(f"  决策: [优先级1] 豆瓣角色是有效中文名。选择豆瓣角色。")
-        logger.debug(f"  选择: '{candidate_role}'")
+        logger.trace(f"  -> 决策: [优先级1] 豆瓣角色是有效中文名。选择豆瓣角色。")
+        logger.debug(f"  -> 选择: '{candidate_role}'")
         return candidate_role
 
     # 优先级 2: 当前角色是有效的中文名，而豆瓣角色不是。必须保留当前角色！
     if current_is_chinese and not current_is_placeholder and not candidate_is_chinese:
-        logger.trace(f"  决策: [优先级2] 当前角色是有效中文名，而豆瓣不是。保留当前角色。")
-        logger.debug(f"  选择: '{current_role}'")
+        logger.trace(f"  -> 决策: [优先级2] 当前角色是有效中文名，而豆瓣不是。保留当前角色。")
+        logger.debug(f"  -> 选择: '{current_role}'")
         return current_role
 
     # 优先级 3: 两者都不是有效的中文名（或都是）。选择一个非占位符的，豆瓣者优先。
     if candidate_role and not candidate_is_placeholder:
-        logger.trace(f"  决策: [优先级3] 豆瓣角色是有效的非中文名/占位符。选择豆瓣角色。")
-        logger.debug(f"  选择: '{candidate_role}'")
+        logger.trace(f"  -> 决策: [优先级3] 豆瓣角色是有效的非中文名/占位符。选择豆瓣角色。")
+        logger.debug(f"  -> 选择: '{candidate_role}'")
         return candidate_role
     
     if current_role and not current_is_placeholder:
-        logger.trace(f"  决策: [优先级4] 当前角色是有效的非中文名/占位符，而豆瓣角色是无效的。保留当前角色。")
-        logger.debug(f"  选择: '{current_role}'")
+        logger.trace(f"  -> 决策: [优先级4] 当前角色是有效的非中文名/占位符，而豆瓣角色是无效的。保留当前角色。")
+        logger.debug(f"  -> 选择: '{current_role}'")
         return current_role
 
     # 优先级 4: 处理占位符。如果两者之一是占位符，则返回一个（豆瓣优先）。
     if candidate_role: # 如果豆瓣有内容（此时只能是占位符）
-        logger.trace(f"  决策: [优先级5] 豆瓣角色是占位符。选择豆瓣角色。")
-        logger.debug(f"  选择: '{candidate_role}'")
+        logger.trace(f"  -> 决策: [优先级5] 豆瓣角色是占位符。选择豆瓣角色。")
+        logger.debug(f"  -> 选择: '{candidate_role}'")
         return candidate_role
         
     if current_role: # 如果当前有内容（此时只能是占位符）
-        logger.trace(f"  决策: [优先级6] 当前角色是占位符，豆瓣为空。保留当前角色。")
-        logger.debug(f"  选择: '{current_role}'")
+        logger.trace(f"  -> 决策: [优先级6] 当前角色是占位符，豆瓣为空。保留当前角色。")
+        logger.debug(f"  -> 选择: '{current_role}'")
         return current_role
 
     # 优先级 5: 所有情况都处理完，只剩下两者都为空。
-    logger.trace(f"  决策: [优先级7] 所有输入均为空或无效。返回空字符串。")
-    logger.debug(f"  选择: ''")
+    logger.trace(f"  -> 决策: [优先级7] 所有输入均为空或无效。返回空字符串。")
+    logger.debug(f"  -> 选择: ''")
     return ""
 # --- 质量评估 ---
 def evaluate_cast_processing_quality(
@@ -180,7 +180,7 @@ def evaluate_cast_processing_quality(
             logger.debug(f"  - 惩罚: 数量正常，不进行惩罚。")
     
     final_score_rounded = round(avg_score, 1)
-    logger.info(f"  - 最终评分: {final_score_rounded:.1f}")
+    logger.info(f" --- 最终评分: {final_score_rounded:.1f} ---")
     return final_score_rounded
 
 
@@ -329,7 +329,7 @@ def format_and_complete_cast_list(
     add_role_prefix = config.get(constants.CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX, False)
     generic_roles = {"演员", "配音"}
 
-    logger.debug(f"格式化演员列表，调用模式: '{mode}' (前缀开关: {'开' if add_role_prefix else '关'})")
+    logger.debug(f"  -> 格式化演员列表，调用模式: '{mode}' (前缀开关: {'开' if add_role_prefix else '关'})")
 
     # --- 阶段1: 统一的角色名格式化 (所有模式通用) ---
     for idx, actor in enumerate(cast_list):
@@ -359,14 +359,14 @@ def format_and_complete_cast_list(
     # --- 阶段2: 根据模式执行不同的排序策略 ---
     if mode == 'manual':
         # 【手动模式】：以用户自定义顺序为基础，并增强（通用角色后置）
-        logger.debug("应用 'manual' 排序策略：保留用户自定义顺序，并将通用角色后置。")
+        logger.debug("  -> 应用 'manual' 排序策略：保留用户自定义顺序，并将通用角色后置。")
         processed_cast.sort(key=lambda actor: (
             1 if actor.get("character") in generic_roles else 0,  # 1. 通用角色排在后面
             actor.get("original_index")                          # 2. 在此基础上，保持原始手动顺序
         ))
     else: # mode == 'auto' 或其他任何默认情况
         # 【自动模式】：严格按照TMDb原始的 'order' 字段排序
-        logger.debug("应用 'auto' 排序策略：严格按原始TMDb 'order' 字段排序。")
+        logger.debug("  -> 应用 'auto' 排序策略：严格按原始TMDb 'order' 字段排序。")
         processed_cast.sort(key=lambda actor: actor.get('order', 999))
         
     # --- 阶段3: 最终重置 order 索引 (所有模式通用) ---

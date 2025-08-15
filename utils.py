@@ -203,7 +203,7 @@ class LogDBManager:
                 "REPLACE INTO failed_log (item_id, item_name, reason, item_type, score, failed_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
                 (item_id, item_name, reason, item_type, score)
             )
-            logger.debug(f"已将 Item ID '{item_id}' 写入待复核。")
+            logger.trace(f"已将 Item ID '{item_id}' 写入待复核。")
         except sqlite3.Error as e:
             logger.error(f"写入 failed_log 失败 (Item ID: {item_id}): {e}")
             raise

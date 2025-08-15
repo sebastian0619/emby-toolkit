@@ -59,7 +59,7 @@ def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[
         "language": DEFAULT_LANGUAGE,
         "append_to_response": append_to_response or ""
     }
-    logger.debug(f"TMDb: 获取电影详情 (ID: {movie_id})")
+    logger.trace(f"TMDb: 获取电影详情 (ID: {movie_id})")
     details = _tmdb_request(endpoint, api_key, params)
     
     # 同样为电影补充英文标题，保持逻辑一致性

@@ -197,7 +197,7 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
     # 步骤1: 获取当前项目的完整信息，因为更新时需要整个对象
     current_item_url = f"{emby_server_url.rstrip('/')}/Users/{user_id}/Items/{item_id}"
     params_get = {"api_key": emby_api_key}
-    logger.debug(
+    logger.trace(
         f"update_emby_item_cast: 准备获取项目 {item_id} (UserID: {user_id}) 的当前信息...")
 
     item_to_update: Optional[Dict[str, Any]] = None
@@ -228,7 +228,7 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
             # Emby 的社区评分范围是 0-10
             if 0 <= rating_float <= 10:
                 item_to_update["CommunityRating"] = rating_float
-                logger.info(f"  -> 准备将项目 '{item_name_for_log}' 的社区评分更新为: {rating_float}")
+                logger.info(f"  -> 将 '{item_name_for_log}' 的评分更新为豆瓣评分: {rating_float}")
             else:
                 logger.warning(f"  -> 提供的评分 {rating_float} 超出有效范围 (0-10)，将不更新评分。")
         except (ValueError, TypeError):
