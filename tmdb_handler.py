@@ -223,7 +223,7 @@ def aggregate_full_series_data_from_tmdb(
                 result_data = future.result()
                 if result_data:
                     results[task_key] = result_data
-                logger.debug(f"    ({i+1}/{len(tasks)}) 任务 {task_key} 完成。")
+                logger.trace(f"    ({i+1}/{len(tasks)}) 任务 {task_key} 完成。")
             except Exception as exc:
                 logger.error(f"    任务 {task_key} 执行时产生错误: {exc}")
 
@@ -241,7 +241,7 @@ def aggregate_full_series_data_from_tmdb(
         elif key.startswith("S") and "E" in key: # 是集
             final_aggregated_data["episodes_details"][key] = data
             
-    logger.info(f"🚀 TMDB 数据并发聚合完成！成功获取 {len(final_aggregated_data['seasons_details'])} 季和 {len(final_aggregated_data['episodes_details'])} 集的详情。")
+    logger.info(f"  -> 成功获取 {len(final_aggregated_data['seasons_details'])} 季和 {len(final_aggregated_data['episodes_details'])} 集的详情。")
     
     return final_aggregated_data
 # +++ 获取集详情 +++

@@ -160,169 +160,117 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
     update_url = f"{emby_server_url.rstrip('/')}/Items/{person_id}"
     headers = {'Content-Type': 'application/json'}
 
-    logger.debug(f"准备更新 Person (ID: {person_id}) 的信息，新数据: {new_data}")
+    logger.trace(f"  -> 准备更新 Person (ID: {person_id}) 的信息，新数据: {new_data}")
     try:
         response_post = requests.post(update_url, json=person_to_update, headers=headers, params=params, timeout=15)
         response_post.raise_for_status()
-        logger.trace(f"成功更新 Person (ID: {person_id}) 的信息。")
+        logger.trace(f"  -> 成功更新 Person (ID: {person_id}) 的信息。")
         return True
     except requests.exceptions.RequestException as e:
-        logger.error(f"更新 Person (ID: {person_id}) 时发生错误: {e}")
+        logger.error(f"  -> 更新 Person (ID: {person_id}) 时发生错误: {e}")
         return False
 # ✨✨✨ 更新 Emby 媒体项目的演员列表 ✨✨✨
 def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str, Any]],
                           emby_server_url: str, emby_api_key: str, user_id: str,
-                          # ★★★ 新增修改：添加可选的评分参数 ★★★
                           new_rating: Optional[float] = None
                           ) -> bool:
     """
-    【增强版】更新 Emby 媒体项目的演员列表，并可选择性地更新评分。
-    :param item_id: Emby 媒体项目的 ID。
-    :param new_cast_list_for_handler: 包含演员信息的列表...
-    :param emby_server_url: Emby 服务器 URL。
-    :param emby_api_key: Emby API Key。
-    :param user_id: Emby 用户 ID (用于获取项目当前信息)。
-    :param new_rating: (可选) 新的社区评分 (float)。
-    :return: True 如果更新成功或被Emby接受，False 如果失败。
+    【V-Final Optimized - 最终优化版】
+    职责单一化：此函数的核心职责是更新媒体与演员的“链接关系”。
+    - 对于已存在的演员，只发送其Emby ID。
+    - 对于新演员，发送其ProviderIds以帮助Emby创建更完整的条目。
     """
     if not all([item_id, emby_server_url, emby_api_key, user_id]):
         logger.error(
             "update_emby_item_cast: 参数不足：缺少ItemID、服务器URL、API Key或UserID。")
         return False
     if new_cast_list_for_handler is None:
-        logger.warning(
-            f"update_emby_item_cast: new_cast_list_for_handler 为 None，将视为空列表处理，尝试清空演员。")
         new_cast_list_for_handler = []
 
-    # 步骤1: 获取当前项目的完整信息，因为更新时需要整个对象
+    # 步骤1: 获取当前项目的完整信息 (逻辑不变)
     current_item_url = f"{emby_server_url.rstrip('/')}/Users/{user_id}/Items/{item_id}"
     params_get = {"api_key": emby_api_key}
-    logger.trace(
-        f"update_emby_item_cast: 准备获取项目 {item_id} (UserID: {user_id}) 的当前信息...")
-
     item_to_update: Optional[Dict[str, Any]] = None
+    item_name_for_log = f"ID:{item_id}"
     try:
         response_get = requests.get(
             current_item_url, params=params_get, timeout=15)
         response_get.raise_for_status()
         item_to_update = response_get.json()
         item_name_for_log = item_to_update.get("Name", f"ID:{item_id}")
-        logger.trace(f"成功获取项目 {item_name_for_log} (UserID: {user_id}) 的当前信息用于更新。")
     except requests.exceptions.RequestException as e:
         logger.error(
             f"update_emby_item_cast: 获取Emby项目 {item_name_for_log} (UserID: {user_id}) 失败: {e}", exc_info=True)
         return False
-    except json.JSONDecodeError as e:
-        logger.error(
-            f"update_emby_item_cast: 解析Emby项目 {item_name_for_log} (UserID: {user_id}) 响应失败: {e}", exc_info=True)
+    
+    if not item_to_update:
         return False
 
-    if not item_to_update:  # 如果获取失败
-        logger.error(f"update_emby_item_cast: 未能获取到项目 {item_name_for_log} 的当前信息，更新中止。")
-        return False
-
-    # ★★★ 新增修改：在这里注入更新评分的逻辑 ★★★
+    # 更新评分的逻辑 (逻辑不变)
     if new_rating is not None:
         try:
             rating_float = float(new_rating)
-            # Emby 的社区评分范围是 0-10
             if 0 <= rating_float <= 10:
                 item_to_update["CommunityRating"] = rating_float
                 logger.info(f"  -> 将 '{item_name_for_log}' 的评分更新为豆瓣评分: {rating_float}")
-            else:
-                logger.warning(f"  -> 提供的评分 {rating_float} 超出有效范围 (0-10)，将不更新评分。")
         except (ValueError, TypeError):
-            logger.warning(f"  -> 提供的评分 '{new_rating}' 不是有效数字，将不更新评分。")
+            pass
 
-    # 步骤2: 构建新的 People 列表以发送给 Emby
+    # ======================================================================
+    # ★★★ 核心修改：构建新的 People 列表，逻辑更清晰 ★★★
+    # ======================================================================
     formatted_people_for_emby: List[Dict[str, Any]] = []
     for actor_entry in new_cast_list_for_handler:
         actor_name = actor_entry.get("name")
-        if not actor_name or not str(actor_name).strip():  # 名字是必须的，且不能为空白
-            logger.warning(
-                f"update_emby_item_cast: 跳过无效的演员条目（缺少或空白name）：{actor_entry}")
+        if not actor_name or not str(actor_name).strip():
             continue
 
         person_obj: Dict[str, Any] = {
-            "Name": str(actor_name).strip(),  # 确保名字是字符串且去除首尾空白
-            # 确保 Role 是字符串且去除首尾空白
+            "Name": str(actor_name).strip(),
             "Role": str(actor_entry.get("character", "")).strip(),
-            "Type": "Actor"  # 明确指定类型为 Actor
+            "Type": "Actor"
         }
 
-        emby_person_id_from_core = actor_entry.get("emby_person_id")
-        provider_ids_from_core = actor_entry.get("provider_ids")
+        emby_person_id = actor_entry.get("emby_person_id")
 
-        # 如果有有效的 Emby Person ID
-        if emby_person_id_from_core and str(emby_person_id_from_core).strip():
-            person_obj["Id"] = str(emby_person_id_from_core).strip()
-            # logger.debug(f"  演员 '{person_obj['Name']}': 更新现有 Emby Person ID '{person_obj['Id']}'") # <--- 已注释或删除
-            if isinstance(provider_ids_from_core, dict) and provider_ids_from_core:
-                sanitized_provider_ids = {k: str(v) for k, v in provider_ids_from_core.items() if v is not None and str(v).strip()}
-                if sanitized_provider_ids:
-                    person_obj["ProviderIds"] = sanitized_provider_ids
-                    logger.trace(f"    尝试为现有演员 '{person_obj['Name']}' (ID: {person_obj['Id']}) 更新/设置 ProviderIds: {person_obj['ProviderIds']}") # 保留这条，但加上ID
-        else: # 新增演员
-            logger.debug(f"  演员 '{person_obj['Name']}': 作为新演员添加。")
-            if isinstance(provider_ids_from_core, dict) and provider_ids_from_core:
-                sanitized_provider_ids = {k: str(v) for k, v in provider_ids_from_core.items() if v is not None and str(v).strip()}
-                if sanitized_provider_ids:
-                    person_obj["ProviderIds"] = sanitized_provider_ids
-                    logger.trace(f"    为新演员 '{person_obj['Name']}' 设置 ProviderIds: {person_obj['ProviderIds']}")
-            # 对于新增演员，不包含 "Id" 字段，让 Emby 自动生成
+        # --- 策略分流 ---
+        if emby_person_id and str(emby_person_id).strip():
+            # 1. 对于已存在的演员：只提供ID，用于链接。
+            person_obj["Id"] = str(emby_person_id).strip()
+            logger.trace(f"  -> 链接现有演员 '{person_obj['Name']}' (ID: {person_obj['Id']})")
+        else:
+            # 2. 对于新演员：提供ProviderIds，帮助Emby创建。
+            logger.debug(f"  -> 添加新演员 '{person_obj['Name']}'")
+            provider_ids = actor_entry.get("provider_ids")
+            if isinstance(provider_ids, dict) and provider_ids:
+                sanitized_ids = {k: str(v) for k, v in provider_ids.items() if v is not None and str(v).strip()}
+                if sanitized_ids:
+                    person_obj["ProviderIds"] = sanitized_ids
+                    logger.trace(f"    -> 为新演员 '{person_obj['Name']}' 设置初始 ProviderIds: {sanitized_ids}")
 
         formatted_people_for_emby.append(person_obj)
 
-    # 更新 item_to_update 对象中的 People 字段
     item_to_update["People"] = formatted_people_for_emby
 
-    # 处理 LockedFields
-    if "LockedFields" in item_to_update and isinstance(item_to_update["LockedFields"], list):
-        if "Cast" in item_to_update["LockedFields"]:
-            logger.info(
-                f"update_emby_item_cast: 项目 {item_name_for_log} 的 Cast 字段之前是锁定的，将尝试在本次更新中临时移除锁定（如果Emby API允许）。")
-        current_locked_fields = set(item_to_update.get("LockedFields", []))
-        if "Cast" in current_locked_fields:
-            current_locked_fields.remove("Cast")
-            item_to_update["LockedFields"] = list(current_locked_fields)
-            logger.trace(
-                f"项目 {item_name_for_log} 的 LockedFields 更新为 (移除了Cast): {item_to_update['LockedFields']}")
-    # 步骤3: POST 更新项目信息
-    # 更新通常用不带 UserID 的端点
+    # 处理锁字段的逻辑 (逻辑不变)
+    if "LockedFields" in item_to_update and "Cast" in item_to_update.get("LockedFields", []):
+        current_locked_fields = set(item_to_update["LockedFields"])
+        current_locked_fields.remove("Cast")
+        item_to_update["LockedFields"] = list(current_locked_fields)
+
+    # 步骤3: POST 更新项目信息 (逻辑不变)
     update_url = f"{emby_server_url.rstrip('/')}/Items/{item_id}"
     headers = {'Content-Type': 'application/json'}
     params_post = {"api_key": emby_api_key}
-
-    logger.trace(f"准备POST更新Emby项目 {item_name_for_log} 的演员信息。URL: {update_url}")
-    if formatted_people_for_emby:
-        logger.trace(
-            f"  更新数据 (People部分的前2条，共{len(formatted_people_for_emby)}条): {formatted_people_for_emby[:2]}")
-    else:
-        logger.trace(f"  更新数据 (People部分): 将设置为空列表。")
 
     try:
         response_post = requests.post(
             update_url, json=item_to_update, headers=headers, params=params_post, timeout=20)
         response_post.raise_for_status()
-
-        if response_post.status_code == 204:  # No Content，表示成功
-            logger.trace(f"成功更新Emby项目 {item_name_for_log} 的演员信息。")
-            return True
-        else:
-            logger.warning(
-                f"更新Emby项目 {item_name_for_log} 演员信息请求已发送，但状态码为: {response_post.status_code}。响应 (前200字符): {response_post.text[:200]}")
-            # 即使不是204，只要没抛异常，也可能意味着Emby接受了请求并在后台处理
-            return True
-    except requests.exceptions.HTTPError as e:
-        response_text = e.response.text[:500] if e.response else "无响应体"
-        logger.error(
-            f"更新Emby项目 {item_name_for_log} 演员信息时发生HTTP错误: {e.response.status_code if e.response else 'N/A'} - {response_text}", exc_info=True)
-        return False
+        logger.trace(f"成功更新Emby项目 {item_name_for_log} 的演员信息。")
+        return True
     except requests.exceptions.RequestException as e:
-        logger.error(f"更新Emby项目 {item_name_for_log} 演员信息时发生请求错误: {e}", exc_info=True)
-        return False
-    except Exception as e:  # 捕获其他所有未知异常
-        logger.error(f"更新Emby项目 {item_name_for_log} 演员信息时发生未知错误: {e}", exc_info=True)
+        logger.error(f"更新Emby项目 {item_name_for_log} 演员信息时发生错误: {e}", exc_info=True)
         return False
 # ✨✨✨ 获取 Emby 用户可见媒体库列表 ✨✨✨
 def get_emby_libraries(emby_server_url, emby_api_key, user_id):
