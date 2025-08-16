@@ -1,19 +1,36 @@
-version: '3'
+# D:/vue/docker/docker-compose.yml (最终持久化版)
+
+version: '3.8'
 
 services:
   emby-toolkit:
-    image: hbq0405/emby-toolkit:latest
+    build: .
     container_name: emby-toolkit
-    network_mode: bridge
-    environment:
-      - TZ=Asia/Shanghai         # 设置时区
-      - AUTH_USERNAME=admin      # 用户名可任意设置，密码在程序首次运行会生成随机密码打印在日志中
-      - PUID=0                   # 设置为你的用户ID，默认为0，建议根据实际情况修改
-      - PGID=0                   # 设置为你的组ID，默认为0，建议根据实际情况修改
-      - UMASK=000                # 设置权限掩码，默认为000，建议根据实际情况修改
-    volumes:
-      - ./config:/config         # 配置文件目录
-      - ./tmdb:/tmdb             # 映射神医本地TMDB目录，必须配置
-    ports:
-      - "5257:5257"              # 应用端口
     restart: unless-stopped
+    volumes:
+      - ./local_data:/config 
+    environment:
+      - APP_DATA_DIR=/config
+      - PUID=1000
+      - PGID=1000
+    ports:
+      - "5257:5257"
+    networks:
+      - emby-net
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: emby-proxy-nginx
+    restart: unless-stopped
+    ports:
+      - "8097:8097"
+    volumes:
+      - ./local_data/nginx/conf.d:/etc/nginx/conf.d
+    depends_on:
+      - emby-toolkit
+    networks:
+      - emby-net
+
+networks:
+  emby-net:
+    driver: bridge

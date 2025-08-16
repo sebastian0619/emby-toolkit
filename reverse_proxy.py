@@ -485,24 +485,8 @@ def proxy_all(path):
             return handle_get_mimicked_library_items(user_id, mimicked_id, request.args)
 
         # --- 默认转发逻辑 (保持不变) ---
-        path_to_forward = path
-        if path and not path.startswith(('emby/', 'socket.io/', 'Audio/', 'Videos/', 'Items/')):
-             path_to_forward = f'web/{path}'
-        base_url, api_key = _get_real_emby_url_and_key()
-        target_url = f"{base_url}/{path_to_forward}"
-        headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
-        headers['Host'] = urlparse(base_url).netloc
-        headers['Accept-Encoding'] = 'identity'
-        params = request.args.copy()
-        params['api_key'] = api_key
-        resp = requests.request(
-            method=request.method, url=target_url, headers=headers, params=params,
-            data=request.get_data(), cookies=request.cookies, stream=True, timeout=30.0
-        )
-        excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
-        response_headers = [(name, value) for name, value in resp.raw.headers.items()
-                            if name.lower() not in excluded_resp_headers]
-        return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
+        logger.warning(f"反代服务收到了一个未处理的请求: '{path}'。这通常意味着Nginx配置有误，请检查路由规则。")
+        return Response("Path not handled by virtual library proxy.", status=404, mimetype='text/plain')
     except Exception as e:
         logger.error(f"[PROXY] HTTP 代理时发生未知错误: {e}", exc_info=True)
         return "Internal Server Error", 500

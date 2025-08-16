@@ -5,6 +5,7 @@ import os
 import sqlite3
 import shutil
 from datetime import datetime
+from jinja2 import Environment, FileSystemLoader
 from actor_sync_handler import UnifiedSyncHandler
 from db_handler import ActorDBManager
 import emby_handler
@@ -23,6 +24,7 @@ from werkzeug.utils import safe_join, secure_filename
 from utils import get_override_path_for_item
 from watchlist_processor import WatchlistProcessor
 from datetime import datetime
+from string import Template
 import requests
 import tmdb_handler
 import task_manager
@@ -473,6 +475,57 @@ def initialize_processors():
     extensions.actor_subscription_processor_instance = actor_subscription_processor_instance_local
     extensions.EMBY_SERVER_ID = server_id_local
 
+# --- 虚拟库反代配置 ---
+def ensure_nginx_config():
+    """
+    【Jinja2 最终版】使用 Jinja2 模板引擎，强制生成 Nginx 配置文件。
+    """
+    logger.info("正在强制同步 Nginx 配置文件 (使用 Jinja2)...")
+    
+    # 定义路径
+    nginx_config_dir = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'nginx', 'conf.d')
+    final_config_path = os.path.join(nginx_config_dir, 'default.conf')
+    # Jinja2 需要模板所在的目录
+    template_dir = os.path.join(os.getcwd(), 'templates', 'nginx')
+    template_filename = 'emby_proxy.conf.template'
+
+    try:
+        # 确保 Nginx 配置目录存在
+        os.makedirs(nginx_config_dir, exist_ok=True)
+
+        # 1. 设置 Jinja2 环境
+        env = Environment(loader=FileSystemLoader(template_dir))
+        template = env.get_template(template_filename)
+
+        # 2. 从 APP_CONFIG 获取值 (逻辑不变)
+        emby_url = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_SERVER_URL, "")
+        nginx_listen_port = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_PORT, 8097)
+
+        # 3. 准备替换值 (逻辑不变)
+        emby_upstream = emby_url.replace("http://", "").replace("https://", "").rstrip('/')
+        proxy_upstream = "emby-toolkit:8098"
+
+        if not emby_upstream:
+            logger.error("config.ini 中未配置 Emby 服务器地址，无法生成 Nginx 配置！")
+            return
+
+        # 4. 填充模板
+        context = {
+            'EMBY_UPSTREAM': emby_upstream,
+            'PROXY_UPSTREAM': proxy_upstream,
+            'NGINX_LISTEN_PORT': nginx_listen_port
+        }
+        final_config_content = template.render(context)
+
+        # 5. 写入最终的配置文件 (会直接覆盖旧文件)
+        with open(final_config_path, 'w', encoding='utf-8') as f:
+            f.write(final_config_content)
+        
+        logger.info("✅ Nginx 配置文件已成功同步！")
+
+    except Exception as e:
+        logger.error(f"处理 Nginx 配置文件时发生严重错误: {e}", exc_info=True)
+
 # --- 检查字体文件 ---
 def ensure_cover_generator_fonts():
     """
@@ -660,6 +713,8 @@ if __name__ == '__main__':
     add_file_handler(log_directory=config_manager.LOG_DIRECTORY, log_size_mb=log_size, log_backups=log_backups)
     
     init_db()
+    # --- 拷贝反代配置 ---
+    ensure_nginx_config()
     # 新增字体文件检测和拷贝
     ensure_cover_generator_fonts()
     init_auth_from_blueprint()
@@ -670,11 +725,12 @@ if __name__ == '__main__':
     def run_proxy_server():
         if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
             try:
-                proxy_port = int(config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_PORT))
-                logger.info(f"🚀 [GEVENT] 反向代理服务即将启动，监听端口: {proxy_port}")
+                # 定义一个固定的内部端口
+                internal_proxy_port = 8098
+                logger.trace(f"🚀 [GEVENT] 反向代理服务即将启动，监听内部端口: {internal_proxy_port}")
                 
                 proxy_server = WSGIServer(
-                    ('0.0.0.0', proxy_port), 
+                    ('0.0.0.0', internal_proxy_port), 
                     proxy_app, 
                     handler_class=WebSocketHandler
                 )
