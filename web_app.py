@@ -582,45 +582,6 @@ def application_exit_handler():
     logger.info("atexit 清理操作执行完毕。")
 atexit.register(application_exit_handler)
 
-# --- strm处理 ---
-@app.route('/api/decide_stream_action')
-def decide_stream_action():
-    # 1. 从 Nginx 转发的请求头中，获取原始的请求 URI
-    original_uri = request.headers.get('X-Original-URI')
-    
-    # 2. 在这里，用 Python 实现你所有复杂的路由规则！
-    #    你可以检查 URI 是不是 .strm，检查客户端类型，检查用户...
-    #    这比在 NJS 里写 JS 要方便得多。
-    
-    if ".strm" in original_uri:
-        # 如果是 strm 文件，解析 pick_code
-        pick_code = original_uri.split('/')[-1].split('.')[0] # 这是一个简化的例子
-        try:
-            # 调用你的 pick_code 解析服务
-            response = requests.get(f"http://192.168.31.177:9527/d/{pick_code}")
-            response.raise_for_status()
-            
-            # 获取真实的直链
-            real_link = response.url # requests 会自动处理跳转
-            
-            # 告诉 Nginx：请 302 跳转到这个地址
-            return jsonify({
-                "action": "redirect",
-                "target": real_link
-            })
-        except Exception as e:
-            # 如果解析失败，告诉 Nginx：让 Emby 自己处理吧（中转流量）
-            return jsonify({
-                "action": "proxy",
-                "target": "emby_server"
-            })
-    else:
-        # 如果是普通视频文件，告诉 Nginx：直接让 Emby 处理
-        return jsonify({
-            "action": "proxy",
-            "target": "emby_server"
-        })
-
 # --- 反代监控 ---
 @app.route('/api/health')
 def health_check():

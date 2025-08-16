@@ -1,8 +1,5 @@
 # /etc/nginx/conf.d/emby_proxy.conf
-map $upstream_http_x_media_path $stream_target {
-    default "emby_server";          # 默认发给 emby_server
-    "~*\.strm" "pick_code_resolver"; # 如果路径包含 .strm，发给 pick_code_resolver
-}
+
 # 为了配置清晰，我们为上游服务定义了 upstream 块
 upstream emby_server {
     server {{ EMBY_UPSTREAM }};
@@ -12,102 +9,70 @@ upstream virtual_library_proxy {
     server {{ PROXY_UPSTREAM }};
 }
 
-# 3. 你的 pick_code 直链解析服务
-upstream pick_code_resolver {
-    # 【请务必确认】这里是你 pick_code 服务的地址和端口
-    server 192.168.31.177:9527;
-}
-
 server {
     listen {{ NGINX_LISTEN_PORT }};
     # 【请修改】这里填写你的域名或服务器IP
     server_name your.domain.com;
 
-# --- 基础代理参数 (直接复制，不用修改) ---
+    # --- 基础代理参数 ---
+    # 这些参数确保后端服务能正确获取客户端信息
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_http_version 1.1;
+
+    # --- WebSocket 专用参数 ---
+    # Emby 严重依赖 WebSocket 进行实时通信
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "Upgrade";
+
+    # 关闭缓冲对于媒体流和实时通信很重要
     proxy_buffering off;
 
     # ====================================================================
-    #  核心路由规则 (简单直接版)
+    #  核心路由规则 (最终修正版)
     # ====================================================================
 
-    # 规则 0：【strm 文件 302 反代】
-    # ★★★ 2. 修改视频播放的 location 块 ★★★
-    location ~ /Videos/(\d+)/stream {
-        # a. 先去内部地址“问一下”这个视频的真实路径
-        auth_request /_internal_get_path;
-        
-        # b. 将“问到”的路径，通过响应头传递回来
-        auth_request_set $media_path $upstream_http_x_media_path;
-
-        # c. 302 跳转魔法 (保持不变)
-        proxy_redirect off;
-        proxy_intercept_errors on;
-        error_page 301 302 307 = @handle_redirects;
-
-        # d. 使用 map 变量动态决定上游服务
-        proxy_pass http://$stream_target;
-    }
-
-    # ★★★ 3. 定义内部“问询”地址 ★★★
-    location = /_internal_get_path {
-        internal; # 只能内部访问
-        
-        # a. 从原始请求的 URI 中捕获 ItemId
-        #    例如，从 /Videos/704294/stream 捕获 704294
-        set $item_id $1;
-
-        # b. 构造一个指向 Emby API 的查询 URL
-        proxy_pass http://192.168.31.163/Items/$item_id/PlaybackInfo?api_key=78171696a78d4be48cf82de09b303256;
-
-        # c. 优化请求
-        proxy_pass_request_body off;
-        proxy_set_header Content-Length "";
-        proxy_set_header X-Original-URI $request_uri;
-
-        # d. ★★★ 核心魔法：告诉 Nginx，处理完后，把 Emby 返回的 JSON 中的 Path 字段值，提取出来放到一个叫 X-Media-Path 的响应头里
-        #    这通常需要一个小的 Lua 或 NJS 脚本，但有一个更简单的技巧...
-        #    (为了简化，我们先假设 PlaybackInfo 直接返回路径，如果不行再引入 Lua/NJS)
-        #    为了让 Nginx 能读取到后端返回的 JSON 内容，我们需要更高级的模块。
-        
-        # --- 为了实现“照葫芦画瓢”，我们先用最简单的方式 ---
-        # 我们先假设所有 /Videos/ 请求都可能是 strm，都先发给 pick_code 服务
-        # 如果 pick_code 服务处理不了（比如返回 404），我们再把它转发给 emby
-        error_page 404 = @fallback_to_emby;
-        proxy_pass http://pick_code_resolver;
-    }
-    
-    location @fallback_to_emby {
-        proxy_pass http://emby_server;
-    }
-
-    # 规则 1：【虚拟库】
-    # 为了避免与真实 Emby 的 API 冲突，我们只拦截最关键的 /Views 和 /Items?ParentId=-...
-    # 获取媒体库列表
+    # 规则 1：拦截“获取媒体库列表”的请求 (这个之前就对了)
     location ~ /emby/Users/([a-f0-9]+)/Views {
         proxy_pass http://virtual_library_proxy;
     }
-    # 获取虚拟库内容
+
+    # ★★★ 规则 2：【新增的关键规则】拦截“获取库内容”的请求 ★★★
+    # 这是我们之前一直缺失的规则！
     location ~ /emby/Users/([a-f0-9]+)/Items$ {
+        # 检查 URL 参数中是否包含 ParentId=-xxxxx
         if ($arg_ParentId ~ ^-\d+$) {
+            # 如果是，就转发给 Python 代理
             proxy_pass http://virtual_library_proxy;
         }
-        # 如果不是虚拟库，则交由下面的兜底规则处理
+        # 如果不是，就执行默认行为，转发给真实 Emby
         proxy_pass http://emby_server;
     }
-    # 获取虚拟库图片等
+
+    # 规则 3：拦截所有路径中包含虚拟ID的请求 (例如获取图片)
     location ~ /(emby/Users/[^/]+/Items|emby/Items)/-(\d+) {
         proxy_pass http://virtual_library_proxy;
     }
 
-    # 规则 2：【兜底规则】
-    # 所有其他请求，都默认访问真实 Emby
+    # 规则 4：拦截虚拟库内的“元数据筛选”和“最新添加”请求
+    location ~ /Items/(Prefixes|Genres|Studios|Tags|OfficialRatings|Years|Latest)$ {
+        if ($arg_ParentId ~ ^-\d+$) {
+            proxy_pass http://virtual_library_proxy;
+        }
+        if ($arg_customViewId ~ ^-\d+$) {
+            proxy_pass http://virtual_library_proxy;
+        }
+        proxy_pass http://emby_server;
+    }
+
+    # 规则 5: WebSocket (保持不变)
+    location /embywebsocket {
+        proxy_pass http://emby_server;
+    }
+
+    # 兜底规则：转发所有其他请求到真实 Emby
     location / {
         proxy_pass http://emby_server;
     }
