@@ -280,13 +280,13 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"  -> 数据库查询阶段失败: {e}", exc_info=True)
 
-        logger.info(f"  -> 阶段一 (数据库) 完成：找到了 {len(ids_found_in_db)} 位演员的缓存信息。")
+        logger.info(f"  -> 从演员映射表找到了 {len(ids_found_in_db)} 位演员的信息。")
 
         # --- 阶段二：为未找到的演员实时查询 Emby API (这部分逻辑不变) ---
         ids_to_fetch_from_api = [pid for pid in original_actor_map.keys() if pid not in ids_found_in_db]
         
         if ids_to_fetch_from_api:
-            logger.info(f"  -> 阶段二 (API查询) 开始：为 {len(ids_to_fetch_from_api)} 位新演员实时获取信息...")
+            logger.info(f"  -> 开始为 {len(ids_to_fetch_from_api)} 位新演员从Emby获取信息...")
             for i, actor_id in enumerate(ids_to_fetch_from_api):
                 # ... (这里的 API 调用逻辑保持不变) ...
                 full_detail = emby_handler.get_emby_item_details(
@@ -303,7 +303,7 @@ class MediaProcessor:
                 else:
                     logger.warning(f"    未能从 API 获取到演员 ID {actor_id} 的 ProviderIds。")
         else:
-            logger.info("  -> 阶段二 (API查询) 跳过：所有演员均在本地数据库中找到。")
+            logger.trace("  -> (API查询) 跳过：所有演员均在本地数据库中找到。")
 
         # --- 阶段三：合并最终结果 (这部分逻辑不变) ---
         final_enriched_cast = []
@@ -743,7 +743,7 @@ class MediaProcessor:
                         user_id=self.emby_user_id
                     )
 
-                logger.info("  -> 演员(Person)元数据前置更新完成。")
+                logger.info("  -> 演员元数据更新完成。")
 
 
                 # --- 步骤 4.2: 核心更新 - 更新媒体项目自身的演员列表 (此部分逻辑不变) ---
@@ -1171,7 +1171,7 @@ class MediaProcessor:
         current_cast_list = list(final_cast_map.values())
 
         # ★★★ 在截断前进行一次全量反哺映射表 ★★★
-        logger.debug(f"  -> 截断前：将 {len(current_cast_list)} 位演员的完整映射关系反哺到数据库...")
+        logger.debug(f"  -> 截断前：将 {len(current_cast_list)} 位演员的完整映射关系反哺到演员映射表...")
         for actor_data in current_cast_list:
             self.actor_db_manager.upsert_person(
                 cursor,
