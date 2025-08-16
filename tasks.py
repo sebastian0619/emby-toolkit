@@ -1390,17 +1390,17 @@ def get_task_registry(context: str = 'all'):
         
         # --- 适合任务链的常规任务 ---
         'full-scan': (task_run_full_scan, "全量处理媒体", True),
-        'populate-metadata': (task_populate_metadata_cache, "同步媒体数据", True),
         'sync-person-map': (task_sync_person_map, "同步演员映射", True),
-        'sync-images-map': (task_full_image_sync, "覆盖缓存备份", True),
-        'process-watchlist': (task_process_watchlist, "智能追剧更新", True),
         'enrich-aliases': (task_enrich_aliases, "演员数据补充", True),
+        'populate-metadata': (task_populate_metadata_cache, "同步媒体数据", True),
+        'process-watchlist': (task_process_watchlist, "智能追剧更新", True),
         'actor-cleanup': (task_actor_translation_cleanup, "演员姓名翻译", True),
         'refresh-collections': (task_refresh_collections, "原生合集刷新", True),
         'custom-collections': (task_process_all_custom_collections, "自建合集刷新", True),
-        'auto-subscribe': (task_auto_subscribe, "智能订阅缺失", True),
         'actor-tracking': (task_process_actor_subscriptions, "演员订阅扫描", True),
         'generate-all-covers': (task_generate_all_covers, "生成所有封面", True),
+        'auto-subscribe': (task_auto_subscribe, "智能订阅缺失", True),
+        'sync-images-map': (task_full_image_sync, "覆盖缓存备份", True),
 
         # --- 不适合任务链的、需要特定参数的任务 ---
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", False),
