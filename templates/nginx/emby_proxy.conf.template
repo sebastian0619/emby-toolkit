@@ -9,70 +9,65 @@ upstream virtual_library_proxy {
     server {{ PROXY_UPSTREAM }};
 }
 
+# 3. 你的 pick_code 直链解析服务
+upstream pick_code_resolver {
+    # 【请务必确认】这里是你 pick_code 服务的地址和端口
+    server 192.168.31.177:9527;
+}
+
 server {
     listen {{ NGINX_LISTEN_PORT }};
     # 【请修改】这里填写你的域名或服务器IP
     server_name your.domain.com;
 
-    # --- 基础代理参数 ---
-    # 这些参数确保后端服务能正确获取客户端信息
+# --- 基础代理参数 (直接复制，不用修改) ---
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_http_version 1.1;
-
-    # --- WebSocket 专用参数 ---
-    # Emby 严重依赖 WebSocket 进行实时通信
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "Upgrade";
-
-    # 关闭缓冲对于媒体流和实时通信很重要
     proxy_buffering off;
 
     # ====================================================================
-    #  核心路由规则 (最终修正版)
+    #  核心路由规则 (简单直接版)
     # ====================================================================
 
-    # 规则 1：拦截“获取媒体库列表”的请求 (这个之前就对了)
+    # 规则 0：【strm 文件 302 反代】
+    location ~ /Videos/(.*)\.strm {
+        proxy_pass http://pick_code_resolver;
+        proxy_redirect off;
+        proxy_intercept_errors on;
+        error_page 301 302 307 = @handle_redirects;
+    }
+
+    location @handle_redirects {
+        set $redirect_uri $upstream_http_location;
+        return 302 $redirect_uri;
+    }
+
+    # 规则 1：【虚拟库】
+    # 为了避免与真实 Emby 的 API 冲突，我们只拦截最关键的 /Views 和 /Items?ParentId=-...
+    # 获取媒体库列表
     location ~ /emby/Users/([a-f0-9]+)/Views {
         proxy_pass http://virtual_library_proxy;
     }
-
-    # ★★★ 规则 2：【新增的关键规则】拦截“获取库内容”的请求 ★★★
-    # 这是我们之前一直缺失的规则！
+    # 获取虚拟库内容
     location ~ /emby/Users/([a-f0-9]+)/Items$ {
-        # 检查 URL 参数中是否包含 ParentId=-xxxxx
         if ($arg_ParentId ~ ^-\d+$) {
-            # 如果是，就转发给 Python 代理
             proxy_pass http://virtual_library_proxy;
         }
-        # 如果不是，就执行默认行为，转发给真实 Emby
+        # 如果不是虚拟库，则交由下面的兜底规则处理
         proxy_pass http://emby_server;
     }
-
-    # 规则 3：拦截所有路径中包含虚拟ID的请求 (例如获取图片)
+    # 获取虚拟库图片等
     location ~ /(emby/Users/[^/]+/Items|emby/Items)/-(\d+) {
         proxy_pass http://virtual_library_proxy;
     }
 
-    # 规则 4：拦截虚拟库内的“元数据筛选”和“最新添加”请求
-    location ~ /Items/(Prefixes|Genres|Studios|Tags|OfficialRatings|Years|Latest)$ {
-        if ($arg_ParentId ~ ^-\d+$) {
-            proxy_pass http://virtual_library_proxy;
-        }
-        if ($arg_customViewId ~ ^-\d+$) {
-            proxy_pass http://virtual_library_proxy;
-        }
-        proxy_pass http://emby_server;
-    }
-
-    # 规则 5: WebSocket (保持不变)
-    location /embywebsocket {
-        proxy_pass http://emby_server;
-    }
-
-    # 兜底规则：转发所有其他请求到真实 Emby
+    # 规则 2：【兜底规则】
+    # 所有其他请求，都默认访问真实 Emby
     location / {
         proxy_pass http://emby_server;
     }
