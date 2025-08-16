@@ -1506,53 +1506,40 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                 
                 emby_collection_id, tmdb_ids_in_library = result_tuple
 
+                
+
                 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                 # ★★★ 核心改造：在这里执行完整的健康状态分析和数据准备 ★★★
                 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                 update_data = {
                     "emby_collection_id": emby_collection_id,
-                    # ★ item_type 现在从 definition 中获取，并存为JSON字符串
                     "item_type": json.dumps(definition.get('item_type', ['Movie'])),
                     "last_synced_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 }
 
-                if not emby_collection_id:
-                    logger.warning(f"合集 '{collection_name}' 未能在Emby中创建，跳过分析。")
-                elif collection_type == 'list':
-
-                    # ▼▼▼ 核心修正点 ▼▼▼
-                    # 在分析前，加载当前已存在的媒体状态信息，以便保留 'subscribed' 状态
+                if collection_type == 'list':
                     previous_media_map = {}
                     try:
-                        # collection 对象是从数据库循环中得到的，它包含了旧的JSON数据
                         previous_media_list = json.loads(collection.get('generated_media_info_json') or '[]')
                         previous_media_map = {str(m.get('tmdb_id')): m for m in previous_media_list}
                     except (json.JSONDecodeError, TypeError):
-                        logger.warning(f"解析合集 {collection_name} 的旧媒体JSON失败，将无法保留'subscribed'状态。")
+                        logger.warning(f"解析合集 {collection_name} 的旧媒体JSON失败...")
 
-                    # 对榜单类型进行详细分析
                     existing_tmdb_ids = set(map(str, tmdb_ids_in_library))
-                    emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-                    image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
+                    image_tag = None
+                    if emby_collection_id: # 只有当合集存在时才去获取封面信息
+                        emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                        image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
                     
                     all_media_details = []
                     with ThreadPoolExecutor(max_workers=5) as executor:
-                        future_to_item = {}
-                        for item in tmdb_items:
-                            if item['type'] == 'Series':
-                                future = executor.submit(tmdb_handler.get_tv_details_tmdb, item['id'], processor.tmdb_api_key)
-                            else: # 默认为 Movie
-                                future = executor.submit(tmdb_handler.get_movie_details, item['id'], processor.tmdb_api_key)
-                            future_to_item[future] = item
-
+                        future_to_item = {executor.submit(tmdb_handler.get_movie_details if item['type'] != 'Series' else tmdb_handler.get_tv_details_tmdb, item['id'], processor.tmdb_api_key): item for item in tmdb_items}
                         for future in concurrent.futures.as_completed(future_to_item):
-                            item_info = future_to_item[future]
                             try:
                                 detail = future.result()
-                                if detail:
-                                    all_media_details.append(detail)
+                                if detail: all_media_details.append(detail)
                             except Exception as exc:
-                                logger.error(f"获取 TMDb 详情 (ID: {item_info['id']}, Type: {item_info['type']}) 时线程内发生错误: {exc}")
+                                logger.error(f"获取TMDb详情时线程内出错: {exc}")
                     
                     all_media_with_status, has_missing, missing_count = [], False, 0
                     today_str = datetime.now().strftime('%Y-%m-%d')
@@ -1561,15 +1548,10 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                         media_tmdb_id = str(media.get("id"))
                         release_date = media.get("release_date") or media.get("first_air_date", '')
                         
-                        # ▼▼▼ 核心修正点：修正状态判断的优先级 ▼▼▼
-                        if media_tmdb_id in existing_tmdb_ids:
-                            status = "in_library"
-                        elif previous_media_map.get(media_tmdb_id, {}).get('status') == 'subscribed':
-                            status = "subscribed" # 优先保留已订阅状态
-                        elif release_date and release_date > today_str:
-                            status = "unreleased"
-                        else:
-                            status, has_missing, missing_count = "missing", True, missing_count + 1
+                        if media_tmdb_id in existing_tmdb_ids: status = "in_library"
+                        elif previous_media_map.get(media_tmdb_id, {}).get('status') == 'subscribed': status = "subscribed"
+                        elif release_date and release_date > today_str: status = "unreleased"
+                        else: status, has_missing, missing_count = "missing", True, missing_count + 1
                         
                         all_media_with_status.append({
                             "tmdb_id": media_tmdb_id, "title": media.get("title") or media.get("name"),
@@ -1580,15 +1562,17 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                         "health_status": "has_missing" if has_missing else "ok",
                         "in_library_count": len(existing_tmdb_ids), "missing_count": missing_count,
                         "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False),
-                        "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
+                        "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag and emby_collection_id else None
                     })
-                else: # 对于 'filter' 类型，写入默认的健康状态
+                
+                # 对于 'filter' 类型，逻辑保持不变
+                else: 
                     update_data.update({
                         "health_status": "ok", "in_library_count": len(tmdb_ids_in_library),
                         "missing_count": 0, "generated_media_info_json": '[]', "poster_path": None
                     })
                 
-                # 3c. ★★★ 核心改造：调用新的、功能更全的数据库更新函数 ★★★
+                # 统一将包含完整分析结果的数据写入数据库
                 db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, collection_id, update_data)
                 logger.info(f"  -> ✅ 合集 '{collection_name}' 处理完成，并已更新数据库状态。")
 
@@ -1720,110 +1704,75 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         
         emby_collection_id, tmdb_ids_in_library = result_tuple
 
-        if not emby_collection_id:
-            logger.warning(f"合集 '{collection_name}' 未能在Emby中创建（可能无匹配项），跳过缺失分析。")
-            db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, custom_collection_id, {"emby_collection_id": emby_collection_id})
-            task_manager.update_status_from_thread(100, "任务完成，未在Emby中创建合集。")
-            return
-
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        # ★★★ 核心改造：分析合集状态并准备写入 custom_collections 表 ★★★
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        
         update_data = {
             "emby_collection_id": emby_collection_id,
-            # ★ item_type 现在从 definition 中获取，因为它可能是个列表
             "item_type": json.dumps(definition.get('item_type', ['Movie'])),
             "last_synced_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
 
-        # 只有 'list' 类型的合集才需要进行详细的缺失分析
+        # ★★★ 核心修正：对 list 类型合集，无条件执行健康分析 ★★★
         if collection_type == 'list':
-            task_manager.update_status_from_thread(90, "榜单合集已生成/更新，正在并行获取详情...")
+            task_manager.update_status_from_thread(90, "榜单合集已同步，正在并行获取详情...")
             
-            # ▼▼▼ 核心修正点 ▼▼▼
-            # 在分析前，加载当前已存在的媒体状态信息
+            # ... (这部分健康分析的详细代码保持不变) ...
             previous_media_map = {}
             try:
-                # collection 对象是从数据库里读出来的，它包含了旧的JSON数据
                 previous_media_list = json.loads(collection.get('generated_media_info_json') or '[]')
                 previous_media_map = {str(m.get('tmdb_id')): m for m in previous_media_list}
             except (json.JSONDecodeError, TypeError):
-                logger.warning(f"解析合集 {collection_name} 的旧媒体JSON失败，将无法保留'subscribed'状态。")
+                logger.warning(f"解析合集 {collection_name} 的旧媒体JSON失败...")
 
             existing_tmdb_ids = set(map(str, tmdb_ids_in_library))
             
-            emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-            image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
+            image_tag = None
+            if emby_collection_id: # 只有当合集存在时才去获取封面信息
+                emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
             
             all_media_details = []
             with ThreadPoolExecutor(max_workers=5) as executor:
-                future_to_item = {}
-                for item in tmdb_items:
-                    if item['type'] == 'Series':
-                        future = executor.submit(tmdb_handler.get_tv_details_tmdb, item['id'], processor.tmdb_api_key)
-                    else: # 默认为 Movie
-                        future = executor.submit(tmdb_handler.get_movie_details, item['id'], processor.tmdb_api_key)
-                    future_to_item[future] = item
-
+                future_to_item = {executor.submit(tmdb_handler.get_movie_details if item['type'] != 'Series' else tmdb_handler.get_tv_details_tmdb, item['id'], processor.tmdb_api_key): item for item in tmdb_items}
                 for future in concurrent.futures.as_completed(future_to_item):
-                    item_info = future_to_item[future]
                     try:
                         detail = future.result()
-                        if detail:
-                            all_media_details.append(detail)
+                        if detail: all_media_details.append(detail)
                     except Exception as exc:
-                        logger.error(f"获取 TMDb 详情 (ID: {item_info['id']}, Type: {item_info['type']}) 时线程内发生错误: {exc}")
+                        logger.error(f"获取TMDb详情时线程内出错: {exc}")
             
             all_media_with_status, has_missing, missing_count = [], False, 0
             today_str = datetime.now().strftime('%Y-%m-%d')
             for media in all_media_details:
                 if not media: continue
                 media_tmdb_id = str(media.get("id"))
-                media_status = "unknown"
                 release_date = media.get("release_date") or media.get("first_air_date", '')
             
-                # ▼▼▼ 核心修正点：修正状态判断的优先级，并移除重复逻辑 ▼▼▼
-                # 1. 检查是否在库
-                if media_tmdb_id in existing_tmdb_ids:
-                    media_status = "in_library"
-                # 2. 如果不在库，检查之前是否为“已订阅”
-                elif previous_media_map.get(media_tmdb_id, {}).get('status') == 'subscribed':
-                    media_status = "subscribed"  # 保留已订阅状态！
-                # 3. 如果也不是已订阅，检查是否“未上映”
-                elif release_date and release_date > today_str:
-                    media_status = "unreleased"
-                # 4. 都不是，则为“缺失”
-                else:
-                    media_status, has_missing, missing_count = "missing", True, missing_count + 1
+                if media_tmdb_id in existing_tmdb_ids: media_status = "in_library"
+                elif previous_media_map.get(media_tmdb_id, {}).get('status') == 'subscribed': media_status = "subscribed"
+                elif release_date and release_date > today_str: media_status = "unreleased"
+                else: media_status, has_missing, missing_count = "missing", True, missing_count + 1
                 
                 all_media_with_status.append({
-                    "tmdb_id": media_tmdb_id, 
-                    "title": media.get("title") or media.get("name"),
-                    "release_date": release_date, 
-                    "poster_path": media.get("poster_path"),
-                    "status": media_status
+                    "tmdb_id": media_tmdb_id, "title": media.get("title") or media.get("name"),
+                    "release_date": release_date, "poster_path": media.get("poster_path"), "status": media_status
                 })
 
             update_data.update({
                 "health_status": "has_missing" if has_missing else "ok",
-                "in_library_count": len(existing_tmdb_ids),
-                "missing_count": missing_count,
+                "in_library_count": len(existing_tmdb_ids), "missing_count": missing_count,
                 "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False),
-                "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
+                "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag and emby_collection_id else None
             })
             logger.info(f"已为RSS合集 '{collection_name}' 分析健康状态。")
-        else: # 对于 'filter' 类型
+        
+        # 对于 'filter' 类型，逻辑保持不变
+        else: 
             task_manager.update_status_from_thread(95, "筛选合集已生成，跳过缺失分析。")
             update_data.update({
-                "health_status": "ok",
-                "in_library_count": len(tmdb_ids_in_library),
-                "missing_count": 0,
-                "generated_media_info_json": '[]',
-                "poster_path": None
+                "health_status": "ok", "in_library_count": len(tmdb_ids_in_library),
+                "missing_count": 0, "generated_media_info_json": '[]', "poster_path": None
             })
 
-        # --- 步骤 3: 统一更新数据库 ---
+        # 统一将包含完整分析结果的数据写入数据库
         db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, custom_collection_id, update_data)
         logger.info(f"  -> 已更新自定义合集 '{collection_name}' (ID: {custom_collection_id}) 的同步状态和健康信息。")
 

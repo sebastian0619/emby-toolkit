@@ -928,7 +928,7 @@ const columns = [
   {
     title: '健康检查', key: 'health_check', width: 150,
     render(row) {
-      if (row.type !== 'list' || !row.emby_collection_id) {
+      if (row.type !== 'list') {
         return h(NText, { depth: 3 }, { default: () => 'N/A' });
       }
       const missingText = row.missing_count > 0 ? ` (${row.missing_count}缺失)` : '';
