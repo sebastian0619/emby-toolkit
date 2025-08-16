@@ -97,6 +97,19 @@
               请输入一个有效的RSS订阅源地址。
               </template>
           </n-form-item>
+          <!-- ★★★ 数量限制输入框 ★★★ -->
+          <n-form-item label="数量限制" path="definition.limit">
+            <n-input-number 
+              v-model:value="currentCollection.definition.limit" 
+              placeholder="0或留空表示不限制" 
+              :min="0" 
+              clearable 
+              style="width: 100%;"
+            />
+            <template #feedback>
+              仅导入榜单中的前 N 个项目，例如：输入 50 表示只处理 TOP 50。
+            </template>
+          </n-form-item>
         </div>
 
         <!-- 筛选规则 (Filter) 类型的表单 -->
@@ -450,6 +463,7 @@ const getInitialFormModel = () => ({
   definition: {
     item_type: ['Movie'],
     url: '',
+    limit: null,
     default_sort_by: 'none',
     default_sort_order: 'Ascending' 
   }
@@ -471,7 +485,7 @@ watch(() => currentCollection.value.type, (newType) => {
     currentCollection.value.definition = { 
       item_type: ['Movie'], // 注意这里也改成了数组
       url: '',
-      // ★★★ 新增：为榜单类型也初始化排序字段 ★★★
+      limit: null,
       default_sort_by: 'none',
       default_sort_order: 'Ascending'
     };

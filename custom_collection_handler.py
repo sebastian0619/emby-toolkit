@@ -120,6 +120,7 @@ class ListImporter:
         """
         url = definition.get('url')
         item_types = definition.get('item_type', ['Movie'])
+        limit = definition.get('limit')
         if isinstance(item_types, str):
             item_types = [item_types]
 
@@ -130,6 +131,10 @@ class ListImporter:
         if not titles:
             return []
 
+        if limit and isinstance(limit, int) and limit > 0:
+            logger.info(f"  -> RSS榜单已启用数量限制，将只处理前 {limit} 个项目。")
+            titles = titles[:limit]
+        
         tmdb_items = []
         
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
