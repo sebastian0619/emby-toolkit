@@ -64,7 +64,7 @@ server {
         set $item_id $1;
 
         # b. 构造一个指向 Emby API 的查询 URL
-        proxy_pass http://emby_server/Items/$item_id/PlaybackInfo?api_key=你的EmbyAPIKey;
+        proxy_pass http://192.168.31.163/Items/$item_id/PlaybackInfo?api_key=78171696a78d4be48cf82de09b303256;
 
         # c. 优化请求
         proxy_pass_request_body off;
