@@ -171,7 +171,7 @@ class ActorDBManager:
             found_by_name = cursor.fetchone()
 
             if found_by_name:
-                logger.debug(f"未通过ID找到匹配，但通过名字 '{new_data['primary_name']}' 找到候选记录 (map_id: {found_by_name['map_id']})。")
+                logger.trace(f"未通过ID找到匹配，但通过名字 '{new_data['primary_name']}' 找到候选记录 (map_id: {found_by_name['map_id']})。")
                 
                 # --- 关键安全检查：检查ID是否冲突 ---
                 is_safe_to_merge = True
@@ -186,7 +186,7 @@ class ActorDBManager:
                         break
                 
                 if is_safe_to_merge:
-                    logger.debug("安全检查通过，确认为同一个人，准备合并。")
+                    logger.trace("安全检查通过，确认为同一个人，准备合并。")
                     existing_record = dict(found_by_name)
 
         # ======================================================================
@@ -211,7 +211,7 @@ class ActorDBManager:
                 return existing_record['map_id']
             else:
                 # --- 创建新记录 ---
-                logger.debug(f"未找到任何可安全合并的记录，为 '{new_data['primary_name']}' 创建新条目。")
+                logger.trace(f"未找到任何可安全合并的记录，为 '{new_data['primary_name']}' 创建新条目。")
                 cols_to_insert = list(new_data.keys())
                 vals_to_insert = list(new_data.values())
 
