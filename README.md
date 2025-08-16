@@ -53,7 +53,7 @@
         container_name: emby-toolkit
         network_mode: bridge
         ports:
-          - "8096:8096"                               # 反代端口
+          - "8097:8097"                               # 反代端口，虚拟库用，冒号前面是实际访问端口，冒号后面是管理后台设置的反代监听端口
           - "5257:5257"                               # 管理端口
         volumes:
           - /path/config:/config                      # 将宿主机的数据目录挂载到容器的 /config 目录
