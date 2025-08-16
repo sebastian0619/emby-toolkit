@@ -36,11 +36,11 @@ def subscribe_movie_to_moviepilot(movie_info: dict, config: Dict[str, Any]) -> b
             "type": "电影"
         }
         
-        logger.info(f"【MoviePilot】正在提交电影任务: '{movie_info['title']}'")
+        logger.info(f"  -> 正在向 MoviePilot 提交订阅: '{movie_info['title']}'")
         sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
         
         if sub_response.status_code in [200, 201, 204]:
-            logger.info(f"  -> 成功！MoviePilot 已接受订阅任务。")
+            logger.info(f"  -> ✅ MoviePilot 已接受订阅任务。")
             return True
         else:
             logger.error(f"  -> 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
@@ -93,7 +93,7 @@ def subscribe_series_to_moviepilot(series_info: dict, season_number: int, config
             subscribe_payload["season"] = season_number
         
         # 使用获取到的 series_title 进行日志记录
-        logger.info(f"  -> 正在向 MoviePilot 提交订阅: '{series_title}'" + (f" 第 {season_number} 季" if season_number is not None else " 任务"))
+        logger.info(f"  -> 正在向 MoviePilot 提交订阅: '{series_title}'" + (f" 第 {season_number} 季" if season_number is not None else ""))
         sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
         
         if sub_response.status_code in [200, 201, 204]:
