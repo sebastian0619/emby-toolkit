@@ -98,6 +98,9 @@ RUN chmod +x /entrypoint.sh && \
     groupadd -r embyactor -g 918 && \
     useradd -r embyactor -g embyactor -d ${HOME} -s /bin/bash -u 918
 
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
+  CMD curl -f http://localhost:5257/api/health || exit 1    
+
 # 声明数据卷、端口和入口点 (保持不变)
 VOLUME [ "${CONFIG_DIR}" ]
 EXPOSE 5257

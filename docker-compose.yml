@@ -27,7 +27,8 @@ services:
     volumes:
       - ./local_data/nginx/conf.d:/etc/nginx/conf.d
     depends_on:
-      - emby-toolkit
+      emby-toolkit:
+        condition: service_healthy
     networks:
       - emby-net
 
