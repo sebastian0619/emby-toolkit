@@ -503,7 +503,7 @@ def ensure_nginx_config():
 
         # 3. 准备替换值 (逻辑不变)
         emby_upstream = emby_url.replace("http://", "").replace("https://", "").rstrip('/')
-        proxy_upstream = "emby-:8098"
+        proxy_upstream = "emby-toolkit:8098"
 
         if not emby_upstream:
             logger.error("config.ini 中未配置 Emby 服务器地址，无法生成 Nginx 配置！")
@@ -581,6 +581,12 @@ def application_exit_handler():
     
     logger.info("atexit 清理操作执行完毕。")
 atexit.register(application_exit_handler)
+
+# --- 反代监控 ---
+@app.route('/api/health')
+def health_check():
+    """一个简单的健康检查端点，用于 Docker healthcheck。"""
+    return jsonify({"status": "ok"}), 200
 
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
