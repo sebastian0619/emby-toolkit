@@ -344,7 +344,7 @@ def create_style_multi_1(library_dir, title, font_path, font_size=(1,1), is_blur
         if config and config.get("show_item_count", False) and item_count is not None:
             result = result.convert('RGBA')
             result = draw_badge(
-                image=result, item_count=item_count, font_path=en_font_path,
+                image=result, item_count=item_count, font_path=zh_font_path,
                 style=config.get('badge_style', 'badge'),
                 size_ratio=config.get('badge_size_ratio', 0.12),
                 base_color=base_color_for_badge

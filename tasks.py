@@ -1416,6 +1416,7 @@ def get_task_registry(context: str = 'all'):
     return {key: (info[0], info[1]) for key, info in full_registry.items()}
 
 # ★★★ 一键生成所有合集的后台任务，核心优化在于只获取一次Emby媒体库 ★★★
+# ★★★ 一键生成所有合集的后台任务，核心优化在于只获取一次Emby媒体库 ★★★
 def task_process_all_custom_collections(processor: MediaProcessor):
     """
     【V3 - 终极完整版】处理所有已启用的自定义合集。
@@ -1633,8 +1634,12 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                         )
                         
                         if library_info:
-                            # 从数据库记录中获取已入库和缺失的数量
+                            # 从数据库记录中获取已入库的数量
                             item_count_to_pass = collection.get('in_library_count', 0)
+                            # ★★★ 新增逻辑：如果合集类型是榜单，则替换数字为文字 ★★★
+                            if collection.get('type') == 'list':
+                                item_count_to_pass = '榜单'
+                            
                             cover_service.generate_for_library(
                                 emby_server_id=server_id,
                                 library=library_info,
@@ -1858,6 +1863,11 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                         
                         # 同样，我们只关心已入库的数量
                         item_count_to_pass = in_library_count
+
+                        # ★★★ 新增逻辑：如果合集类型是榜单，则替换数字为文字 ★★★
+                        # collection_type 变量在函数开头已经定义
+                        if collection_type == 'list':
+                            item_count_to_pass = '榜单'
 
                         cover_service.generate_for_library(
                             emby_server_id=server_id,
