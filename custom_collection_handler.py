@@ -105,7 +105,7 @@ class ListImporter:
             if series_details and 'seasons' in series_details:
                 for season in series_details['seasons']:
                     if season.get('season_number') == season_number_to_validate:
-                        logger.info(f"验证成功！剧集 '{show_name}' 存在第 {season_number_to_validate} 季。最终匹配ID为 {series_id}。")
+                        logger.info(f"  -> 剧集 '{show_name}' 存在第 {season_number_to_validate} 季。最终匹配ID为 {series_id}。")
                         return series_id # 验证成功，返回剧集主ID
             
             logger.warning(f"验证失败！剧集 '{show_name}' (ID: {series_id}) 存在，但未找到第 {season_number_to_validate} 季。")
@@ -157,7 +157,7 @@ class ListImporter:
                 if result:
                     tmdb_items.append(result)
 
-        logger.info(f"RSS匹配完成，成功获得 {len(tmdb_items)} 个TMDb项目。")
+        logger.info(f"  -> RSS匹配完成，成功获得 {len(tmdb_items)} 个TMDb项目。")
         # 去重逻辑保持不变
         unique_items = list({f"{item['type']}-{item['id']}": item for item in tmdb_items}.values())
         return unique_items
