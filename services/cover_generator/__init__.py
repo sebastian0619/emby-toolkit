@@ -88,7 +88,7 @@ class CoverGeneratorService:
         # 3. 上传封面到媒体服务器
         success = self.__set_library_image(emby_server_id, library, image_data)
         if success:
-            logger.info(f"  -> 成功更新媒体库 '{library['Name']}' 的封面！")
+            logger.info(f"  -> ✅ 成功更新媒体库 '{library['Name']}' 的封面！")
         else:
             logger.error(f"上传封面到媒体库 '{library['Name']}' 失败。")
             

@@ -1589,7 +1589,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                 
                 # 3c. ★★★ 核心改造：调用新的、功能更全的数据库更新函数 ★★★
                 db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, collection_id, update_data)
-                logger.info(f"  -> 合集 '{collection_name}' 处理完成，并已更新数据库状态。")
+                logger.info(f"  -> ✅ 合集 '{collection_name}' 处理完成，并已更新数据库状态。")
 
             except Exception as e_coll:
                 logger.error(f"处理合集 '{collection_name}' (ID: {collection_id}) 时发生错误: {e_coll}", exc_info=True)
