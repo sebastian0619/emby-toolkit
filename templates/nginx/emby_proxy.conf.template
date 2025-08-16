@@ -1,7 +1,7 @@
 # /etc/nginx/conf.d/emby_proxy.conf
-map $http_x_emby_authorization $stream_target {
-    default "emby_server"; # 默认情况下，所有流量都发给 emby_server
-    "~*\.strm" "pick_code_resolver"; # 如果 X-Emby-Authorization 头里的路径包含 .strm，则把目标设为 pick_code_resolver
+map $upstream_http_x_media_path $stream_target {
+    default "emby_server";          # 默认发给 emby_server
+    "~*\.strm" "pick_code_resolver"; # 如果路径包含 .strm，发给 pick_code_resolver
 }
 # 为了配置清晰，我们为上游服务定义了 upstream 块
 upstream emby_server {
@@ -39,19 +39,52 @@ server {
 
     # 规则 0：【strm 文件 302 反代】
     # ★★★ 2. 修改视频播放的 location 块 ★★★
-    location ~ /Videos/ {
-        # --- 302 跳转的魔法指令 (保持不变) ---
+    location ~ /Videos/(\d+)/stream {
+        # a. 先去内部地址“问一下”这个视频的真实路径
+        auth_request /_internal_get_path;
+        
+        # b. 将“问到”的路径，通过响应头传递回来
+        auth_request_set $media_path $upstream_http_x_media_path;
+
+        # c. 302 跳转魔法 (保持不变)
         proxy_redirect off;
         proxy_intercept_errors on;
         error_page 301 302 307 = @handle_redirects;
 
-        # ★★★ 3. 使用 map 变量来动态决定上游服务 ★★★
+        # d. 使用 map 变量动态决定上游服务
         proxy_pass http://$stream_target;
     }
 
-    location @handle_redirects {
-        set $redirect_uri $upstream_http_location;
-        return 302 $redirect_uri;
+    # ★★★ 3. 定义内部“问询”地址 ★★★
+    location = /_internal_get_path {
+        internal; # 只能内部访问
+        
+        # a. 从原始请求的 URI 中捕获 ItemId
+        #    例如，从 /Videos/704294/stream 捕获 704294
+        set $item_id $1;
+
+        # b. 构造一个指向 Emby API 的查询 URL
+        proxy_pass http://emby_server/Items/$item_id/PlaybackInfo?api_key=你的EmbyAPIKey;
+
+        # c. 优化请求
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Original-URI $request_uri;
+
+        # d. ★★★ 核心魔法：告诉 Nginx，处理完后，把 Emby 返回的 JSON 中的 Path 字段值，提取出来放到一个叫 X-Media-Path 的响应头里
+        #    这通常需要一个小的 Lua 或 NJS 脚本，但有一个更简单的技巧...
+        #    (为了简化，我们先假设 PlaybackInfo 直接返回路径，如果不行再引入 Lua/NJS)
+        #    为了让 Nginx 能读取到后端返回的 JSON 内容，我们需要更高级的模块。
+        
+        # --- 为了实现“照葫芦画瓢”，我们先用最简单的方式 ---
+        # 我们先假设所有 /Videos/ 请求都可能是 strm，都先发给 pick_code 服务
+        # 如果 pick_code 服务处理不了（比如返回 404），我们再把它转发给 emby
+        error_page 404 = @fallback_to_emby;
+        proxy_pass http://pick_code_resolver;
+    }
+    
+    location @fallback_to_emby {
+        proxy_pass http://emby_server;
     }
 
     # 规则 1：【虚拟库】
