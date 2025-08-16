@@ -1324,7 +1324,10 @@ class MediaProcessor:
         
         # 5.2: 正常调用格式化函数 (黑盒)
         logger.trace("调用 actor_utils.format_and_complete_cast_list 进行格式化...")
-        is_animation = "Animation" in item_details_from_emby.get("Genres", [])
+        
+        genres = item_details_from_emby.get("Genres", [])
+        is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
+        
         final_cast_perfect = actor_utils.format_and_complete_cast_list(
             cast_to_process, is_animation, self.config, mode='auto'
         )
