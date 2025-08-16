@@ -1,5 +1,8 @@
 # /etc/nginx/conf.d/emby_proxy.conf
-
+map $http_x_emby_authorization $stream_target {
+    default "emby_server"; # 默认情况下，所有流量都发给 emby_server
+    "~*\.strm" "pick_code_resolver"; # 如果 X-Emby-Authorization 头里的路径包含 .strm，则把目标设为 pick_code_resolver
+}
 # 为了配置清晰，我们为上游服务定义了 upstream 块
 upstream emby_server {
     server {{ EMBY_UPSTREAM }};
@@ -35,11 +38,15 @@ server {
     # ====================================================================
 
     # 规则 0：【strm 文件 302 反代】
-    location ~ /Videos/(.*)\.strm {
-        proxy_pass http://pick_code_resolver;
+    # ★★★ 2. 修改视频播放的 location 块 ★★★
+    location ~ /Videos/ {
+        # --- 302 跳转的魔法指令 (保持不变) ---
         proxy_redirect off;
         proxy_intercept_errors on;
         error_page 301 302 307 = @handle_redirects;
+
+        # ★★★ 3. 使用 map 变量来动态决定上游服务 ★★★
+        proxy_pass http://$stream_target;
     }
 
     location @handle_redirects {
