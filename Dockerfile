@@ -2,16 +2,23 @@
 FROM node:20-alpine AS frontend-build
 WORKDIR /app/emby-actor-ui
 
-# 复制前端源码并构建（合并多个操作到单个RUN层）
-COPY emby-actor-ui/ ./
+# 1. 仅复制 package.json 和 lock 文件
+COPY emby-actor-ui/package*.json ./
+
+# 2. 安装依赖。这一层只有在 package.json 变动时才会重新运行
 RUN npm cache clean --force && \
-    npm install --no-fund --verbose --legacy-peer-deps && \
-    npm run build
+    npm install --no-fund --verbose --legacy-peer-deps
+
+# 3. 复制所有前端源码
+COPY emby-actor-ui/ ./
+
+# 4. 构建前端。这一层只有在前端源码变动时才会重新运行
+RUN npm run build
 
 # --- 阶段 2: 构建最终的生产镜像 ---
 FROM python:3.11-slim
 
-# 设置环境变量
+# 设置环境变量 (保持不变)
 ENV LANG="C.UTF-8" \
     TZ="Asia/Shanghai" \
     HOME="/embyactor" \
@@ -24,7 +31,7 @@ ENV LANG="C.UTF-8" \
 
 WORKDIR /app
 
-# 安装必要的系统依赖和 Node.js
+# 1. 安装系统依赖。这一层很少变动，会长期被缓存。
 RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y \
@@ -43,9 +50,14 @@ RUN apt-get update && \
         /var/lib/apt/lists/* \
         /var/tmp/*
 
-# 复制所有应用文件（合并多个COPY操作）
-COPY requirements.txt \
-     web_app.py \
+# 2. 仅复制 Python 依赖文件
+COPY requirements.txt .
+
+# 3. 安装 Python 依赖。这一层只有在 requirements.txt 变动时才会重新运行
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 4. 复制所有应用文件。这是变动最频繁的部分，放在后面。
+COPY web_app.py \
      core_processor.py \
      douban.py \
      tmdb_handler.py \
@@ -77,20 +89,16 @@ COPY routes/ ./routes/
 COPY templates/ ./templates/
 COPY docker/entrypoint.sh /entrypoint.sh
 
-# 从前端构建阶段拷贝编译好的静态文件
+# 5. 从前端构建阶段拷贝编译好的静态文件
 COPY --from=frontend-build /app/emby-actor-ui/dist/. /app/static/
 
-# 安装Python依赖、设置权限、创建用户（合并多个RUN操作）
-RUN pip install --no-cache-dir -r requirements.txt && \
-    chmod +x /entrypoint.sh && \
+# 6. 设置权限和用户。这些操作依赖于被复制的文件，所以放在后面。
+RUN chmod +x /entrypoint.sh && \
     mkdir -p ${HOME} && \
     groupadd -r embyactor -g 918 && \
     useradd -r embyactor -g embyactor -d ${HOME} -s /bin/bash -u 918
 
-# 声明 /config 目录为数据卷
+# 声明数据卷、端口和入口点 (保持不变)
 VOLUME [ "${CONFIG_DIR}" ]
-
 EXPOSE 5257
-
-# 设置容器入口点
 ENTRYPOINT [ "/entrypoint.sh" ]
