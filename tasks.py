@@ -946,7 +946,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                 sql_query_native_movies = "SELECT * FROM collections_info WHERE status = 'has_missing' AND missing_movies_json IS NOT NULL AND missing_movies_json != '[]'"
                 cursor.execute(sql_query_native_movies)
                 native_collections_to_check = cursor.fetchall()
-                logger.info(f"【智能订阅-原生电影】找到 {len(native_collections_to_check)} 个有缺失影片的原生合集。")
+                logger.info(f"  -> 找到 {len(native_collections_to_check)} 个有缺失影片的原生合集。")
 
                 for collection in native_collections_to_check:
                     if processor.is_stop_requested(): break
@@ -991,7 +991,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                 task_manager.update_status_from_thread(60, "正在检查缺失的剧集...")
                 
                 sql_query = "SELECT * FROM watchlist WHERE status IN ('Watching', 'Paused') AND missing_info_json IS NOT NULL AND missing_info_json != '[]'"
-                logger.debug(f"【智能订阅-剧集】执行查询: {sql_query}")
+                logger.debug(f"  -> 剧集 执行查询: {sql_query}")
                 cursor.execute(sql_query)
                 series_to_check = cursor.fetchall()
                 
@@ -1001,14 +1001,14 @@ def task_auto_subscribe(processor: MediaProcessor):
                     if processor.is_stop_requested(): break
                     
                     series_name = series['item_name']
-                    logger.info(f"【智能订阅-剧集】>>> 正在检查: 《{series_name}》")
+                    logger.info(f"  -> 正在检查: 《{series_name}》")
                     
                     try:
                         missing_info = json.loads(series['missing_info_json'])
                         missing_seasons = missing_info.get('missing_seasons', [])
                         
                         if not missing_seasons:
-                            logger.info(f"【智能订阅-剧集】   -> 《{series_name}》没有记录在案的缺失季(missing_seasons为空)，跳过。")
+                            logger.info(f"  -> 《{series_name}》没有记录在案的缺失季(missing_seasons为空)，跳过。")
                             continue
 
                         seasons_to_keep = []
@@ -1022,36 +1022,36 @@ def task_auto_subscribe(processor: MediaProcessor):
                                 air_date_str = air_date_str.strip()
                             
                             if not air_date_str:
-                                logger.warning(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季缺少播出日期(air_date)，无法判断，跳过。")
+                                logger.warning(f"  -> 《{series_name}》第 {season_num} 季缺少播出日期(air_date)，无法判断，跳过。")
                                 seasons_to_keep.append(season)
                                 continue
                             
                             try:
                                 season_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
                             except (ValueError, TypeError):
-                                logger.warning(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季的播出日期 '{air_date_str}' 格式无效，跳过。")
+                                logger.warning(f"  -> 《{series_name}》第 {season_num} 季的播出日期 '{air_date_str}' 格式无效，跳过。")
                                 seasons_to_keep.append(season)
                                 continue
 
                             if season_date <= today:
-                                logger.info(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 已播出，符合订阅条件，正在提交...")
+                                logger.info(f"  -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 已播出，符合订阅条件，正在提交...")
                                 try:
                                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                                     # ★★★  核心修复：剧集订阅也需要传递 config_manager.APP_CONFIG！ ★★★
                                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                                     success = moviepilot_handler.subscribe_series_to_moviepilot(dict(series), season['season_number'], config_manager.APP_CONFIG)
                                     if success:
-                                        logger.info(f"【智能订阅-剧集】      -> 订阅成功！")
+                                        logger.info(f"  -> ✅ 订阅成功！")
                                         successfully_subscribed_items.append(f"《{series['item_name']}》第 {season['season_number']} 季")
                                         seasons_changed = True
                                     else:
-                                        logger.error(f"【智能订阅-剧集】      -> MoviePilot报告订阅失败！将保留在缺失列表中。")
+                                        logger.error(f"  -> MoviePilot报告订阅失败！将保留在缺失列表中。")
                                         seasons_to_keep.append(season)
                                 except Exception as e:
                                     logger.error(f"【智能订阅-剧集】      -> 提交订阅到MoviePilot时发生内部错误: {e}", exc_info=True)
                                     seasons_to_keep.append(season)
                             else:
-                                logger.info(f"【智能订阅-剧集】   -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 尚未播出，跳过订阅。")
+                                logger.info(f"  -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 尚未播出，跳过订阅。")
                                 seasons_to_keep.append(season)
                         
                         if seasons_changed:
@@ -1072,7 +1072,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                 """
                 cursor.execute(sql_query_custom_collections)
                 custom_collections_to_check = cursor.fetchall()
-                logger.info(f"【智能订阅-自定义榜单】找到 {len(custom_collections_to_check)} 个有缺失媒体的自定义榜单。")
+                logger.info(f"  -> 找到 {len(custom_collections_to_check)} 个有缺失媒体的自定义榜单。")
 
                 # 步骤 2: 统一循环处理
                 for collection in custom_collections_to_check:
@@ -1093,7 +1093,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                             authoritative_type = item_type_from_db
                         
                         if authoritative_type not in ['Movie', 'Series']:
-                            logger.warning(f"合集 '{collection_name}' 的 item_type ('{authoritative_type}') 无法识别，将默认按 'Movie' 处理。")
+                            logger.warning(f"  -> 合集 '{collection_name}' 的 item_type ('{authoritative_type}') 无法识别，将默认按 'Movie' 处理。")
                             authoritative_type = 'Movie'
 
                         # 步骤 2b: 遍历媒体列表，执行订阅
@@ -1147,12 +1147,12 @@ def task_auto_subscribe(processor: MediaProcessor):
                                 (new_missing_json, new_health_status, new_missing_count, collection_id)
                             )
                     except Exception as e_coll:
-                        logger.error(f"【智能订阅】处理自定义合集 '{collection_name}' 时发生错误: {e_coll}", exc_info=True)
+                        logger.error(f"  -> 处理自定义合集 '{collection_name}' 时发生错误: {e_coll}", exc_info=True)
 
             conn.commit()
 
         if successfully_subscribed_items:
-            summary = "任务完成！已自动订阅: " + ", ".join(successfully_subscribed_items)
+            summary = "  -> ✅ 任务完成！已自动订阅: " + ", ".join(successfully_subscribed_items)
             logger.info(summary)
             task_manager.update_status_from_thread(100, summary)
         else:
