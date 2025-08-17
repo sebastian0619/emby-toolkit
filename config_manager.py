@@ -58,8 +58,6 @@ CONFIG_DEFINITION = {
     constants.CONFIG_OPTION_PROXY_MERGE_NATIVE: (constants.CONFIG_SECTION_REVERSE_PROXY, 'boolean', True),
     constants.CONFIG_OPTION_PROXY_NATIVE_VIEW_SELECTION: (constants.CONFIG_SECTION_REVERSE_PROXY, 'list', []),
     constants.CONFIG_OPTION_PROXY_NATIVE_VIEW_ORDER: (constants.CONFIG_SECTION_REVERSE_PROXY, 'str', 'before'),
-    constants.CONFIG_OPTION_NGINX_CONTAINER_NAME: (constants.CONFIG_SECTION_REVERSE_PROXY, 'string', 'emby-proxy-nginx'),
-    constants.CONFIG_OPTION_NGINX_IMAGE_NAME: (constants.CONFIG_SECTION_REVERSE_PROXY, 'string', 'nginx:1.25-alpine'),
 
     # [TMDB]
     constants.CONFIG_OPTION_TMDB_API_KEY: (constants.CONFIG_SECTION_TMDB, 'string', ""),
@@ -152,36 +150,6 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
             app_cfg[key] = [item.strip() for item in value_str.split(',') if item.strip()]
         else: # string
             app_cfg[key] = config_parser.get(section, key, fallback=default)
-
-    # +++ 新增的核心修复逻辑：环境变量覆盖 START +++
-    # 在从文件加载完配置后，检查关键的环境变量，并用它们的值覆盖内存中的配置。
-    # 这确保了 docker-compose.yml 中的设置始终具有最高优先级。
-    
-    logger.debug("正在检查环境变量以覆盖配置...")
-    
-    # 检查主程序的容器名和镜像名
-    container_name_from_env = os.environ.get('CONTAINER_NAME')
-    if container_name_from_env:
-        app_cfg['container_name'] = container_name_from_env
-        logger.trace(f"  -> 已从环境变量加载 CONTAINER_NAME: {container_name_from_env}")
-
-    image_name_from_env = os.environ.get('DOCKER_IMAGE_NAME')
-    if image_name_from_env:
-        app_cfg['docker_image_name'] = image_name_from_env
-        logger.trace(f"  -> 已从环境变量加载 DOCKER_IMAGE_NAME: {image_name_from_env}")
-
-    # 检查 Nginx 的容器名和镜像名
-    nginx_container_name_from_env = os.environ.get('NGINX_CONTAINER_NAME')
-    if nginx_container_name_from_env:
-        app_cfg['nginx_container_name'] = nginx_container_name_from_env
-        logger.info(f"  -> 已从环境变量加载 NGINX_CONTAINER_NAME: {nginx_container_name_from_env}")
-
-    nginx_image_name_from_env = os.environ.get('NGINX_IMAGE_NAME')
-    if nginx_image_name_from_env:
-        app_cfg['nginx_image_name'] = nginx_image_name_from_env
-        logger.trace(f"  -> 已从环境变量加载 NGINX_IMAGE_NAME: {nginx_image_name_from_env}")
-        
-    # +++ 新增的核心修复逻辑：环境变量覆盖 END +++
 
     APP_CONFIG = app_cfg.copy()
     logger.info("全局配置 APP_CONFIG 已加载/更新。")

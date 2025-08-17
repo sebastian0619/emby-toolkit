@@ -224,8 +224,8 @@ def stream_update_progress():
             client = docker.from_env()
             container_name = config_manager.APP_CONFIG.get('container_name', 'emby-toolkit')
             image_name_tag = config_manager.APP_CONFIG.get('docker_image_name', 'hbq0405/emby-toolkit:latest')
-            nginx_container_name = config_manager.APP_CONFIG.get('nginx_container_name')
-            nginx_image_name = config_manager.APP_CONFIG.get('nginx_image_name')
+            nginx_container_name = os.environ.get('NGINX_CONTAINER_NAME', 'emby-proxy-nginx')
+            nginx_image_name = os.environ.get('NGINX_IMAGE_NAME', 'nginx:1.25-alpine')
 
 
             yield from send_event({"status": f"正在检查并拉取最新镜像: {image_name_tag}...", "layers": {}})
@@ -309,7 +309,6 @@ def stream_update_progress():
             if nginx_container_name and nginx_image_name:
                 yield from send_event({"status": f"正在检查并拉取 Nginx 镜像: {nginx_image_name}...", "layers": {}})
                 try:
-                    # 简单拉取，不显示详细进度
                     client.images.pull(nginx_image_name)
                     yield from send_event({"status": f"Nginx 镜像检查完成。"})
                 except Exception as e_nginx_pull:
@@ -324,24 +323,18 @@ def stream_update_progress():
 
             # --- 2. ★★★ 核心：召唤并启动“更新器容器” ★★★ ---
             yield from send_event({"status": "准备应用更新...", "progress": 70})
-
             try:
-                old_container = client.containers.get(container_name)
                 updater_image = "containrrr/watchtower"
                 
-                # +++ 核心修改点：动态构建要更新的容器列表 +++
                 command = [
                     "--cleanup",
                     "--run-once",
-                    container_name  # 1. 始终包含主程序
+                    container_name,
+                    nginx_container_name
                 ]
-                
-                # 2. 如果配置了 Nginx 容器名，也把它加进去
-                if nginx_container_name:
-                    command.append(nginx_container_name)
-                    logger.info(f"检测到关联的 Nginx 容器 '{nginx_container_name}'，将一并纳入更新流程。")
+                command = [c for c in command if c]
 
-                logger.info(f"正在应用更新，目标容器: {', '.join(command[3:])}...")
+                logger.info(f"正在应用更新，最终目标容器: {', '.join(command[2:])}...")
                 client.containers.run(
                     image=updater_image,
                     command=command,
