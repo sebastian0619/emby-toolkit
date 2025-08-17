@@ -791,6 +791,15 @@ class MediaProcessor:
                     new_rating=douban_rating
                 )
 
+                # +++ 对分集的处理 +++
+                if item_type == "Series" and update_success:
+                    logger.info(f"  -> 自动处理：开始为 '{item_name_for_log}' 批量同步所有分集的演员表...")
+                    self._batch_update_episodes_cast(
+                        series_id=item_id,
+                        series_name=item_name_for_log,
+                        final_cast_list=final_processed_cast 
+                    )
+
                 # ======================================================================
                 # ★★★★★★★★★★★★★★★ 阶段 5: 通知Emby刷新完成收尾 ★★★★★★★★★★★★★★★
                 # ======================================================================

@@ -240,7 +240,7 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
             logger.trace(f"  -> 链接现有演员 '{person_obj['Name']}' (ID: {person_obj['Id']})")
         else:
             # 2. 对于新演员：提供ProviderIds，帮助Emby创建。
-            logger.debug(f"  -> 添加新演员 '{person_obj['Name']}'")
+            logger.trace(f"  -> 添加新演员 '{person_obj['Name']}'")
             provider_ids = actor_entry.get("provider_ids")
             if isinstance(provider_ids, dict) and provider_ids:
                 sanitized_ids = {k: str(v) for k, v in provider_ids.items() if v is not None and str(v).strip()}
