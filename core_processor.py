@@ -288,17 +288,13 @@ class MediaProcessor:
         ids_to_fetch_from_api = [pid for pid in original_actor_map.keys() if pid not in ids_found_in_db]
         
         if ids_to_fetch_from_api:
-            logger.info(f"  -> 开始为 {len(ids_to_fetch_from_api)} 位新演员从Emby获取信息并【实时反哺】...")
+            logger.trace(f"  -> 开始为 {len(ids_to_fetch_from_api)} 位新演员从Emby获取信息并【实时反哺】...")
             
             with get_central_db_connection(self.db_path) as conn_upsert:
                 cursor_upsert = conn_upsert.cursor()
 
                 for i, actor_id in enumerate(ids_to_fetch_from_api):
                     
-                    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-                    # ★★★★★★★★★★★★★★★ 终极修正 ★★★★★★★★★★★★★★★
-                    # 恢复了所有缺失的参数，确保API调用是完整的
-                    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
                     full_detail = emby_handler.get_emby_item_details(
                         item_id=actor_id,
                         emby_server_url=self.emby_url,
@@ -306,7 +302,6 @@ class MediaProcessor:
                         user_id=self.emby_user_id,
                         fields="ProviderIds,Name"
                     )
-                    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
                     if full_detail and full_detail.get("ProviderIds"):
                         enriched_actor = original_actor_map[actor_id].copy()
@@ -316,10 +311,10 @@ class MediaProcessor:
                         provider_ids = full_detail["ProviderIds"]
                         
                         person_data_for_db = {
-                            "emby_id": actor_id,                      # <--- 修正于此！使用 emby_id
-                            "name": full_detail.get("Name"),          # <--- 修正于此！使用 name
-                            "tmdb_id": provider_ids.get("Tmdb"),      # <--- 修正于此！使用 tmdb_id
-                            "imdb_id": provider_ids.get("Imdb")       # imdb_id 恰好是一致的
+                            "emby_id": actor_id,                      
+                            "name": full_detail.get("Name"),          
+                            "tmdb_id": provider_ids.get("Tmdb"),      
+                            "imdb_id": provider_ids.get("Imdb")       
                         }
                         
                         self.actor_db_manager.upsert_person(
@@ -327,13 +322,13 @@ class MediaProcessor:
                             person_data=person_data_for_db
                         )
                         
-                        logger.debug(f"    -> [实时反哺] 已将演员 '{full_detail.get('Name')}' (ID: {actor_id}) 的新映射关系存入数据库。")
+                        logger.trace(f"    -> [实时反哺] 已将演员 '{full_detail.get('Name')}' (ID: {actor_id}) 的新映射关系存入数据库。")
                     else:
                         logger.warning(f"    未能从 API 获取到演员 ID {actor_id} 的 ProviderIds。")
                 
                 conn_upsert.commit()
         else:
-            logger.trace("  -> (API查询) 跳过：所有演员均在本地数据库中找到。")
+            logger.info("  -> (API查询) 跳过：所有演员均在本地数据库中找到。")
 
         # --- 阶段三：合并最终结果 ---
         final_enriched_cast = []
