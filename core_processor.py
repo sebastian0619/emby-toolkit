@@ -274,7 +274,6 @@ class MediaProcessor:
         if ids_to_fetch_from_api:
             logger.info(f"  -> 开始为 {len(ids_to_fetch_from_api)} 位新演员从Emby获取信息并【实时反哺】...")
             
-            # ★★★ 核心修改：在循环外获取一次数据库连接 ★★★
             with get_central_db_connection(self.db_path) as conn_upsert:
                 cursor_upsert = conn_upsert.cursor()
 
@@ -292,23 +291,30 @@ class MediaProcessor:
                         enriched_actor["ProviderIds"] = full_detail["ProviderIds"]
                         enriched_actors_map[actor_id] = enriched_actor
                         
-                        # ★★★ 2. 【新增】立即将新发现反哺到数据库 ★★★
+                        # 2. 【实时反哺】到数据库
                         provider_ids = full_detail["ProviderIds"]
+                        
+                        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+                        # ★★★★★★★★★★★★★★★ 核心修正点 ★★★★★★★★★★★★★★★
+                        # 将字典的键从 "emby_id" 改为 "emby_person_id"
+                        # 以匹配数据库列名和 upsert_person 函数的期望
+                        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
                         self.actor_db_manager.upsert_person(
                             cursor=cursor_upsert,
                             person_data={
-                                "emby_id": actor_id,
+                                "emby_person_id": actor_id, # <--- 修正于此！
                                 "name": full_detail.get("Name"),
                                 "tmdb_id": provider_ids.get("Tmdb"),
                                 "imdb_id": provider_ids.get("Imdb")
-                                # 如果有其他ID也可以在这里添加
                             }
                         )
+                        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+                        
                         logger.debug(f"    -> [实时反哺] 已将演员 '{full_detail.get('Name')}' (ID: {actor_id}) 的新映射关系存入数据库。")
                     else:
                         logger.warning(f"    未能从 API 获取到演员 ID {actor_id} 的 ProviderIds。")
                 
-                # ★★★ 3. 【新增】在循环结束后提交事务 ★★★
+                # 3. 提交事务
                 conn_upsert.commit()
         else:
             logger.trace("  -> (API查询) 跳过：所有演员均在本地数据库中找到。")
