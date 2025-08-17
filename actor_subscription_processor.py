@@ -14,6 +14,7 @@ import tmdb_handler
 import emby_handler
 from db_handler import get_db_connection
 import moviepilot_handler
+from config_manager import get_proxies_for_requests
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,7 @@ class ActorSubscriptionProcessor:
         为单个订阅ID执行全量作品扫描。
         现在可以接受一个可选的 session_subscribed_ids 集合来防止重复订阅。
         """
+        proxies = get_proxies_for_requests()
         # 如果是手动触发单个扫描（session_subscribed_ids 未提供），则创建一个临时的空集合
         if session_subscribed_ids is None:
             session_subscribed_ids = set()
@@ -143,7 +145,7 @@ class ActorSubscriptionProcessor:
 
                 old_tracked_media = self._get_existing_tracked_media(cursor, subscription_id)
                 
-                credits = tmdb_handler.get_person_credits_tmdb(sub['tmdb_person_id'], self.tmdb_api_key)
+                credits = tmdb_handler.get_person_credits_tmdb(sub['tmdb_person_id'], self.tmdb_api_key, proxies=proxies)
                 if self.is_stop_requested() or not credits: return
                 
                 all_works = credits.get('movie_credits', {}).get('cast', []) + credits.get('tv_credits', {}).get('cast', [])

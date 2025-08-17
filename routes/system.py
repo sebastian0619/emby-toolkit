@@ -4,9 +4,11 @@ from flask import Blueprint, jsonify, request, Response, stream_with_context
 import logging
 import json
 import re
+import requests
 import os
 import threading
 import docker
+from json import JSONDecodeError
 # 导入底层模块
 import task_manager
 from logger_setup import frontend_log_queue
@@ -91,6 +93,56 @@ def api_get_config():
         logger.error(f"API /api/config (GET) 获取配置时发生错误: {e}", exc_info=True)
         return jsonify({"error": "获取配置信息时发生服务器内部错误"}), 500
 
+# --- 代理测试 ---
+@system_bp.route('/proxy/test', methods=['POST'])
+def test_proxy_connection():
+    """
+    接收代理 URL，并从配置中读取 TMDB API Key，进行一个完整的连接和认证测试。
+    """
+    data = request.get_json()
+    proxy_url = data.get('url')
+
+    if not proxy_url:
+        return jsonify({"success": False, "message": "错误：未提供代理 URL。"}), 400
+
+    # ★★★ 1. 从全局配置中获取 TMDB API Key ★★★
+    tmdb_api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+
+    # 如果用户还没填 API Key，提前告知
+    if not tmdb_api_key:
+        return jsonify({"success": False, "message": "测试失败：请先在下方配置 TMDB API Key。"}), 400
+
+    test_target_url = "https://api.themoviedb.org/3/configuration"
+    proxies = {"http": proxy_url, "https": proxy_url}
+    
+    # ★★★ 2. 将 API Key 加入到请求参数中 ★★★
+    params = {"api_key": tmdb_api_key}
+
+    try:
+        response = requests.get(test_target_url, proxies=proxies, params=params, timeout=10)
+        
+        # ★★★ 3. 严格检查状态码，并对 401 给出特定提示 ★★★
+        response.raise_for_status() # 这会对所有非 2xx 的状态码抛出 HTTPError 异常
+        
+        # 如果代码能执行到这里，说明状态码是 200 OK
+        return jsonify({"success": True, "message": "代理和 API Key 均测试成功！"}), 200
+
+    except requests.exceptions.HTTPError as e:
+        # 专门捕获 HTTP 错误，并判断是否是 401
+        if e.response.status_code == 401:
+            return jsonify({"success": False, "message": "代理连接成功，但 TMDB API Key 无效或错误。"}), 401
+        else:
+            # 其他 HTTP 错误 (如 404, 500 等)
+            return jsonify({"success": False, "message": f"HTTP 错误: 代理连接成功，但 TMDB 返回了 {e.response.status_code} 状态码。"}), 500
+            
+    except requests.exceptions.ProxyError as e:
+        return jsonify({"success": False, "message": f"代理错误: {e}"}), 500
+    except requests.exceptions.ConnectTimeout:
+        return jsonify({"success": False, "message": "连接代理服务器超时，请检查地址和端口。"}), 500
+    except requests.exceptions.RequestException as e:
+        return jsonify({"success": False, "message": f"网络请求失败: {e}"}), 500
+    except Exception as e:
+        return jsonify({"success": False, "message": f"发生未知错误: {e}"}), 500
 
 # --- API 端点：保存配置 ---
 @system_bp.route('/config', methods=['POST'])
@@ -184,11 +236,13 @@ def get_about_info():
         # ★★★ 1. 从全局配置中获取 GitHub Token ★★★
         github_token = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_GITHUB_TOKEN)
 
+        proxies = config_manager.get_proxies_for_requests()
         # ★★★ 2. 将 Token 传递给 get_github_releases 函数 ★★★
         releases = github_handler.get_github_releases(
             owner=constants.GITHUB_REPO_OWNER,
             repo=constants.GITHUB_REPO_NAME,
-            token=github_token  # <--- 将令牌作为参数传入
+            token=github_token,  # <--- 将令牌作为参数传入
+            proxies=proxies
         )
 
         if releases is None:
@@ -220,7 +274,14 @@ def stream_update_progress():
             yield f"data: {json.dumps(data)}\n\n"
 
         client = None
+        proxies_config = config_manager.get_proxies_for_requests()
+        old_env = os.environ.copy()
         try:
+            if proxies_config and proxies_config.get('https'):
+                proxy_url = proxies_config['https']
+                os.environ['HTTPS_PROXY'] = proxy_url
+                os.environ['HTTP_PROXY'] = proxy_url # 有些系统也需要设置 http_proxy
+                yield from send_event({"status": f"检测到代理配置，将通过 {proxy_url} 拉取镜像...", "layers": {}})
             client = docker.from_env()
             container_name = config_manager.APP_CONFIG.get('container_name', 'emby-toolkit')
             image_name_tag = config_manager.APP_CONFIG.get('docker_image_name', 'hbq0405/emby-toolkit:latest')
@@ -352,6 +413,11 @@ def stream_update_progress():
             error_message = f"更新过程中发生未知错误: {str(e)}"
             logger.error(f"[Update Stream]: {error_message}", exc_info=True)
             yield from send_event({"status": error_message, "event": "ERROR"})
+        finally:
+            # ★★★ 3. 关键：无论成功还是失败，都恢复原始的环境变量 ★★★
+            os.environ.clear()
+            os.environ.update(old_env)
+            logger.debug("已恢复原始环境变量。")
 
     return Response(stream_with_context(generate_progress()), mimetype='text/event-stream')
 

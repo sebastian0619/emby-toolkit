@@ -24,6 +24,7 @@ import emby_handler
 import tmdb_handler
 import moviepilot_handler
 import config_manager
+from config_manager import get_proxies_for_requests
 import constants
 import extensions
 import task_manager
@@ -774,6 +775,7 @@ def _process_single_collection_concurrently(collection_data: dict, db_path: str,
     在单个线程中处理单个电影合集的所有逻辑。
     这个函数现在可以完全信任传入的 collection_data 就是一个常规电影合集。
     """
+    proxies = get_proxies_for_requests()
     collection_id = collection_data['Id']
     collection_name = collection_data.get('Name', '')
     today_str = datetime.now().strftime('%Y-%m-%d')
@@ -790,7 +792,7 @@ def _process_single_collection_concurrently(collection_data: dict, db_path: str,
     if not tmdb_id:
         status = "unlinked"
     else:
-        details = tmdb_handler.get_collection_details_tmdb(int(tmdb_id), tmdb_api_key)
+        details = tmdb_handler.get_collection_details_tmdb(int(tmdb_id), tmdb_api_key, proxies=proxies)
         if not details or "parts" not in details:
             status = "tmdb_error"
         else:

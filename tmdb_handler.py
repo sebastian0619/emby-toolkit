@@ -7,6 +7,7 @@ import concurrent.futures
 from utils import contains_chinese, normalize_name_for_matching
 from typing import Optional, List, Dict, Any, Union
 import logging
+import config_manager
 logger = logging.getLogger(__name__)
 # TMDb API 的基础 URL
 TMDB_API_BASE_URL = "https://api.themoviedb.org/3"
@@ -30,8 +31,9 @@ def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] 
         base_params.update(params)
 
     try:
+        proxies = config_manager.get_proxies_for_requests()
         # logger.debug(f"TMDb Request: URL={full_url}, Params={base_params}")
-        response = requests.get(full_url, params=base_params, timeout=15) # 增加超时
+        response = requests.get(full_url, params=base_params, timeout=15, proxies=proxies) # 增加超时
         response.raise_for_status()
         data = response.json()
         return data
@@ -269,7 +271,8 @@ def find_person_by_external_id(external_id: str, api_key: str, source: str = "im
     params = {"api_key": api_key, "external_source": source, "language": "en-US"}
     logger.debug(f"TMDb: 正在通过 {source} '{external_id}' 查找人物...")
     try:
-        response = requests.get(api_url, params=params, timeout=10)
+        proxies = config_manager.get_proxies_for_requests()
+        response = requests.get(api_url, params=params, timeout=10, proxies=proxies)
         response.raise_for_status()
         data = response.json()
         person_results = data.get("person_results", [])

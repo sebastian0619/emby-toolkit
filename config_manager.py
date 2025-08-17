@@ -2,7 +2,7 @@
 import os
 import configparser
 import logging
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 import json
 
 # --- 核心模块导入 ---
@@ -82,7 +82,9 @@ CONFIG_DEFINITION = {
     constants.CONFIG_OPTION_AUTO_LOCK_CAST: ("General", 'boolean', True),
     constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS: ("General", 'int', constants.DEFAULT_MAX_ACTORS_TO_PROCESS),
 
-    # [Network]
+    # [Network] 
+    constants.CONFIG_OPTION_NETWORK_PROXY_ENABLED: (constants.CONFIG_SECTION_NETWORK, 'boolean', False),
+    constants.CONFIG_OPTION_NETWORK_HTTP_PROXY: (constants.CONFIG_SECTION_NETWORK, 'string', ""),
     "user_agent": ("Network", 'string', 'Mozilla/5.0 ...'),
     "accept_language": ("Network", 'string', 'zh-CN,zh;q=0.9,en;q=0.8'),
 
@@ -252,3 +254,18 @@ def delete_custom_theme() -> bool:
     except OSError as e:
         logger.error(f"删除自定义主题文件时发生 I/O 错误: {e}", exc_info=True)
         return False
+    
+# --- 代理小助手 ---
+def get_proxies_for_requests() -> Optional[Dict[str, str]]:
+    """
+    【代理小助手】
+    根据全局配置，生成用于 requests 库的代理字典。
+    如果代理未启用或 URL 为空，则返回 None。
+    """
+    if APP_CONFIG.get(constants.CONFIG_OPTION_NETWORK_PROXY_ENABLED) and APP_CONFIG.get(constants.CONFIG_OPTION_NETWORK_HTTP_PROXY):
+        proxy_url = APP_CONFIG[constants.CONFIG_OPTION_NETWORK_HTTP_PROXY]
+        return {
+            "http": proxy_url,
+            "https": proxy_url,
+        }
+    return None

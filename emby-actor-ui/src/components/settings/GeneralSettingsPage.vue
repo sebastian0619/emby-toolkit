@@ -111,6 +111,43 @@
                 </n-text>
               </template>
             </n-form-item>
+            <!-- ★★★ 分割线: 网络代理 ★★★ -->
+            <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">
+              网络代理
+            </n-divider>
+
+            <n-form-item-grid-item label="启用网络代理" path="network_proxy_enabled">
+              <n-switch v-model:value="configModel.network_proxy_enabled" />
+              <template #feedback>
+                <n-text depth="3" style="font-size:0.8em;">
+                  为 TMDb 等外部API请求启用 HTTP/HTTPS 代理。
+                </n-text>
+              </template>
+            </n-form-item-grid-item>
+
+            <n-form-item-grid-item label="HTTP 代理地址" path="network_http_proxy_url">
+              <n-input-group>
+                <n-input
+                  v-model:value="configModel.network_http_proxy_url"
+                  placeholder="例如: http://127.0.0.1:7890"
+                  :disabled="!configModel.network_proxy_enabled"
+                />
+                <n-button 
+                  type="primary" 
+                  ghost 
+                  @click="testProxy" 
+                  :loading="isTestingProxy"
+                  :disabled="!configModel.network_proxy_enabled || !configModel.network_http_proxy_url"
+                >
+                  测试连接
+                </n-button>
+              </n-input-group>
+              <template #feedback>
+                <n-text depth="3" style="font-size:0.8em;">
+                  请填写完整的代理 URL，支持 http 和 https。
+                </n-text>
+              </template>
+            </n-form-item-grid-item>
           </n-card>
           <n-card :bordered="false" class="dashboard-card">
             <template #header>
@@ -480,7 +517,7 @@ import {
   NCard, NForm, NFormItem, NInputNumber, NSwitch, NButton, NGrid, NGi, 
   NSpin, NAlert, NInput, NSelect, NSpace, useMessage, useDialog,
   NFormItemGridItem, NCheckboxGroup, NCheckbox, NText, NRadioGroup, NRadio,
-  NTag, NIcon, NUpload, NModal, NDivider
+  NTag, NIcon, NUpload, NModal, NDivider, NInputGroup
 } from 'naive-ui';
 import { 
   MoveOutline as DragHandleIcon,
@@ -526,6 +563,9 @@ const nativeLibraryError = ref(null);
 let unwatchGlobal = null;
 let unwatchEmbyConfig = null;
 
+// --- 代理测试 ---
+const isTestingProxy = ref(false);
+
 // --- Emby 用户ID 校验逻辑 ---
 const embyUserIdRegex = /^[a-f0-9]{32}$/i;
 const isInvalidUserId = computed(() => {
@@ -539,6 +579,32 @@ const embyUserIdRule = {
       return new Error('ID格式不正确，应为32位。');
     }
     return true;
+  }
+};
+
+// ★★★ 新增：测试代理连接的方法 ★★★
+const testProxy = async () => {
+  if (!configModel.value.network_http_proxy_url) {
+    message.warning('请先填写 HTTP 代理地址再进行测试。');
+    return;
+  }
+
+  isTestingProxy.value = true;
+  try {
+    const response = await axios.post('/api/proxy/test', {
+      url: configModel.value.network_http_proxy_url
+    });
+
+    if (response.data.success) {
+      message.success(response.data.message);
+    } else {
+      message.error(`测试失败: ${response.data.message}`);
+    }
+  } catch (error) {
+    const errorMsg = error.response?.data?.message || error.message;
+    message.error(`测试请求失败: ${errorMsg}`);
+  } finally {
+    isTestingProxy.value = false;
   }
 };
 

@@ -55,6 +55,7 @@
           - emby-net                                  # 容器内部网络，虚拟库必须严格按此设置
         ports:
           - "5257:5257"                               # 管理端口
+          - "8097:8097"                               # 反代端口，虚拟库用，冒号前面是实际访问端口，冒号后面是管理后台设置的反代监听端口
         volumes:
           - /path/emby-toolkit:/config                # 将宿主机的数据目录挂载到容器的 /config 目录
           - /path/tmdb:/tmdb                          # 映射神医本地TMDB目录，非神医Pro用户可以留空
@@ -66,25 +67,20 @@
           - PUID=1000                                 # 设置为你的用户ID，建议与宿主机用户ID保持一致
           - PGID=1000                                 # 设置为DOCKER组ID (一键更新用，‘grep docker /etc/group’可以查询)
           - UMASK=022                                 # 设置文件权限掩码，建议022
-          - CONTAINER_NAME=emby-toolkit               # 以下四项都是一键更新用，不需要可以不配置
+          - CONTAINER_NAME=emby-toolkit               # 以下两项都是一键更新用，不需要可以不配置
           - DOCKER_IMAGE_NAME=hbq0405/emby-toolkit:latest
-          - NGINX_CONTAINER_NAME=emby-proxy-nginx
-          - NGINX_IMAGE_NAME=nginx:1.25-alpine
         restart: unless-stopped
       # 以下为虚拟库反代配置，不需要可以整个删掉
       nginx:
         image: nginx:1.25-alpine
-        container_name: emby-proxy-nginx
+        container_name: emby-proxy-nginx              
         restart: unless-stopped
-        ports:
-          - "8097:8097"                               # 反代端口，虚拟库用，冒号前面是实际访问端口，冒号后面是管理后台设置的反代监听端口
+        network_mode: "service:emby-toolkit"          # 并入主程序的网络，绑定容器生命周期，主程序重启会自动跟着重启
         volumes:
           - /path/emby-toolkit/nginx/conf.d:/etc/nginx/conf.d #Ngixn配置文件目录，必须映射到主程序持久化目录，否则无法读取配置文件
         depends_on:
           emby-toolkit:                               # 监控主程序启动
             condition: service_healthy                # 保证Nginx只在主程序成功启动后再启动，以免读取不到配置文件反代失败
-        networks:
-          - emby-net                                  # 和主程序同一个内部网络，保障容器间通讯
 
     networks:
       emby-net:

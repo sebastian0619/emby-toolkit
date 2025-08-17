@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "3.2.4"  # 更新版本号
+APP_VERSION = "3.2.5"  # 更新版本号
 GITHUB_REPO_OWNER = "hbq0405"  # 您的 GitHub 用户名
 GITHUB_REPO_NAME = "emby-toolkit" # 您的 GitHub 仓库名
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
@@ -81,6 +81,13 @@ CONFIG_OPTION_AI_API_KEY = "ai_api_key"                         # AI服务的API
 CONFIG_OPTION_AI_MODEL_NAME = "ai_model_name"                   # 使用的AI模型名称 (如 'Qwen/Qwen2-7B-Instruct')
 CONFIG_OPTION_AI_BASE_URL = "ai_base_url"                       # AI服务的API基础URL
 CONFIG_OPTION_AI_TRANSLATION_MODE = "ai_translation_mode"       # AI翻译模式 ('fast' 或 'quality')
+
+# ==============================================================================
+# ✨ 网络配置 (Network) - ★★★ 新增部分 ★★★
+# ==============================================================================
+CONFIG_SECTION_NETWORK = "Network"
+CONFIG_OPTION_NETWORK_PROXY_ENABLED = "network_proxy_enabled"
+CONFIG_OPTION_NETWORK_HTTP_PROXY = "network_http_proxy_url"
 
 # ==============================================================================
 # ✨ 计划任务配置 (Scheduler)

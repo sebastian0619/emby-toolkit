@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-def get_github_releases(owner: str, repo: str, token: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+def get_github_releases(owner: str, repo: str, token: Optional[str] = None, proxies: Optional[Dict[str, str]] = None) -> Optional[List[Dict[str, Any]]]:
     """
     【V2 - 支持认证版】从 GitHub API 获取指定仓库的所有 Release 信息。
     如果提供了 token，则会使用认证来提高速率限制。
@@ -30,7 +30,7 @@ def get_github_releases(owner: str, repo: str, token: Optional[str] = None) -> O
     
     logger.trace(f"正在从 GitHub API 获取 releases: {api_url}")
     try:
-        response = requests.get(api_url, headers=headers, timeout=20)
+        response = requests.get(api_url, headers=headers, timeout=20, proxies=proxies)
         
         # 打印速率限制信息，方便调试
         remaining = response.headers.get('X-RateLimit-Remaining')
