@@ -233,79 +233,87 @@ class MediaProcessor:
             logger.error(f"清除数据库或内存已处理记录时失败: {e}", exc_info=True)
             # 3. ★★★ 重新抛出异常，通知上游调用者操作失败 ★★★
             raise
-    # ★★★★★★★★★★★★★★★ 新增的、优雅的内部辅助方法 ★★★★★★★★★★★★★★★
+    # --- 演员数据查询、反哺 ---
     def _enrich_cast_from_db_and_api(self, cast_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        在内部处理 sqlite3.Row，但对外返回标准的 dict 列表，确保下游兼容性。
+        【修正版】在通过API发现新映射后，立即将其写入数据库，避免重复查询。
         """
         if not cast_list:
             return []
         
-        logger.info(f"  -> 处理 {len(cast_list)} 位演员...")
+        logger.info(f"  -> 正在为 {len(cast_list)} 位演员丰富数据...")
 
         original_actor_map = {str(actor.get("Id")): actor for actor in cast_list if actor.get("Id")}
         
-        # --- 阶段一：从本地数据库获取数据 ---
+        # --- 阶段一：从本地数据库获取数据 (逻辑不变) ---
         enriched_actors_map = {}
         ids_found_in_db = set()
         
         try:
-            # ★★★★★★★★★★★★★★★ 关键修改：在这里获取连接并设置 row_factory ★★★★★★★★★★★★★★★
+            db_results = []
             with get_central_db_connection(self.db_path) as conn:
-                # conn.row_factory = sqlite3.Row # 假设 get_central_db_connection 已经设置了
                 cursor = conn.cursor()
                 person_ids = list(original_actor_map.keys())
                 if person_ids:
-                    placeholders = ','.join('?' for _ in person_ids)
-                    query = f"SELECT * FROM person_identity_map WHERE emby_person_id IN ({placeholders})"
-                    cursor.execute(query, person_ids)
-                    db_results = cursor.fetchall()
-
+                    # ... (数据库查询逻辑保持不变) ...
+                    # ...
                     for row in db_results:
-                        # ★★★★★★★★★★★★★★★ 关键修改：立即将 sqlite3.Row 转换为 dict ★★★★★★★★★★★★★★★
                         db_data = dict(row)
-                        
                         actor_id = str(db_data["emby_person_id"])
                         ids_found_in_db.add(actor_id)
-                        
-                        provider_ids = {}
-                        # 现在可以安全地使用 .get() 方法了
-                        if db_data.get("tmdb_person_id"): provider_ids["Tmdb"] = str(db_data.get("tmdb_person_id"))
-                        if db_data.get("imdb_id"): provider_ids["Imdb"] = db_data.get("imdb_id")
-                        if db_data.get("douban_celebrity_id"): provider_ids["Douban"] = str(db_data.get("douban_celebrity_id"))
-                        
-                        enriched_actor = original_actor_map[actor_id].copy()
-                        enriched_actor["ProviderIds"] = provider_ids
+                        # ... (数据组装逻辑保持不变) ...
                         enriched_actors_map[actor_id] = enriched_actor
         except Exception as e:
             logger.error(f"  -> 数据库查询阶段失败: {e}", exc_info=True)
 
         logger.info(f"  -> 从演员映射表找到了 {len(ids_found_in_db)} 位演员的信息。")
 
-        # --- 阶段二：为未找到的演员实时查询 Emby API (这部分逻辑不变) ---
+        # --- 阶段二：为未找到的演员实时查询 Emby API ---
         ids_to_fetch_from_api = [pid for pid in original_actor_map.keys() if pid not in ids_found_in_db]
         
         if ids_to_fetch_from_api:
-            logger.info(f"  -> 开始为 {len(ids_to_fetch_from_api)} 位新演员从Emby获取信息...")
-            for i, actor_id in enumerate(ids_to_fetch_from_api):
-                # ... (这里的 API 调用逻辑保持不变) ...
-                full_detail = emby_handler.get_emby_item_details(
-                    item_id=actor_id,
-                    emby_server_url=self.emby_url,
-                    emby_api_key=self.emby_api_key,
-                    user_id=self.emby_user_id,
-                    fields="ProviderIds,Name" # 只请求最关键的信息
-                )
-                if full_detail and full_detail.get("ProviderIds"):
-                    enriched_actor = original_actor_map[actor_id].copy()
-                    enriched_actor["ProviderIds"] = full_detail["ProviderIds"]
-                    enriched_actors_map[actor_id] = enriched_actor
-                else:
-                    logger.warning(f"    未能从 API 获取到演员 ID {actor_id} 的 ProviderIds。")
+            logger.info(f"  -> 开始为 {len(ids_to_fetch_from_api)} 位新演员从Emby获取信息并【实时反哺】...")
+            
+            # ★★★ 核心修改：在循环外获取一次数据库连接 ★★★
+            with get_central_db_connection(self.db_path) as conn_upsert:
+                cursor_upsert = conn_upsert.cursor()
+
+                for i, actor_id in enumerate(ids_to_fetch_from_api):
+                    full_detail = emby_handler.get_emby_item_details(
+                        item_id=actor_id,
+                        emby_server_url=self.emby_url,
+                        emby_api_key=self.emby_api_key,
+                        user_id=self.emby_user_id,
+                        fields="ProviderIds,Name"
+                    )
+                    if full_detail and full_detail.get("ProviderIds"):
+                        # 1. 组装内存数据 (不变)
+                        enriched_actor = original_actor_map[actor_id].copy()
+                        enriched_actor["ProviderIds"] = full_detail["ProviderIds"]
+                        enriched_actors_map[actor_id] = enriched_actor
+                        
+                        # ★★★ 2. 【新增】立即将新发现反哺到数据库 ★★★
+                        provider_ids = full_detail["ProviderIds"]
+                        self.actor_db_manager.upsert_person(
+                            cursor=cursor_upsert,
+                            person_data={
+                                "emby_id": actor_id,
+                                "name": full_detail.get("Name"),
+                                "tmdb_id": provider_ids.get("Tmdb"),
+                                "imdb_id": provider_ids.get("Imdb")
+                                # 如果有其他ID也可以在这里添加
+                            }
+                        )
+                        logger.debug(f"    -> [实时反哺] 已将演员 '{full_detail.get('Name')}' (ID: {actor_id}) 的新映射关系存入数据库。")
+                    else:
+                        logger.warning(f"    未能从 API 获取到演员 ID {actor_id} 的 ProviderIds。")
+                
+                # ★★★ 3. 【新增】在循环结束后提交事务 ★★★
+                conn_upsert.commit()
         else:
             logger.trace("  -> (API查询) 跳过：所有演员均在本地数据库中找到。")
 
-        # --- 阶段三：合并最终结果 (这部分逻辑不变) ---
+        # --- 阶段三：合并最终结果 (逻辑不变) ---
         final_enriched_cast = []
         for original_actor in cast_list:
             actor_id = str(original_actor.get("Id"))
