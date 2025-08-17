@@ -480,7 +480,7 @@ def ensure_nginx_config():
     """
     【Jinja2 最终版】使用 Jinja2 模板引擎，强制生成 Nginx 配置文件。
     """
-    logger.info("正在强制同步 Nginx 配置文件 (使用 Jinja2)...")
+    logger.trace("正在强制同步 Nginx 配置文件 (使用 Jinja2)...")
     
     # 定义路径
     nginx_config_dir = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'nginx', 'conf.d')
@@ -503,7 +503,7 @@ def ensure_nginx_config():
 
         # 3. 准备替换值 (逻辑不变)
         emby_upstream = emby_url.replace("http://", "").replace("https://", "").rstrip('/')
-        proxy_upstream = "emby-toolkit:8098"
+        proxy_upstream = "localhost:8098"
 
         if not emby_upstream:
             logger.error("config.ini 中未配置 Emby 服务器地址，无法生成 Nginx 配置！")
