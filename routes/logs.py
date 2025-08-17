@@ -132,31 +132,28 @@ def search_all_logs():
 @login_required
 def search_logs_with_context():
     """
-    【V4 - 终极健壮版】在所有日志文件中定位包含关键词的完整“处理块”。
-    此版本能同时正确处理：
-    1. 因任务失败或中断产生的孤立日志块。
-    2. 在单个成功任务内部出现的重复起始标记。
+    【V9 - 最终无干扰版】在所有日志文件中定位与关键词匹配的、完整的、未被中断的处理块。
+    此版本能正确忽略在目标块内部出现的、不相关的其他处理块起始标记。
     """
     query = request.args.get('q', '').strip()
     if not query:
         return jsonify({"error": "搜索关键词不能为空"}), 400
 
     START_MARKER = re.compile(r"(开始处理|手动处理)\s'(.+?)'\s\(TMDb ID: \d+\)")
-    END_MARKER = re.compile(r"(✨✨✨处理完成|最终状态: 处理完成)")
+    END_MARKER = re.compile(r"处理完成\s'(.+?)'")
     TIMESTAMP_REGEX = re.compile(r"^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})")
 
     found_blocks = []
     
     try:
         all_files = os.listdir(config_manager.LOG_DIRECTORY)
-        log_files = [f for f in all_files if f.startswith('app.log')]
+        log_files = sorted([f for f in all_files if f.startswith('app.log')], reverse=True)
 
         for filename in log_files:
             full_path = os.path.join(config_manager.LOG_DIRECTORY, filename)
             
-            in_block = False
             current_block = []
-            current_item_name = None # 用于跟踪当前块所属的项目名
+            active_item_name = None # 状态变量：记录当前正在追踪的片名
 
             try:
                 with open(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
@@ -164,48 +161,56 @@ def search_logs_with_context():
                         line = line.strip()
                         if not line: continue
 
-                        is_start_marker = START_MARKER.search(line)
-                        is_end_marker = END_MARKER.search(line)
+                        start_match = START_MARKER.search(line)
+                        end_match = END_MARKER.search(line)
 
-                        if is_start_marker:
-                            new_item_name = is_start_marker.group(1)
-                            # ★★★ 核心智能逻辑 ★★★
-                            # 如果不在块内，或者新块名和旧块名不同（说明旧的被中断了），则开始一个新块
-                            if not in_block or new_item_name != current_item_name:
-                                in_block = True
+                        # ★★★★★★★★★★★★★★★ 核心逻辑修正 ★★★★★★★★★★★★★★★
+                        if not active_item_name and start_match:
+                            # 状态：当前未追踪任何块，并且遇到了一个起始标记
+                            start_item_name = start_match.group(2)
+                            if query.lower() in start_item_name.lower():
+                                # 关键词匹配！开始追踪
+                                active_item_name = start_item_name
                                 current_block = [line]
-                                current_item_name = new_item_name
-                            else:
-                                # 如果块名相同，说明是内部重复调用，直接追加即可
-                                current_block.append(line)
                         
-                        elif in_block:
-                            current_block.append(line)
-                            if is_end_marker:
-                                block_content = "\n".join(current_block)
-                                if query.lower() in block_content.lower():
-                                    
-                                    block_date = "Unknown Date"
-                                    if current_block:
-                                        match = TIMESTAMP_REGEX.search(current_block[0])
-                                        if match:
-                                            block_date = match.group(1)
-
-                                    found_blocks.append({
-                                        "file": filename,
-                                        "date": block_date,
-                                        "lines": current_block
-                                    })
+                        elif active_item_name and end_match:
+                            # 状态：正在追踪一个块，并且遇到了一个结束标记
+                            end_item_name = end_match.group(1)
+                            
+                            if end_item_name == active_item_name:
+                                # 完美闭环！保存
+                                current_block.append(line)
                                 
-                                # 结束当前块，重置所有状态
-                                in_block = False
+                                block_date = "Unknown Date"
+                                if current_block:
+                                    match = TIMESTAMP_REGEX.search(current_block[0])
+                                    if match:
+                                        block_date = match.group(1).split(' ')[0]
+
+                                found_blocks.append({
+                                    "file": filename,
+                                    "date": block_date,
+                                    "lines": current_block
+                                })
+                                
+                                # 任务完成，重置状态
+                                active_item_name = None
                                 current_block = []
-                                current_item_name = None
+                            else:
+                                # 结束的片名不匹配，说明日志错乱，抛弃当前块
+                                active_item_name = None
+                                current_block = []
+
+                        elif active_item_name:
+                            # 状态：正在追踪一个块，当前行是普通日志，追加
+                            current_block.append(line)
+                        
+                        # 如果 active_item_name 为空，且当前行不是匹配的 start_match，则什么都不做，直接忽略
 
             except Exception as e:
                 logging.warning(f"API: 上下文搜索时无法读取文件 '{filename}': {e}")
         
-        found_blocks.sort(key=lambda x: x['date'])
+        found_blocks.sort(key=lambda x: x['date'], reverse=True)
         
         return jsonify(found_blocks)
 
