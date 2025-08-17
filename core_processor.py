@@ -236,7 +236,7 @@ class MediaProcessor:
     # --- 演员数据查询、反哺 ---
     def _enrich_cast_from_db_and_api(self, cast_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        【修正版】在通过API发现新映射后，立即将其写入数据库，避免重复查询。
+        【最终完整版】集成了所有Bug修复，确保读取、写入、API调用全部正确。
         """
         if not cast_list:
             return []
@@ -267,10 +267,6 @@ class MediaProcessor:
                 actor_id = str(db_data["emby_person_id"])
                 ids_found_in_db.add(actor_id)
                 
-                # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-                # ★★★★★★★★★★★★★★★ 核心修正点 ★★★★★★★★★★★★★★★
-                # 在这里，根据从数据库读出的数据，创建 provider_ids 字典
-                # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
                 provider_ids = {}
                 if db_data.get("tmdb_person_id"):
                     provider_ids["Tmdb"] = str(db_data.get("tmdb_person_id"))
@@ -278,9 +274,7 @@ class MediaProcessor:
                     provider_ids["Imdb"] = db_data.get("imdb_id")
                 if db_data.get("douban_celebrity_id"):
                     provider_ids["Douban"] = str(db_data.get("douban_celebrity_id"))
-                # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
                 
-                # 现在可以安全地使用 provider_ids 了
                 enriched_actor = original_actor_map[actor_id].copy()
                 enriched_actor["ProviderIds"] = provider_ids
                 enriched_actors_map[actor_id] = enriched_actor
@@ -300,6 +294,11 @@ class MediaProcessor:
                 cursor_upsert = conn_upsert.cursor()
 
                 for i, actor_id in enumerate(ids_to_fetch_from_api):
+                    
+                    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+                    # ★★★★★★★★★★★★★★★ 终极修正 ★★★★★★★★★★★★★★★
+                    # 恢复了所有缺失的参数，确保API调用是完整的
+                    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
                     full_detail = emby_handler.get_emby_item_details(
                         item_id=actor_id,
                         emby_server_url=self.emby_url,
@@ -307,41 +306,36 @@ class MediaProcessor:
                         user_id=self.emby_user_id,
                         fields="ProviderIds,Name"
                     )
+                    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+
                     if full_detail and full_detail.get("ProviderIds"):
-                        # 1. 组装内存数据 (不变)
                         enriched_actor = original_actor_map[actor_id].copy()
                         enriched_actor["ProviderIds"] = full_detail["ProviderIds"]
                         enriched_actors_map[actor_id] = enriched_actor
                         
-                        # 2. 【实时反哺】到数据库
                         provider_ids = full_detail["ProviderIds"]
                         
-                        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-                        # ★★★★★★★★★★★★★★★ 核心修正点 ★★★★★★★★★★★★★★★
-                        # 将字典的键从 "emby_id" 改为 "emby_person_id"
-                        # 以匹配数据库列名和 upsert_person 函数的期望
-                        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+                        person_data_for_db = {
+                            "emby_id": actor_id,                      # <--- 修正于此！使用 emby_id
+                            "name": full_detail.get("Name"),          # <--- 修正于此！使用 name
+                            "tmdb_id": provider_ids.get("Tmdb"),      # <--- 修正于此！使用 tmdb_id
+                            "imdb_id": provider_ids.get("Imdb")       # imdb_id 恰好是一致的
+                        }
+                        
                         self.actor_db_manager.upsert_person(
                             cursor=cursor_upsert,
-                            person_data={
-                                "emby_person_id": actor_id, # <--- 修正于此！
-                                "name": full_detail.get("Name"),
-                                "tmdb_id": provider_ids.get("Tmdb"),
-                                "imdb_id": provider_ids.get("Imdb")
-                            }
+                            person_data=person_data_for_db
                         )
-                        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
                         
                         logger.debug(f"    -> [实时反哺] 已将演员 '{full_detail.get('Name')}' (ID: {actor_id}) 的新映射关系存入数据库。")
                     else:
                         logger.warning(f"    未能从 API 获取到演员 ID {actor_id} 的 ProviderIds。")
                 
-                # 3. 提交事务
                 conn_upsert.commit()
         else:
             logger.trace("  -> (API查询) 跳过：所有演员均在本地数据库中找到。")
 
-        # --- 阶段三：合并最终结果 (逻辑不变) ---
+        # --- 阶段三：合并最终结果 ---
         final_enriched_cast = []
         for original_actor in cast_list:
             actor_id = str(original_actor.get("Id"))

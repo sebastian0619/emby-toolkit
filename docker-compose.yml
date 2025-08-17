@@ -17,6 +17,12 @@ services:
       - "5257:5257"
     networks:
       - emby-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5257/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
   nginx:
     image: nginx:1.25-alpine
