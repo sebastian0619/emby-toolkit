@@ -250,30 +250,39 @@ class MediaProcessor:
         ids_found_in_db = set()
         
         try:
-            # ★★★ 核心修正 1: 在 with 块外面初始化 db_results ★★★
             db_results = []
             
             with get_central_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
                 person_ids = list(original_actor_map.keys())
                 
-                # ★★★ 核心修正 2: 只有在 person_ids 确实有内容时才执行查询 ★★★
                 if person_ids:
                     placeholders = ','.join('?' for _ in person_ids)
                     query = f"SELECT * FROM person_identity_map WHERE emby_person_id IN ({placeholders})"
                     cursor.execute(query, person_ids)
                     db_results = cursor.fetchall()
 
-            # 现在，无论 person_ids 是否为空，db_results 都保证是一个有效的列表（可能是空的）
-            # for 循环将安全地执行
             for row in db_results:
                 db_data = dict(row)
                 actor_id = str(db_data["emby_person_id"])
                 ids_found_in_db.add(actor_id)
                 
-                # ... (数据组装逻辑保持不变) ...
+                # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+                # ★★★★★★★★★★★★★★★ 核心修正点 ★★★★★★★★★★★★★★★
+                # 在这里，根据从数据库读出的数据，创建 provider_ids 字典
+                # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+                provider_ids = {}
+                if db_data.get("tmdb_person_id"):
+                    provider_ids["Tmdb"] = str(db_data.get("tmdb_person_id"))
+                if db_data.get("imdb_id"):
+                    provider_ids["Imdb"] = db_data.get("imdb_id")
+                if db_data.get("douban_celebrity_id"):
+                    provider_ids["Douban"] = str(db_data.get("douban_celebrity_id"))
+                # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+                
+                # 现在可以安全地使用 provider_ids 了
                 enriched_actor = original_actor_map[actor_id].copy()
-                enriched_actor["ProviderIds"] = provider_ids # 假设 provider_ids 在这里被正确组装
+                enriched_actor["ProviderIds"] = provider_ids
                 enriched_actors_map[actor_id] = enriched_actor
                 
         except Exception as e:
