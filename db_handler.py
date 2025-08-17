@@ -122,14 +122,11 @@ class ActorDBManager:
 
     def upsert_person(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any], **kwargs):
         """
-        【V7 - Hierarchical Merge 最终安全版】
-        采用分层级智能合并策略，彻底解决“精神分裂”和“同名异人”问题。
-        1. 优先通过所有可用ID进行精确查找。
-        2. 仅在ID查找失败时，才通过名字进行辅助查找。
-        3. 对名字匹配的结果进行严格的ID冲突检查，确保不会合并不同的人。
-        4. 最终确认安全后，才进行合并更新或创建新记录。
+        【V8 - 最终合并版】
+        彻底解决“人格分裂”问题。此版本能检测到由不同ID指向的多个数据库记录，
+        并将它们智能地合并为一条记录，然后删除冗余记录。
         """
-        # 1. 标准化输入数据
+        # 1. 标准化输入数据 (逻辑不变)
         new_data = {
             "primary_name": str(person_data.get("name") or '').strip(),
             "emby_person_id": str(person_data.get("emby_id") or '').strip() or None,
@@ -138,92 +135,128 @@ class ActorDBManager:
             "douban_celebrity_id": str(person_data.get("douban_id") or '').strip() or None,
         }
         id_fields = ["emby_person_id", "tmdb_person_id", "imdb_id", "douban_celebrity_id"]
-        
-        # 提取新数据中所有非空的ID
         new_ids = {k: v for k, v in new_data.items() if k in id_fields and v}
 
         if not new_data["primary_name"] and not new_ids:
-            return -1 # 无有效信息，无法处理
+            return -1
 
-        existing_record = None
+        # ======================================================================
+        # 策略层 1: 通过所有提供的 ID 和名字进行最全面的查找
+        # ======================================================================
+        conflicting_records = []
         
-        # ======================================================================
-        # 策略层 1: 通过所有提供的 ID 进行精确查找
-        # ======================================================================
+        # 1.1 使用所有 ID 进行查找
         if new_ids:
             query_parts = [f"{key} = ?" for key in new_ids.keys()]
             query_values = list(new_ids.values())
             sql_find_by_id = f"SELECT * FROM person_identity_map WHERE {' OR '.join(query_parts)}"
             cursor.execute(sql_find_by_id, tuple(query_values))
             
-            # 在理想情况下，通过ID应该只找到一条记录。如果找到多条，说明数据库本身存在数据不一致。
-            # 我们这里简化处理，只取第一条作为合并目标。
-            found_by_id = cursor.fetchone()
+            # ★★★ 核心修正：使用 fetchall() 获取所有冲突记录 ★★★
+            found_by_id = cursor.fetchall()
             if found_by_id:
-                existing_record = dict(found_by_id)
-                logger.trace(f"通过ID找到匹配记录 (map_id: {existing_record['map_id']})，准备合并。")
+                conflicting_records.extend([dict(row) for row in found_by_id])
 
-        # ======================================================================
-        # 策略层 2: 仅在ID查找失败时，才通过名字进行辅助查找
-        # ======================================================================
-        if not existing_record and new_data["primary_name"]:
+        # 1.2 仅在没有通过ID找到任何记录时，才通过名字查找
+        if not conflicting_records and new_data["primary_name"]:
             cursor.execute("SELECT * FROM person_identity_map WHERE primary_name = ?", (new_data["primary_name"],))
-            found_by_name = cursor.fetchone()
-
+            found_by_name = cursor.fetchall()
             if found_by_name:
-                logger.trace(f"未通过ID找到匹配，但通过名字 '{new_data['primary_name']}' 找到候选记录 (map_id: {found_by_name['map_id']})。")
-                
-                # --- 关键安全检查：检查ID是否冲突 ---
-                is_safe_to_merge = True
-                for key, new_id_val in new_ids.items():
-                    existing_id_val = found_by_name[key]
-                    if existing_id_val and new_id_val != existing_id_val:
-                        logger.warning(
-                            f"检测到同名异人！新数据 '{new_data['primary_name']}' ({key}: {new_id_val}) "
-                            f"与数据库记录 (map_id: {found_by_name['map_id']}) 的 ({key}: {existing_id_val}) 冲突。将创建新记录。"
-                        )
-                        is_safe_to_merge = False
+                # 安全检查：确保名字匹配的记录没有ID冲突
+                is_safe = True
+                for record in found_by_name:
+                    for key, new_id_val in new_ids.items():
+                        existing_id_val = record.get(key)
+                        if existing_id_val and new_id_val != existing_id_val:
+                            is_safe = False
+                            break
+                    if not is_safe:
                         break
-                
-                if is_safe_to_merge:
-                    logger.trace("安全检查通过，确认为同一个人，准备合并。")
-                    existing_record = dict(found_by_name)
+                if is_safe:
+                    conflicting_records.extend([dict(row) for row in found_by_name])
 
+        # 去重，因为ID和名字可能找到相同的记录
+        unique_conflicts = {record['map_id']: record for record in conflicting_records}.values()
+        
         # ======================================================================
-        # 执行层: 根据查找结果，执行更新或插入
+        # 执行层: 根据查找到的记录数量，执行不同策略
         # ======================================================================
         try:
-            if existing_record:
-                # --- 合并与更新 ---
-                merged_data = existing_record.copy()
-                # 用新数据中更完善的信息覆盖旧数据
-                for key, value in new_data.items():
-                    if value: # 只用非空值进行覆盖
-                        merged_data[key] = value
+            # --- 策略 A: 未找到任何记录 -> 创建新记录 ---
+            if not unique_conflicts:
+                logger.trace(f"未找到任何记录，为 '{new_data['primary_name']}' 创建新条目。")
+                cols = [k for k, v in new_data.items() if v]
+                vals = [v for v in new_data.values() if v]
+                placeholders = ', '.join(['?'] * len(cols))
+                sql_insert = f"INSERT INTO person_identity_map ({', '.join(cols)}) VALUES ({placeholders})"
+                cursor.execute(sql_insert, tuple(vals))
+                return cursor.lastrowid
+
+            # --- 策略 B: 找到一条记录 -> 更新该记录 ---
+            elif len(unique_conflicts) == 1:
+                existing_record = list(unique_conflicts)[0]
+                logger.trace(f"找到唯一匹配记录 (map_id: {existing_record['map_id']})，准备更新。")
                 
-                # 准备更新数据库
+                merged_data = existing_record.copy()
+                merged_data.update({k: v for k, v in new_data.items() if v}) # 用新数据覆盖
+                
                 update_clauses = [f"{key} = ?" for key in merged_data.keys() if key != 'map_id']
                 update_values = [v for k, v in merged_data.items() if k != 'map_id']
-                update_values.append(existing_record['map_id']) # for WHERE clause
+                update_values.append(existing_record['map_id'])
 
                 sql_update = f"UPDATE person_identity_map SET {', '.join(update_clauses)}, last_updated_at = CURRENT_TIMESTAMP WHERE map_id = ?"
                 cursor.execute(sql_update, tuple(update_values))
                 return existing_record['map_id']
+
+            # --- 策略 C: 找到多条记录 (“人格分裂”) -> 合并它们！ ---
             else:
-                # --- 创建新记录 ---
-                logger.trace(f"未找到任何可安全合并的记录，为 '{new_data['primary_name']}' 创建新条目。")
-                cols_to_insert = list(new_data.keys())
-                vals_to_insert = list(new_data.values())
+                logger.warning(f"检测到演员 '{new_data['primary_name']}' 的人格分裂！找到 {len(unique_conflicts)} 条冲突记录，将执行合并手术。")
+                
+                # 1. 确定主记录 (通常是ID最小的) 和待删除记录
+                sorted_records = sorted(unique_conflicts, key=lambda x: x['map_id'])
+                primary_record = sorted_records[0]
+                records_to_delete = sorted_records[1:]
+                
+                # 2. 构建最终的“黄金记录”
+                golden_record = primary_record.copy()
+                all_records_to_merge = [primary_record] + records_to_delete + [new_data]
+                for record in all_records_to_merge:
+                    for key, value in record.items():
+                        if value: # 用任何非空值来填充黄金记录
+                            golden_record[key] = value
+                
+                # 3. 在事务中执行更新和删除
+                cursor.execute("BEGIN TRANSACTION;")
+                try:
+                    # 3.1 更新主记录
+                    update_clauses = [f"{key} = ?" for key in golden_record.keys() if key != 'map_id']
+                    update_values = [v for k, v in golden_record.items() if k != 'map_id']
+                    update_values.append(primary_record['map_id'])
+                    
+                    sql_update = f"UPDATE person_identity_map SET {', '.join(update_clauses)}, last_updated_at = CURRENT_TIMESTAMP WHERE map_id = ?"
+                    cursor.execute(sql_update, tuple(update_values))
+                    
+                    # 3.2 删除冗余记录
+                    ids_to_delete = [rec['map_id'] for rec in records_to_delete]
+                    placeholders = ', '.join(['?'] * len(ids_to_delete))
+                    sql_delete = f"DELETE FROM person_identity_map WHERE map_id IN ({placeholders})"
+                    cursor.execute(sql_delete, tuple(ids_to_delete))
+                    
+                    cursor.execute("COMMIT;")
+                    logger.info(f"✅ 人格分裂合并成功！所有信息已合并到 map_id: {primary_record['map_id']}，并删除了 {len(ids_to_delete)} 条冗余记录。")
+                    return primary_record['map_id']
+                
+                except Exception as e_trans:
+                    cursor.execute("ROLLBACK;")
+                    logger.error(f"合并事务执行失败，正在回滚: {e_trans}", exc_info=True)
+                    raise
 
-                cols_to_insert.extend(["last_synced_at", "last_updated_at"])
-                placeholders = ["?" for _ in vals_to_insert] + ["CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP"]
-
-                sql_insert = f"INSERT INTO person_identity_map ({', '.join(cols_to_insert)}) VALUES ({', '.join(placeholders)})"
-                cursor.execute(sql_insert, tuple(vals_to_insert))
-                return cursor.lastrowid
-
-        except sqlite3.Error as e:
-            logger.error(f"为演员 '{new_data.get('primary_name')}' 执行 upsert 操作时发生数据库错误: {e}", exc_info=True)
+        except sqlite3.IntegrityError as e:
+            # 这个捕获现在是最终的保险，理论上新逻辑不会再触发它
+            logger.error(f"为演员 '{new_data.get('primary_name')}' 执行 upsert 时发生最终的唯一性冲突: {e}", exc_info=True)
+            raise
+        except Exception as e:
+            logger.error(f"为演员 '{new_data.get('primary_name')}' 执行 upsert 时发生未知错误: {e}", exc_info=True)
             raise
         
 # ======================================================================
