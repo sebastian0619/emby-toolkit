@@ -58,6 +58,8 @@ CONFIG_DEFINITION = {
     constants.CONFIG_OPTION_PROXY_MERGE_NATIVE: (constants.CONFIG_SECTION_REVERSE_PROXY, 'boolean', True),
     constants.CONFIG_OPTION_PROXY_NATIVE_VIEW_SELECTION: (constants.CONFIG_SECTION_REVERSE_PROXY, 'list', []),
     constants.CONFIG_OPTION_PROXY_NATIVE_VIEW_ORDER: (constants.CONFIG_SECTION_REVERSE_PROXY, 'str', 'before'),
+    constants.CONFIG_OPTION_NGINX_CONTAINER_NAME: (constants.CONFIG_SECTION_REVERSE_PROXY, 'string', 'emby-proxy-nginx'),
+    constants.CONFIG_OPTION_NGINX_IMAGE_NAME: (constants.CONFIG_SECTION_REVERSE_PROXY, 'string', 'nginx:1.25-alpine'),
 
     # [TMDB]
     constants.CONFIG_OPTION_TMDB_API_KEY: (constants.CONFIG_SECTION_TMDB, 'string', ""),

@@ -224,6 +224,8 @@ def stream_update_progress():
             client = docker.from_env()
             container_name = config_manager.APP_CONFIG.get('container_name', 'emby-toolkit')
             image_name_tag = config_manager.APP_CONFIG.get('docker_image_name', 'hbq0405/emby-toolkit:latest')
+            nginx_container_name = config_manager.APP_CONFIG.get('nginx_container_name')
+            nginx_image_name = config_manager.APP_CONFIG.get('nginx_image_name')
 
 
             yield from send_event({"status": f"正在检查并拉取最新镜像: {image_name_tag}...", "layers": {}})
@@ -303,6 +305,16 @@ def stream_update_progress():
                 if status == "Pull complete":
                     is_new_image_pulled = True
             
+            # +++ 新增：如果配置了 Nginx，也拉取它的镜像以确保最新 +++
+            if nginx_container_name and nginx_image_name:
+                yield from send_event({"status": f"正在检查并拉取 Nginx 镜像: {nginx_image_name}...", "layers": {}})
+                try:
+                    # 简单拉取，不显示详细进度
+                    client.images.pull(nginx_image_name)
+                    yield from send_event({"status": f"Nginx 镜像检查完成。"})
+                except Exception as e_nginx_pull:
+                    yield from send_event({"status": f"警告：拉取 Nginx 镜像失败: {e_nginx_pull}，将继续尝试更新。"})
+            
             # 检查最终状态
             final_status_line = line.get('status', '')
             if 'Status: Image is up to date' in final_status_line:
@@ -314,31 +326,31 @@ def stream_update_progress():
             yield from send_event({"status": "准备应用更新...", "progress": 70})
 
             try:
-                # 获取旧容器的完整配置，以便新容器可以重建它
                 old_container = client.containers.get(container_name)
-                
-                # Watchtower 使用的官方工具镜像，非常小巧可靠
                 updater_image = "containrrr/watchtower"
                 
-                # 构建传递给更新器容器的命令
-                # --cleanup 会移除旧镜像，--run-once 会让它执行一次就退出
+                # +++ 核心修改点：动态构建要更新的容器列表 +++
                 command = [
                     "--cleanup",
                     "--run-once",
-                    container_name # 明确告诉 watchtower 只更新我们自己
+                    container_name  # 1. 始终包含主程序
                 ]
+                
+                # 2. 如果配置了 Nginx 容器名，也把它加进去
+                if nginx_container_name:
+                    command.append(nginx_container_name)
+                    logger.info(f"检测到关联的 Nginx 容器 '{nginx_container_name}'，将一并纳入更新流程。")
 
-                # 启动更新器容器！
-                logger.info(f"正在应用更新 '{container_name}'...")
+                logger.info(f"正在应用更新，目标容器: {', '.join(command[3:])}...")
                 client.containers.run(
                     image=updater_image,
                     command=command,
-                    remove=True,  # a.k.a. --rm，任务完成后自动删除自己
-                    detach=True,  # 在后台运行
+                    remove=True,
+                    detach=True,
                     volumes={'/var/run/docker.sock': {'bind': '/var/run/docker.sock', 'mode': 'rw'}}
                 )
                 
-                yield from send_event({"status": "更新任务已成功交接给临时更新器！本容器将在后台被重启。", "progress": 90})
+                yield from send_event({"status": "更新任务已成功交接给临时更新器！本容器及关联服务将在后台被重启。", "progress": 90})
                 yield from send_event({"status": "稍后手动刷新页面以访问新版本。", "progress": 100, "event": "DONE"})
 
             except docker.errors.NotFound:
