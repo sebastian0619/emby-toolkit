@@ -37,39 +37,56 @@
 1.  **准备持久化数据目录**：
     在你的服务器上（例如 NAS）创建一个目录，用于存放应用的配置文件和数据库。例如：
     ```bash
-    mkdir -p /path/app_data/emby-toolkit/config
+    mkdir -p /path/emby-toolkit
     ```
-    请将 `/path/app_data/emby-toolkit/config` 替换为你实际的路径。
+    请将 `/path/emby-toolkit` 替换为你实际的路径。
 
 2.  **使用 `docker-compose.yml` (推荐)**：
     创建一个 `docker-compose.yml` 文件，内容如下：
 
     ```yaml
-    version: '3'
+    version: '3.8'
 
     services:
       emby-toolkit:
         image: hbq0405/emby-toolkit:latest 
         container_name: emby-toolkit
-        network_mode: bridge
+        networks:
+          - emby-net                                  # 容器内部网络，虚拟库必须严格按此设置
         ports:
-          - "8097:8097"                               # 反代端口，虚拟库用，冒号前面是实际访问端口，冒号后面是管理后台设置的反代监听端口
           - "5257:5257"                               # 管理端口
         volumes:
-          - /path/config:/config                      # 将宿主机的数据目录挂载到容器的 /config 目录
+          - /path/emby-toolkit:/config                # 将宿主机的数据目录挂载到容器的 /config 目录
           - /path/tmdb:/tmdb                          # 映射神医本地TMDB目录，非神医Pro用户可以留空
           - /var/run/docker.sock:/var/run/docker.sock # 一键更新用，不需要可以不配置
         environment:
           - APP_DATA_DIR=/config                      # 持久化目录
           - TZ=Asia/Shanghai                          # 设置容器时区
           - AUTH_USERNAME=admin                       # 用户名可任意设置，密码在程序首次运行会生成初始密码：password
-          - PUID=0                                    # 设置为你的用户ID，建议与宿主机用户ID保持一致
-          - PGID=0                                    # 设置为DOCKER组ID (一键更新用，‘grep docker /etc/group’可以查询)
-          - UMASK=000                                 # 设置文件权限掩码，建议022
+          - PUID=1000                                 # 设置为你的用户ID，建议与宿主机用户ID保持一致
+          - PGID=1000                                 # 设置为DOCKER组ID (一键更新用，‘grep docker /etc/group’可以查询)
+          - UMASK=022                                 # 设置文件权限掩码，建议022
           - CONTAINER_NAME=emby-toolkit               # 以下两项都是一键更新用，不需要可以不配置
           - DOCKER_IMAGE_NAME=hbq0405/emby-toolkit:latest
         restart: unless-stopped
-        
+      # 以下为虚拟库反代配置，不需要可以整个删掉
+      nginx:
+        image: nginx:1.25-alpine
+        container_name: emby-proxy-nginx
+        restart: unless-stopped
+        ports:
+          - "8097:8097"                               # 反代端口，虚拟库用，冒号前面是实际访问端口，冒号后面是管理后台设置的反代监听端口
+        volumes:
+          - /path/emby-toolkit/nginx/conf.d:/etc/nginx/conf.d #Ngixn配置文件目录，必须映射到主程序持久化目录，否则无法读取配置文件
+        depends_on:
+          emby-toolkit:                               # 监控主程序启动
+            condition: service_healthy                # 保证Nginx只在主程序成功启动后再启动，以免读取不到配置文件反代失败
+        networks:
+          - emby-net                                  # 和主程序同一个内部网络，保障容器间通讯
+
+    networks:
+      emby-net:
+        driver: bridge                                # 创建一个容器内部网络
 
     ```
     然后在 `docker-compose.yml` 文件所在的目录下运行：
@@ -77,24 +94,6 @@
     docker-compose up -d
     ```
 
-3.  **或者使用 `docker run` 命令**：
-    ```bash
-    docker run -d \
-      --name emby-toolkit \
-      --network bridge \
-      -p 5257:5257 \
-      -v /path/config:/config \
-      -v /path/tmdb:/tmdb \
-      -e APP_DATA_DIR=/config \
-      -e TZ="Asia/Shanghai" \
-      -e AUTH_USERNAME="admin" \
-      -e PUID=0 \
-      -e PGID=0 \
-      -e UMASK=000 \
-      --restart unless-stopped \
-      hbq0405/emby-toolkit:latest
-    ```
-    同样，请替换占位符。
 
 4.  **首次配置**：
     *   容器启动后，通过浏览器访问 `http://<你的服务器IP>:5257`。

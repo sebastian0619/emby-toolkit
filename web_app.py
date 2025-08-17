@@ -475,7 +475,7 @@ def initialize_processors():
     extensions.actor_subscription_processor_instance = actor_subscription_processor_instance_local
     extensions.EMBY_SERVER_ID = server_id_local
 
-# --- 虚拟库反代配置 ---
+# --- 生成Nginx配置 ---
 def ensure_nginx_config():
     """
     【Jinja2 最终版】使用 Jinja2 模板引擎，强制生成 Nginx 配置文件。
