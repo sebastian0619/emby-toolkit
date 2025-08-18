@@ -16,6 +16,14 @@
               </n-button>
             </n-space>
           </template>
+          <n-alert title="操作提示" type="info" style="margin-top: 24px;">
+          本功能提取自MP插件，感谢作者<a
+                  href="https://github.com/justzerock/MoviePilot-Plugins/"
+                  target="_blank"
+                  style="font-size: 0.85em; margin-left: 8px; color: var(--n-primary-color); text-decoration: underline;"
+                >justzerock</a><br />
+          开启监控新入库可实时生成封面，包括原生媒体库、自建合集。
+        </n-alert>
         </n-page-header>
 
         <!-- ★★★ 核心修改：使用 n-grid 重新排版 ★★★ -->
