@@ -53,7 +53,7 @@
         </template>
         <n-alert title="操作提示" type="info" style="margin-top: 24px;">
           点击 <n-icon :component="SyncOutline" /> 可扫描Emby所有原生合集并显示缺失。<br />
-          点击 <n-icon :component="CloudDownloadIcon" /> 可一键订阅所有缺失，也可以通过任务中心只能定期检查缺失并订阅。
+          点击 <n-icon :component="CloudDownloadIcon" /> 可一键订阅所有缺失，也可以通过任务中心智能订阅定期检查缺失并订阅。
         </n-alert>
       </n-page-header>
 

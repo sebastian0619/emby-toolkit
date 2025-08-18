@@ -1,10 +1,11 @@
 <template>
   <n-layout content-style="padding: 24px;">
   <n-card class="dashboard-card" :bordered="false" size="small">
-    <template #header>
-      <!-- 将 card-title 类应用到标题文本的容器上 -->
-      <span class="card-title">手动处理</span>
-    </template>
+    
+    <n-alert title="手动处理操作提示" type="info" style="margin-top: 24px;">
+          可在下方搜索框输入片名直接搜索处理，也可以搜索存量剧集点击 <n-icon :component="AddToWatchlistIcon" /> 加入智能追剧 <br />
+          可点击待复核列表媒体项进入手动编辑页面、可一键清空待复核列表转到已处理记录。
+    </n-alert>
     <!-- ✅ [修正] Access prop via `props.taskStatus` -->
     <n-alert 
       v-if="props.taskStatus?.is_running" 
