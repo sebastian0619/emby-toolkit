@@ -701,9 +701,9 @@ app.register_blueprint(cover_generator_config_bp)
 app.register_blueprint(tasks_bp)
 
 if __name__ == '__main__':
-    # ★★★ 猴子补丁已经移到文件顶部，这里不再需要 ★★★
     from gevent.pywsgi import WSGIServer
     from geventwebsocket.handler import WebSocketHandler
+    import gevent # <--- 1. 导入 gevent
 
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}")
     
@@ -747,8 +747,7 @@ if __name__ == '__main__':
         else:
             logger.info("反向代理功能未在配置中启用。")
 
-    proxy_thread = threading.Thread(target=run_proxy_server, daemon=True)
-    proxy_thread.start()
+    gevent.spawn(run_proxy_server)
 
     main_app_port = int(constants.WEB_APP_PORT)
     logger.info(f"🚀 [GEVENT] 主应用服务器即将启动，监听端口: {main_app_port}")
