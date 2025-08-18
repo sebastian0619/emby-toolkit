@@ -36,14 +36,100 @@ class ListImporter:
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'Mozilla/5.0'})
 
-    def _get_titles_from_url(self, url: str) -> List[str]:
+    def _match_by_ids(self, imdb_id: Optional[str], tmdb_id: Optional[str], item_type: str) -> Optional[str]:
+        """
+        优先使用 ID 进行匹配，返回 TMDb ID 字符串。
+        逻辑：
+        - 如果已有 tmdb_id，直接返回该tmdb_id
+        - 如果只有 imdb_id，则使用 tmdb_handler 根据IMDb ID获取tmdb_id
+        - 如果都没有则返回 None
+        """
+        if tmdb_id:
+            logger.debug(f"通过TMDb ID直接匹配：{tmdb_id}")
+            # 可以考虑对TMDb ID做合法性验证，例如调用TMDb接口确认存在，但此处先直接返回
+            return tmdb_id
+        if imdb_id:
+            logger.debug(f"通过IMDb ID查找TMDb ID：{imdb_id}")
+            # 调用tmdb_handler中根据IMDb ID获取TMDb ID的接口，假设有
+            try:
+                tmdb_id_from_imdb = tmdb_handler.get_tmdb_id_by_imdb_id(imdb_id, self.tmdb_api_key, item_type)
+                if tmdb_id_from_imdb:
+                    logger.debug(f"IMDb ID {imdb_id} 对应 TMDb ID: {tmdb_id_from_imdb}")
+                    return str(tmdb_id_from_imdb)
+                else:
+                    logger.warning(f"无法通过IMDb ID {imdb_id} 查找到对应的TMDb ID。")
+            except Exception as e:
+                logger.error(f"通过IMDb ID查找TMDb ID时出错: {e}")
+        return None
+    
+    def _extract_ids_from_title_or_line(self, title_line: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        尝试从一行文本中提取IMDb ID和TMDb ID
+        返回 (imdb_id, tmdb_id)，均为字符串，找不到返回None
+
+        IMDb ID 格式通常是 tt\d+
+        TMDb ID 没有固定模式，但假设榜单中出现 tmdb://12345 或类似格式，可以适配
+        
+        这里只做简单示例，如果有别的格式可根据实际调整
+        """
+        imdb_id = None
+        tmdb_id = None
+        # IMDb ID 示例匹配
+        imdb_match = re.search(r'(tt\d{7,8})', title_line, re.I)
+        if imdb_match:
+            imdb_id = imdb_match.group(1)
+
+        # TMDb ID 假设格式 tmdb://数字
+        tmdb_match = re.search(r'tmdb://(\d+)', title_line, re.I)
+        if tmdb_match:
+            tmdb_id = tmdb_match.group(1)
+
+        return imdb_id, tmdb_id
+    
+    def _get_titles_and_imdbids_from_url(self, url: str) -> List[Dict[str, str]]:
+        """
+        从 RSS 源解析，返回 [{'title':标题, 'imdb_id': imdb_id}, ...] 列表。
+
+        imdb_id 从 <guid> 或 <link> 中提取，格式为 'ttxxxxxxx'。
+        """
         try:
             response = self.session.get(url, timeout=20)
             response.raise_for_status()
             content = response.text
-            titles = re.findall(r'<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>', content)
-            return titles[1:] if titles else []
-        except requests.RequestException as e:
+
+            # 解析 XML
+            root = ET.fromstring(content)
+
+            items = []
+            # RSS的item通常在 root/channel/item
+            channel = root.find('channel')
+            if channel is None:
+                return []
+
+            for item in channel.findall('item'):
+                title_elem = item.find('title')
+                guid_elem = item.find('guid')
+                link_elem = item.find('link')
+
+                title = title_elem.text if title_elem is not None else None
+
+                imdb_id = None
+                # 优先从 guid 中提取
+                if guid_elem is not None and guid_elem.text:
+                    match = re.search(r'tt\d{7,8}', guid_elem.text)
+                    if match:
+                        imdb_id = match.group(0)
+
+                # 如果 guid 没有，尝试从 link 中提取
+                if not imdb_id and link_elem is not None and link_elem.text:
+                    match = re.search(r'tt\d{7,8}', link_elem.text)
+                    if match:
+                        imdb_id = match.group(0)
+
+                if title:
+                    items.append({'title': title.strip(), 'imdb_id': imdb_id})
+            return items
+        except Exception as e:
             logger.error(f"从URL '{url}' 获取榜单时出错: {e}")
             return []
 
@@ -114,56 +200,57 @@ class ListImporter:
         return None
 
     def process(self, definition: Dict) -> List[Dict[str, str]]:
-        """
-        【V3 - 并发搜索版】
-        根据定义处理RSS源，并行搜索TMDb以提高效率。
-        """
         url = definition.get('url')
         item_types = definition.get('item_type', ['Movie'])
-        limit = definition.get('limit')
         if isinstance(item_types, str):
             item_types = [item_types]
+        limit = definition.get('limit')
 
         if not url:
             return []
 
-        titles = self._get_titles_from_url(url)
-        if not titles:
+        # 这里调用改好的函数，拿到有title和imdb_id的列表
+        items = self._get_titles_and_imdbids_from_url(url)
+        if not items:
             return []
 
         if limit and isinstance(limit, int) and limit > 0:
             logger.info(f"  -> RSS榜单已启用数量限制，将只处理前 {limit} 个项目。")
-            titles = titles[:limit]
-        
+            items = items[:limit]
+
         tmdb_items = []
-        
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        # ★★★ 核心修改：使用5个并发线程并行执行搜索任务 ★★★
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
         with ThreadPoolExecutor(max_workers=5) as executor:
-            
-            # 定义一个将在线程中执行的独立工作函数
-            def find_first_match(title_to_check, types_to_check):
-                cleaned_title = re.sub(r'\s*\(\d{4}\)$', '', title_to_check).strip()
+            def find_first_match(item: Dict[str,str], types_to_check):
+                imdb_id = item.get('imdb_id')
+                title = item.get('title')
+
+                # 尝试优先用 imdb_id 匹配
                 for item_type in types_to_check:
-                    # _match_title_to_tmdb 内部会调用缓慢的网络请求
+                    tmdb_id = None
+                    if imdb_id:
+                        tmdb_id = self._match_by_ids(imdb_id, None, item_type)
+                    if tmdb_id:
+                        return {'id': tmdb_id, 'type': item_type}
+
+                # 否则用标题搜索匹配，先清理序号和年份
+                cleaned_title = re.sub(r'^\s*\d+\.\s*', '', title)
+                cleaned_title = re.sub(r'\s*\(\d{4}\)$', '', cleaned_title).strip()
+
+                for item_type in types_to_check:
                     tmdb_id = self._match_title_to_tmdb(cleaned_title, item_type)
                     if tmdb_id:
-                        # 找到一个匹配就立刻返回结果
                         return {'id': tmdb_id, 'type': item_type}
-                return None # 如果所有类型都试过还没找到，返回None
+                return None
 
-            # 提交所有任务
-            future_to_title = {executor.submit(find_first_match, title, item_types): title for title in titles}
-
-            # 实时收集已完成的结果
-            for future in as_completed(future_to_title):
+            future_to_item = {executor.submit(find_first_match, item, item_types): item for item in items}
+            for future in as_completed(future_to_item):
                 result = future.result()
                 if result:
                     tmdb_items.append(result)
 
         logger.info(f"  -> RSS匹配完成，成功获得 {len(tmdb_items)} 个TMDb项目。")
-        # 去重逻辑保持不变
+        # 去重
         unique_items = list({f"{item['type']}-{item['id']}": item for item in tmdb_items}.values())
         return unique_items
 

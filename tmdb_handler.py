@@ -409,3 +409,24 @@ def get_person_credits_tmdb(person_id: int, api_key: str) -> Optional[Dict[str, 
     details = get_person_details_tmdb(person_id, api_key, append_to_response="movie_credits,tv_credits")
 
     return details
+
+# --- 通过 TMDb API v3 /find/{imdb_id} 方式获取TMDb ID ---
+def get_tmdb_id_by_imdb_id(imdb_id: str, api_key: str, media_type: str) -> Optional[int]:
+    """
+    通过 TMDb API v3 /find/{imdb_id} 方式获取TMDb ID。
+    media_type: 'movie' 或 'tv'
+    """
+    url = f"https://api.themoviedb.org/3/find/{imdb_id}"
+    params = {
+        "api_key": api_key,
+        "external_source": "imdb_id"
+    }
+    resp = requests.get(url, params=params)
+    if resp.status_code == 200:
+        data = resp.json()
+        if media_type.lower() == 'movie' and data.get('movie_results'):
+            return data['movie_results'][0].get('id')
+        elif media_type.lower() == 'series' or media_type.lower() == 'tv':
+            if data.get('tv_results'):
+                return data['tv_results'][0].get('id')
+    return None
