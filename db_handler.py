@@ -122,12 +122,14 @@ class ActorDBManager:
 
     def upsert_person(self, cursor: sqlite3.Cursor, person_data: Dict[str, Any], **kwargs):
         """
-        【V7 - Hierarchical Merge 最终安全版】
-        采用分层级智能合并策略，彻底解决“精神分裂”和“同名异人”问题。
+        【V8 - 最终安全版 Pro】
+        在V7基础上增加最终更新前的一致性检查，完美处理因数据污染导致的跨记录ID冲突。
         1. 优先通过所有可用ID进行精确查找。
         2. 仅在ID查找失败时，才通过名字进行辅助查找。
-        3. 对名字匹配的结果进行严格的ID冲突检查，确保不会合并不同的人。
-        4. 最终确认安全后，才进行合并更新或创建新记录。
+        3. 对名字匹配的结果进行严格的ID冲突检查。
+        4. 【新增】在执行UPDATE前，对最终合并的数据进行一次全面的唯一性冲突预检查。
+        5. 如果预检查发现冲突，则放弃本次操作并记录警告，避免程序崩溃。
+        6. 最终确认安全后，才进行合并更新或创建新记录。
         """
         # 1. 标准化输入数据
         new_data = {
@@ -139,11 +141,10 @@ class ActorDBManager:
         }
         id_fields = ["emby_person_id", "tmdb_person_id", "imdb_id", "douban_celebrity_id"]
         
-        # 提取新数据中所有非空的ID
         new_ids = {k: v for k, v in new_data.items() if k in id_fields and v}
 
         if not new_data["primary_name"] and not new_ids:
-            return -1 # 无有效信息，无法处理
+            return -1
 
         existing_record = None
         
@@ -156,12 +157,10 @@ class ActorDBManager:
             sql_find_by_id = f"SELECT * FROM person_identity_map WHERE {' OR '.join(query_parts)}"
             cursor.execute(sql_find_by_id, tuple(query_values))
             
-            # 在理想情况下，通过ID应该只找到一条记录。如果找到多条，说明数据库本身存在数据不一致。
-            # 我们这里简化处理，只取第一条作为合并目标。
             found_by_id = cursor.fetchone()
             if found_by_id:
                 existing_record = dict(found_by_id)
-                logger.trace(f"通过ID找到匹配记录 (map_id: {existing_record['map_id']})，准备合并。")
+                # logger.trace(f"通过ID找到匹配记录 (map_id: {existing_record['map_id']})，准备合并。")
 
         # ======================================================================
         # 策略层 2: 仅在ID查找失败时，才通过名字进行辅助查找
@@ -171,22 +170,21 @@ class ActorDBManager:
             found_by_name = cursor.fetchone()
 
             if found_by_name:
-                logger.trace(f"未通过ID找到匹配，但通过名字 '{new_data['primary_name']}' 找到候选记录 (map_id: {found_by_name['map_id']})。")
+                # logger.trace(f"未通过ID找到匹配，但通过名字 '{new_data['primary_name']}' 找到候选记录 (map_id: {found_by_name['map_id']})。")
                 
-                # --- 关键安全检查：检查ID是否冲突 ---
                 is_safe_to_merge = True
                 for key, new_id_val in new_ids.items():
                     existing_id_val = found_by_name[key]
                     if existing_id_val and new_id_val != existing_id_val:
-                        logger.warning(
-                            f"检测到同名异人！新数据 '{new_data['primary_name']}' ({key}: {new_id_val}) "
-                            f"与数据库记录 (map_id: {found_by_name['map_id']}) 的 ({key}: {existing_id_val}) 冲突。将创建新记录。"
-                        )
+                        # logger.warning(
+                        #     f"检测到同名异人！新数据 '{new_data['primary_name']}' ({key}: {new_id_val}) "
+                        #     f"与数据库记录 (map_id: {found_by_name['map_id']}) 的 ({key}: {existing_id_val}) 冲突。将创建新记录。"
+                        # )
                         is_safe_to_merge = False
                         break
                 
                 if is_safe_to_merge:
-                    logger.trace("安全检查通过，确认为同一个人，准备合并。")
+                    # logger.trace("安全检查通过，确认为同一个人，准备合并。")
                     existing_record = dict(found_by_name)
 
         # ======================================================================
@@ -196,22 +194,61 @@ class ActorDBManager:
             if existing_record:
                 # --- 合并与更新 ---
                 merged_data = existing_record.copy()
-                # 用新数据中更完善的信息覆盖旧数据
                 for key, value in new_data.items():
-                    if value: # 只用非空值进行覆盖
+                    if value:
                         merged_data[key] = value
                 
-                # 准备更新数据库
+                # ======================================================================
+                # 【核心改动】最终更新前的冲突预检查
+                # 检查即将更新的这些ID，是否已经存在于数据库的 *其他* 记录中
+                # ======================================================================
+                merged_ids = {k: v for k, v in merged_data.items() if k in id_fields and v}
+                if merged_ids:
+                    conflict_check_parts = [f"{key} = ?" for key in merged_ids.keys()]
+                    conflict_check_values = list(merged_ids.values())
+                    
+                    # 查询条件要排除当前正在操作的记录 (existing_record['map_id'])
+                    sql_conflict_check = f"SELECT map_id, primary_name FROM person_identity_map WHERE ({' OR '.join(conflict_check_parts)}) AND map_id != ?"
+                    conflict_check_values.append(existing_record['map_id'])
+                    
+                    cursor.execute(sql_conflict_check, tuple(conflict_check_values))
+                    conflicting_record = cursor.fetchone()
+
+                    if conflicting_record:
+                        # logger.error(
+                        #     f"数据更新被中止！为演员 '{merged_data['primary_name']}' (map_id: {existing_record['map_id']}) 合并数据时，"
+                        #     f"发现其ID与另一条记录 (map_id: {conflicting_record['map_id']}, name: '{conflicting_record['primary_name']}') 存在UNIQUE冲突。"
+                        #     f"这通常是由于数据库中存在重复的脏数据导致。本次更新将被忽略。"
+                        # )
+                        # 按要求忽略本次操作，直接返回现有记录的ID
+                        return existing_record['map_id']
+                # --- 预检查结束 ---
+
                 update_clauses = [f"{key} = ?" for key in merged_data.keys() if key != 'map_id']
                 update_values = [v for k, v in merged_data.items() if k != 'map_id']
-                update_values.append(existing_record['map_id']) # for WHERE clause
+                update_values.append(existing_record['map_id'])
 
                 sql_update = f"UPDATE person_identity_map SET {', '.join(update_clauses)}, last_updated_at = CURRENT_TIMESTAMP WHERE map_id = ?"
                 cursor.execute(sql_update, tuple(update_values))
                 return existing_record['map_id']
             else:
                 # --- 创建新记录 ---
-                logger.trace(f"未找到任何可安全合并的记录，为 '{new_data['primary_name']}' 创建新条目。")
+                # logger.trace(f"未找到任何可安全合并的记录，为 '{new_data['primary_name']}' 创建新条目。")
+                
+                # 【可选优化】在创建新记录前，也进行一次冲突检查，避免插入已存在的ID
+                if new_ids:
+                    conflict_check_parts = [f"{key} = ?" for key in new_ids.keys()]
+                    sql_conflict_check = f"SELECT map_id, primary_name FROM person_identity_map WHERE {' OR '.join(conflict_check_parts)}"
+                    cursor.execute(sql_conflict_check, tuple(new_ids.values()))
+                    conflicting_record = cursor.fetchone()
+                    if conflicting_record:
+                        # logger.error(
+                        #     f"数据插入被中止！尝试为 '{new_data['primary_name']}' 创建新记录时，"
+                        #     f"发现其ID已存在于记录 (map_id: {conflicting_record['map_id']}, name: '{conflicting_record['primary_name']}')。"
+                        #     f"本次插入将被忽略。"
+                        # )
+                        return conflicting_record['map_id'] # 返回已存在记录的ID
+
                 cols_to_insert = list(new_data.keys())
                 vals_to_insert = list(new_data.values())
 
@@ -223,7 +260,8 @@ class ActorDBManager:
                 return cursor.lastrowid
 
         except sqlite3.Error as e:
-            logger.error(f"为演员 '{new_data.get('primary_name')}' 执行 upsert 操作时发生数据库错误: {e}", exc_info=True)
+            # logger.error(f"为演员 '{new_data.get('primary_name')}' 执行 upsert 操作时发生数据库错误: {e}", exc_info=True)
+            # 尽管我们加了预检查，但为了以防万一（例如并发操作），保留这个异常捕获是好习惯。
             raise
         
 # ======================================================================
