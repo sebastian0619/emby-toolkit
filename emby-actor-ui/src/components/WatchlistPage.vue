@@ -1,5 +1,4 @@
----  src/components/WatchlistPage.vue ---
-<!-- src/components/WatchlistPage.vue (最终健壮版 - 弹窗终极修复 + 批量操作 + 排序) -->
+<!-- src/components/WatchlistPage.vue (无限滚动 + Shift 多选完整版) -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="watchlist-page">
@@ -19,9 +18,9 @@
         <template #extra>
           <n-space>
             <!-- 【新增】批量操作按钮，仅在有项目被选中时显示 -->
-            <n-dropdown 
+            <n-dropdown
               v-if="selectedItems.length > 0"
-              trigger="click" 
+              trigger="click"
               :options="batchActions"
               @select="handleBatchAction"
             >
@@ -30,7 +29,6 @@
                 <template #icon><n-icon :component="CaretDownIcon" /></template>
               </n-button>
             </n-dropdown>
-
             <n-radio-group v-model:value="currentView" size="small">
               <n-radio-button value="inProgress">追剧中</n-radio-button>
               <n-radio-button value="completed">已完结</n-radio-button>
@@ -47,7 +45,7 @@
                   扫描媒体库并将所有剧集添加到追剧列表
                 </n-tooltip>
               </template>
-              确定要扫描 Emby 媒体库中的所有剧集吗？<br/>
+              确定要扫描 Emby 媒体库中的所有剧集吗？<br />
               此操作会忽略已在列表中的剧集，只添加新的。
             </n-popconfirm>
             <n-tooltip>
@@ -62,17 +60,16 @@
         </template>
       </n-page-header>
       <n-divider />
-
       <div v-if="isLoading" class="center-container"><n-spin size="large" /></div>
       <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error" style="max-width: 500px;">{{ error }}</n-alert></div>
       <div v-else-if="filteredWatchlist.length > 0">
         <n-grid cols="1 s:1 m:2 l:3 xl:4" :x-gap="20" :y-gap="20" responsive="screen">
-          <n-gi v-for="item in renderedWatchlist" :key="item.item_id">
+          <n-gi v-for="(item, i) in renderedWatchlist" :key="item.item_id">
             <!-- 【布局优化】减小海报和内容之间的 gap -->
             <n-card class="dashboard-card series-card" :bordered="false">
-              <n-checkbox 
+              <n-checkbox
                 :checked="selectedItems.includes(item.item_id)"
-                @update:checked="toggleSelection(item.item_id)"
+                @update:checked="(checked, event) => toggleSelection(item.item_id, event, i)"
                 class="card-checkbox"
               />
               <div class="card-poster-container">
@@ -104,9 +101,8 @@
                         {{ getSmartTMDbStatusText(item) }}
                       </n-tag>
                     </n-space>
-                    
-                    <n-tag v-if="hasMissing(item)" type="warning" size="small" round>{{ getMissingCountText(item) }}</n-tag>
 
+                    <n-tag v-if="hasMissing(item)" type="warning" size="small" round>{{ getMissingCountText(item) }}</n-tag>
                     <n-text v-if="nextEpisode(item)?.name" :depth="3" class="next-episode-text">
                       <n-icon :component="CalendarIcon" /> 播出时间: {{ nextEpisode(item).name }} ({{ formatAirDate(nextEpisode(item).air_date) }})
                     </n-text>
@@ -117,11 +113,11 @@
                   <!-- 【最终优化】将“查看缺失”按钮改为带 Tooltip 的图标按钮 -->
                   <n-tooltip>
                     <template #trigger>
-                      <n-button 
-                        type="primary" 
-                        size="small" 
-                        circle 
-                        @click="() => openMissingInfoModal(item)" 
+                      <n-button
+                        type="primary"
+                        size="small"
+                        circle
+                        @click="() => openMissingInfoModal(item)"
                         :disabled="!hasMissing(item)"
                       >
                         <template #icon><n-icon :component="EyeIcon" /></template>
@@ -131,9 +127,9 @@
                   </n-tooltip>
                   <n-tooltip>
                     <template #trigger>
-                      <n-button 
-                        circle 
-                        :loading="refreshingItems[item.item_id]" 
+                      <n-button
+                        circle
+                        :loading="refreshingItems[item.item_id]"
                         @click="() => triggerSingleRefresh(item.item_id, item.item_name)"
                       >
                         <template #icon><n-icon :component="SyncOutline" /></template>
@@ -154,15 +150,12 @@
             </n-card>
           </n-gi>
         </n-grid>
-
         <div ref="loaderRef" class="loader-trigger">
           <n-spin v-if="hasMore" size="small" />
         </div>
-
       </div>
       <div v-else class="center-container"><n-empty :description="emptyStateDescription" size="huge" /></div>
     </div>
-
     <n-modal v-model:show="showModal" preset="card" style="width: 90%; max-width: 900px;" :title="selectedSeries ? `缺失详情 - ${selectedSeries.item_name}` : ''" :bordered="false" size="huge">
       <div v-if="selectedSeries && missingData">
         <n-tabs type="line" animated>
@@ -188,23 +181,27 @@
     </n-modal>
   </n-layout>
 </template>
-
 <script setup>
-import { ref, onMounted, onBeforeUnmount, h, computed, watch, nextTick } from 'vue';
+import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown } from 'naive-ui';
-// 【图标优化】引入 PlayCircleOutline，并重新命名图标别名，使其更符合逻辑
 import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon } from '@vicons/ionicons5';
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
-const EmbyIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 48 48", width: "18", height: "18" }, [ h('path', { d: "M24,4.2c-11,0-19.8,8.9-19.8,19.8S13,43.8,24,43.8s19.8-8.9,19.8-19.8S35,4.2,24,4.2z M24,39.8c-8.7,0-15.8-7.1-15.8-15.8S15.3,8.2,24,8.2s15.8,7.1,15.8,15.8S32.7,39.8,24,39.8z", fill: "currentColor" }), h('polygon', { points: "22.2,16.4 22.2,22.2 16.4,22.2 16.4,25.8 22.2,25.8 22.2,31.6 25.8,31.6 25.8,25.8 31.6,31.6 31.6,22.2 25.8,22.2 25.8,16.4 ", fill: "currentColor" }) ]);
-const TMDbIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 512 512", width: "18", height: "18" }, [ h('path', { d: "M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM133.2 176.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zM133.2 262.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8z", fill: "#01b4e4" }) ]);
+const EmbyIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 48 48", width: "18", height: "18" }, [
+  h('path', { d: "M24,4.2c-11,0-19.8,8.9-19.8,19.8S13,43.8,24,43.8s19.8-8.9,19.8-19.8S35,4.2,24,4.2z M24,39.8c-8.7,0-15.8-7.1-15.8-15.8S15.3,8.2,24,8.2s15.8,7.1,15.8,15.8S32.7,39.8,24,39.8z", fill: "currentColor" }),
+  h('polygon', { points: "22.2,16.4 22.2,22.2 16.4,22.2 16.4,25.8 22.2,25.8 22.2,31.6 25.8,31.6 25.8,25.8 31.6,31.6 31.6,22.2 25.8,22.2 25.8,16.4 ", fill: "currentColor" })
+]);
+const TMDbIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 512 512", width: "18", height: "18" }, [
+  h('path', { d: "M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM133.2 176.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zM133.2 262.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8z", fill: "#01b4e4" })
+]);
 
 const { configModel } = useConfig();
 const message = useMessage();
 const dialog = useDialog();
 const props = defineProps({ taskStatus: { type: Object, required: true } });
+
 const rawWatchlist = ref([]);
 const currentView = ref('inProgress');
 const isLoading = ref(true);
@@ -222,13 +219,36 @@ const loaderRef = ref(null);
 let observer = null;
 
 const selectedItems = ref([]);
-const toggleSelection = (itemId) => {
-  const index = selectedItems.value.indexOf(itemId);
-  if (index > -1) {
-    selectedItems.value.splice(index, 1);
+const lastSelectedIndex = ref(null);
+
+// 支持 shift+多选
+const toggleSelection = (itemId, event, index) => {
+  if (!event) return;
+
+  if (event.shiftKey && lastSelectedIndex.value !== null) {
+    const start = Math.min(lastSelectedIndex.value, index);
+    const end = Math.max(lastSelectedIndex.value, index);
+    const idsInRange = renderedWatchlist.value.slice(start, end + 1).map(i => i.item_id);
+
+    const isCurrentlySelected = selectedItems.value.includes(itemId);
+    const willSelect = !isCurrentlySelected; // 因为点击时状态还没切换，取反表示切换后的状态
+
+    if (willSelect) {
+      const newSet = new Set(selectedItems.value);
+      idsInRange.forEach(id => newSet.add(id));
+      selectedItems.value = Array.from(newSet);
+    } else {
+      selectedItems.value = selectedItems.value.filter(id => !idsInRange.includes(id));
+    }
   } else {
-    selectedItems.value.push(itemId);
+    const idx = selectedItems.value.indexOf(itemId);
+    if (idx > -1) {
+      selectedItems.value.splice(idx, 1);
+    } else {
+      selectedItems.value.push(itemId);
+    }
   }
+  lastSelectedIndex.value = index;
 };
 
 // 【核心修改】将 batchActions 转换为 computed 属性
@@ -253,7 +273,6 @@ const batchActions = computed(() => {
   return []; // 默认返回空数组
 });
 
-
 // 【核心修改】更新 handleBatchAction 以处理新的 'rewatch' 键
 const handleBatchAction = (key) => {
   if (key === 'forceEnd') {
@@ -275,7 +294,7 @@ const handleBatchAction = (key) => {
         }
       }
     });
-  } 
+  }
   // 【新增逻辑】处理“重新追剧”
   else if (key === 'rewatch') {
     dialog.info({
@@ -285,16 +304,12 @@ const handleBatchAction = (key) => {
       negativeText: '取消',
       onPositiveClick: async () => {
         try {
-          // 注意：这里我们假设后端有一个可以批量更新状态的接口
-          // 如果没有，你需要先在后端实现它
           const response = await axios.post('/api/watchlist/batch_update_status', {
             item_ids: selectedItems.value,
             new_status: 'Watching'
           });
           message.success(response.data.message || '批量操作成功！');
-          // 操作成功后，自动切换到“追剧中”视图查看结果
           currentView.value = 'inProgress';
-          // selectedItems 会被 currentView 的 watch 自动清空
         } catch (err) {
           message.error(err.response?.data?.error || '批量操作失败。');
         }
@@ -315,7 +330,6 @@ const addAllSeriesToWatchlist = async () => {
     isAddingAll.value = false;
   }
 };
-
 const triggerSingleRefresh = async (itemId, itemName) => {
   refreshingItems.value[itemId] = true;
   try {
@@ -340,9 +354,9 @@ const subscribeSeason = async (seasonNumber) => {
     });
     message.success(`《${selectedSeries.value.item_name}》第 ${seasonNumber} 季已提交订阅！`);
     if (selectedSeries.value.missing_info_json) {
-        const data = JSON.parse(selectedSeries.value.missing_info_json);
-        data.missing_seasons = data.missing_seasons.filter(s => s.season_number !== seasonNumber);
-        selectedSeries.value.missing_info_json = JSON.stringify(data);
+      const data = JSON.parse(selectedSeries.value.missing_info_json);
+      data.missing_seasons = data.missing_seasons.filter(s => s.season_number !== seasonNumber);
+      selectedSeries.value.missing_info_json = JSON.stringify(data);
     }
   } catch (err) {
     message.error(err.response?.data?.error || '订阅失败');
@@ -350,7 +364,6 @@ const subscribeSeason = async (seasonNumber) => {
     subscribing.value[key] = false;
   }
 };
-
 const filteredWatchlist = computed(() => {
   let list = [];
   if (currentView.value === 'inProgress') {
@@ -378,33 +391,28 @@ const filteredWatchlist = computed(() => {
   }
   return list;
 });
-
 watch(currentView, () => {
   displayCount.value = 30;
   selectedItems.value = [];
+  lastSelectedIndex.value = null;
 });
-
 const renderedWatchlist = computed(() => {
   return filteredWatchlist.value.slice(0, displayCount.value);
 });
-
 const hasMore = computed(() => {
   return displayCount.value < filteredWatchlist.value.length;
 });
-
 const loadMore = () => {
   if (hasMore.value) {
-    displayCount.value += INCREMENT;
+    displayCount.value = Math.min(displayCount.value + INCREMENT, filteredWatchlist.value.length);
   }
 };
-
 const emptyStateDescription = computed(() => {
   if (currentView.value === 'inProgress') {
     return '追剧列表为空，快去“手动处理”页面搜索并添加你正在追的剧集吧！';
   }
   return '还没有已完结的剧集。';
 });
-
 const missingData = computed(() => {
   if (!selectedSeries.value || !selectedSeries.value.missing_info_json) {
     return { missing_seasons: [], missing_episodes: [] };
@@ -415,13 +423,11 @@ const missingData = computed(() => {
     return { missing_seasons: [], missing_episodes: [] };
   }
 });
-
 const nextEpisode = (item) => {
   if (!item.next_episode_to_air_json) return null;
-  try { return JSON.parse(item.next_episode_to_air_json); } 
+  try { return JSON.parse(item.next_episode_to_air_json); }
   catch (e) { return null; }
 };
-
 const hasMissing = (item) => {
   if (!item.missing_info_json) return false;
   try {
@@ -431,7 +437,6 @@ const hasMissing = (item) => {
     return false;
   }
 };
-
 const getMissingCountText = (item) => {
   if (!hasMissing(item)) return '';
   const data = JSON.parse(item.missing_info_json);
@@ -442,10 +447,9 @@ const getMissingCountText = (item) => {
   if (episode_count > 0) parts.push(`缺 ${episode_count} 集`);
   return parts.join(' | ');
 };
-
 const formatTimestamp = (timestamp) => {
   if (!timestamp) return '从未';
-  try { return format(parseISO(timestamp), 'MM-dd HH:mm'); } 
+  try { return format(parseISO(timestamp), 'MM-dd HH:mm'); }
   catch (e) { return 'N/A'; }
 };
 const formatAirDate = (dateString) => {
@@ -471,7 +475,6 @@ const openInEmby = (itemId) => {
     window.open(url, '_blank');
   }
 };
-
 const statusInfo = (status) => {
   const map = {
     'Watching': { type: 'success', text: '追剧中', icon: WatchingIcon, next: 'Paused', nextText: '暂停' },
@@ -480,7 +483,6 @@ const statusInfo = (status) => {
   };
   return map[status] || map['Paused'];
 };
-
 const translateTmdbStatus = (status) => {
   const statusMap = {
     "Returning Series": "连载中",
@@ -495,7 +497,6 @@ const translateTmdbStatus = (status) => {
 const getSmartTMDbStatusText = (item) => {
   const internalStatus = item.status;
   const tmdbStatus = item.tmdb_status;
-
   if (internalStatus === 'Completed') {
     if (tmdbStatus === 'Ended' || tmdbStatus === 'Canceled') {
       return '待回归';
@@ -503,7 +504,6 @@ const getSmartTMDbStatusText = (item) => {
   }
   return translateTmdbStatus(tmdbStatus);
 };
-
 const getSmartTMDbStatusType = (item) => {
   if (getSmartTMDbStatusText(item) === '待回归') {
     return 'info';
@@ -516,7 +516,6 @@ const fetchWatchlist = async () => {
   try {
     const response = await axios.get('/api/watchlist');
     rawWatchlist.value = response.data;
-    // displayCount.value = 30; // 切换视图时已经重置，这里可以不重复
   } catch (err) {
     error.value = err.response?.data?.error || '获取追剧列表失败。';
   } finally {
@@ -541,8 +540,7 @@ const removeFromWatchlist = async (itemId, itemName) => {
     await axios.post(`/api/watchlist/remove/${itemId}`);
     message.success(`已将《${itemName}》从追剧列表移除。`);
     rawWatchlist.value = rawWatchlist.value.filter(i => i.item_id !== itemId);
-  } catch (err)
- {
+  } catch (err) {
     message.error(err.response?.data?.error || '移除失败。');
   }
 };
@@ -568,18 +566,16 @@ const triggerSingleUpdate = async (itemId) => {
     message.error(err.response?.data?.error || '启动单项更新失败。');
   }
 };
-
 const openMissingInfoModal = (item) => {
   selectedSeries.value = item;
   showModal.value = true;
 };
-
 watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {
   if (wasRunning && !isRunning) {
     const relevantActions = [
-        '追剧',
-        '扫描全库剧集',
-        '手动刷新'
+      '追剧',
+      '扫描全库剧集',
+      '手动刷新'
     ];
     if (relevantActions.some(action => props.taskStatus.current_action.includes(action))) {
       message.info('相关后台任务已结束，正在刷新追剧列表...');
@@ -588,6 +584,7 @@ watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {
   }
 });
 
+// ==== 无限滚动部分 ====
 onMounted(() => {
   fetchWatchlist();
   observer = new IntersectionObserver(
@@ -596,49 +593,44 @@ onMounted(() => {
         loadMore();
       }
     },
-    { threshold: 1.0 }
+    {
+      root: null,
+      rootMargin: '0px',
+      threshold: 0.1, // 元素进入视口10%触发加载
+    }
   );
   if (loaderRef.value) {
     observer.observe(loaderRef.value);
   }
 });
-
 onBeforeUnmount(() => {
   if (observer) {
     observer.disconnect();
   }
 });
-
-watch(loaderRef, (newEl) => {
-  if (observer && newEl) {
-    observer.observe(newEl);
-  }
+watch(loaderRef, (newEl, oldEl) => {
+  if (oldEl && observer) observer.unobserve(oldEl);
+  if (newEl && observer) observer.observe(newEl);
 });
-
 watch(isTaskRunning, (isRunning, wasRunning) => {
   if (wasRunning && !isRunning) {
     const lastAction = props.taskStatus.last_action;
     const relevantActions = ['追剧', '扫描全库剧集', '手动刷新'];
     const isRelevant = lastAction && relevantActions.some(action => lastAction.includes(action));
-
     if (isRelevant) {
       message.info('相关后台任务已结束，正在刷新追剧列表...');
       fetchWatchlist();
     }
   }
 });
-
 </script>
-
 <style scoped>
 .watchlist-page { padding: 0 10px; }
 .center-container { display: flex; justify-content: center; align-items: center; height: calc(100vh - 200px); }
-
 /* 卡片样式，为 checkbox 定位做准备 */
 .series-card {
   position: relative;
 }
-
 /* 【修改】Checkbox 样式，默认隐藏，鼠标悬浮或已选中时显示 */
 .card-checkbox {
   position: absolute;
@@ -655,7 +647,6 @@ watch(isTaskRunning, (isRunning, wasRunning) => {
   visibility: hidden;
   transition: opacity 0.2s ease-in-out, visibility 0.2s ease-in-out;
 }
-
 /* 鼠标悬浮于卡片上时，或当多选框自身被勾选时，显示它 */
 /* 注意: .n-checkbox--checked 是 Naive UI 内部用于标记“已选中”状态的类 */
 .series-card:hover .card-checkbox,
@@ -663,25 +654,70 @@ watch(isTaskRunning, (isRunning, wasRunning) => {
   opacity: 1;
   visibility: visible;
 }
-
 /* 【终极修复】为海报容器添加 overflow: hidden，裁剪掉溢出的图片部分，防止其挤压右侧内容 */
-.card-poster-container { 
-  flex-shrink: 0; 
-  width: 160px; 
-  height: 240px; 
+.card-poster-container {
+  flex-shrink: 0;
+  width: 160px;
+  height: 240px;
   overflow: hidden;
 }
-.card-poster { width: 100%; height: 100%; }
-.poster-placeholder { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; background-color: var(--n-action-color); }
+.card-poster {
+  width: 100%;
+  height: 100%;
+}
+.poster-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background-color: var(--n-action-color);
+}
 /* 【布局优化】减小右侧内边距，给内容更多空间 */
-.card-content-container { flex-grow: 1; display: flex; flex-direction: column; padding: 12px 8px 12px 0; min-width: 0; }
-.card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-shrink: 0; }
-.card-title { font-weight: 600; font-size: 1.1em; line-height: 1.3; }
-.card-status-area { flex-grow: 1; padding-top: 8px; }
-.last-checked-text { display: block; font-size: 0.8em; margin-top: 6px; }
-.next-episode-text { display: flex; align-items: center; gap: 4px; font-size: 0.8em; }
+.card-content-container {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 8px 12px 0;
+  min-width: 0;
+}
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.card-title {
+  font-weight: 600;
+  font-size: 1.1em;
+  line-height: 1.3;
+}
+.card-status-area {
+  flex-grow: 1;
+  padding-top: 8px;
+}
+.last-checked-text {
+  display: block;
+  font-size: 0.8em;
+  margin-top: 6px;
+}
+.next-episode-text {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.8em;
+}
 /* 【最终优化】将按钮改为环绕对齐，使其均匀分布 */
-.card-actions { border-top: 1px solid var(--n-border-color); padding-top: 8px; margin-top: 8px; display: flex; justify-content: space-around; align-items: center; flex-shrink: 0; }
+.card-actions {
+  border-top: 1px solid var(--n-border-color);
+  padding-top: 8px;
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  flex-shrink: 0;
+}
 .loader-trigger {
   height: 50px;
   display: flex;
@@ -697,14 +733,12 @@ watch(isTaskRunning, (isRunning, wasRunning) => {
 .series-card.dashboard-card > :deep(.n-card__content) {
   /* 核心：强制将 flex 方向从全局的 "column" 改为 "row" */
   flex-direction: row !important;
-
   /* 
     重置对齐方式。
     全局的 "space-between" 在水平布局下会导致元素被拉开，
     我们把它改回默认的起始对齐。
   */
   justify-content: flex-start !important;
-
   /* 
     重置内边距和间距，以匹配你在 template 中最初的设定。
     这确保了海报和右侧内容区之间有正确的空隙。
