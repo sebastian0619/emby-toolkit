@@ -101,7 +101,18 @@ You MUST return a single, valid JSON object mapping each original name to its Ch
 - Do not add any explanations or text outside the JSON object.
 """
 
-# ★★★ 说明书二：给“影视顾问”看的（顾问模式） - 已优化 ★★★
+# ★★★ 说明书二：给“音译专家”看的 ★★★
+FORCE_TRANSLITERATE_PROMPT = """
+You are a translation API that only returns JSON.
+Your task is to transliterate a list of proper nouns (personal names, locations, etc.) into **Simplified Chinese (简体中文)** based on their pronunciation.
+
+- The source language can be anything. Your goal is to find the most common Chinese phonetic translation.
+- The target language MUST ALWAYS be Simplified Chinese.
+- If a name absolutely cannot be transliterated (e.g., it's a random code), use the original name as its value.
+- Do not add any explanations or text outside the JSON object.
+"""
+
+# ★★★ 说明书三：给“影视顾问”看的（顾问模式）  ★★★
 QUALITY_MODE_SYSTEM_PROMPT = """
 You are a world-class film and television expert, acting as a JSON-only API.
 Your mission is to accurately translate foreign language or Pinyin names of actors and characters into **Simplified Chinese (简体中文)**, using the provided movie/series context.
@@ -171,7 +182,7 @@ class AITranslator:
     # --- ✨✨✨ 翻译调度 ✨✨✨ ---
     def batch_translate(self, 
                         texts: List[str], 
-                        mode: str = 'fast', # 新增一个“模式”参数，默认是“快速度”
+                        mode: str = 'fast',
                         title: Optional[str] = None, 
                         year: Optional[int] = None) -> Dict[str, str]:
         
@@ -184,6 +195,10 @@ class AITranslator:
         if mode == 'quality':
             # 如果指令是“高质量”，就喊“顾问组”来干活
             return self._translate_quality_mode(unique_texts, title, year)
+        # ★★★ 新增调度逻辑 ★★★
+        elif mode == 'transliterate':
+            # 如果指令是“强制音译”，就喊“音译组”来干活
+            return self._translate_transliterate_mode(unique_texts)
         else:
             # 其他所有情况（包括默认的'fast'），都喊“翻译组”来干活
             return self._translate_fast_mode(unique_texts)
@@ -222,6 +237,41 @@ class AITranslator:
             # 4. 安排休息时间（如果不是最后一批）
             if i < total_chunks - 1:
                 logger.debug(f"批次处理完毕，等待 {REQUEST_INTERVAL} 秒...")
+                time.sleep(REQUEST_INTERVAL)
+        
+        return all_results
+    
+    # ★★★ “强制音译”小组长 ★★★
+    def _translate_transliterate_mode(self, texts: List[str]) -> Dict[str, str]:
+        CHUNK_SIZE = 50
+        REQUEST_INTERVAL = 1.5
+
+        all_results = {}
+        text_chunks = [texts[i:i + CHUNK_SIZE] for i in range(0, len(texts), CHUNK_SIZE)]
+        total_chunks = len(text_chunks)
+
+        if total_chunks > 1:
+            logger.info(f"[音译模式] 数据量较大，已自动分块。共 {len(texts)} 个词条，分为 {total_chunks} 个批次。")
+        else:
+            logger.info(f"[音译模式] 开始处理 {len(texts)} 个词条...")
+
+        for i, chunk in enumerate(text_chunks):
+            if total_chunks > 1:
+                logger.info(f"--- [音译模式] 正在处理批次 {i + 1}/{total_chunks} ---")
+            
+            result_chunk = {}
+            # 根据提供商选择不同的实现
+            if self.provider == 'openai':
+                result_chunk = self._transliterate_openai(chunk)
+            elif self.provider == 'zhipuai':
+                result_chunk = self._transliterate_zhipuai(chunk)
+            elif self.provider == 'gemini':
+                result_chunk = self._transliterate_gemini(chunk)
+            
+            if result_chunk:
+                all_results.update(result_chunk)
+            
+            if i < total_chunks - 1:
                 time.sleep(REQUEST_INTERVAL)
         
         return all_results
@@ -404,5 +454,72 @@ class AITranslator:
             logger.error(f"[顾问模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
             if hasattr(e, 'last_response') and e.last_response:
                 logger.info("尝试从Gemini的错误响应中恢复内容...")
+                return _safe_json_loads(e.last_response.text) or {}
+            return {}
+        
+    # ★★★ OpenAI 音译实现 ★★★
+    def _transliterate_openai(self, texts: List[str]) -> Dict[str, str]:
+        if not self.client: return {}
+        system_prompt = FORCE_TRANSLITERATE_PROMPT
+        user_prompt = json.dumps(texts, ensure_ascii=False)
+        try:
+            chat_completion = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                timeout=300
+            )
+            response_content = chat_completion.choices[0].message.content
+            return _safe_json_loads(response_content) or {}
+        except Exception as e:
+            logger.error(f"[音译模式-OpenAI] 翻译时发生错误: {e}", exc_info=True)
+            return {}
+
+    # ★★★ 智谱AI 音译实现 ★★★
+    def _transliterate_zhipuai(self, texts: List[str]) -> Dict[str, str]:
+        if not self.client: return {}
+        system_prompt = FORCE_TRANSLITERATE_PROMPT
+        user_prompt = json.dumps(texts, ensure_ascii=False)
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.0,
+                response_format={"type": "json_object"}
+            )
+            response_content = response.choices[0].message.content
+            return _safe_json_loads(response_content) or {}
+        except Exception as e:
+            logger.error(f"[音译模式-智谱AI] 翻译时发生错误: {e}", exc_info=True)
+            return {}
+
+    # ★★★ Gemini 音译实现 ★★★
+    def _transliterate_gemini(self, texts: List[str]) -> Dict[str, str]:
+        if not self.client: return {}
+        system_prompt = FORCE_TRANSLITERATE_PROMPT
+        user_prompt = json.dumps(texts, ensure_ascii=False)
+        full_prompt = [system_prompt, user_prompt]
+        
+        generation_config = genai.types.GenerationConfig(
+            response_mime_type="application/json",
+            temperature=0.0
+        )
+        try:
+            response = self.client.generate_content(
+                full_prompt,
+                generation_config=generation_config,
+                request_options={'timeout': 300}
+            )
+            return _safe_json_loads(response.text) or {}
+        except Exception as e:
+            logger.error(f"[音译模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
+            if hasattr(e, 'last_response') and e.last_response:
                 return _safe_json_loads(e.last_response.text) or {}
             return {}

@@ -493,6 +493,7 @@ class MediaProcessor:
                     pass
 
         return douban_cast_raw, douban_rating
+    
     # --- 通过豆瓣ID查找映射表 ---
     def _find_person_in_map_by_douban_id(self, douban_id: str, cursor: sqlite3.Cursor) -> Optional[sqlite3.Row]:
         """
@@ -509,6 +510,7 @@ class MediaProcessor:
         except sqlite3.Error as e:
             logger.error(f"通过豆瓣ID '{douban_id}' 查询 person_identity_map 时出错: {e}")
             return None
+    
     # --- 通过TmdbID查找映射表 ---
     def _find_person_in_map_by_tmdb_id(self, tmdb_id: str, cursor: sqlite3.Cursor) -> Optional[sqlite3.Row]:
         """
@@ -525,6 +527,7 @@ class MediaProcessor:
         except sqlite3.Error as e:
             logger.error(f"通过 TMDB ID '{tmdb_id}' 查询 person_identity_map 时出错: {e}")
             return None
+    
     # --- 通过ImbdID查找映射表 ---
     def _find_person_in_map_by_imdb_id(self, imdb_id: str, cursor: sqlite3.Cursor) -> Optional[sqlite3.Row]:
         """
@@ -542,6 +545,7 @@ class MediaProcessor:
         except sqlite3.Error as e:
             logger.error(f"通过 IMDb ID '{imdb_id}' 查询 person_identity_map 时出错: {e}")
             return None
+    
     # --- 补充新增演员额外数据 ---
     def _get_actor_metadata_from_cache(self, tmdb_id: int, cursor: sqlite3.Cursor) -> Optional[Dict]:
         """根据TMDb ID从ActorMetadata缓存表中获取演员的元数据。"""
@@ -552,6 +556,7 @@ class MediaProcessor:
         if metadata_row:
             return dict(metadata_row)  # 将其转换为字典，方便使用
         return None
+    
     # --- 批量注入分集演员表 ---
     def _batch_update_episodes_cast(self, series_id: str, series_name: str, final_cast_list: List[Dict[str, Any]]):
         """
@@ -611,6 +616,7 @@ class MediaProcessor:
             time.sleep(0.2)
 
         logger.info(f"  -> 剧集 '{series_name}' 的分集批量更新完成。")
+    
     # --- 核心处理总管 ---
     def process_single_item(self, emby_item_id: str,
                             force_reprocess_this_item: bool = False,
@@ -1239,111 +1245,103 @@ class MediaProcessor:
         logger.info(f"  -> 将对 {len(cast_to_process)} 位演员进行最终的翻译和格式化处理...")
 
         # ======================================================================
-        # 步骤 4: 翻译准备与执行 (后收集，并检查缓存！)
+        # 步骤 4: ★★★ 三级翻译流程 ★★★
         # ======================================================================
-        ai_translation_succeeded = False
-        translation_cache = {}  # ★★★ 核心修正1：将缓存初始化在最外面
-        texts_to_collect = set()
-        texts_to_send_to_api = set()
-
-        if self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False):
-            logger.info("  -> AI翻译已启用，优先尝试批量翻译模式。")
-
-            try:
-                translation_mode = self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_MODE, "fast")
-
-                for actor in cast_to_process:
-                    name = actor.get('name')
-                    if name and not utils.contains_chinese(name):
-                        texts_to_collect.add(name)
-
-                    character = actor.get('character')
-                    if character:
-                        cleaned_character = utils.clean_character_name_static(character)
-                        if cleaned_character and not utils.contains_chinese(cleaned_character):
-                            texts_to_collect.add(cleaned_character)
-
-                if translation_mode == 'fast':
-                    logger.debug("  -> [翻译模式] 正在检查全局翻译缓存...")
-                    for text in texts_to_collect:
-                        cached_entry = self.actor_db_manager.get_translation_from_db(cursor=cursor, text=text)
-                        if cached_entry:
-                            translation_cache[text] = cached_entry.get("translated_text")
-                        else:
-                            texts_to_send_to_api.add(text)
-                else:
-                    logger.debug("  -> [顾问模式] 跳过缓存检查，直接翻译所有词条。")
-                    texts_to_send_to_api = texts_to_collect
-                if texts_to_send_to_api:
-                    item_title = item_details_from_emby.get("Name")
-                    item_year = item_details_from_emby.get("ProductionYear")
-
-                    logger.info(f"  -> 将 {len(texts_to_send_to_api)} 个词条提交给AI (模式: {translation_mode})。")
-
-                    translation_map_from_api = self.ai_translator.batch_translate(
-                        texts=list(texts_to_send_to_api),
-                        mode=translation_mode,
-                        title=item_title,
-                        year=item_year
-                    )
-
-                    if translation_map_from_api:
-                        translation_cache.update(translation_map_from_api)
-                        if translation_mode == 'fast':
-                            for original, translated in translation_map_from_api.items():
-                                self.actor_db_manager.save_translation_to_db(
-                                    cursor=cursor,
-                                    original_text=original,
-                                    translated_text=translated,
-                                    engine_used=self.ai_translator.provider
-                                )
-
-                ai_translation_succeeded = True
-            except Exception as e:
-                logger.error(f"  -> 调用AI批量翻译时发生严重错误: {e}", exc_info=True)
-                ai_translation_succeeded = False
-        else:
+        if not (self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False)):
             logger.info("  -> AI翻译未启用，将保留演员和角色名原文。")
-
-        # --- ★★★ 核心修正2：无论AI是否成功，都执行清理与回填，降级逻辑只在AI失败时触发 ★★★
-
-        if ai_translation_succeeded:
-            logger.info("------------ AI翻译流程成功，开始应用结果 ------------")
-
-            if not texts_to_collect:
-                logger.info("  所有演员名和角色名均已是中文，无需翻译。")
-            elif not texts_to_send_to_api:
-                logger.info(f"  所有 {len(texts_to_collect)} 个待翻译词条均从数据库缓存中获取，无需调用AI。")
-            else:
-                logger.info(f"  AI翻译完成，共处理 {len(translation_cache)} 个词条。")
-
-            # 无条件执行回填，因为translation_cache包含所有需数据（来自缓存或API）。
+        else:
+            # --- 数据准备 ---
+            final_translation_map = {} # 存储所有最终的翻译结果
+            
+            # 1. 收集所有需要翻译的词条
+            terms_to_translate = set()
             for actor in cast_to_process:
-                # 1. 处理演员名
-                original_name = actor.get('name')
-                translated_name = translation_cache.get(original_name, original_name)
-                if original_name != translated_name:
-                    logger.debug(f"  演员名翻译: '{original_name}' -> '{translated_name}'")
-                actor['name'] = translated_name
+                name = actor.get('name')
+                if name and not utils.contains_chinese(name):
+                    terms_to_translate.add(name)
+                character = actor.get('character')
+                if character:
+                    cleaned_character = utils.clean_character_name_static(character)
+                    if cleaned_character and not utils.contains_chinese(cleaned_character):
+                        terms_to_translate.add(cleaned_character)
+            
+            remaining_terms = list(terms_to_translate)
 
-                # 2. 处理角色名
+            # --- 🚀 第一级: 翻译官模式 (带全局缓存) ---
+            if remaining_terms:
+                logger.info(f"--- 第一级翻译开始: 快速模式处理 {len(remaining_terms)} 个词条 ---")
+                
+                # 1.1 查缓存
+                cached_results = {}
+                terms_for_api = []
+                for term in remaining_terms:
+                    cached = self.actor_db_manager.get_translation_from_db(cursor, term)
+                    if cached and cached.get('translated_text'):
+                        cached_results[term] = cached['translated_text']
+                    else:
+                        terms_for_api.append(term)
+                
+                if cached_results:
+                    final_translation_map.update(cached_results)
+                    logger.info(f"  -> 从数据库缓存命中 {len(cached_results)} 个词条。")
+
+                # 1.2 调API
+                if terms_for_api:
+                    logger.info(f"  -> 将 {len(terms_for_api)} 个词条提交给AI (模式: fast)...")
+                    fast_api_results = self.ai_translator.batch_translate(terms_for_api, mode='fast')
+                    
+                    # 1.3 处理API结果并回写缓存
+                    for term, translation in fast_api_results.items():
+                        final_translation_map[term] = translation
+                        self.actor_db_manager.save_translation_to_db(cursor, term, translation, self.ai_translator.provider)
+
+                # 1.4 筛选失败者
+                failed_terms = []
+                for term in remaining_terms:
+                    if not utils.contains_chinese(final_translation_map.get(term, term)):
+                        failed_terms.append(term)
+                
+                remaining_terms = failed_terms
+                if remaining_terms:
+                    logger.warning(f"快速模式后，仍有 {len(remaining_terms)} 个词条未翻译成中文，进入二级翻译流程。")
+
+            # --- 🚀 第二级: 强制音译模式 ---
+            if remaining_terms:
+                logger.info(f"--- 第二级翻译开始: 强制音译模式处理 {len(remaining_terms)} 个专有名词 ---")
+                transliterate_results = self.ai_translator.batch_translate(remaining_terms, mode='transliterate')
+                
+                final_translation_map.update(transliterate_results) # 直接更新最终结果
+                
+                still_failed_terms = []
+                for term in remaining_terms:
+                    if not utils.contains_chinese(final_translation_map.get(term, term)):
+                        still_failed_terms.append(term)
+                
+                remaining_terms = still_failed_terms
+                if remaining_terms:
+                    logger.warning(f"音译模式后，仍有 {len(remaining_terms)} 个顽固词条，将启动三级最终的顾问模式。")
+
+            # --- 🚀 第三级翻译: 全上下文顾问模式 ---
+            if remaining_terms:
+                logger.info(f"--- 第三级翻译开始: 顾问模式处理 {len(remaining_terms)} 个最棘手的词条 ---")
+                item_title = item_details_from_emby.get("Name")
+                item_year = item_details_from_emby.get("ProductionYear")
+                quality_results = self.ai_translator.batch_translate(remaining_terms, mode='quality', title=item_title, year=item_year)
+                final_translation_map.update(quality_results) # 最终信任顾问的结果
+            
+            # --- 应用所有翻译结果 ---
+            logger.info("------------ AI翻译流程成功，开始应用结果 ------------")
+            for actor in cast_to_process:
+                original_name = actor.get('name')
+                actor['name'] = final_translation_map.get(original_name, original_name)
+                
                 original_character = actor.get('character')
                 if original_character:
                     cleaned_character = utils.clean_character_name_static(original_character)
-                    translated_character = translation_cache.get(cleaned_character, cleaned_character)
-                    if translated_character != original_character:
-                        actor_name_for_log = actor.get('name', '未知演员')
-                        logger.debug(f"  角色名翻译: '{original_character}' -> '{translated_character}' (演员: {actor_name_for_log})")
-                    actor['character'] = translated_character
+                    actor['character'] = final_translation_map.get(cleaned_character, cleaned_character)
                 else:
-                    # 保证字段始终有字符串，避免漏网
                     actor['character'] = ''
-
             logger.info("----------------------------------------------------")
-        else:
-            # AI失败时保留原文，不做翻译改写
-            if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False):
-                logger.warning("  -> AI批量翻译失败，将保留演员和角色名原文。")
 
         # ======================================================================
         # 步骤 5: 格式化最终演员表
@@ -1623,11 +1621,7 @@ class MediaProcessor:
 
         logger.info("手动编辑-翻译完成。")
         return translated_cast
-    # ✨✨✨手动处理✨✨✨
-    # core_processor.py
-
-# ... (文件其他部分保持不变) ...
-
+    
     # ✨✨✨手动处理✨✨✨
     def process_item_with_manual_cast(self, item_id: str, manual_cast_list: List[Dict[str, Any]], item_name: str) -> bool:
         """
@@ -1785,6 +1779,7 @@ class MediaProcessor:
             if item_id in self.manual_edit_cache:
                 del self.manual_edit_cache[item_id]
                 logger.trace(f"已清理 ItemID {item_id} 的手动编辑会话缓存。")
+    
     # --- 为前端准备演员列表用于编辑 ---
     def get_cast_for_editing(self, item_id: str) -> Optional[Dict[str, Any]]:
         """

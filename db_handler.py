@@ -6,6 +6,7 @@ import logging
 from typing import Optional, Dict, Any, List, Tuple
 from flask import jsonify
 import emby_handler
+from utils import contains_chinese
 logger = logging.getLogger(__name__)
 
 # ======================================================================
@@ -89,9 +90,22 @@ class ActorDBManager:
 
     def save_translation_to_db(self, cursor: sqlite3.Cursor, original_text: str, translated_text: Optional[str], engine_used: Optional[str]):
         """
-        【已迁移】将翻译结果保存到数据库。
+        【V2 - 增加中文校验】将翻译结果保存到数据库。
+        在保存前会检查译文是否包含中文字符，如果不包含则丢弃。
         :param cursor: 必须提供外部数据库游标。
         """
+        # ★★★ 核心修改：在保存前进行校验 ★★★
+        # 1. 如果译文非空
+        if translated_text and translated_text.strip():
+            # 2. 检查是否包含中文字符
+            if not contains_chinese(translated_text):
+                # 3. 如果不包含，则记录日志并直接返回，不保存到数据库
+                logger.warning(
+                    f"翻译结果 '{translated_text}' 不含中文，已丢弃，不写入缓存。原文: '{original_text}'"
+                )
+                return # 提前退出函数
+
+        # 如果校验通过（例如译文为空或包含中文），则执行保存操作
         try:
             cursor.execute(
                 "REPLACE INTO translation_cache (original_text, translated_text, engine_used, last_updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
