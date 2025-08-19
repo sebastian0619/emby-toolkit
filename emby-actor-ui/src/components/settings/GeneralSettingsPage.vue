@@ -10,7 +10,7 @@
           :rules="formRules"
           @submit.prevent="save"
           label-placement="left"
-          label-width="auto"
+          label-width="230"
           label-align="right"
           :model="configModel"
         >
@@ -43,10 +43,10 @@
                     <n-form-item-grid-item label="更新后刷新 Emby 媒体项">
                       <n-switch v-model:value="configModel.refresh_emby_after_update" />
                     </n-form-item-grid-item>
-                    <n-form-item label="自动锁定演员表" path="auto_lock_cast_after_update">
+                    <n-form-item-grid-item label="自动锁定演员表" path="auto_lock_cast_after_update">
                       <n-switch v-model:value="configModel.auto_lock_cast_after_update" :disabled="!configModel.refresh_emby_after_update"/>
                       <template #feedback>【酌情开启】开启后，处理完演员表后，会自动将该项目的“演员”字段锁定，防止被后续刷新操作覆盖。</template>
-                    </n-form-item>
+                    </n-form-item-grid-item>
                   </n-card>
                 </n-gi>
                 <!-- 右侧列 -->
