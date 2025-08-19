@@ -503,7 +503,7 @@ def ensure_nginx_config():
 
         # 3. 准备替换值 (逻辑不变)
         emby_upstream = emby_url.replace("http://", "").replace("https://", "").rstrip('/')
-        proxy_upstream = "localhost:8098"
+        proxy_upstream = "127.0.0.1:8098"
 
         if not emby_upstream:
             logger.error("config.ini 中未配置 Emby 服务器地址，无法生成 Nginx 配置！")

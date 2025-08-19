@@ -30,8 +30,8 @@
         <template #footer>
           <n-alert title="操作提示" type="info" :bordered="false">
             <ul style="margin: 0; padding-left: 20px;">
-              <li>在这里创建和管理通过RSS榜单或自定义规则生成的“自建合集”。</li>
-              <li>在创建或生成“筛选规则”合集前，请点击 <n-icon :component="SyncIcon" /> 按钮快速同步一次最新的媒体库元数据。</li>
+              <li>自建合集是虚拟库的虚拟来源，任何通过规则筛选、RSS导入的合集都可以被虚拟成媒体库展示在首页（需通过配置的反代端口访问）。</li>
+              <li>在创建或生成“筛选规则”合集前，请先同步演员映射然后点击 <n-icon :component="SyncIcon" /> 按钮快速同步一次最新的媒体库元数据。</li>
               <li>您可以通过拖动每行最左侧的 <n-icon :component="DragHandleIcon" /> 图标来对合集进行排序，Emby虚拟库实时联动更新排序。</li>
             </ul>
           </n-alert>
