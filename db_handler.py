@@ -68,14 +68,16 @@ class ActorDBManager:
 
     def get_translation_from_db(self, cursor: sqlite3.Cursor, text: str, by_translated_text: bool = False) -> Optional[Dict[str, Any]]:
         """
-        【已迁移】从数据库获取翻译缓存。
+        【V2 - 自我净化版】从数据库获取翻译缓存。
+        如果发现缓存中的译文不含中文（历史遗留的坏数据），
+        则会顺手将其销毁并返回 None，触发重新翻译。
+        
         :param cursor: 必须提供外部数据库游标。
         :param text: 要查询的文本 (可以是原文或译文)。
         :param by_translated_text: 如果为 True，则通过译文反查原文。
         :return: 包含原文、译文和引擎的字典，或 None。
         """
         try:
-            # 根据查询模式选择不同的SQL语句
             if by_translated_text:
                 sql = "SELECT original_text, translated_text, engine_used FROM translation_cache WHERE translated_text = ?"
             else:
@@ -83,9 +85,40 @@ class ActorDBManager:
 
             cursor.execute(sql, (text,))
             row = cursor.fetchone()
-            return dict(row) if row else None
+
+            if not row:
+                # 1. 如果本来就没找到，直接返回 None
+                return None
+
+            # ★★★ 核心修改：在这里加入“质检与销毁”逻辑 ★★★
+            translated_text = row['translated_text']
+            
+            # 2. 质检：检查翻译结果是否合格
+            #    - translated_text 存在
+            #    - 且它不是中文
+            if translated_text and not contains_chinese(translated_text):
+                original_text_key = row['original_text']
+                logger.warning(
+                    f"发现无效的历史翻译缓存: '{original_text_key}' -> '{translated_text}'。将自动销毁此记录以待重新翻译。"
+                )
+                
+                # 3. 销毁：从数据库中删除这条坏记录
+                try:
+                    # 我们使用 original_text 作为主键来删除，这是最可靠的
+                    cursor.execute("DELETE FROM translation_cache WHERE original_text = ?", (original_text_key,))
+                    # 注意：这里不需要 commit，因为这个函数总是在一个更大的事务中被调用。
+                    # 事务的提交由外层逻辑（如 _process_cast_list_from_api）负责。
+                except Exception as e_delete:
+                    logger.error(f"销毁无效缓存 '{original_text_key}' 时失败: {e_delete}")
+
+                # 4. 报告：向上层假装没找到，这样就能触发重新翻译
+                return None
+            
+            # 5. 如果质检通过，正常返回结果
+            return dict(row)
+
         except Exception as e:
-            logger.error(f"DB读取翻译缓存失败 for '{text}' (by_translated: {by_translated_text}): {e}", exc_info=True)
+            logger.error(f"DB读取翻译缓存时发生错误 for '{text}': {e}", exc_info=True)
             return None
 
     def save_translation_to_db(self, cursor: sqlite3.Cursor, original_text: str, translated_text: Optional[str], engine_used: Optional[str]):
