@@ -10,11 +10,11 @@
           :rules="formRules"
           @submit.prevent="save"
           label-placement="left"
-          label-width="230"
+          label-width="200"
           label-align="right"
           :model="configModel"
         >
-          <n-tabs type="line" animated size="large" pane-style="padding-top: 20px;">
+          <n-tabs type="line" animated size="large" pane-style="padding: 20px; box-sizing: border-box;">
             <!-- ================== 标签页 1: 通用设置 ================== -->
             <n-tab-pane name="general" tab="通用设置">
               <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
@@ -117,11 +117,11 @@
                 <!-- ########## 右侧卡片: 虚拟库 (反向代理) ########## -->
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
-                    <template #header><span class="card-title">虚拟库 (反向代理)</span></template>
+                    <template #header><span class="card-title">虚拟库</span></template>
                     <n-space vertical :size="18">
-                      <n-form-item-grid-item label="启用虚拟库" path="proxy_enabled">
+                      <n-form-item-grid-item label="启用" path="proxy_enabled">
                         <n-switch v-model:value="configModel.proxy_enabled" />
-                        <template #feedback><n-text depth="3" style="font-size:0.8em;">开启后，自动将自建合集虚拟成媒体库，用反代的端口访问。</n-text></template>
+                        <template #feedback><n-text depth="3" style="font-size:0.8em;">开启后，自动将自建合集虚拟成媒体库，用下方设置的端口访问。</n-text></template>
                       </n-form-item-grid-item>
                       <n-form-item-grid-item label="合并原生媒体库" path="proxy_merge_native_libraries">
                         <n-switch v-model:value="configModel.proxy_merge_native_libraries" :disabled="!configModel.proxy_enabled"/>
@@ -179,7 +179,7 @@
                         <n-radio-group v-model:value="configModel.ai_translation_mode" name="ai_translation_mode" :disabled="!configModel.ai_translation_enabled">
                           <n-space><n-radio value="fast">翻译模式 (速度优先)</n-radio><n-radio value="quality">顾问模式 (质量优先)</n-radio></n-space>
                         </n-radio-group>
-                        <template #feedback><n-text depth="3" style="font-size:0.8em;"><b>翻译模式：</b>纯翻译，全局共享缓存，速度快成本低。<br><b>顾问模式：</b>结合上下文翻译，准确率更高，但无缓存，耗时且成本高。</n-text></template>
+                        <template #feedback><n-text depth="3" style="font-size:0.8em;"><b>翻译模式：</b>采用三段式翻译，依次用普通模式、音译模式、顾问模式进行翻译。<br><b>顾问模式：</b>结合上下文翻译，准确率更高，但无缓存，耗时且成本高，适合手动处理单项媒体。</n-text></template>
                       </n-form-item>
                       <n-form-item label="AI 服务商" path="ai_provider"><n-select v-model:value="configModel.ai_provider" :options="aiProviderOptions" :disabled="!configModel.ai_translation_enabled"/></n-form-item>
                       <n-form-item label="API Key" path="ai_api_key"><n-input type="password" show-password-on="mousedown" v-model:value="configModel.ai_api_key" placeholder="输入你的 API Key" :disabled="!configModel.ai_translation_enabled"/></n-form-item>
