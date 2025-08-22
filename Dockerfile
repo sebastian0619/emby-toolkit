@@ -55,7 +55,7 @@ COPY requirements.txt .
 
 # 3. 安装 Python 依赖。这一层只有在 requirements.txt 变动时才会重新运行
 RUN pip install --no-cache-dir -r requirements.txt
-
+RUN playwright install chromium
 # 4. 复制所有应用文件。这是变动最频繁的部分，放在后面。
 COPY web_app.py \
      core_processor.py \
