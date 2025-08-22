@@ -2200,7 +2200,7 @@ class MediaProcessor:
         item_type = item_details.get("Type")
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_details.get('Id')})")
         log_prefix = "元数据备份:"
-        logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 执行智能分级匹配备份...")
+        logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 执行元数据备份...")
 
         # 1. 路径定义和完整复制 (逻辑不变)
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
@@ -2208,11 +2208,11 @@ class MediaProcessor:
         target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
 
         if not os.path.exists(source_cache_dir):
-            logger.warning(f"    - {log_prefix} 跳过，因为源缓存目录不存在: {source_cache_dir}")
+            logger.warning(f"  -> {log_prefix} 跳过，因为源缓存目录不存在: {source_cache_dir}")
             return
         try:
             shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-            logger.info(f"    -> {log_prefix} 步骤 1/3: 成功将元数据从 '{source_cache_dir}' 完整复制到 '{target_override_dir}'。")
+            logger.info(f"  -> {log_prefix} 步骤 1/3: 成功将元数据从 '{source_cache_dir}' 完整复制到 '{target_override_dir}'。")
         except Exception as e:
             logger.error(f"    - {log_prefix} 复制元数据时失败: {e}", exc_info=True)
             return
@@ -2240,7 +2240,7 @@ class MediaProcessor:
                 update_count = 0
 
                 # 3. 策略一：直接用中文名匹配 (处理TMDB官方中文名的情况)
-                logger.debug(f"    -> {log_prefix} 步骤 2/3: 开始直接匹配TMDB官方中文名...")
+                logger.info(f"  -> {log_prefix} 步骤 2/3: 开始直接匹配TMDB官方中文名...")
                 
                 # 创建一个 {json中的中文名: 对应的演员字典} 的映射，方便快速修改
                 json_actors_by_cn_name = {
@@ -2261,7 +2261,7 @@ class MediaProcessor:
                         remaining_emby_people.append(person)
                 
                 # 4. 策略二：对剩下未匹配的演员，进行翻译缓存反查 (处理本地翻译的小角色)
-                logger.debug(f"    -> {log_prefix} 步骤 3/3: 对 {len(remaining_emby_people)} 个剩余演员进行翻译缓存反查...")
+                logger.info(f"  -> {log_prefix} 步骤 3/3: 对 {len(remaining_emby_people)} 个剩余演员进行翻译缓存反查...")
                 if remaining_emby_people:
                     # 创建一个 {json中的原始英文名: 对应的演员字典} 的映射
                     json_actors_by_original_name = {
@@ -2290,12 +2290,12 @@ class MediaProcessor:
                     f.seek(0)
                     json.dump(data, f, ensure_ascii=False, indent=2)
                     f.truncate()
-                    logger.info(f"    -> {log_prefix} 成功更新了 {update_count} 个演员的中文角色名。")
+                    logger.info(f"  -> {log_prefix} 成功更新了 {update_count} 个演员的中文角色名。")
                 else:
-                    logger.info(f"    -> {log_prefix} 角色名已是最新，或未能匹配到任何可更新的演员。")
+                    logger.info(f"  -> {log_prefix} 角色名已是最新，或未能匹配到任何可更新的演员。")
 
         except Exception as e:
-            logger.error(f"    - {log_prefix} 更新 '{main_json_filename}' 中的角色名时失败: {e}", exc_info=True)
+            logger.error(f"  -> {log_prefix} 更新 '{main_json_filename}' 中的角色名时失败: {e}", exc_info=True)
 
     def close(self):
         if self.douban_api: self.douban_api.close()
