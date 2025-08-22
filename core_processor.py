@@ -2193,123 +2193,98 @@ class MediaProcessor:
     # --- 备份元数据 ---
     def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str):
         """
-        【新版】根据Emby API的实时数据，调用JSON构建器生成全新的元数据文件并存入override目录。
+        【V3 - 混合模式最终版】
+        首先从cache目录完整复制原始元数据，然后用Emby API中最新的中文角色名来更新这份备份。
         """
         item_type = item_details.get("Type")
-        item_id = item_details.get("Id")
-        item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
+        item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_details.get('Id')})")
         log_prefix = "元数据备份:"
-        logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 从 Emby API 生成 JSON...")
+        logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 执行混合模式备份...")
 
-        # 1. 准备目标路径
+        # 1. 定义路径
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+        source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
         target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
-        os.makedirs(target_override_dir, exist_ok=True)
 
-        # 2. 定义辅助函数
-        def _save_json(data, filename):
-            """一个用于保存JSON文件的内部函数"""
-            path = os.path.join(target_override_dir, filename)
-            try:
-                with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                logger.debug(f"    -> {log_prefix} 成功保存元数据文件: {filename}")
-            except Exception as e:
-                logger.error(f"    -> {log_prefix} 保存 {filename} 失败: {e}")
+        # 2. 检查源缓存是否存在并执行复制
+        if not os.path.exists(source_cache_dir):
+            logger.warning(f"    - {log_prefix} 跳过，因为源缓存目录不存在: {source_cache_dir}")
+            return
 
-        def _format_people_from_emby(people_list: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-            """将Emby的People列表转换为构建器所需的cast和crew格式"""
-            cast, crew = [], []
-            if not people_list:
-                return cast, crew
-            for person in people_list:
-                person_info = {
-                    "id": person.get("ProviderIds", {}).get("Tmdb"),
-                    "name": person.get("Name"),
-                    "original_name": person.get("Name") # Emby无此字段，用Name代替
-                }
-                if person.get("Type") == "Actor":
-                    person_info["character"] = person.get("Role")
-                    cast.append(person_info)
-                else: # Director, Writer, etc.
-                    person_info["job"] = person.get("Type")
-                    crew.append(person_info)
-            return cast, crew
-
-        # 3. 根据媒体类型执行操作
         try:
-            if item_type == "Movie":
-                processed_cast, processed_crew = _format_people_from_emby(item_details.get("People", []))
-                
-                # 将Emby数据映射到构建器需要的格式
-                source_data = {
-                    "id": tmdb_id,
-                    "imdb_id": item_details.get("ProviderIds", {}).get("Imdb"),
-                    "title": item_details.get("Name"),
-                    "original_title": item_details.get("OriginalTitle"),
-                    "overview": item_details.get("Overview"),
-                    "tagline": (item_details.get("Taglines") or [None])[0],
-                    "release_date": (item_details.get("PremiereDate") or "0000-01-01T00:00:00.000Z").split('T')[0],
-                    "vote_average": item_details.get("CommunityRating", 0.0),
-                    "genres": [{"name": g} for g in item_details.get("Genres", [])],
-                    "production_companies": [{"name": s["Name"]} for s in item_details.get("Studios", [])]
-                }
-                
-                movie_json = self._build_movie_json(source_data, processed_cast, processed_crew)
-                _save_json(movie_json, "all.json")
+            # 复制所有元数据文件到override目录
+            shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
+            logger.info(f"    -> {log_prefix} 步骤 1/2: 成功将元数据从 '{source_cache_dir}' 完整复制到 '{target_override_dir}'。")
+        except Exception as e:
+            logger.error(f"    - {log_prefix} 复制元数据时失败: {e}", exc_info=True)
+            return
 
-            elif item_type == "Series":
-                # 3a. 处理剧集主文件 (series.json)
-                series_cast, series_crew = _format_people_from_emby(item_details.get("People", []))
-                series_source_data = {
-                    "id": tmdb_id,
-                    "name": item_details.get("Name"),
-                    "original_name": item_details.get("OriginalTitle"),
-                    "overview": item_details.get("Overview"),
-                    "vote_average": item_details.get("CommunityRating", 0.0),
-                    "first_air_date": (item_details.get("PremiereDate") or "0000-01-01T00:00:00.000Z").split('T')[0],
-                    "genres": [{"name": g} for g in item_details.get("Genres", [])],
-                    "networks": [{"name": s["Name"]} for s in item_details.get("Studios", [])],
-                    "origin_country": item_details.get("ProductionLocations", [])
-                }
-                series_json = self._build_series_json(series_source_data, series_cast, series_crew)
-                _save_json(series_json, "series.json")
+        # 3. 准备用于更新的中文角色名映射
+        emby_people = item_details.get("People", [])
+        if not emby_people:
+            logger.debug(f"    -> {log_prefix} Emby中没有演员信息，跳过角色名更新。")
+            return
 
-                # 3b. 获取并处理所有子项目 (季、集)
-                children = emby_handler.get_series_children(
-                    item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
-                    series_name_for_log=item_name_for_log,
-                    fields="Name,Overview,PremiereDate,IndexNumber,ParentIndexNumber,People"
-                )
-                if not children:
-                    logger.debug(f"    -> {log_prefix} 剧集 '{item_name_for_log}' 没有子项目，跳过季/集元数据生成。")
+        # 创建一个 {tmdb_id: "中文角色名"} 的映射，方便快速查找
+        character_update_map = {
+            str(person.get("ProviderIds", {}).get("Tmdb")): person.get("Role")
+            for person in emby_people
+            if person.get("Type") == "Actor" and person.get("ProviderIds", {}).get("Tmdb") and person.get("Role")
+        }
+
+        if not character_update_map:
+            logger.debug(f"    -> {log_prefix} 未能从Emby演员中提取到有效的角色名映射，跳过更新。")
+            return
+
+        # 4. 读取、修改并写回主元数据文件
+        main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+        json_path = os.path.join(target_override_dir, main_json_filename)
+
+        if not os.path.exists(json_path):
+            logger.warning(f"    - {log_prefix} 复制后未找到主元数据文件 '{main_json_filename}'，无法更新角色名。")
+            return
+
+        try:
+            # 使用 'r+' 模式，先读后写
+            with open(json_path, 'r+', encoding='utf-8') as f:
+                data = json.load(f)
+                
+                # 定位到cast列表 (兼容电影和剧集的结构)
+                cast_list = None
+                if 'casts' in data and 'cast' in data['casts']: # 电影的结构
+                    cast_list = data['casts']['cast']
+                elif 'credits' in data and 'cast' in data['credits']: # 电视剧的结构
+                    cast_list = data['credits']['cast']
+
+                if cast_list is None:
+                    logger.warning(f"    - {log_prefix} 在 '{main_json_filename}' 中未找到 'cast' 列表。")
                     return
 
-                for child in children:
-                    child_cast, child_crew = _format_people_from_emby(child.get("People", []))
-                    child_source_data = {
-                        "name": child.get("Name"),
-                        "overview": child.get("Overview"),
-                        "air_date": (child.get("PremiereDate") or "0000-01-01T00:00:00.000Z").split('T')[0]
-                    }
-
-                    if child.get("Type") == "Season":
-                        season_num = child.get("IndexNumber")
-                        if season_num is not None:
-                            season_json = self._build_season_json(child_source_data, child_cast, child_crew)
-                            _save_json(season_json, f"season-{season_num}.json")
-                    
-                    elif child.get("Type") == "Episode":
-                        season_num = child.get("ParentIndexNumber")
-                        ep_num = child.get("IndexNumber")
-                        if season_num is not None and ep_num is not None:
-                            episode_json = self._build_episode_json(child_source_data, child_cast, child_crew)
-                            _save_json(episode_json, f"season-{season_num}-episode-{ep_num}.json")
-            
-            logger.info(f"  -> {log_prefix} ✅ 成功完成 '{item_name_for_log}' 的元数据备份。")
+                update_count = 0
+                # 遍历JSON文件中的演员列表
+                for actor in cast_list:
+                    actor_tmdb_id = str(actor.get("id"))
+                    # 如果在我们的映射中能找到这个演员
+                    if actor_tmdb_id in character_update_map:
+                        new_role = character_update_map[actor_tmdb_id]
+                        # 如果角色名确实需要更新
+                        if actor.get("character") != new_role:
+                            actor["character"] = new_role
+                            update_count += 1
+                
+                if update_count > 0:
+                    # 将文件指针移回文件开头，准备覆盖写入
+                    f.seek(0)
+                    # 将修改后的数据写回文件
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                    # 清除从当前位置到文件末尾的所有内容（防止旧文件更长导致内容残留）
+                    f.truncate()
+                    logger.info(f"    -> {log_prefix} 步骤 2/2: 成功更新了 {update_count} 个演员的中文角色名。")
+                else:
+                    logger.info(f"    -> {log_prefix} 步骤 2/2: 角色名已是最新，无需更新。")
 
         except Exception as e:
-            logger.error(f"  -> {log_prefix} 为 '{item_name_for_log}' 生成元数据时发生错误: {e}", exc_info=True)
+            logger.error(f"    - {log_prefix} 更新 '{main_json_filename}' 中的角色名时失败: {e}", exc_info=True)
 
     def close(self):
         if self.douban_api: self.douban_api.close()
