@@ -10,8 +10,7 @@ import json
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ★★★ 核心修正：导入 gevent 的 subprocess 和 Timeout 异常 ★★★
-from gevent import subprocess, Timeout
+# ★★★ 不再需要 gevent 或 subprocess ★★★
 
 import tmdb_handler
 import config_manager
@@ -23,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 class ListImporter:
     """
-    (V7.3版) 修复了在 gevent 环境下调用标准 subprocess 导致的 fork 冲突问题。
+    (V8.1 终极简化版)
+    使用 os.system 替代所有 subprocess 调用，以最简单的方式绕过 gevent fork 冲突。
     """
     
     SEASON_PATTERN = re.compile(r'(.*?)\s*[（(]?\s*(第?[一二三四五六七八九十百]+)\s*季\s*[)）]?$')
@@ -31,7 +31,7 @@ class ListImporter:
         '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
         '十一': 11, '十二': 12, '十三': 13, '十四': 14, '十五': 15,
         '第一': 1, '第二': 2, '第三': 3, '第四': 4, '第五': 5, '第六': 6, '第七': 7, '第八': 8, '第九': 9, '第十': 10,
-        '第十一': 11, '第十二': 12, '第十三': 13, '第十四': 14, '第十五': 15
+        '第十一': 11, '十二': 12, '第十三': 13, '第十四': 14, '第十五': 15
     }
     VALID_MAOYAN_PLATFORMS = {'tencent', 'iqiyi', 'youku', 'mango'}
 
@@ -40,6 +40,7 @@ class ListImporter:
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'Mozilla/5.0'})
 
+    # ★★★ 核心重构：使用 os.system 替代所有子进程逻辑 ★★★
     def _process_maoyan_list(self, definition: Dict) -> List[Dict[str, str]]:
         logger.info("  -> 检测到猫眼榜单，启动独立进程处理...")
         
@@ -57,14 +58,12 @@ class ListImporter:
         except Exception as e:
             logger.warning(f"读取猫眼缓存失败，将强制刷新: {e}")
 
-        logger.info("  -> 缓存无效或不存在，正在运行猫眼数据获取脚本...")
+        logger.info("  -> 缓存无效，正在运行猫眼数据获取脚本...")
         
         content_key = maoyan_url.replace('maoyan://', '')
         parts = content_key.split('-')
         
         platform = 'all'
-        types_to_fetch = []
-
         if len(parts) > 1 and parts[-1] in self.VALID_MAOYAN_PLATFORMS:
             platform = parts[-1]
             type_part = '-'.join(parts[:-1])
@@ -86,50 +85,41 @@ class ListImporter:
             logger.error(f"严重错误：无法找到猫眼获取脚本 '{fetcher_script_path}'。")
             return []
 
-        command = [
-            sys.executable,
-            fetcher_script_path,
-            '--api-key', self.tmdb_api_key,
-            '--output-file', cache_file,
+        # 为了安全地构建命令行字符串，对可能包含特殊字符的路径和key进行引用
+        # sys.executable 通常是安全的，但引用一下更保险
+        command_parts = [
+            f'"{sys.executable}"',
+            f'"{fetcher_script_path}"',
+            '--api-key', f'"{self.tmdb_api_key}"',
+            '--output-file', f'"{cache_file}"',
             '--num', str(limit),
-            '--platform', platform,
-            '--types', *types_to_fetch
+            '--platform', f'"{platform}"',
+            '--types', *[f'"{t}"' for t in types_to_fetch]
         ]
+        command_str = ' '.join(command_parts)
         
-        # ★★★ 核心修正：使用 gevent.subprocess 替代标准库 ★★★
         try:
-            logger.debug(f"  -> 执行命令: {' '.join(command)}")
+            logger.debug(f"  -> 执行命令: {command_str}")
             
-            # 使用 gevent.subprocess.check_output，它类似于 run(check=True, capture_output=True)
-            # 我们将 stderr 重定向到 STDOUT，以便在一个地方捕获所有输出
-            result_bytes = subprocess.check_output(
-                command, 
-                stderr=subprocess.STDOUT, 
-                timeout=600
-            )
+            # 使用 os.system，它会阻塞直到命令完成
+            # 它的返回值是 shell 的退出码，0 表示成功
+            exit_code = os.system(command_str)
             
-            result_output = result_bytes.decode('utf-8', errors='ignore')
+            if exit_code != 0:
+                logger.error(f"执行猫眼获取脚本失败。Shell 返回码: {exit_code}")
+                return []
+
             logger.info("  -> 猫眼获取脚本成功完成。")
-            logger.debug(f"  -> 脚本输出:\n{result_output}")
             
-            # 如果脚本成功，读取它生成的文件
+            # 脚本成功，读取它生成的文件
             with open(cache_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
 
-        except Timeout:
-            logger.error("执行猫眼获取脚本超时（超过10分钟）。")
-            return []
-        except subprocess.CalledProcessError as e:
-            # 异常对象 e 包含了所有输出
-            error_output = e.output.decode('utf-8', errors='ignore') if e.output else "No output captured."
-            logger.error(f"执行猫眼获取脚本失败。返回码: {e.returncode}")
-            logger.error(f"  -> 脚本完整输出 (STDOUT/STDERR):\n{error_output}")
-            return []
         except Exception as e:
             logger.error(f"处理猫眼榜单时发生未知错误: {e}", exc_info=True)
             return []
 
-    # ... 其他方法 (_match_by_ids, _get_titles_and_imdbids_from_url, etc.) 保持不变 ...
+    # ... 其他所有方法 (_match_by_ids, process, FilterEngine等) 保持完全不变 ...
     def _match_by_ids(self, imdb_id: Optional[str], tmdb_id: Optional[str], item_type: str) -> Optional[str]:
         if tmdb_id:
             logger.debug(f"通过TMDb ID直接匹配：{tmdb_id}")
