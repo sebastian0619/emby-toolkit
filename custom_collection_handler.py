@@ -4,17 +4,18 @@ import requests
 import xml.etree.ElementTree as ET
 import re
 import os
+import sys
 from typing import List, Dict, Any, Optional, Tuple
 import json
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
-# --- 新增导入 ---
-import subprocess
-import sys
-# -----------------
+
+# ★★★ 核心修正：导入 gevent 的 subprocess 和 Timeout 异常 ★★★
+from gevent import subprocess, Timeout
+
 import tmdb_handler
 import config_manager
-import db_handler # 新增导入
+import db_handler 
 from tmdb_handler import search_media, get_tv_details_tmdb
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 class ListImporter:
     """
-    (V7版) 支持处理标准RSS源和包含平台细分的 `maoyan://` 协议。
+    (V7.3版) 修复了在 gevent 环境下调用标准 subprocess 导致的 fork 冲突问题。
     """
     
     SEASON_PATTERN = re.compile(r'(.*?)\s*[（(]?\s*(第?[一二三四五六七八九十百]+)\s*季\s*[)）]?$')
@@ -32,7 +33,6 @@ class ListImporter:
         '第一': 1, '第二': 2, '第三': 3, '第四': 4, '第五': 5, '第六': 6, '第七': 7, '第八': 8, '第九': 9, '第十': 10,
         '第十一': 11, '第十二': 12, '第十三': 13, '第十四': 14, '第十五': 15
     }
-    # ★★★ 新增：平台名称常量 ★★★
     VALID_MAOYAN_PLATFORMS = {'tencent', 'iqiyi', 'youku', 'mango'}
 
     def __init__(self, tmdb_api_key: str):
@@ -77,12 +77,9 @@ class ListImporter:
             logger.error(f"无法从猫眼URL '{maoyan_url}' 中解析出有效的类型。")
             return []
             
-        # ★★★ 核心修正：确保 limit 是一个有效的数字 ★★★
         limit = definition.get('limit')
-        # 如果 limit 是 None, 0, 或者其他 "falsy" 值，就使用默认值 10
         if not limit:
             limit = 50
-        # ★★★ 修正结束 ★★★
 
         fetcher_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'maoyan_fetcher.py')
         if not os.path.exists(fetcher_script_path):
@@ -94,27 +91,39 @@ class ListImporter:
             fetcher_script_path,
             '--api-key', self.tmdb_api_key,
             '--output-file', cache_file,
-            '--num', str(limit), # 现在 str(limit) 永远是有效的数字字符串
+            '--num', str(limit),
             '--platform', platform,
             '--types', *types_to_fetch
         ]
         
+        # ★★★ 核心修正：使用 gevent.subprocess 替代标准库 ★★★
         try:
             logger.debug(f"  -> 执行命令: {' '.join(command)}")
-            result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8', timeout=600)
-            logger.info("  -> 猫眼获取脚本成功完成。")
-            logger.debug(f"  -> 脚本输出:\n{result.stdout}")
             
+            # 使用 gevent.subprocess.check_output，它类似于 run(check=True, capture_output=True)
+            # 我们将 stderr 重定向到 STDOUT，以便在一个地方捕获所有输出
+            result_bytes = subprocess.check_output(
+                command, 
+                stderr=subprocess.STDOUT, 
+                timeout=600
+            )
+            
+            result_output = result_bytes.decode('utf-8', errors='ignore')
+            logger.info("  -> 猫眼获取脚本成功完成。")
+            logger.debug(f"  -> 脚本输出:\n{result_output}")
+            
+            # 如果脚本成功，读取它生成的文件
             with open(cache_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except subprocess.TimeoutExpired as e:
-            logger.error(f"执行猫眼获取脚本超时（超过10分钟）。")
-            logger.error(f"  -> STDERR: {e.stderr}")
+
+        except Timeout:
+            logger.error("执行猫眼获取脚本超时（超过10分钟）。")
             return []
         except subprocess.CalledProcessError as e:
+            # 异常对象 e 包含了所有输出
+            error_output = e.output.decode('utf-8', errors='ignore') if e.output else "No output captured."
             logger.error(f"执行猫眼获取脚本失败。返回码: {e.returncode}")
-            logger.error(f"  -> STDOUT: {e.stdout}")
-            logger.error(f"  -> STDERR: {e.stderr}")
+            logger.error(f"  -> 脚本完整输出 (STDOUT/STDERR):\n{error_output}")
             return []
         except Exception as e:
             logger.error(f"处理猫眼榜单时发生未知错误: {e}", exc_info=True)
