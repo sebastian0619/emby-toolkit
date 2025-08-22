@@ -2193,14 +2193,14 @@ class MediaProcessor:
     # --- 备份元数据 ---
     def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str):
         """
-        【V6 - original_name 权威匹配最终版】
-        复制cache元数据后，构建一个以演员中文名为键的映射。
-        优先使用JSON中的original_name进行匹配，失败后再尝试用name匹配，最大化成功率并避免反查。
+        【V8 - 智能分级匹配最终版】
+        复制cache元数据后，优先用中文名直接匹配TMDB官方译名，
+        对于匹配失败的演员，再通过反查翻译缓存来匹配本地翻译的小角色。
         """
         item_type = item_details.get("Type")
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_details.get('Id')})")
         log_prefix = "元数据备份:"
-        logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 执行混合模式备份...")
+        logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 执行智能分级匹配备份...")
 
         # 1. 路径定义和完整复制 (逻辑不变)
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
@@ -2212,32 +2212,14 @@ class MediaProcessor:
             return
         try:
             shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-            logger.info(f"    -> {log_prefix} 步骤 1/2: 成功将元数据从 '{source_cache_dir}' 完整复制到 '{target_override_dir}'。")
+            logger.info(f"    -> {log_prefix} 步骤 1/3: 成功将元数据从 '{source_cache_dir}' 完整复制到 '{target_override_dir}'。")
         except Exception as e:
             logger.error(f"    - {log_prefix} 复制元数据时失败: {e}", exc_info=True)
             return
 
-        # 2. 构建一个以【Emby中的演员名】为键，【中文角色名】为值的直接映射
-        emby_people = item_details.get("People", [])
-        if not emby_people:
-            logger.debug(f"    -> {log_prefix} Emby中没有演员信息，跳过角色名更新。")
-            return
-
-        # 这个映射的键是 Emby 中当前演员的名字（通常是中文）
-        character_map_by_emby_name = {
-            person.get("Name"): person.get("Role")
-            for person in emby_people
-            if person.get("Type") == "Actor" and person.get("Name") and person.get("Role")
-        }
-
-        if not character_map_by_emby_name:
-            logger.debug(f"    -> {log_prefix} 未能从Emby演员中提取到有效的角色名映射，跳过更新。")
-            return
-
-        # 3. 读取、修改并写回主元数据文件
+        # 2. 读取JSON文件并准备数据
         main_json_filename = "all.json" if item_type == "Movie" else "series.json"
         json_path = os.path.join(target_override_dir, main_json_filename)
-
         if not os.path.exists(json_path):
             logger.warning(f"    - {log_prefix} 复制后未找到主元数据文件 '{main_json_filename}'。")
             return
@@ -2248,41 +2230,69 @@ class MediaProcessor:
                 cast_list = None
                 if 'casts' in data and 'cast' in data['casts']: cast_list = data['casts']['cast']
                 elif 'credits' in data and 'cast' in data['credits']: cast_list = data['credits']['cast']
-
                 if cast_list is None: return
 
+                emby_people = item_details.get("People", [])
+                if not emby_people: return
+
+                # 准备一个待处理的 Emby 演员列表
+                unmatched_emby_people = list(emby_people)
                 update_count = 0
-                # 遍历JSON文件中的演员列表
-                for actor in cast_list:
-                    # ★★★ 核心匹配逻辑 ★★★
-                    # 从JSON中获取两个可能的名字：本地化的名字和原始名字
-                    name_in_json = actor.get("name")
-                    original_name_in_json = actor.get("original_name")
-                    
-                    new_role = None
 
-                    # 策略一 (最高优先级): 使用JSON中的 original_name 去匹配Emby名
-                    # 这种情况发生在：JSON中是 Brad Pitt, Emby中也是 Brad Pitt (未翻译)
-                    if original_name_in_json and original_name_in_json in character_map_by_emby_name:
-                        new_role = character_map_by_emby_name[original_name_in_json]
-                    
-                    # 策略二: 使用JSON中的 name 去匹配Emby名
-                    # 这种情况发生在：JSON中是 布拉德·皮特, Emby中也是 布拉德·皮特 (TMDB官方中文)
-                    elif name_in_json and name_in_json in character_map_by_emby_name:
-                        new_role = character_map_by_emby_name[name_in_json]
-
-                    # 只有找到了新角色名且与旧的不同，才更新
-                    if new_role is not None and actor.get("character") != new_role:
-                        actor["character"] = new_role
-                        update_count += 1
+                # 3. 策略一：直接用中文名匹配 (处理TMDB官方中文名的情况)
+                logger.debug(f"    -> {log_prefix} 步骤 2/3: 开始直接匹配TMDB官方中文名...")
                 
+                # 创建一个 {json中的中文名: 对应的演员字典} 的映射，方便快速修改
+                json_actors_by_cn_name = {
+                    actor.get("name"): actor
+                    for actor in cast_list if actor.get("name") and utils.contains_chinese(actor.get("name"))
+                }
+
+                remaining_emby_people = []
+                for person in unmatched_emby_people:
+                    person_name_cn = person.get("Name")
+                    if person_name_cn in json_actors_by_cn_name:
+                        actor_to_update = json_actors_by_cn_name[person_name_cn]
+                        new_role = person.get("Role")
+                        if actor_to_update.get("character") != new_role:
+                            actor_to_update["character"] = new_role
+                            update_count += 1
+                    else:
+                        remaining_emby_people.append(person)
+                
+                # 4. 策略二：对剩下未匹配的演员，进行翻译缓存反查 (处理本地翻译的小角色)
+                logger.debug(f"    -> {log_prefix} 步骤 3/3: 对 {len(remaining_emby_people)} 个剩余演员进行翻译缓存反查...")
+                if remaining_emby_people:
+                    # 创建一个 {json中的原始英文名: 对应的演员字典} 的映射
+                    json_actors_by_original_name = {
+                        actor.get("original_name"): actor for actor in cast_list if actor.get("original_name")
+                    }
+                    
+                    with get_central_db_connection(self.db_path) as conn:
+                        cursor = conn.cursor()
+                        for person in remaining_emby_people:
+                            person_name_cn = person.get("Name")
+                            if person_name_cn:
+                                cache_entry = self.actor_db_manager.get_translation_from_db(
+                                    cursor, person_name_cn, by_translated_text=True
+                                )
+                                if cache_entry and cache_entry.get("original_text"):
+                                    original_name = cache_entry["original_text"]
+                                    if original_name in json_actors_by_original_name:
+                                        actor_to_update = json_actors_by_original_name[original_name]
+                                        new_role = person.get("Role")
+                                        if actor_to_update.get("character") != new_role:
+                                            actor_to_update["character"] = new_role
+                                            update_count += 1
+                
+                # 5. 写回文件
                 if update_count > 0:
                     f.seek(0)
                     json.dump(data, f, ensure_ascii=False, indent=2)
                     f.truncate()
-                    logger.info(f"    -> {log_prefix} 步骤 2/2: 成功更新了 {update_count} 个演员的中文角色名。")
+                    logger.info(f"    -> {log_prefix} 成功更新了 {update_count} 个演员的中文角色名。")
                 else:
-                    logger.info(f"    -> {log_prefix} 步骤 2/2: 角色名已是最新，或未能匹配到任何可更新的演员。")
+                    logger.info(f"    -> {log_prefix} 角色名已是最新，或未能匹配到任何可更新的演员。")
 
         except Exception as e:
             logger.error(f"    - {log_prefix} 更新 '{main_json_filename}' 中的角色名时失败: {e}", exc_info=True)
