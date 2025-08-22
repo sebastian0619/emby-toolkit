@@ -2193,95 +2193,90 @@ class MediaProcessor:
     # --- 备份元数据 ---
     def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str):
         """
-        【V3 - 混合模式最终版】
-        首先从cache目录完整复制原始元数据，然后用Emby API中最新的中文角色名来更新这份备份。
+        【V5 - 翻译缓存反查最终版】
+        复制cache元数据后，通过反查翻译缓存，将Emby中的中文角色名精确更新到备份中。
         """
         item_type = item_details.get("Type")
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_details.get('Id')})")
         log_prefix = "元数据备份:"
         logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 执行混合模式备份...")
 
-        # 1. 定义路径
+        # 1. 路径定义和完整复制 (逻辑不变)
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
         source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
         target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
 
-        # 2. 检查源缓存是否存在并执行复制
         if not os.path.exists(source_cache_dir):
             logger.warning(f"    - {log_prefix} 跳过，因为源缓存目录不存在: {source_cache_dir}")
             return
-
         try:
-            # 复制所有元数据文件到override目录
             shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
             logger.info(f"    -> {log_prefix} 步骤 1/2: 成功将元数据从 '{source_cache_dir}' 完整复制到 '{target_override_dir}'。")
         except Exception as e:
             logger.error(f"    - {log_prefix} 复制元数据时失败: {e}", exc_info=True)
             return
 
-        # 3. 准备用于更新的中文角色名映射
+        # 2. 通过反查翻译缓存，构建一个 {原文名: "中文角色名"} 的映射
         emby_people = item_details.get("People", [])
         if not emby_people:
             logger.debug(f"    -> {log_prefix} Emby中没有演员信息，跳过角色名更新。")
             return
 
-        # 创建一个 {tmdb_id: "中文角色名"} 的映射，方便快速查找
-        character_update_map = {
-            str(person.get("ProviderIds", {}).get("Tmdb")): person.get("Role")
-            for person in emby_people
-            if person.get("Type") == "Actor" and person.get("ProviderIds", {}).get("Tmdb") and person.get("Role")
-        }
+        character_map_by_original_name = {}
+        with get_central_db_connection(self.db_path) as conn:
+            cursor = conn.cursor()
+            for person in emby_people:
+                if person.get("Type") == "Actor":
+                    person_name_cn = person.get("Name")
+                    role_cn = person.get("Role")
+                    if person_name_cn and role_cn:
+                        # 使用新增强的数据库功能进行反查
+                        cache_entry = self.actor_db_manager.get_translation_from_db(
+                            cursor, person_name_cn, by_translated_text=True
+                        )
+                        if cache_entry and cache_entry.get("original_text"):
+                            original_name = cache_entry["original_text"]
+                            character_map_by_original_name[original_name] = role_cn
 
-        if not character_update_map:
-            logger.debug(f"    -> {log_prefix} 未能从Emby演员中提取到有效的角色名映射，跳过更新。")
+        if not character_map_by_original_name:
+            logger.debug(f"    -> {log_prefix} 未能通过翻译缓存反查到任何有效的演员映射，跳过更新。")
             return
 
-        # 4. 读取、修改并写回主元数据文件
+        # 3. 读取、修改并写回主元数据文件
         main_json_filename = "all.json" if item_type == "Movie" else "series.json"
         json_path = os.path.join(target_override_dir, main_json_filename)
 
         if not os.path.exists(json_path):
-            logger.warning(f"    - {log_prefix} 复制后未找到主元数据文件 '{main_json_filename}'，无法更新角色名。")
+            logger.warning(f"    - {log_prefix} 复制后未找到主元数据文件 '{main_json_filename}'。")
             return
 
         try:
-            # 使用 'r+' 模式，先读后写
             with open(json_path, 'r+', encoding='utf-8') as f:
                 data = json.load(f)
-                
-                # 定位到cast列表 (兼容电影和剧集的结构)
                 cast_list = None
-                if 'casts' in data and 'cast' in data['casts']: # 电影的结构
-                    cast_list = data['casts']['cast']
-                elif 'credits' in data and 'cast' in data['credits']: # 电视剧的结构
-                    cast_list = data['credits']['cast']
+                if 'casts' in data and 'cast' in data['casts']: cast_list = data['casts']['cast']
+                elif 'credits' in data and 'cast' in data['credits']: cast_list = data['credits']['cast']
 
-                if cast_list is None:
-                    logger.warning(f"    - {log_prefix} 在 '{main_json_filename}' 中未找到 'cast' 列表。")
-                    return
+                if cast_list is None: return
 
                 update_count = 0
                 # 遍历JSON文件中的演员列表
                 for actor in cast_list:
-                    actor_tmdb_id = str(actor.get("id"))
-                    # 如果在我们的映射中能找到这个演员
-                    if actor_tmdb_id in character_update_map:
-                        new_role = character_update_map[actor_tmdb_id]
-                        # 如果角色名确实需要更新
+                    # 使用JSON中的 "original_name" 字段作为key去查找
+                    actor_original_name = actor.get("original_name")
+                    if actor_original_name in character_map_by_original_name:
+                        new_role = character_map_by_original_name[actor_original_name]
                         if actor.get("character") != new_role:
                             actor["character"] = new_role
                             update_count += 1
                 
                 if update_count > 0:
-                    # 将文件指针移回文件开头，准备覆盖写入
                     f.seek(0)
-                    # 将修改后的数据写回文件
                     json.dump(data, f, ensure_ascii=False, indent=2)
-                    # 清除从当前位置到文件末尾的所有内容（防止旧文件更长导致内容残留）
                     f.truncate()
                     logger.info(f"    -> {log_prefix} 步骤 2/2: 成功更新了 {update_count} 个演员的中文角色名。")
                 else:
-                    logger.info(f"    -> {log_prefix} 步骤 2/2: 角色名已是最新，无需更新。")
+                    logger.info(f"    -> {log_prefix} 步骤 2/2: 角色名已是最新，或未能匹配到任何可更新的演员。")
 
         except Exception as e:
             logger.error(f"    - {log_prefix} 更新 '{main_json_filename}' 中的角色名时失败: {e}", exc_info=True)
