@@ -81,6 +81,7 @@ COPY web_app.py \
      custom_collection_handler.py \
      scheduler_manager.py \
      reverse_proxy.py \
+     maoyan_fetcher.py \
      ./
 
 COPY fonts/ ./fonts/

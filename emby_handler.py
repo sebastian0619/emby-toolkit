@@ -1083,7 +1083,7 @@ def create_or_update_collection_with_tmdb_ids(
             return (emby_collection_id, tmdb_ids_in_library)
         else:
             # --- 创建逻辑 (保持不变) ---
-            logger.info(f"未找到合集 '{collection_name}'，将开始创建...")
+            logger.info(f"  -> 未找到合集 '{collection_name}'，将开始创建...")
             if not desired_emby_ids:
                 logger.warning(f"合集 '{collection_name}' 在媒体库中没有任何匹配项，跳过创建。")
                 return (None, [])

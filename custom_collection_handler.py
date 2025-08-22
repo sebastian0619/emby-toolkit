@@ -8,7 +8,10 @@ from typing import List, Dict, Any, Optional, Tuple
 import json
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+# --- 新增导入 ---
+import subprocess
+import sys
+# -----------------
 import tmdb_handler
 import config_manager
 import db_handler # 新增导入
@@ -19,8 +22,7 @@ logger = logging.getLogger(__name__)
 
 class ListImporter:
     """
-    【V5 - 姿势正确版】
-    采用“先搜索、再验证”的正确流程处理带季号的剧集标题。
+    (V7版) 支持处理标准RSS源和包含平台细分的 `maoyan://` 协议。
     """
     
     SEASON_PATTERN = re.compile(r'(.*?)\s*[（(]?\s*(第?[一二三四五六七八九十百]+)\s*季\s*[)）]?$')
@@ -30,27 +32,101 @@ class ListImporter:
         '第一': 1, '第二': 2, '第三': 3, '第四': 4, '第五': 5, '第六': 6, '第七': 7, '第八': 8, '第九': 9, '第十': 10,
         '第十一': 11, '第十二': 12, '第十三': 13, '第十四': 14, '第十五': 15
     }
+    # ★★★ 新增：平台名称常量 ★★★
+    VALID_MAOYAN_PLATFORMS = {'tencent', 'iqiyi', 'youku', 'mango'}
 
     def __init__(self, tmdb_api_key: str):
         self.tmdb_api_key = tmdb_api_key
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'Mozilla/5.0'})
 
+    def _process_maoyan_list(self, definition: Dict) -> List[Dict[str, str]]:
+        logger.info("  -> 检测到猫眼榜单，启动独立进程处理...")
+        
+        maoyan_url = definition.get('url', '')
+        cache_filename = f"maoyan_cache_{hash(maoyan_url)}.json"
+        cache_file = os.path.join(config_manager.PERSISTENT_DATA_PATH, cache_filename)
+        
+        try:
+            if os.path.exists(cache_file):
+                last_modified = datetime.fromtimestamp(os.path.getmtime(cache_file))
+                if datetime.now() - last_modified < timedelta(hours=24):
+                    logger.info(f"  -> 使用24小时内的有效猫眼榜单缓存: {cache_file}")
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+        except Exception as e:
+            logger.warning(f"读取猫眼缓存失败，将强制刷新: {e}")
+
+        logger.info("  -> 缓存无效或不存在，正在运行猫眼数据获取脚本...")
+        
+        content_key = maoyan_url.replace('maoyan://', '')
+        parts = content_key.split('-')
+        
+        platform = 'all'
+        types_to_fetch = []
+
+        if len(parts) > 1 and parts[-1] in self.VALID_MAOYAN_PLATFORMS:
+            platform = parts[-1]
+            type_part = '-'.join(parts[:-1])
+        else:
+            type_part = content_key
+
+        types_to_fetch = [t.strip() for t in type_part.split(',') if t.strip()]
+        
+        if not types_to_fetch:
+            logger.error(f"无法从猫眼URL '{maoyan_url}' 中解析出有效的类型。")
+            return []
+            
+        # ★★★ 核心修正：确保 limit 是一个有效的数字 ★★★
+        limit = definition.get('limit')
+        # 如果 limit 是 None, 0, 或者其他 "falsy" 值，就使用默认值 10
+        if not limit:
+            limit = 50
+        # ★★★ 修正结束 ★★★
+
+        fetcher_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'maoyan_fetcher.py')
+        if not os.path.exists(fetcher_script_path):
+            logger.error(f"严重错误：无法找到猫眼获取脚本 '{fetcher_script_path}'。")
+            return []
+
+        command = [
+            sys.executable,
+            fetcher_script_path,
+            '--api-key', self.tmdb_api_key,
+            '--output-file', cache_file,
+            '--num', str(limit), # 现在 str(limit) 永远是有效的数字字符串
+            '--platform', platform,
+            '--types', *types_to_fetch
+        ]
+        
+        try:
+            logger.debug(f"  -> 执行命令: {' '.join(command)}")
+            result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8', timeout=600)
+            logger.info("  -> 猫眼获取脚本成功完成。")
+            logger.debug(f"  -> 脚本输出:\n{result.stdout}")
+            
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except subprocess.TimeoutExpired as e:
+            logger.error(f"执行猫眼获取脚本超时（超过10分钟）。")
+            logger.error(f"  -> STDERR: {e.stderr}")
+            return []
+        except subprocess.CalledProcessError as e:
+            logger.error(f"执行猫眼获取脚本失败。返回码: {e.returncode}")
+            logger.error(f"  -> STDOUT: {e.stdout}")
+            logger.error(f"  -> STDERR: {e.stderr}")
+            return []
+        except Exception as e:
+            logger.error(f"处理猫眼榜单时发生未知错误: {e}", exc_info=True)
+            return []
+
+    # ... 其他方法 (_match_by_ids, _get_titles_and_imdbids_from_url, etc.) 保持不变 ...
     def _match_by_ids(self, imdb_id: Optional[str], tmdb_id: Optional[str], item_type: str) -> Optional[str]:
-        """
-        优先使用 ID 进行匹配，返回 TMDb ID 字符串。
-        逻辑：
-        - 如果已有 tmdb_id，直接返回该tmdb_id
-        - 如果只有 imdb_id，则使用 tmdb_handler 根据IMDb ID获取tmdb_id
-        - 如果都没有则返回 None
-        """
         if tmdb_id:
             logger.debug(f"通过TMDb ID直接匹配：{tmdb_id}")
-            # 可以考虑对TMDb ID做合法性验证，例如调用TMDb接口确认存在，但此处先直接返回
             return tmdb_id
         if imdb_id:
             logger.debug(f"通过IMDb ID查找TMDb ID：{imdb_id}")
-            # 调用tmdb_handler中根据IMDb ID获取TMDb ID的接口，假设有
             try:
                 tmdb_id_from_imdb = tmdb_handler.get_tmdb_id_by_imdb_id(imdb_id, self.tmdb_api_key, item_type)
                 if tmdb_id_from_imdb:
@@ -63,69 +139,40 @@ class ListImporter:
         return None
     
     def _extract_ids_from_title_or_line(self, title_line: str) -> Tuple[Optional[str], Optional[str]]:
-        """
-        尝试从一行文本中提取IMDb ID和TMDb ID
-        返回 (imdb_id, tmdb_id)，均为字符串，找不到返回None
-
-        IMDb ID 格式通常是 tt\d+
-        TMDb ID 没有固定模式，但假设榜单中出现 tmdb://12345 或类似格式，可以适配
-        
-        这里只做简单示例，如果有别的格式可根据实际调整
-        """
         imdb_id = None
         tmdb_id = None
-        # IMDb ID 示例匹配
         imdb_match = re.search(r'(tt\d{7,8})', title_line, re.I)
         if imdb_match:
             imdb_id = imdb_match.group(1)
-
-        # TMDb ID 假设格式 tmdb://数字
         tmdb_match = re.search(r'tmdb://(\d+)', title_line, re.I)
         if tmdb_match:
             tmdb_id = tmdb_match.group(1)
-
         return imdb_id, tmdb_id
     
     def _get_titles_and_imdbids_from_url(self, url: str) -> List[Dict[str, str]]:
-        """
-        从 RSS 源解析，返回 [{'title':标题, 'imdb_id': imdb_id}, ...] 列表。
-
-        imdb_id 从 <guid> 或 <link> 中提取，格式为 'ttxxxxxxx'。
-        """
         try:
             response = self.session.get(url, timeout=20)
             response.raise_for_status()
             content = response.text
-
-            # 解析 XML
             root = ET.fromstring(content)
-
             items = []
-            # RSS的item通常在 root/channel/item
             channel = root.find('channel')
             if channel is None:
                 return []
-
             for item in channel.findall('item'):
                 title_elem = item.find('title')
                 guid_elem = item.find('guid')
                 link_elem = item.find('link')
-
                 title = title_elem.text if title_elem is not None else None
-
                 imdb_id = None
-                # 优先从 guid 中提取
                 if guid_elem is not None and guid_elem.text:
                     match = re.search(r'tt\d{7,8}', guid_elem.text)
                     if match:
                         imdb_id = match.group(0)
-
-                # 如果 guid 没有，尝试从 link 中提取
                 if not imdb_id and link_elem is not None and link_elem.text:
                     match = re.search(r'tt\d{7,8}', link_elem.text)
                     if match:
                         imdb_id = match.group(0)
-
                 if title:
                     items.append({'title': title.strip(), 'imdb_id': imdb_id})
             return items
@@ -134,27 +181,18 @@ class ListImporter:
             return []
 
     def _parse_series_title(self, title: str) -> Tuple[str, Optional[int]]:
-        """
-        解析标题，返回 (剧集主名称, 季号或None)。
-        """
         match = self.SEASON_PATTERN.search(title)
         if not match:
-            return title, None # 没有季号信息
-
+            return title, None
         show_name = match.group(1).strip()
         season_word = match.group(2)
         season_number = self.CHINESE_NUM_MAP.get(season_word)
-        
         if season_number is None:
-            return title, None # 无法识别的季号，当作没有处理
-            
+            return title, None
         logger.debug(f"标题解析: '{title}' -> 名称='{show_name}', 季号='{season_number}'")
         return show_name, season_number
 
     def _match_title_to_tmdb(self, title: str, item_type: str) -> Optional[str]:
-        """
-        在TMDb上查找标题并返回TMDb ID，对剧集进行季号验证。
-        """
         if item_type == 'Movie':
             results = search_media(title, self.tmdb_api_key, 'Movie')
             if results:
@@ -164,93 +202,68 @@ class ListImporter:
             else:
                 logger.warning(f"电影标题 '{title}' 未能在TMDb上找到匹配项。")
                 return None
-
         elif item_type == 'Series':
-            # 1. 解析标题
             show_name, season_number_to_validate = self._parse_series_title(title)
-            
-            # 2. 搜索剧集主名称
             results = search_media(show_name, self.tmdb_api_key, 'Series')
             if not results:
                 logger.warning(f"剧集标题 '{title}' (搜索词: '{show_name}') 未能在TMDb上找到匹配项。")
                 return None
-            
-            # 拿到最匹配的剧集的ID
             series_result = results[0]
             series_id = str(series_result.get('id'))
-            
-            # 3. 如果没有季号要求，直接返回成功
             if season_number_to_validate is None:
                 logger.debug(f"剧集标题 '{title}' 成功匹配到: {series_result.get('name')} (ID: {series_id})")
                 return series_id
-
-            # 4. 如果有季号要求，则必须进行验证
             logger.debug(f"剧集 '{show_name}' (ID: {series_id}) 已找到，正在验证是否存在第 {season_number_to_validate} 季...")
             series_details = get_tv_details_tmdb(int(series_id), self.tmdb_api_key, append_to_response="seasons")
-            
             if series_details and 'seasons' in series_details:
                 for season in series_details['seasons']:
                     if season.get('season_number') == season_number_to_validate:
                         logger.info(f"  -> 剧集 '{show_name}' 存在第 {season_number_to_validate} 季。最终匹配ID为 {series_id}。")
-                        return series_id # 验证成功，返回剧集主ID
-            
+                        return series_id
             logger.warning(f"验证失败！剧集 '{show_name}' (ID: {series_id}) 存在，但未找到第 {season_number_to_validate} 季。")
             return None
-            
         return None
 
     def process(self, definition: Dict) -> List[Dict[str, str]]:
         url = definition.get('url')
+        if url and url.startswith('maoyan://'):
+            return self._process_maoyan_list(definition)
+        if not url:
+            return []
         item_types = definition.get('item_type', ['Movie'])
         if isinstance(item_types, str):
             item_types = [item_types]
         limit = definition.get('limit')
-
-        if not url:
-            return []
-
-        # 这里调用改好的函数，拿到有title和imdb_id的列表
         items = self._get_titles_and_imdbids_from_url(url)
         if not items:
             return []
-
         if limit and isinstance(limit, int) and limit > 0:
             logger.info(f"  -> RSS榜单已启用数量限制，将只处理前 {limit} 个项目。")
             items = items[:limit]
-
         tmdb_items = []
-
         with ThreadPoolExecutor(max_workers=5) as executor:
             def find_first_match(item: Dict[str,str], types_to_check):
                 imdb_id = item.get('imdb_id')
                 title = item.get('title')
-
-                # 尝试优先用 imdb_id 匹配
                 for item_type in types_to_check:
                     tmdb_id = None
                     if imdb_id:
                         tmdb_id = self._match_by_ids(imdb_id, None, item_type)
                     if tmdb_id:
                         return {'id': tmdb_id, 'type': item_type}
-
-                # 否则用标题搜索匹配，先清理序号和年份
                 cleaned_title = re.sub(r'^\s*\d+\.\s*', '', title)
                 cleaned_title = re.sub(r'\s*\(\d{4}\)$', '', cleaned_title).strip()
-
                 for item_type in types_to_check:
                     tmdb_id = self._match_title_to_tmdb(cleaned_title, item_type)
                     if tmdb_id:
                         return {'id': tmdb_id, 'type': item_type}
                 return None
-
             future_to_item = {executor.submit(find_first_match, item, item_types): item for item in items}
             for future in as_completed(future_to_item):
                 result = future.result()
                 if result:
                     tmdb_items.append(result)
-
         logger.info(f"  -> RSS匹配完成，成功获得 {len(tmdb_items)} 个TMDb项目。")
-        # 去重
         unique_items = list({f"{item['type']}-{item['id']}": item for item in tmdb_items}.values())
         return unique_items
 

@@ -1,4 +1,4 @@
-<!-- src/components/CustomCollectionsManager.vue (最终独立版) -->
+<!-- src/components/CustomCollectionsManager.vue (V3.1 - 修复UI切换BUG版) -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="custom-collections-manager">
@@ -30,7 +30,11 @@
         <template #footer>
           <n-alert title="操作提示" type="info" :bordered="false">
             <ul style="margin: 0; padding-left: 20px;">
-              <li>自建合集是虚拟库的虚拟来源，任何通过规则筛选、RSS导入的合集都可以被虚拟成媒体库展示在首页（需通过配置的反代端口访问）。</li>
+              <li>自建合集是虚拟库的虚拟来源，任何通过规则筛选、RSS导入的合集都可以被虚拟成媒体库展示在首页（需通过配置的反代端口访问）。内置猫眼榜单提取自MP插件，感谢<a
+                  href="https://github.com/baozaodetudou"
+                  target="_blank"
+                  style="font-size: 0.85em; margin-left: 8px; color: var(--n-primary-color); text-decoration: underline;"
+                >逗猫佬</a>。</li>
               <li>在创建或生成“筛选规则”合集前，请先同步演员映射然后点击 <n-icon :component="SyncIcon" /> 按钮快速同步一次最新的媒体库元数据。</li>
               <li>您可以通过拖动每行最左侧的 <n-icon :component="DragHandleIcon" /> 图标来对合集进行排序，Emby虚拟库实时联动更新排序。</li>
             </ul>
@@ -81,7 +85,10 @@
         </n-form-item>
 
         <n-form-item v-if="currentCollection.type" label="合集内容" path="definition.item_type">
-          <n-checkbox-group v-model:value="currentCollection.definition.item_type">
+          <n-checkbox-group 
+            v-model:value="currentCollection.definition.item_type"
+            :disabled="isContentTypeLocked"
+          >
             <n-space>
               <n-checkbox value="Movie">电影</n-checkbox>
               <n-checkbox value="Series">电视剧</n-checkbox>
@@ -91,23 +98,34 @@
 
         <!-- 榜单导入 (List) 类型的表单 -->
         <div v-if="currentCollection.type === 'list'">
+          <!-- ★★★ 核心修正：移除 path="definition.source" 属性 ★★★ -->
+          <n-form-item label="榜单来源">
+            <n-select
+              v-model:value="selectedBuiltInList"
+              :options="builtInLists"
+              placeholder="选择一个内置榜单或自定义"
+            />
+          </n-form-item>
           <n-form-item label="榜单URL" path="definition.url">
-              <n-input v-model:value="currentCollection.definition.url" placeholder="请输入RSS源的URL" />
+              <n-input 
+                v-model:value="currentCollection.definition.url" 
+                :placeholder="urlInputPlaceholder"
+                :disabled="selectedBuiltInList !== 'custom'"
+              />
               <template #feedback>
-              请输入一个有效的RSS订阅源地址。
+                选择内置榜单时URL将自动填充；选择自定义时请在此处输入RSS地址。
               </template>
           </n-form-item>
-          <!-- ★★★ 数量限制输入框 ★★★ -->
           <n-form-item label="数量限制" path="definition.limit">
             <n-input-number 
               v-model:value="currentCollection.definition.limit" 
-              placeholder="0或留空表示不限制" 
-              :min="0" 
+              placeholder="留空不限制" 
+              :min="1" 
               clearable 
               style="width: 100%;"
             />
             <template #feedback>
-              仅导入榜单中的前 N 个项目，例如：输入 50 表示只处理 TOP 50。
+              仅导入榜单中的前 N 个项目。例如：输入 20 表示只处理 TOP 20。
             </template>
           </n-form-item>
         </div>
@@ -128,9 +146,7 @@
               <n-space v-for="(rule, index) in currentCollection.definition.rules" :key="index" style="margin-bottom: 12px;" align="center">
                 <n-select v-model:value="rule.field" :options="fieldOptions" placeholder="字段" style="width: 150px;" clearable />
                 <n-select v-model:value="rule.operator" :options="getOperatorOptionsForRow(rule)" placeholder="操作" style="width: 120px;" :disabled="!rule.field" clearable />
-                <!-- 1. 为“类型”提供输入框 -->
                 <template v-if="rule.field === 'genres'">
-                  <!-- 1a. 如果是多选操作符 -->
                   <n-select
                     v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
                     v-model:value="rule.value"
@@ -140,7 +156,6 @@
                     :disabled="!rule.operator"
                     style="flex-grow: 1; min-width: 180px;"
                   />
-                  <!-- 1b. 如果是单选操作符 (包含) -->
                   <n-select
                     v-else
                     v-model:value="rule.value"
@@ -151,10 +166,7 @@
                     style="flex-grow: 1;"
                   />
                 </template>
-
-                <!-- 2. 为“国家/地区”提供输入框 -->
                 <template v-else-if="rule.field === 'countries'">
-                  <!-- 2a. 如果是多选操作符 -->
                   <n-select
                     v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
                     v-model:value="rule.value"
@@ -164,7 +176,6 @@
                     :disabled="!rule.operator"
                     style="flex-grow: 1; min-width: 180px;"
                   />
-                  <!-- 2b. 如果是单选操作符 (包含) -->
                   <n-select
                     v-else
                     v-model:value="rule.value"
@@ -175,12 +186,7 @@
                     style="flex-grow: 1;"
                   />
                 </template>
-
-                <!-- 3. 为“工作室”提供输入框 -->
-                <!-- 3. 为“工作室”提供带搜索建议的输入框 -->
                 <template v-else-if="rule.field === 'studios'">
-
-                  <!-- 3a. 如果是多选操作符，使用可远程搜索的多选框 -->
                   <n-select
                     v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
                     v-model:value="rule.value"
@@ -194,8 +200,6 @@
                     :disabled="!rule.operator"
                     style="flex-grow: 1; min-width: 220px;"
                   />
-
-                  <!-- 3b. 如果是单选操作符 (包含)，使用自动完成输入框 -->
                   <n-auto-complete
                     v-else
                     v-model:value="rule.value"
@@ -207,10 +211,7 @@
                     clearable
                   />
                 </template>
-
-                <!-- 4. 为“演员”、“导演”提供输入框 -->
                 <template v-else-if="rule.field === 'actors'">
-                  <!-- 4a. 如果是多选操作符，使用可远程搜索的多选框 -->
                   <n-select
                     v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
                     v-model:value="rule.value"
@@ -222,7 +223,6 @@
                     :disabled="!rule.operator"
                     style="flex-grow: 1; min-width: 220px;"
                   />
-                  <!-- 4b. 如果是单选操作符 (包含)，使用自动完成输入框 -->
                   <n-auto-complete
                     v-else
                     v-model:value="rule.value"
@@ -234,8 +234,6 @@
                     clearable
                   />
                 </template>
-
-                <!-- 4-bis. 为“导演”保留原来的手动输入框 -->
                 <template v-else-if="rule.field === 'directors'">
                   <n-dynamic-tags
                     v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
@@ -250,8 +248,6 @@
                     :disabled="!rule.operator"
                   />
                 </template>
-
-                <!-- 5. 其他所有字段（日期、年份、评分）的回退逻辑 -->
                 <n-input-number
                   v-else-if="['release_date', 'date_added'].includes(rule.field)"
                   v-model:value="rule.value"
@@ -270,7 +266,6 @@
                   style="width: 180px;"
                 />
                 <n-input v-else v-model:value="rule.value" placeholder="值" :disabled="!rule.operator" />
-                <n-input v-else v-model:value="rule.value" placeholder="值" :disabled="!rule.operator" />
                 <n-button text type="error" @click="removeRule(index)">
                   <template #icon><n-icon :component="DeleteIcon" /></template>
                 </n-button>
@@ -282,8 +277,7 @@
             </div>
           </n-form-item>
         </div>
-        <!-- ★★★ 新增：内容默认排序规则 ★★★ -->
-          <n-form-item label="内容排序">
+        <n-form-item label="内容排序">
             <n-input-group>
               <n-select
                 v-model:value="currentCollection.definition.default_sort_by"
@@ -317,7 +311,6 @@
       </template>
     </n-modal>
     
-    <!-- ★★★ 缺失详情查看模态框 (已完全适配新API) ★★★ -->
     <n-modal v-model:show="showDetailsModal" preset="card" style="width: 90%; max-width: 1200px;" :title="detailsModalTitle" :bordered="false" size="huge">
       <div v-if="isLoadingDetails" class="center-container"><n-spin size="large" /></div>
       <div v-else-if="selectedCollectionDetails">
@@ -400,7 +393,7 @@ import Sortable from 'sortablejs';
 import { 
   NLayout, NPageHeader, NButton, NIcon, NText, NDataTable, NTag, NSpace,
   useMessage, NPopconfirm, NModal, NForm, NFormItem, NInput, NSelect,
-  NAlert, NRadioGroup, NRadio, NTooltip, NSpin, NGrid, NGi, NCard, NEmpty, NTabs, NTabPane
+  NAlert, NRadioGroup, NRadio, NTooltip, NSpin, NGrid, NGi, NCard, NEmpty, NTabs, NTabPane, NCheckboxGroup, NCheckbox, NInputNumber, NAutoComplete, NDynamicTags, NInputGroup
 } from 'naive-ui';
 import { 
   AddOutline as AddIcon, 
@@ -412,7 +405,7 @@ import {
   CloudDownloadOutline as CloudDownloadIcon,
   CheckmarkCircleOutline as CheckmarkCircle,
   CloseCircleOutline as CloseCircleIcon,
-  ReorderFourOutline as DragHandleIcon // ★ 新增图标
+  ReorderFourOutline as DragHandleIcon
 } from '@vicons/ionicons5';
 import { format } from 'date-fns';
 
@@ -423,7 +416,7 @@ const showModal = ref(false);
 const isEditing = ref(false);
 const isSaving = ref(false);
 const formRef = ref(null);
-const tableRef = ref(null); // ★ 新增：表格的引用
+const tableRef = ref(null);
 const syncLoading = ref({});
 const isSyncingMetadata = ref(false);
 const countryOptions = ref([]);
@@ -437,10 +430,63 @@ const selectedCollectionDetails = ref(null);
 const subscribing = ref({});
 const actorOptions = ref([]); 
 const isSearchingActors = ref(false); 
-const isSavingOrder = ref(false); // ★ 新增：保存排序时的加载状态
-let sortableInstance = null; // ★ 新增：保存Sortable实例
+const isSavingOrder = ref(false);
+let sortableInstance = null;
 
-// ★★★ 新增：为排序规则定义选项 ★★★
+const builtInLists = [
+  { label: '自定义RSS源', value: 'custom' },
+  { type: 'group', label: '猫眼电影榜单', key: 'maoyan-movie' },
+  { label: '电影票房榜', value: 'maoyan://movie', contentType: ['Movie'] },
+  { type: 'group', label: '猫眼全网热度榜', key: 'maoyan-all' },
+  { label: '全网 - 电视剧', value: 'maoyan://web-heat', contentType: ['Series'] },
+  { label: '全网 - 网剧', value: 'maoyan://web-tv', contentType: ['Series'] },
+  { label: '全网 - 综艺', value: 'maoyan://zongyi', contentType: ['Series'] },
+  { label: '全网 - 全类型', value: 'maoyan://web-heat,web-tv,zongyi', contentType: ['Series'] },
+  { type: 'group', label: '猫眼腾讯视频热度榜', key: 'maoyan-tencent' },
+  { label: '腾讯 - 电视剧', value: 'maoyan://web-heat-tencent', contentType: ['Series'] },
+  { label: '腾讯 - 网剧', value: 'maoyan://web-tv-tencent', contentType: ['Series'] },
+  { label: '腾讯 - 综艺', value: 'maoyan://zongyi-tencent', contentType: ['Series'] },
+  { type: 'group', label: '猫眼爱奇艺热度榜', key: 'maoyan-iqiyi' },
+  { label: '爱奇艺 - 电视剧', value: 'maoyan://web-heat-iqiyi', contentType: ['Series'] },
+  { label: '爱奇艺 - 网剧', value: 'maoyan://web-tv-iqiyi', contentType: ['Series'] },
+  { label: '爱奇艺 - 综艺', value: 'maoyan://zongyi-iqiyi', contentType: ['Series'] },
+  { type: 'group', label: '猫眼优酷热度榜', key: 'maoyan-youku' },
+  { label: '优酷 - 电视剧', value: 'maoyan://web-heat-youku', contentType: ['Series'] },
+  { label: '优酷 - 网剧', value: 'maoyan://web-tv-youku', contentType: ['Series'] },
+  { label: '优酷 - 综艺', value: 'maoyan://zongyi-youku', contentType: ['Series'] },
+  { type: 'group', label: '猫眼芒果TV热度榜', key: 'maoyan-mango' },
+  { label: '芒果TV - 电视剧', value: 'maoyan://web-heat-mango', contentType: ['Series'] },
+  { label: '芒果TV - 网剧', value: 'maoyan://web-tv-mango', contentType: ['Series'] },
+  { label: '芒果TV - 综艺', value: 'maoyan://zongyi-mango', contentType: ['Series'] },
+];
+
+const selectedBuiltInList = ref('custom');
+
+const isContentTypeLocked = computed(() => {
+  return selectedBuiltInList.value !== 'custom' && currentCollection.value.type === 'list';
+});
+
+const urlInputPlaceholder = computed(() => {
+  return selectedBuiltInList.value === 'custom'
+    ? '请输入RSS源的URL'
+    : '已选择内置榜单，URL自动填充';
+});
+
+watch(selectedBuiltInList, (newValue) => {
+  if (newValue && newValue !== 'custom') {
+    currentCollection.value.definition.url = newValue;
+  } else {
+    if (!isEditing.value) {
+      currentCollection.value.definition.url = '';
+    }
+  }
+
+  const selectedOption = builtInLists.find(opt => opt.value === newValue);
+  if (selectedOption && selectedOption.contentType) {
+    currentCollection.value.definition.item_type = selectedOption.contentType;
+  }
+});
+
 const sortFieldOptions = ref([
   { label: '不设置 (使用Emby原生排序)', value: 'none' },
   { label: '名称', value: 'SortName' },
@@ -474,21 +520,21 @@ watch(() => currentCollection.value.type, (newType) => {
   if (isEditing.value) { return; }
   if (newType === 'filter') {
     currentCollection.value.definition = {
-      item_type: ['Movie'], // 注意这里也改成了数组
+      item_type: ['Movie'],
       logic: 'AND',
       rules: [{ field: null, operator: null, value: '' }],
-      // ★★★ 新增：为筛选类型也初始化排序字段 ★★★
       default_sort_by: 'none',
       default_sort_order: 'Ascending'
     };
   } else if (newType === 'list') {
     currentCollection.value.definition = { 
-      item_type: ['Movie'], // 注意这里也改成了数组
+      item_type: ['Movie'],
       url: '',
       limit: null,
       default_sort_by: 'none',
       default_sort_order: 'Ascending'
     };
+    selectedBuiltInList.value = 'custom';
   }
 });
 
@@ -620,7 +666,7 @@ const removeRule = (index) => {
 };
 
 const typeOptions = [
-  { label: '通过榜单导入 (RSS)', value: 'list' },
+  { label: '通过榜单导入 (RSS/内置)', value: 'list' },
   { label: '通过筛选规则生成', value: 'filter' }
 ];
 
@@ -631,13 +677,13 @@ const formRules = computed(() => {
     'definition.item_type': { type: 'array', required: true, message: '请至少选择一种合集内容类型' }
   };
   if (currentCollection.value.type === 'list') {
-    baseRules['definition.url'] = { required: true, message: '请输入榜单的URL', trigger: 'blur' };
+    baseRules['definition.url'] = { required: true, message: '请选择一个内置榜单或输入一个自定义URL', trigger: 'blur' };
   } else if (currentCollection.value.type === 'filter') {
     baseRules['definition.rules'] = {
       type: 'array', required: true,
       validator: (rule, value) => {
         if (!value || value.length === 0) return new Error('请至少添加一条筛选规则');
-        if (value.some(r => !r.field || !r.operator || (Array.isArray(r.value) ? r.value.length === 0 : !r.value))) {
+        if (value.some(r => !r.field || !r.operator || (Array.isArray(r.value) ? r.value.length === 0 : (r.value === null || r.value === '')))) {
           return new Error('请将所有规则填写完整');
         }
         return true;
@@ -687,7 +733,6 @@ const fetchCollections = async () => {
   try {
     const response = await axios.get('/api/custom_collections');
     collections.value = response.data;
-    // ★ 数据加载后，初始化或重新初始化拖拽功能
     nextTick(() => {
       initSortable();
     });
@@ -698,7 +743,6 @@ const fetchCollections = async () => {
   }
 };
 
-// ★ 新增：初始化拖拽排序功能
 const initSortable = () => {
   if (sortableInstance) {
     sortableInstance.destroy();
@@ -713,26 +757,21 @@ const initSortable = () => {
   }
 };
 
-// ★ 新增：拖拽结束后的处理函数
 const handleDragEnd = async (event) => {
   const { oldIndex, newIndex } = event;
   if (oldIndex === newIndex) return;
 
-  // 1. 更新前端数组顺序以匹配DOM
   const movedItem = collections.value.splice(oldIndex, 1)[0];
   collections.value.splice(newIndex, 0, movedItem);
 
-  // 2. 准备要发送到后端的数据
   const orderedIds = collections.value.map(c => c.id);
   isSavingOrder.value = true;
 
   try {
-    // 3. 调用API保存新顺序
     await axios.post('/api/custom_collections/update_order', { ids: orderedIds });
     message.success('合集顺序已保存。');
   } catch (error) {
     message.error(error.response?.data?.error || '保存顺序失败，请刷新页面重试。');
-    // 如果保存失败，重新获取最新列表以恢复
     fetchCollections();
   } finally {
     isSavingOrder.value = false;
@@ -765,8 +804,6 @@ const subscribeMedia = async (media) => {
     await axios.post('/api/custom_collections/subscribe', {
       collection_id: selectedCollectionDetails.value.id,
       tmdb_id: media.tmdb_id,
-      title: media.title,
-      item_type: media.type 
     });
     message.success(`《${media.title}》已成功提交订阅并更新状态！`);
     media.status = 'subscribed'; 
@@ -833,6 +870,7 @@ const triggerMetadataSync = async () => {
 const handleCreateClick = () => {
   isEditing.value = false;
   currentCollection.value = getInitialFormModel();
+  selectedBuiltInList.value = 'custom';
   showModal.value = true;
 };
 
@@ -843,11 +881,22 @@ const handleEditClick = (row) => {
     rowCopy.definition = JSON.parse(rowCopy.definition_json);
   } catch {
     rowCopy.definition = rowCopy.type === 'filter' 
-      ? { item_type: 'Movie', logic: 'AND', rules: [] } 
-      : { item_type: 'Movie', url: '' };
+      ? { item_type: ['Movie'], logic: 'AND', rules: [] } 
+      : { item_type: ['Movie'], url: '' };
   }
   delete rowCopy.definition_json;
   currentCollection.value = rowCopy;
+
+  if (rowCopy.type === 'list') {
+    const url = rowCopy.definition.url || '';
+    const isBuiltIn = builtInLists.some(item => item.value === url);
+    if (isBuiltIn) {
+      selectedBuiltInList.value = url;
+    } else {
+      selectedBuiltInList.value = 'custom';
+    }
+  }
+
   showModal.value = true;
 };
 
@@ -885,7 +934,6 @@ const handleSave = () => {
 };
 
 const columns = [
-  // ★ 新增：拖拽把手列
   {
     key: 'drag',
     width: 50,
@@ -898,20 +946,44 @@ const columns = [
   },
   { title: '名称', key: 'name', width: 250, ellipsis: { tooltip: true } },
   { 
-    title: '类型', key: 'type', width: 120,
-    render: (row) => h(NTag, { type: row.type === 'list' ? 'info' : 'default', bordered: false }, { default: () => row.type === 'list' ? '榜单导入' : '筛选生成' })
+    title: '类型', key: 'type', width: 180,
+    render: (row) => {
+      let label = '未知';
+      let tagType = 'default';
+      if (row.type === 'list') {
+        let url = '';
+        try {
+          const def = JSON.parse(row.definition_json);
+          url = def.url || '';
+        } catch(e) {}
+        
+        const matchedOption = builtInLists.find(opt => opt.value === url);
+        if (matchedOption) {
+            label = matchedOption.label;
+        } else if (url) {
+            label = '榜单导入 (RSS)';
+        } else {
+            label = '榜单导入';
+        }
+        tagType = 'info';
+
+      } else if (row.type === 'filter') {
+        label = '筛选生成';
+        tagType = 'default';
+      }
+      return h(NTag, { type: tagType, bordered: false }, { default: () => label });
+    }
   },
   {
     title: '内容', key: 'item_type', width: 120,
     render: (row) => {
         let itemTypes = [];
         try {
-            if (row.item_type) {
-                itemTypes = JSON.parse(row.item_type);
-            } 
-            else if (row.definition_json) {
+            if (row.definition_json) {
                 const definition = JSON.parse(row.definition_json);
                 itemTypes = definition.item_type || ['Movie'];
+            } else if (row.item_type) {
+                itemTypes = JSON.parse(row.item_type);
             }
         } catch (e) {
             itemTypes = ['Movie'];
@@ -1007,8 +1079,7 @@ onMounted(() => {
   align-items: center;
   height: 200px;
 }
-/* ★ 新增：拖拽把手样式 */
 .drag-handle:hover {
-  color: #2080f0; /* Naive UI Primary Color */
+  color: #2080f0;
 }
 </style>

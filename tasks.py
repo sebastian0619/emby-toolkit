@@ -1762,7 +1762,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False),
                 "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag and emby_collection_id else None
             })
-            logger.info(f"已为RSS合集 '{collection_name}' 分析健康状态。")
+            logger.info(f"  -> 已为RSS合集 '{collection_name}' 分析健康状态。")
         
         # 对于 'filter' 类型，逻辑保持不变
         else: 
