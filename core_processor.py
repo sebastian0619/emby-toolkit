@@ -151,6 +151,108 @@ def _aggregate_series_cast_from_tmdb_data(series_data: Dict[str, Any], all_episo
     
     logger.info(f"  -> 共为 '{series_data.get('name')}' 聚合了 {len(full_aggregated_cast)} 位独立演员。")
     return full_aggregated_cast
+# ==========================================================================================
+# +++ JSON 构建器函数 (JSON Builders) +++
+# ==========================================================================================
+def _build_movie_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    构建电影 all.json。
+    无论输入数据结构如何，都强制输出干净、统一的格式。
+    """
+    # 1. 从原始数据中安全地提取所有必需的字段
+    #    使用 .get() 并提供默认值，确保即使原始数据缺少某些键也不会出错。
+    final_json = {
+      "id": source_data.get("id"),
+      "imdb_id": source_data.get("imdb_id"),
+      "title": source_data.get("title", ""),
+      "original_title": source_data.get("original_title", ""),
+      "overview": source_data.get("overview", ""),
+      "tagline": source_data.get("tagline", ""),
+      "release_date": source_data.get("release_date", ""),
+      "vote_average": source_data.get("vote_average", 0.0),
+      "production_countries": source_data.get("production_countries", []),
+      "production_companies": source_data.get("production_companies", []),
+      "genres": source_data.get("genres", []),
+      # 以下字段是为了兼容性，即使模板中没有也建议保留
+      "belongs_to_collection": source_data.get("belongs_to_collection"),
+      "videos": source_data.get("videos", {"results": []}),
+      "external_ids": source_data.get("external_ids", {})
+    }
+
+    # 2. ★★★ 核心：强制创建 "casts" 键，并填入处理好的演员和职员数据 ★★★
+    final_json["casts"] = {
+        "cast": processed_cast,
+        "crew": processed_crew
+    }
+    
+    # 3. (可选但推荐) 清理一下可能为空的ID
+    if not final_json.get("imdb_id"):
+        final_json["imdb_id"] = final_json.get("external_ids", {}).get("imdb_id", "")
+
+    return final_json
+
+def _build_series_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    构建 series.json。
+    此版本假设输入数据已被上游归一化。
+    """
+    final_json = {
+        "id": source_data.get("id"),
+        "name": source_data.get("name", ""),
+        "original_name": source_data.get("original_name", ""),
+        "overview": source_data.get("overview", ""),
+        "vote_average": source_data.get("vote_average", 0.0),
+        "episode_run_time": source_data.get("episode_run_time", []),
+        "first_air_date": source_data.get("first_air_date"),
+        "last_air_date": source_data.get("last_air_date"),
+        "status": source_data.get("status", ""),
+        "genres": source_data.get("genres", []),
+        "external_ids": source_data.get("external_ids", {}),
+        "videos": source_data.get("videos", {"results": []}),
+        "content_ratings": source_data.get("content_ratings", {"results": []}),
+        
+        # 【关键】: 现在只从归一化后的键取值
+        "networks": source_data.get("networks", []),
+        "origin_country": source_data.get("origin_country", [])
+    }
+
+    # 创建 credits 键
+    final_json["credits"] = {
+        "cast": processed_cast,
+        "crew": processed_crew
+    }
+    
+    return final_json
+
+def _build_season_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """构建季 season-X.json，确保Emby兼容性。"""
+    return {
+      "name": source_data.get("name", ""),
+      "overview": source_data.get("overview", ""),
+      "air_date": source_data.get("air_date", "1970-01-01T00:00:00.000Z"),
+      "external_ids": source_data.get("external_ids", {"tvdb_id": None}),
+      "credits": {
+        "cast": processed_cast,
+        "crew": processed_crew
+      }
+    }
+
+def _build_episode_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """构建集 season-X-episode-Y.json，确保Emby兼容性。"""
+    return {
+      "name": source_data.get("name", ""),
+      "overview": source_data.get("overview", ""),
+      "videos": source_data.get("videos", {"results": []}),
+      "external_ids": source_data.get("external_ids", {"tvdb_id": None, "tvrage_id": None, "imdb_id": ""}),
+      "air_date": source_data.get("air_date", "1970-01-01T00:00:00.000Z"),
+      "vote_average": source_data.get("vote_average", 0.0),
+      "credits": {
+        "cast": processed_cast,
+        "guest_stars": [], # 保持清空
+        "crew": processed_crew
+      }
+    }
+
 class MediaProcessor:
     def __init__(self, config: Dict[str, Any]):
         # ★★★ 然后，从这个 config 字典里，解析出所有需要的属性 ★★★
@@ -1936,7 +2038,10 @@ class MediaProcessor:
 
                 try:
                     # 步骤A: 获取项目最新的详细信息
-                    item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields="ProviderIds,Type,DateModified")
+                    item_details = emby_handler.get_emby_item_details(
+                        item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
+                        fields="ProviderIds,Type,DateModified,Name,OriginalTitle,Overview,Tagline,PremiereDate,ProductionYear,CommunityRating,Genres,Studios,People,OfficialRating,DateCreated"
+                    )
                     
                     if not item_details:
                         raise ValueError(f"项目在Emby中已不存在或无法访问 (ID: {item_id})")
@@ -2087,17 +2192,125 @@ class MediaProcessor:
             return False
     
     # --- 备份元数据 ---
-    def sync_item_metadata(self, item_details, tmdb_id):
+    def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str):
+        """
+        【新版】根据Emby API的实时数据，调用JSON构建器生成全新的元数据文件并存入override目录。
+        """
         item_type = item_details.get("Type")
+        item_id = item_details.get("Id")
+        item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
+        log_prefix = "元数据备份:"
+        logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 从 Emby API 生成 JSON...")
+
+        # 1. 准备目标路径
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-        source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
         target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
-        if os.path.exists(source_cache_dir):
-            os.makedirs(target_override_dir, exist_ok=True)
-            shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-            logger.info(f"    ✅ 成功将元数据从 '{source_cache_dir}' 备份到 '{target_override_dir}'。")
-        else:
-            logger.debug(f"    - 跳过元数据备份，因为源缓存目录不存在: {source_cache_dir}")
+        os.makedirs(target_override_dir, exist_ok=True)
+
+        # 2. 定义辅助函数
+        def _save_json(data, filename):
+            """一个用于保存JSON文件的内部函数"""
+            path = os.path.join(target_override_dir, filename)
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                logger.debug(f"    -> {log_prefix} 成功保存元数据文件: {filename}")
+            except Exception as e:
+                logger.error(f"    -> {log_prefix} 保存 {filename} 失败: {e}")
+
+        def _format_people_from_emby(people_list: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+            """将Emby的People列表转换为构建器所需的cast和crew格式"""
+            cast, crew = [], []
+            if not people_list:
+                return cast, crew
+            for person in people_list:
+                person_info = {
+                    "id": person.get("ProviderIds", {}).get("Tmdb"),
+                    "name": person.get("Name"),
+                    "original_name": person.get("Name") # Emby无此字段，用Name代替
+                }
+                if person.get("Type") == "Actor":
+                    person_info["character"] = person.get("Role")
+                    cast.append(person_info)
+                else: # Director, Writer, etc.
+                    person_info["job"] = person.get("Type")
+                    crew.append(person_info)
+            return cast, crew
+
+        # 3. 根据媒体类型执行操作
+        try:
+            if item_type == "Movie":
+                processed_cast, processed_crew = _format_people_from_emby(item_details.get("People", []))
+                
+                # 将Emby数据映射到构建器需要的格式
+                source_data = {
+                    "id": tmdb_id,
+                    "imdb_id": item_details.get("ProviderIds", {}).get("Imdb"),
+                    "title": item_details.get("Name"),
+                    "original_title": item_details.get("OriginalTitle"),
+                    "overview": item_details.get("Overview"),
+                    "tagline": item_details.get("Taglines", [None])[0],
+                    "release_date": (item_details.get("PremiereDate") or "0000-01-01T00:00:00.000Z").split('T')[0],
+                    "vote_average": item_details.get("CommunityRating", 0.0),
+                    "genres": [{"name": g} for g in item_details.get("Genres", [])],
+                    "production_companies": [{"name": s["Name"]} for s in item_details.get("Studios", [])]
+                }
+                
+                movie_json = self._build_movie_json(source_data, processed_cast, processed_crew)
+                _save_json(movie_json, "all.json")
+
+            elif item_type == "Series":
+                # 3a. 处理剧集主文件 (series.json)
+                series_cast, series_crew = _format_people_from_emby(item_details.get("People", []))
+                series_source_data = {
+                    "id": tmdb_id,
+                    "name": item_details.get("Name"),
+                    "original_name": item_details.get("OriginalTitle"),
+                    "overview": item_details.get("Overview"),
+                    "vote_average": item_details.get("CommunityRating", 0.0),
+                    "first_air_date": (item_details.get("PremiereDate") or "0000-01-01T00:00:00.000Z").split('T')[0],
+                    "genres": [{"name": g} for g in item_details.get("Genres", [])],
+                    "networks": [{"name": s["Name"]} for s in item_details.get("Studios", [])],
+                    "origin_country": item_details.get("ProductionLocations", [])
+                }
+                series_json = self._build_series_json(series_source_data, series_cast, series_crew)
+                _save_json(series_json, "series.json")
+
+                # 3b. 获取并处理所有子项目 (季、集)
+                children = emby_handler.get_series_children(
+                    item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
+                    series_name_for_log=item_name_for_log,
+                    fields="Name,Overview,PremiereDate,IndexNumber,ParentIndexNumber,People"
+                )
+                if not children:
+                    logger.debug(f"    -> {log_prefix} 剧集 '{item_name_for_log}' 没有子项目，跳过季/集元数据生成。")
+                    return
+
+                for child in children:
+                    child_cast, child_crew = _format_people_from_emby(child.get("People", []))
+                    child_source_data = {
+                        "name": child.get("Name"),
+                        "overview": child.get("Overview"),
+                        "air_date": (child.get("PremiereDate") or "0000-01-01T00:00:00.000Z").split('T')[0]
+                    }
+
+                    if child.get("Type") == "Season":
+                        season_num = child.get("IndexNumber")
+                        if season_num is not None:
+                            season_json = self._build_season_json(child_source_data, child_cast, child_crew)
+                            _save_json(season_json, f"season-{season_num}.json")
+                    
+                    elif child.get("Type") == "Episode":
+                        season_num = child.get("ParentIndexNumber")
+                        ep_num = child.get("IndexNumber")
+                        if season_num is not None and ep_num is not None:
+                            episode_json = self._build_episode_json(child_source_data, child_cast, child_crew)
+                            _save_json(episode_json, f"season-{season_num}-episode-{ep_num}.json")
+            
+            logger.info(f"  -> {log_prefix} ✅ 成功完成 '{item_name_for_log}' 的元数据备份。")
+
+        except Exception as e:
+            logger.error(f"  -> {log_prefix} 为 '{item_name_for_log}' 生成元数据时发生错误: {e}", exc_info=True)
 
     def close(self):
         if self.douban_api: self.douban_api.close()
