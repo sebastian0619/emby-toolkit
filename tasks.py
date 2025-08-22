@@ -7,7 +7,7 @@ import json
 import sqlite3
 import logging
 import threading
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
 
@@ -1838,21 +1838,23 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 # ★★★ 新增：轻量级的元数据缓存填充任务 ★★★
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 50):
+def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 50, force_full_update: bool = False):
     """
-    采用分批处理和写入的机制，通过差异检查自然实现断点续传。
+    【V3 - 混合同步模式】
+    - 默认(force_full_update=False): 使用时间戳进行快速增量同步。
+    - 强制(force_full_update=True): 忽略时间戳，进行全量深度同步。
     """
     task_name = "同步媒体数据"
-    logger.info(f"--- (分批大小: {batch_size}) ---")
+    sync_mode = "深度同步" if force_full_update else "快速同步"
+    logger.info(f"--- 模式: {sync_mode} (分批大小: {batch_size}) ---")
     
-
     try:
         # ======================================================================
-        # 步骤 1: 计算差异
+        # 步骤 1: 计算差异 (根据模式选择不同逻辑)
         # ======================================================================
-        task_manager.update_status_from_thread(0, "阶段1/2: 计算媒体库差异...")
+        task_manager.update_status_from_thread(0, f"阶段1/2: 计算媒体库差异 ({sync_mode})...")
         
-        # --- 从 Emby 获取 ---
+        # --- 1.1 & 1.2 (获取 Emby 和本地数据，逻辑不变) ---
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
         if not libs_to_process_ids:
             raise ValueError("未在配置中指定要处理的媒体库。")
@@ -1860,33 +1862,62 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
         emby_items_index = emby_handler.get_emby_library_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
-            fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,People"
+            fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,People,Tags,DateModified"
         ) or []
         
-        emby_tmdb_ids = {item.get("ProviderIds", {}).get("Tmdb") for item in emby_items_index if item.get("ProviderIds", {}).get("Tmdb")}
-        logger.info(f"  -> 从 Emby 获取到 {len(emby_tmdb_ids)} 个有效的媒体项 (基于TMDb ID)。")
+        emby_items_map = {
+            item.get("ProviderIds", {}).get("Tmdb"): item 
+            for item in emby_items_index if item.get("ProviderIds", {}).get("Tmdb")
+        }
+        emby_tmdb_ids = set(emby_items_map.keys())
+        logger.info(f"  -> 从 Emby 获取到 {len(emby_tmdb_ids)} 个有效的媒体项。")
 
-        # --- 从本地数据库获取 ---
-        db_tmdb_ids = set()
+        db_sync_info = {}
         with db_handler.get_db_connection(processor.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT tmdb_id FROM media_metadata")
-            rows = cursor.fetchall()
-            db_tmdb_ids = {row["tmdb_id"] for row in rows}
+            cursor.execute("SELECT tmdb_id, last_synced_at FROM media_metadata")
+            for row in cursor.fetchall():
+                db_sync_info[row["tmdb_id"]] = row["last_synced_at"]
+        db_tmdb_ids = set(db_sync_info.keys())
         logger.info(f"  -> 从本地数据库 media_metadata 表中获取到 {len(db_tmdb_ids)} 个媒体项。")
 
-        # --- 计算差异 ---
+        # --- 1.3 计算差异 ---
         items_to_add_tmdb_ids = emby_tmdb_ids - db_tmdb_ids
         items_to_delete_tmdb_ids = db_tmdb_ids - emby_tmdb_ids
+        common_ids = emby_tmdb_ids.intersection(db_tmdb_ids)
+        
+        # ★★★ 核心修改: 根据 force_full_update 决定更新逻辑 ★★★
+        if force_full_update:
+            logger.info("  -> 深度同步模式：所有已存在项目都将被更新。")
+            items_to_update_tmdb_ids = common_ids
+        else:
+            logger.info("  -> 快速同步模式：仅更新时间戳已变化的媒体。")
+            items_to_update_tmdb_ids = set()
+            for tmdb_id in common_ids:
+                emby_item = emby_items_map.get(tmdb_id)
+                last_synced_str = db_sync_info.get(tmdb_id)
+                emby_modified_str = emby_item.get("DateModified")
 
-        logger.info(f"  -> 计算差异完成：需要新增 {len(items_to_add_tmdb_ids)} 项，需要删除 {len(items_to_delete_tmdb_ids)} 项。")
+                if not emby_modified_str or not last_synced_str:
+                    items_to_update_tmdb_ids.add(tmdb_id)
+                    continue
+                
+                try:
+                    emby_modified_dt = datetime.fromisoformat(emby_modified_str.replace('Z', '+00:00'))
+                    last_synced_dt = datetime.fromisoformat(last_synced_str).replace(tzinfo=timezone.utc)
+                    if emby_modified_dt > last_synced_dt:
+                        items_to_update_tmdb_ids.add(tmdb_id)
+                except (ValueError, TypeError):
+                    items_to_update_tmdb_ids.add(tmdb_id)
 
-        # --- 执行删除操作 ---
+        logger.info(f"  -> 计算差异完成：新增 {len(items_to_add_tmdb_ids)} 项, 更新 {len(items_to_update_tmdb_ids)} 项, 删除 {len(items_to_delete_tmdb_ids)} 项。")
+
+        # --- 1.4 执行删除操作 (逻辑不变) ---
         if items_to_delete_tmdb_ids:
+            # ... (这部分代码和原来一样，无需修改)
             logger.info(f"  -> 正在从数据库中删除 {len(items_to_delete_tmdb_ids)} 个已不存在的媒体项...")
             with db_handler.get_db_connection(processor.db_path) as conn:
                 cursor = conn.cursor()
-                # 为了安全，分批删除
                 ids_to_delete_list = list(items_to_delete_tmdb_ids)
                 for i in range(0, len(ids_to_delete_list), 500):
                     batch_ids = ids_to_delete_list[i:i+500]
@@ -1895,37 +1926,35 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                     cursor.execute(sql, batch_ids)
                 conn.commit()
             logger.info("  -> 冗余数据清理完成。")
+
+        # --- 1.5 准备需要处理的项目列表 ---
+        ids_to_process = items_to_add_tmdb_ids.union(items_to_update_tmdb_ids)
+        items_to_process = [emby_items_map[tmdb_id] for tmdb_id in ids_to_process]
         
-        # --- 准备新增操作 ---
-        items_to_process = [
-            item for item in emby_items_index 
-            if item.get("ProviderIds", {}).get("Tmdb") in items_to_add_tmdb_ids
-        ]
-        
-        total_to_add = len(items_to_process)
-        if total_to_add == 0:
+        total_to_process = len(items_to_process)
+        if total_to_process == 0:
             task_manager.update_status_from_thread(100, "数据库已是最新，无需同步。")
             return
 
-        logger.info(f"  -> 需要新增 {total_to_add} 项，将分 { (total_to_add + batch_size - 1) // batch_size } 个批次处理。")
+        logger.info(f"  -> 总共需要处理 {total_to_process} 项，将分 { (total_to_process + batch_size - 1) // batch_size } 个批次。")
 
         # ======================================================================
         # 步骤 2: 分批循环处理需要新增的媒体项
         # ======================================================================
         
         processed_count = 0
-        for i in range(0, total_to_add, batch_size):
+        for i in range(0, total_to_process, batch_size):
             if processor.is_stop_requested():
                 logger.info("任务在批次处理前被中止。")
                 break
 
             batch_items = items_to_process[i:i + batch_size]
             batch_number = (i // batch_size) + 1
-            total_batches = (total_to_add + batch_size - 1) // batch_size
+            total_batches = (total_to_process + batch_size - 1) // batch_size
             
             logger.info(f"--- 开始处理批次 {batch_number}/{total_batches} (包含 {len(batch_items)} 个项目) ---")
             task_manager.update_status_from_thread(
-                10 + int((processed_count / total_to_add) * 90), 
+                10 + int((processed_count / total_to_process) * 90), 
                 f"处理批次 {batch_number}/{total_batches}..."
             )
 
@@ -1988,7 +2017,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
 
                 studios = [s['Name'] for s in full_details_emby.get('Studios', []) if s.get('Name')]
                 release_date_str = (full_details_emby.get('PremiereDate') or '0000-01-01T00:00:00.000Z').split('T')[0]
-
+                tags = [tag['Name'] for tag in full_details_emby.get('TagItems', []) if tag.get('Name')]
                 metadata_to_save = {
                     "tmdb_id": tmdb_id, "item_type": full_details_emby.get("Type"),
                     "title": full_details_emby.get('Name'), "original_title": full_details_emby.get('OriginalTitle'),
@@ -1999,6 +2028,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                     "directors_json": json.dumps(directors, ensure_ascii=False),
                     "studios_json": json.dumps(studios, ensure_ascii=False),
                     "countries_json": json.dumps(countries, ensure_ascii=False),
+                    "tags_json": json.dumps(tags, ensure_ascii=False),
                 }
                 metadata_batch.append(metadata_to_save)
 
@@ -2011,8 +2041,9 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                         try:
                             columns = ', '.join(metadata.keys())
                             placeholders = ', '.join('?' for _ in metadata)
-                            sql = f"INSERT OR REPLACE INTO media_metadata ({columns}) VALUES ({placeholders})"
-                            cursor.execute(sql, tuple(metadata.values()))
+                            sql = f"INSERT OR REPLACE INTO media_metadata ({columns}, last_synced_at) VALUES ({placeholders}, ?)"
+                            sync_time = datetime.now(timezone.utc).isoformat()
+                            cursor.execute(sql, tuple(metadata.values()) + (sync_time,))
                         except sqlite3.Error as e:
                             logger.error(f"写入 TMDB ID {metadata.get('tmdb_id')} 的元数据时发生数据库错误: {e}")
                     conn.commit()
@@ -2020,7 +2051,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
             
             processed_count += len(batch_items)
 
-        final_message = f"同步完成！本次处理 {processed_count}/{total_to_add} 项, 删除 {len(items_to_delete_tmdb_ids)} 项。"
+        final_message = f"同步完成！本次处理 {processed_count}/{total_to_process} 项, 删除 {len(items_to_delete_tmdb_ids)} 项。"
         task_manager.update_status_from_thread(100, final_message)
         logger.trace(f"--- '{task_name}' 任务成功完成 ---")
 

@@ -35,7 +35,7 @@
                   target="_blank"
                   style="font-size: 0.85em; margin-left: 8px; color: var(--n-primary-color); text-decoration: underline;"
                 >逗猫佬</a>。</li>
-              <li>在创建或生成“筛选规则”合集前，请先同步演员映射然后点击 <n-icon :component="SyncIcon" /> 按钮快速同步一次最新的媒体库元数据。</li>
+              <li>在创建或生成“筛选规则”合集前，请先同步演员映射然后点击 <n-icon :component="SyncIcon" /> 按钮快速同步一次最新的媒体库元数据。修改媒体标签等不会变更Emby最后更新时间戳的需要到任务中心运行同步媒体数据并采用深度模式。</li>
               <li>您可以通过拖动每行最左侧的 <n-icon :component="DragHandleIcon" /> 图标来对合集进行排序，Emby虚拟库实时联动更新排序。</li>
             </ul>
           </n-alert>
@@ -209,6 +209,30 @@
                     @update:value="handleStudioSearch"
                     :disabled="!rule.operator"
                     clearable
+                  />
+                </template>
+                <template v-else-if="rule.field === 'tags'">
+                  <n-select
+                    v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                    v-model:value="rule.value"
+                    multiple
+                    filterable
+                    tag
+                    placeholder="选择或输入标签"
+                    :options="tagOptions"
+                    :disabled="!rule.operator"
+                    style="flex-grow: 1; min-width: 220px;"
+                  />
+                  <n-select
+                    v-else
+                    v-model:value="rule.value"
+                    filterable
+                    tag
+                    placeholder="选择或输入一个标签"
+                    :options="tagOptions"
+                    :disabled="!rule.operator"
+                    clearable
+                    style="flex-grow: 1;"
                   />
                 </template>
                 <template v-else-if="rule.field === 'actors'">
@@ -424,6 +448,7 @@ const isSyncingAll = ref(false);
 const genreOptions = ref([]);
 const studioOptions = ref([]);
 const isSearchingStudios = ref(false);
+const tagOptions = ref([]);
 const showDetailsModal = ref(false);
 const isLoadingDetails = ref(false);
 const selectedCollectionDetails = ref(null);
@@ -564,6 +589,18 @@ const fetchGenreOptions = async () => {
   }
 };
 
+const fetchTagOptions = async () => {
+  try {
+    const response = await axios.get('/api/custom_collections/config/tags');
+    tagOptions.value = response.data.map(name => ({
+      label: name,
+      value: name
+    }));
+  } catch (error) {
+    message.error('获取标签列表失败。');
+  }
+};
+
 let actorSearchTimeout = null;
 const handleActorSearch = (query) => {
   if (!query) {
@@ -636,7 +673,8 @@ const ruleConfig = {
   rating: { label: '评分', type: 'number', operators: ['gte', 'lte'] },
   genres: { label: '类型', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
   countries: { label: '国家/地区', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
-  studios: { label: '工作室', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
+  studios: { label: '工作室', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
+  tags: { label: '标签', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
   release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
   date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
 };
@@ -1041,6 +1079,7 @@ onMounted(() => {
   fetchCollections();
   fetchCountryOptions();
   fetchGenreOptions();
+  fetchTagOptions();
 });
 </script>
 

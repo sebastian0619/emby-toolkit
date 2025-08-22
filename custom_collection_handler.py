@@ -311,7 +311,7 @@ class FilterEngine:
                         pass # JSON解析失败则不匹配
 
             # 2. 检查字段是否为“字符串列表”（类型/国家/工作室）
-            elif field in ['genres', 'countries', 'studios']:
+            elif field in ['genres', 'countries', 'studios', 'tags']:
                 json_str = item_metadata.get(f"{field}_json")
                 if json_str:
                     try:

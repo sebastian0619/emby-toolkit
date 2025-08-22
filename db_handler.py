@@ -1293,6 +1293,36 @@ def get_unique_studios(db_path: str) -> List[str]:
         logger.error(f"提取唯一工作室时发生数据库错误: {e}", exc_info=True)
         return []
     
+# ★★★ 从元数据表中提取所有唯一的标签 ★★★
+def get_unique_tags(db_path: str) -> List[str]:
+    """
+    从 media_metadata 表中扫描所有媒体项，提取出所有不重复的标签(tags)。
+    """
+    unique_tags = set()
+    try:
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT tags_json FROM media_metadata")
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                if row['tags_json']:
+                    try:
+                        tags = json.loads(row['tags_json'])
+                        for tag in tags:
+                            if tag:
+                                unique_tags.add(tag.strip())
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                        
+        sorted_tags = sorted(list(unique_tags))
+        logger.trace(f"从数据库中成功提取出 {len(sorted_tags)} 个唯一的标签。")
+        return sorted_tags
+        
+    except sqlite3.Error as e:
+        logger.error(f"提取唯一标签时发生数据库错误: {e}", exc_info=True)
+        return []
+
 # ★★★ 根据关键词搜索唯一的工作室 ★★★
 def search_unique_studios(db_path: str, search_term: str, limit: int = 20) -> List[str]:
     """

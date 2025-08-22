@@ -353,3 +353,15 @@ def api_get_countries_for_filter():
     except Exception as e:
         logger.error(f"获取国家/地区列表时出错: {e}", exc_info=True)
         return jsonify([]), 500
+    
+# --- 提取标签列表 ---
+@custom_collections_bp.route('/config/tags', methods=['GET'])
+@login_required
+def api_get_tags_for_filter():
+    """为筛选器提供一个标签列表。"""
+    try:
+        tags = db_handler.get_unique_tags(config_manager.DB_PATH)
+        return jsonify(tags)
+    except Exception as e:
+        logger.error(f"获取标签列表时出错: {e}", exc_info=True)
+        return jsonify([]), 500

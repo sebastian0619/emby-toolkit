@@ -250,7 +250,9 @@ def init_db():
                 
                 new_columns_to_add = {
                     "release_date": "TEXT",
-                    "date_added": "TEXT"
+                    "date_added": "TEXT",
+                    "tags_json": "TEXT",
+                    "last_synced_at": "TEXT"
                 }
 
                 for col_name, col_type in new_columns_to_add.items():

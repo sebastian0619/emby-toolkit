@@ -122,17 +122,17 @@
       </template>
     </n-modal>
     <n-modal
-      v-model:show="showFullScanModal"
+      v-model:show="showSyncModeModal"
       preset="dialog"
-      title="选择处理模式"
+      title="选择同步模式"
       :mask-closable="false"
     >
-      <n-text>您希望如何执行“全量处理媒体”任务？</n-text>
+      <n-text>您希望如何执行此任务？</n-text>
       <template #action>
-        <n-button @click="showFullScanModal = false">取消</n-button>
-        <n-button @click="runFullScan(false)">标准处理</n-button>
-        <n-button type="warning" @click="runFullScan(true)">
-          强制重处理
+        <n-button @click="showSyncModeModal = false">取消</n-button>
+        <n-button @click="runTaskFromModal(false)">快速模式</n-button>
+        <n-button type="warning" @click="runTaskFromModal(true)">
+          深度模式 (慢)
         </n-button>
       </template>
     </n-modal>
@@ -173,7 +173,8 @@ const configuredTaskSequence = ref([]); // 用于模态框中配置的任务列�
 const isTriggeringTask = ref(null);
 const draggableContainer = ref(null);
 let sortableInstance = null;
-const showFullScanModal = ref(false);
+const showSyncModeModal = ref(false); // 新的、通用的模态框显示状态
+const taskToRunInModal = ref(null); // 用于存储当前点击的任务ID
 // ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
 // --- 【【【 核心修改：使用 computed 属性来动态计算已启用的任务列表 】】】 ---
 const enabledTaskChain = computed(() => {
@@ -198,16 +199,50 @@ const fetchAvailableTasks = async () => {
   }
 };
 
+const runTaskFromModal = async (isDeepMode) => {
+  showSyncModeModal.value = false; // 首先关闭模态框
+  const taskIdentifier = taskToRunInModal.value;
+  if (!taskIdentifier) return;
+
+  isTriggeringTask.value = taskIdentifier; // 设置加载状态
+
+  try {
+    // ★★★ 核心: 动态构建请求体 ★★★
+    const payload = {
+      task_name: taskIdentifier,
+      // 根据任务ID和用户选择，决定发送哪个参数
+      // 对于 'full-scan'，参数是 force_reprocess
+      // 对于 'populate-metadata-cache'，参数是 force_full_update
+    };
+    if (taskIdentifier === 'full-scan') {
+      payload.force_reprocess = isDeepMode;
+    } else if (taskIdentifier === 'populate-metadata') {
+      payload.force_full_update = isDeepMode;
+    }
+
+    const response = await axios.post('/api/tasks/run', payload);
+    message.success(response.data.message || '任务已成功提交！');
+  } catch (error) {
+    const errorMessage = error.response?.data?.error || '请求后端接口失败。';
+    message.error(errorMessage);
+  } finally {
+    isTriggeringTask.value = null; // 清除加载状态
+    taskToRunInModal.value = null; // 清空临时存储的任务ID
+  }
+};
+
 const triggerTaskNow = async (taskIdentifier) => {
   if (isBackgroundTaskRunning.value) {
     message.warning('已有后台任务正在运行，请稍后再试。');
     return;
   }
 
-  // 如果是“全量处理”，则显示模态框，而不是直接执行
-  if (taskIdentifier === 'full-scan') {
-    showFullScanModal.value = true;
-    return; // 提前退出，等待用户在模态框中做选择
+  // 如果是“全量处理和同步媒体数据”，则显示模态框，而不是直接执行
+  if (taskIdentifier === 'full-scan' || taskIdentifier === 'populate-metadata') {
+    // 将当前要执行的任务ID存起来，方便模态框的回调函数使用
+    taskToRunInModal.value = taskIdentifier; 
+    showSyncModeModal.value = true; // 显示新的通用模态框
+    return; 
   }
 
   // --- 对于所有其他普通任务，走原来的逻辑 ---
