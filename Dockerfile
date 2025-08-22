@@ -31,7 +31,7 @@ ENV LANG="C.UTF-8" \
 
 WORKDIR /app
 
-# 1. 安装系统依赖。这一层很少变动，会长期被缓存。
+# 1. 安装系统依赖。
 RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y \
@@ -44,6 +44,29 @@ RUN apt-get update && \
         wget \
         curl \
         dumb-init && \
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★★★ 核心修正：在这里安装 Playwright 运行 Chromium 所需的所有系统依赖 ★★★
+    apt-get install -y \
+        libnss3 \
+        libnspr4 \
+        libdbus-1-3 \
+        libatk1.0-0 \
+        libatk-bridge2.0-0 \
+        libcups2 \
+        libdrm2 \
+        libxkbcommon0 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxfixes3 \
+        libxrandr2 \
+        libgbm1 \
+        libasound2 \
+        libpango-1.0-0 \
+        libpangocairo-1.0-0 \
+        libcairo2 \
+        libgdk-pixbuf-2.0-0 \
+        libgtk-3-0 && \
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     apt-get clean && \
     rm -rf \
         /tmp/* \
@@ -53,10 +76,13 @@ RUN apt-get update && \
 # 2. 仅复制 Python 依赖文件
 COPY requirements.txt .
 
-# 3. 安装 Python 依赖。这一层只有在 requirements.txt 变动时才会重新运行
+# 3. 安装 Python 依赖。
 RUN pip install --no-cache-dir -r requirements.txt
+
+# 4. 在构建时安装浏览器内核
 RUN playwright install chromium
-# 4. 复制所有应用文件。这是变动最频繁的部分，放在后面。
+
+# 5. 复制所有应用文件。
 COPY web_app.py \
      core_processor.py \
      douban.py \
@@ -90,10 +116,10 @@ COPY routes/ ./routes/
 COPY templates/ ./templates/
 COPY docker/entrypoint.sh /entrypoint.sh
 
-# 5. 从前端构建阶段拷贝编译好的静态文件
+# 6. 从前端构建阶段拷贝编译好的静态文件
 COPY --from=frontend-build /app/emby-actor-ui/dist/. /app/static/
 
-# 6. 设置权限和用户。这些操作依赖于被复制的文件，所以放在后面。
+# 7. 设置权限和用户。
 RUN chmod +x /entrypoint.sh && \
     mkdir -p ${HOME} && \
     groupadd -r embyactor -g 918 && \
@@ -102,7 +128,7 @@ RUN chmod +x /entrypoint.sh && \
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
   CMD curl -f http://localhost:5257/api/health || exit 1    
 
-# 声明数据卷、端口和入口点 (保持不变)
+# 声明数据卷、端口和入口点
 VOLUME [ "${CONFIG_DIR}" ]
 EXPOSE 5257
 ENTRYPOINT [ "/entrypoint.sh" ]
