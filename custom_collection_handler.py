@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ★★★ 核心修正：导入 gevent 自己的 subprocess 和 Timeout 异常 ★★★
+# ★★★ 核心修正：再次回归 gevent.subprocess ★★★
 from gevent import subprocess, Timeout
 
 import tmdb_handler
@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 
 class ListImporter:
     """
-    (V9.0 终极稳定版)
-    使用 gevent.subprocess 替代 os.system，既解决了 gevent fork 冲突，
-    又能捕获详细的子进程错误输出，是最终的正确实现。
+    (V9.1 - 最终异步版)
+    使用 gevent.subprocess，并确保在独立的 greenlet 中运行，
+    从而实现真正的非阻塞异步执行。
     """
     
     SEASON_PATTERN = re.compile(r'(.*?)\s*[（(]?\s*(第?[一二三四五六七八九十百]+)\s*季\s*[)）]?$')
@@ -42,10 +42,8 @@ class ListImporter:
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'Mozilla/5.0'})
 
-    # ★★★ 核心重构：使用 gevent.subprocess ★★★
-    def _process_maoyan_list(self, definition: Dict) -> List[Dict[str, str]]:
-        logger.info("  -> 检测到猫眼榜单，启动独立进程实时获取...")
-        
+    # ★★★ 核心修改：这个函数现在是纯粹的阻塞执行逻辑 ★★★
+    def _execute_maoyan_fetch(self, definition: Dict) -> List[Dict[str, str]]:
         maoyan_url = definition.get('url', '')
         temp_output_file = os.path.join(config_manager.PERSISTENT_DATA_PATH, f"maoyan_temp_output_{hash(maoyan_url)}.json")
         
@@ -85,23 +83,19 @@ class ListImporter:
         ]
         
         try:
-            logger.debug(f"  -> 执行命令: {' '.join(command)}")
+            logger.debug(f"  -> (在一个独立的 Greenlet 中) 执行命令: {' '.join(command)}")
             
-            # 使用 gevent.subprocess.check_output，它能捕获输出并检查返回码
-            # 我们将 stderr 重定向到 STDOUT，以便在一个地方捕获所有输出
             result_bytes = subprocess.check_output(
                 command, 
                 stderr=subprocess.STDOUT, 
-                timeout=600  # 10分钟超时
+                timeout=600
             )
             
-            # 如果脚本成功，它的日志会在这里被捕获
             result_output = result_bytes.decode('utf-8', errors='ignore')
             logger.info("  -> 猫眼获取脚本成功完成。")
             if result_output:
                 logger.debug(f"  -> 脚本输出:\n{result_output}")
             
-            # 读取脚本生成的文件
             with open(temp_output_file, 'r', encoding='utf-8') as f:
                 results = json.load(f)
             
@@ -111,8 +105,6 @@ class ListImporter:
             logger.error("执行猫眼获取脚本超时（超过10分钟）。")
             return []
         except subprocess.CalledProcessError as e:
-            # ★★★ 如果脚本崩溃 (返回非0退出码)，我们会在这里捕获到它 ★★★
-            # ★★★ 并且 e.output 会包含完整的错误日志和 Traceback ★★★
             error_output = e.output.decode('utf-8', errors='ignore') if e.output else "No output captured."
             logger.error(f"执行猫眼获取脚本失败。返回码: {e.returncode}")
             logger.error(f"  -> 脚本的完整错误输出:\n{error_output}")
@@ -121,7 +113,6 @@ class ListImporter:
             logger.error(f"处理猫眼榜单时发生未知错误: {e}", exc_info=True)
             return []
         finally:
-            # 无论成功失败，都清理临时文件
             if os.path.exists(temp_output_file):
                 os.remove(temp_output_file)
 
@@ -231,9 +222,8 @@ class ListImporter:
 
     def process(self, definition: Dict) -> List[Dict[str, str]]:
         url = definition.get('url')
-        if url and url.startswith('maoyan://'):
-            return self._process_maoyan_list(definition)
-        if not url:
+        if not url or url.startswith('maoyan://'):
+          # 如果是猫眼URL或空URL，直接返回空列表，由上层任务处理器决定如何处理
             return []
         item_types = definition.get('item_type', ['Movie'])
         if isinstance(item_types, str):

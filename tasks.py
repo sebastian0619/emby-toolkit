@@ -10,7 +10,7 @@ import threading
 from datetime import datetime, date, timezone
 from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
-
+import gevent
 # 导入类型提示
 from typing import Optional
 from core_processor import MediaProcessor
@@ -1471,16 +1471,24 @@ def task_process_all_custom_collections(processor: MediaProcessor):
             task_manager.update_status_from_thread(progress, f"({i+1}/{total}) 正在处理: {collection_name}")
 
             try:
-                # 3a. 生成目标TMDb ID列表
                 definition = json.loads(collection['definition_json'])
                 item_types_for_collection = definition.get('item_type', ['Movie'])
+                # 3a. 生成目标TMDb ID列表
+                # --- 异步/同步调度逻辑 (与单个处理任务完全一致) ---
                 tmdb_items = []
-                if collection_type == 'list':
+                if collection_type == 'list' and definition.get('url', '').startswith('maoyan://'):
+                    # 猫眼榜单，异步处理
                     importer = ListImporter(processor.tmdb_api_key)
-                    tmdb_items = importer.process(definition)
-                elif collection_type == 'filter':
-                    engine = FilterEngine(db_path=config_manager.DB_PATH)
-                    tmdb_items = engine.execute_filter(definition)
+                    greenlet = gevent.spawn(importer._execute_maoyan_fetch, definition)
+                    tmdb_items = greenlet.get() # 在当前任务线程中等待结果
+                else:
+                    # 筛选规则或普通RSS榜单，同步处理
+                    if collection_type == 'list':
+                        importer = ListImporter(processor.tmdb_api_key)
+                        tmdb_items = importer.process(definition)
+                    elif collection_type == 'filter':
+                        engine = FilterEngine(db_path=config_manager.DB_PATH)
+                        tmdb_items = engine.execute_filter(definition)
                 
                 tmdb_ids = [item['id'] for item in tmdb_items]
 
@@ -1670,14 +1678,29 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         item_types_for_collection = definition.get('item_type', ['Movie'])
         
         tmdb_items = []
-        if collection_type == 'list':
+        # --- 异步/同步调度逻辑 ---
+        if collection_type == 'list' and definition.get('url', '').startswith('maoyan://'):
+            # 这是猫眼榜单，需要异步处理
+            logger.info(f"检测到猫眼榜单 '{collection_name}'，将启动异步后台任务...")
+            task_manager.update_status_from_thread(10, f"正在后台获取猫眼榜单: {collection_name}...")
+            
             importer = ListImporter(processor.tmdb_api_key)
-            # importer.process 现在返回 [{'id': '123', 'type': 'Movie'}, ...]
-            tmdb_items = importer.process(definition)
-        elif collection_type == 'filter':
-            engine = FilterEngine(db_path=config_manager.DB_PATH)
-            # engine.execute_filter 现在也返回相同的结构
-            tmdb_items = engine.execute_filter(definition)
+            
+            # ★★★ 使用 gevent.spawn 启动一个“跑腿”的协程 ★★★
+            # .get() 会阻塞，直到协程运行完毕并返回结果
+            # 但因为整个 task_process_custom_collection 任务本身就在一个独立的后台线程中运行，
+            # 所以这里的阻塞只会阻塞当前任务线程，完全不会卡住主程序的UI。
+            greenlet = gevent.spawn(importer._execute_maoyan_fetch, definition)
+            tmdb_items = greenlet.get() # 等待异步任务完成并获取结果
+
+        else:
+            # 这是筛选规则或普通RSS榜单，同步处理即可
+            if collection_type == 'list':
+                importer = ListImporter(processor.tmdb_api_key)
+                tmdb_items = importer.process(definition)
+            elif collection_type == 'filter':
+                engine = FilterEngine(db_path=config_manager.DB_PATH)
+                tmdb_items = engine.execute_filter(definition)
         
         tmdb_ids = [item['id'] for item in tmdb_items]
         
