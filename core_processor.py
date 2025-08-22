@@ -155,7 +155,7 @@ class MediaProcessor:
     # ==========================================================================================
     # +++ JSON 构建器函数 (JSON Builders) +++
     # ==========================================================================================
-    def _build_movie_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _build_movie_json(self, source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         构建电影 all.json。
         无论输入数据结构如何，都强制输出干净、统一的格式。
@@ -192,7 +192,7 @@ class MediaProcessor:
 
         return final_json
 
-    def _build_series_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _build_series_json(self, source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         构建 series.json。
         此版本假设输入数据已被上游归一化。
@@ -225,7 +225,7 @@ class MediaProcessor:
         
         return final_json
 
-    def _build_season_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _build_season_json(self, source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
         """构建季 season-X.json，确保Emby兼容性。"""
         return {
         "name": source_data.get("name", ""),
@@ -238,7 +238,7 @@ class MediaProcessor:
         }
         }
 
-    def _build_episode_json(source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _build_episode_json(self, source_data: Dict[str, Any], processed_cast: List[Dict[str, Any]], processed_crew: List[Dict[str, Any]]) -> Dict[str, Any]:
         """构建集 season-X-episode-Y.json，确保Emby兼容性。"""
         return {
         "name": source_data.get("name", ""),
