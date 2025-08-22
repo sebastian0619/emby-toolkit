@@ -761,12 +761,16 @@ def task_reprocess_all_review_items(processor: MediaProcessor):
         logger.error(f"重新处理所有待复核项时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, "任务失败")
 # ★★★ 同步覆盖缓存的任务函数 ★★★
-def task_full_image_sync(processor: MediaProcessor):
+def task_full_image_sync(processor: MediaProcessor, force_full_update: bool = False):
     """
     后台任务：调用 processor 的方法来同步所有图片。
+    新增 force_full_update 参数以支持深度模式。
     """
-    # 直接把回调函数传进去
-    processor.sync_all_media_assets(update_status_callback=task_manager.update_status_from_thread)
+    # 直接把回调函数和新参数传进去
+    processor.sync_all_media_assets(
+        update_status_callback=task_manager.update_status_from_thread,
+        force_full_update=force_full_update
+    )
 # ✨ 辅助函数，并发刷新合集使用
 def _process_single_collection_concurrently(collection_data: dict, db_path: str, tmdb_api_key: str) -> dict:
     """

@@ -200,23 +200,20 @@ const fetchAvailableTasks = async () => {
 };
 
 const runTaskFromModal = async (isDeepMode) => {
-  showSyncModeModal.value = false; // 首先关闭模态框
+  showSyncModeModal.value = false;
   const taskIdentifier = taskToRunInModal.value;
   if (!taskIdentifier) return;
 
-  isTriggeringTask.value = taskIdentifier; // 设置加载状态
+  isTriggeringTask.value = taskIdentifier;
 
   try {
-    // ★★★ 核心: 动态构建请求体 ★★★
     const payload = {
       task_name: taskIdentifier,
-      // 根据任务ID和用户选择，决定发送哪个参数
-      // 对于 'full-scan'，参数是 force_reprocess
-      // 对于 'populate-metadata-cache'，参数是 force_full_update
     };
+    // ★★★ 核心修改：为所有需要模式选择的任务动态添加参数 ★★★
     if (taskIdentifier === 'full-scan') {
       payload.force_reprocess = isDeepMode;
-    } else if (taskIdentifier === 'populate-metadata') {
+    } else if (taskIdentifier === 'populate-metadata' || taskIdentifier === 'sync-images-map') {
       payload.force_full_update = isDeepMode;
     }
 
@@ -226,8 +223,8 @@ const runTaskFromModal = async (isDeepMode) => {
     const errorMessage = error.response?.data?.error || '请求后端接口失败。';
     message.error(errorMessage);
   } finally {
-    isTriggeringTask.value = null; // 清除加载状态
-    taskToRunInModal.value = null; // 清空临时存储的任务ID
+    isTriggeringTask.value = null;
+    taskToRunInModal.value = null;
   }
 };
 
@@ -238,10 +235,9 @@ const triggerTaskNow = async (taskIdentifier) => {
   }
 
   // 如果是“全量处理和同步媒体数据”，则显示模态框，而不是直接执行
-  if (taskIdentifier === 'full-scan' || taskIdentifier === 'populate-metadata') {
-    // 将当前要执行的任务ID存起来，方便模态框的回调函数使用
+  if (['full-scan', 'populate-metadata', 'sync-images-map'].includes(taskIdentifier)) {
     taskToRunInModal.value = taskIdentifier; 
-    showSyncModeModal.value = true; // 显示新的通用模态框
+    showSyncModeModal.value = true;
     return; 
   }
 

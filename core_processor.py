@@ -1977,13 +1977,15 @@ class MediaProcessor:
             return None
     
     # ★★★ 全量备份到覆盖缓存 ★★★
-    def sync_all_media_assets(self, update_status_callback: Optional[callable] = None):
+    def sync_all_media_assets(self, update_status_callback: Optional[callable] = None, force_full_update: bool = False):
         """
-        此版本通过比较Emby中的最后修改时间来智能判断是否需要更新备份，
-        从而支持对连载中剧集的持续备份。
+        【V2 - 深度模式支持版】
+        此版本通过比较Emby中的最后修改时间来智能判断是否需要更新备份（快速模式），
+        或者通过 force_full_update 参数跳过时间检查，进行全量补救（深度模式）。
         """
-        task_name = "覆盖缓存备份"
-        logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
+        sync_mode = "深度模式" if force_full_update else "快速模式"
+        task_name = f"覆盖缓存备份 ({sync_mode})"
+        logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
 
         if not self.local_data_path:
             logger.error(f"'{task_name}' 失败：未在配置中设置“本地数据源路径”。")
@@ -1994,7 +1996,6 @@ class MediaProcessor:
         try:
             with get_central_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
-                # ★★★ 核心修改 1：获取所有已处理的项目，以及它们上次备份时记录的修改时间 ★★★
                 cursor.execute("SELECT item_id, item_name, last_emby_modified_at FROM processed_log")
                 items_to_check = cursor.fetchall()
         except sqlite3.OperationalError as e:
@@ -2036,10 +2037,10 @@ class MediaProcessor:
                     update_status_callback(int((i / total) * 100), f"({i+1}/{total}): 正在检查 {item_name_from_db}")
 
                 try:
-                    # 步骤A: 获取项目最新的详细信息
+                    # ★★★ 核心修改：获取更完整的字段，因为深度模式下需要重建元数据 ★★★
                     item_details = emby_handler.get_emby_item_details(
-                        item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
-                        fields="ProviderIds,Type,DateModified,Name,OriginalTitle,Overview,Tagline,PremiereDate,ProductionYear,CommunityRating,Genres,Studios,People,OfficialRating,DateCreated"
+                        item_id, self.emby_url, self.emby_api_key, self.emby_user_id, 
+                        fields="ProviderIds,Type,DateModified,Name,OriginalTitle,Overview,Tagline,PremiereDate,ProductionYear,CommunityRating,Genres,Studios,People,OfficialRating,DateCreated,ImageTags"
                     )
                     
                     if not item_details:
@@ -2047,28 +2048,31 @@ class MediaProcessor:
 
                     current_emby_modified_at = item_details.get("DateModified")
 
-                    # ★★★ 核心修改 2：比较修改时间，决定是否需要更新 ★★★
-                    # 如果是首次备份(last_known_modified_at is None)，或者Emby中的修改时间更新了，则执行备份
-                    if not last_known_modified_at or (current_emby_modified_at and current_emby_modified_at > last_known_modified_at):
+                    # ★★★ 核心修改：根据模式决定是否执行备份 ★★★
+                    should_backup = False
+                    if force_full_update:
+                        # 深度模式：无条件执行
+                        should_backup = True
+                    elif not last_known_modified_at or (current_emby_modified_at and current_emby_modified_at > last_known_modified_at):
+                        # 快速模式：按时间戳判断
+                        should_backup = True
+                    
+                    if should_backup:
                         logger.info(f"  -> 发现更新 '{item_name_from_db}'，准备执行备份...")
                         
                         tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-                        item_type = item_details.get("Type")
                         if not tmdb_id:
                             logger.warning(f"跳过 '{item_name_from_db}'，因为它缺少 TMDb ID。")
                             stats["skipped_other"] += 1
                             continue
 
-                        # --- 执行备份任务 ---
                         self.sync_item_images(item_details)
-                        self.sync_item_metadata(item_details, tmdb_id) # 将元数据备份逻辑封装一下
+                        self.sync_item_metadata(item_details, tmdb_id)
 
-                        # ★★★ 核心修改 3：更新数据库中的时间戳 ★★★
                         self.log_db_manager.mark_assets_as_synced(cursor_sync, item_id, current_emby_modified_at)
                         conn_sync.commit()
                         stats["updated"] += 1
                     else:
-                        # 如果时间戳相同，说明无变化，直接跳过
                         logger.trace(f"'{item_name_from_db}' 未发生变化，跳过备份。")
                         stats["skipped_no_change"] += 1
 
@@ -2084,7 +2088,7 @@ class MediaProcessor:
                 
                 time.sleep(0.1)
 
-        logger.trace("--- 覆盖缓存备份任务结束 ---")
+        logger.trace(f"--- {task_name} 任务结束 ---")
         final_message = f"✅ 更新: {stats['updated']}, 无变化跳过: {stats['skipped_no_change']}, 清理: {stats['cleaned']}, 其他跳过: {stats['skipped_other']}。"
         logger.info(final_message)
         if update_status_callback:
