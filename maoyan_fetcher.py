@@ -37,7 +37,7 @@ def get_cookies() -> Dict[str, str]:
     """
     V3版：根据测试，API不需要Cookie即可访问。此函数保留为空，以备将来需要。
     """
-    logger.trace("当前 API 无需 Cookie，跳过 Playwright 浏览器操作。")
+    logger.debug("当前 API 无需 Cookie，跳过 Playwright 浏览器操作。")
     return {}
 
 def get_maoyan_rank_titles(types_to_fetch: List[str], platform: str, num: int) -> Tuple[List[Dict], List[Dict]]:

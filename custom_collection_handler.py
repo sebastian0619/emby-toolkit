@@ -10,7 +10,8 @@ import json
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ★★★ 不再需要 gevent 或 subprocess ★★★
+# ★★★ 核心修正：导入 gevent 自己的 subprocess 和 Timeout 异常 ★★★
+from gevent import subprocess, Timeout
 
 import tmdb_handler
 import config_manager
@@ -22,8 +23,9 @@ logger = logging.getLogger(__name__)
 
 class ListImporter:
     """
-    (V8.1 终极简化版)
-    使用 os.system 替代所有 subprocess 调用，以最简单的方式绕过 gevent fork 冲突。
+    (V9.0 终极稳定版)
+    使用 gevent.subprocess 替代 os.system，既解决了 gevent fork 冲突，
+    又能捕获详细的子进程错误输出，是最终的正确实现。
     """
     
     SEASON_PATTERN = re.compile(r'(.*?)\s*[（(]?\s*(第?[一二三四五六七八九十百]+)\s*季\s*[)）]?$')
@@ -40,17 +42,13 @@ class ListImporter:
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'Mozilla/5.0'})
 
-    # ★★★ 核心重构：使用 os.system 替代所有子进程逻辑 ★★★
+    # ★★★ 核心重构：使用 gevent.subprocess ★★★
     def _process_maoyan_list(self, definition: Dict) -> List[Dict[str, str]]:
         logger.info("  -> 检测到猫眼榜单，启动独立进程实时获取...")
         
         maoyan_url = definition.get('url', '')
-        
-        # 这个文件现在只作为子进程返回结果的临时通道，不再是长期缓存
         temp_output_file = os.path.join(config_manager.PERSISTENT_DATA_PATH, f"maoyan_temp_output_{hash(maoyan_url)}.json")
         
-        # --- 移除了整个检查缓存是否存在的 try...except 块 ---
-
         content_key = maoyan_url.replace('maoyan://', '')
         parts = content_key.split('-')
         
@@ -76,43 +74,56 @@ class ListImporter:
             logger.error(f"严重错误：无法找到猫眼获取脚本 '{fetcher_script_path}'。")
             return []
 
-        command_parts = [
-            f'"{sys.executable}"',
-            f'"{fetcher_script_path}"',
-            '--api-key', f'"{self.tmdb_api_key}"',
-            '--output-file', f'"{temp_output_file}"', # 使用临时文件名
+        command = [
+            sys.executable,
+            fetcher_script_path,
+            '--api-key', self.tmdb_api_key,
+            '--output-file', temp_output_file,
             '--num', str(limit),
-            '--platform', f'"{platform}"',
-            '--types', *[f'"{t}"' for t in types_to_fetch]
+            '--platform', platform,
+            '--types', *types_to_fetch
         ]
-        command_str = ' '.join(command_parts)
         
         try:
-            logger.debug(f"  -> 执行命令: {command_str}")
+            logger.debug(f"  -> 执行命令: {' '.join(command)}")
             
-            exit_code = os.system(command_str)
+            # 使用 gevent.subprocess.check_output，它能捕获输出并检查返回码
+            # 我们将 stderr 重定向到 STDOUT，以便在一个地方捕获所有输出
+            result_bytes = subprocess.check_output(
+                command, 
+                stderr=subprocess.STDOUT, 
+                timeout=600  # 10分钟超时
+            )
             
-            if exit_code != 0:
-                logger.error(f"执行猫眼获取脚本失败。Shell 返回码: {exit_code}")
-                return []
-
+            # 如果脚本成功，它的日志会在这里被捕获
+            result_output = result_bytes.decode('utf-8', errors='ignore')
             logger.info("  -> 猫眼获取脚本成功完成。")
+            if result_output:
+                logger.debug(f"  -> 脚本输出:\n{result_output}")
             
-            # 脚本成功，读取它生成的临时文件
+            # 读取脚本生成的文件
             with open(temp_output_file, 'r', encoding='utf-8') as f:
                 results = json.load(f)
             
-            # 读取后立即删除临时文件
-            os.remove(temp_output_file)
-            
             return results
 
+        except Timeout:
+            logger.error("执行猫眼获取脚本超时（超过10分钟）。")
+            return []
+        except subprocess.CalledProcessError as e:
+            # ★★★ 如果脚本崩溃 (返回非0退出码)，我们会在这里捕获到它 ★★★
+            # ★★★ 并且 e.output 会包含完整的错误日志和 Traceback ★★★
+            error_output = e.output.decode('utf-8', errors='ignore') if e.output else "No output captured."
+            logger.error(f"执行猫眼获取脚本失败。返回码: {e.returncode}")
+            logger.error(f"  -> 脚本的完整错误输出:\n{error_output}")
+            return []
         except Exception as e:
             logger.error(f"处理猫眼榜单时发生未知错误: {e}", exc_info=True)
-            # 确保即使出错也尝试删除临时文件
+            return []
+        finally:
+            # 无论成功失败，都清理临时文件
             if os.path.exists(temp_output_file):
                 os.remove(temp_output_file)
-            return []
 
     # ... 其他所有方法 (_match_by_ids, process, FilterEngine等) 保持完全不变 ...
     def _match_by_ids(self, imdb_id: Optional[str], tmdb_id: Optional[str], item_type: str) -> Optional[str]:
@@ -442,7 +453,7 @@ class FilterEngine:
 
                 # 3. 使用 'in' 来判断新入库媒体的类型是否被合集所支持
                 if media_item_type not in collection_item_types:
-                    logger.trace(f"  -> 跳过合集《{collection_def['name']}》，因为内容类型不匹配 (合集需要: {collection_item_types}, 实际是: '{media_item_type}')。")
+                    logger.debug(f"  -> 跳过合集《{collection_def['name']}》，因为内容类型不匹配 (合集需要: {collection_item_types}, 实际是: '{media_item_type}')。")
                     continue
 
                 rules = definition.get('rules', [])
