@@ -2193,8 +2193,9 @@ class MediaProcessor:
     # --- 备份元数据 ---
     def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str):
         """
-        【V5 - 翻译缓存反查最终版】
-        复制cache元数据后，通过反查翻译缓存，将Emby中的中文角色名精确更新到备份中。
+        【V6 - original_name 权威匹配最终版】
+        复制cache元数据后，构建一个以演员中文名为键的映射。
+        优先使用JSON中的original_name进行匹配，失败后再尝试用name匹配，最大化成功率并避免反查。
         """
         item_type = item_details.get("Type")
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_details.get('Id')})")
@@ -2216,30 +2217,21 @@ class MediaProcessor:
             logger.error(f"    - {log_prefix} 复制元数据时失败: {e}", exc_info=True)
             return
 
-        # 2. 通过反查翻译缓存，构建一个 {原文名: "中文角色名"} 的映射
+        # 2. 构建一个以【Emby中的演员名】为键，【中文角色名】为值的直接映射
         emby_people = item_details.get("People", [])
         if not emby_people:
             logger.debug(f"    -> {log_prefix} Emby中没有演员信息，跳过角色名更新。")
             return
 
-        character_map_by_original_name = {}
-        with get_central_db_connection(self.db_path) as conn:
-            cursor = conn.cursor()
-            for person in emby_people:
-                if person.get("Type") == "Actor":
-                    person_name_cn = person.get("Name")
-                    role_cn = person.get("Role")
-                    if person_name_cn and role_cn:
-                        # 使用新增强的数据库功能进行反查
-                        cache_entry = self.actor_db_manager.get_translation_from_db(
-                            cursor, person_name_cn, by_translated_text=True
-                        )
-                        if cache_entry and cache_entry.get("original_text"):
-                            original_name = cache_entry["original_text"]
-                            character_map_by_original_name[original_name] = role_cn
+        # 这个映射的键是 Emby 中当前演员的名字（通常是中文）
+        character_map_by_emby_name = {
+            person.get("Name"): person.get("Role")
+            for person in emby_people
+            if person.get("Type") == "Actor" and person.get("Name") and person.get("Role")
+        }
 
-        if not character_map_by_original_name:
-            logger.debug(f"    -> {log_prefix} 未能通过翻译缓存反查到任何有效的演员映射，跳过更新。")
+        if not character_map_by_emby_name:
+            logger.debug(f"    -> {log_prefix} 未能从Emby演员中提取到有效的角色名映射，跳过更新。")
             return
 
         # 3. 读取、修改并写回主元数据文件
@@ -2262,13 +2254,27 @@ class MediaProcessor:
                 update_count = 0
                 # 遍历JSON文件中的演员列表
                 for actor in cast_list:
-                    # 使用JSON中的 "original_name" 字段作为key去查找
-                    actor_original_name = actor.get("original_name")
-                    if actor_original_name in character_map_by_original_name:
-                        new_role = character_map_by_original_name[actor_original_name]
-                        if actor.get("character") != new_role:
-                            actor["character"] = new_role
-                            update_count += 1
+                    # ★★★ 核心匹配逻辑 ★★★
+                    # 从JSON中获取两个可能的名字：本地化的名字和原始名字
+                    name_in_json = actor.get("name")
+                    original_name_in_json = actor.get("original_name")
+                    
+                    new_role = None
+
+                    # 策略一 (最高优先级): 使用JSON中的 original_name 去匹配Emby名
+                    # 这种情况发生在：JSON中是 Brad Pitt, Emby中也是 Brad Pitt (未翻译)
+                    if original_name_in_json and original_name_in_json in character_map_by_emby_name:
+                        new_role = character_map_by_emby_name[original_name_in_json]
+                    
+                    # 策略二: 使用JSON中的 name 去匹配Emby名
+                    # 这种情况发生在：JSON中是 布拉德·皮特, Emby中也是 布拉德·皮特 (TMDB官方中文)
+                    elif name_in_json and name_in_json in character_map_by_emby_name:
+                        new_role = character_map_by_emby_name[name_in_json]
+
+                    # 只有找到了新角色名且与旧的不同，才更新
+                    if new_role is not None and actor.get("character") != new_role:
+                        actor["character"] = new_role
+                        update_count += 1
                 
                 if update_count > 0:
                     f.seek(0)
