@@ -933,7 +933,7 @@ def get_collection_by_name(name: str, base_url: str, api_key: str, user_id: str)
             logger.debug(f"  -> 根据名称 '{name}' 找到了已存在的合集 (ID: {collection.get('Id')})。")
             return collection
     
-    logger.debug(f"未找到名为 '{name}' 的合集。")
+    logger.trace(f"未找到名为 '{name}' 的合集。")
     return None
 
 def get_collection_members(collection_id: str, base_url: str, api_key: str, user_id: str) -> Optional[List[str]]:
