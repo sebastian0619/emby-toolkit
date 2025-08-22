@@ -14,7 +14,6 @@ translators      # 用于翻译演员名和角色名
 pypinyin         # 用于处理人名拼音
 concurrent-log-handler # 并发日志处理器
 Jinja2
-playwright
 
 # --- 定时任务 ---
 APScheduler

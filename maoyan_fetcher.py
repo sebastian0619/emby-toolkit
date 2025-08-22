@@ -1,4 +1,4 @@
-# maoyan_fetcher.py (V4.1 - Docker 终极稳定版)
+# maoyan_fetcher.py (V3.0 - 无 Playwright 终极版)
 import logging
 import requests
 import argparse
@@ -8,7 +8,8 @@ import random
 from typing import List, Dict, Any, Tuple
 import sys
 import os
-from playwright.sync_api import sync_playwright
+
+# ★★★ 不再需要 Playwright ★★★
 
 # -- 关键：确保可以导入项目中的其他模块 --
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,6 +20,7 @@ except ImportError as e:
     print(f"错误：缺少 tmdb_handler 模块。请确保路径正确。详细信息: {e}")
     sys.exit(1)
 
+# --- 日志记录设置 ---
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -30,41 +32,20 @@ def get_random_user_agent() -> str:
     ]
     return random.choice(user_agents)
 
+# ★★★ 核心修改：用一个空函数替换掉整个 Playwright 逻辑 ★★★
 def get_cookies() -> Dict[str, str]:
-    logger.info("正在启动 Playwright 以获取猫眼 Cookies (这是绕过风控的关键步骤)...")
-    mao_cookies = {}
-    try:
-        with sync_playwright() as p:
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★★★ 核心修正：为浏览器启动添加在 Docker 中稳定运行所需的参数 ★★★
-            browser_args = [
-                '--no-sandbox',             # 禁用沙盒，Docker 环境下必须
-                '--disable-dev-shm-usage',  # 避免 /dev/shm 空间不足的问题
-                '--disable-gpu',            # 禁用 GPU 硬件加速
-            ]
-            browser = p.chromium.launch(args=browser_args)
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            
-            page = browser.new_page()
-            page.goto('https://piaofang.maoyan.com', timeout=60000)
-            cookies = page.context.cookies()
-            mao_cookies = {c['name']: c['value'] for c in cookies}
-            browser.close()
-            logger.info("成功获取 Cookies。")
-    except Exception as e:
-        logger.error(f"使用 Playwright 获取 Cookies 时失败: {e}", exc_info=True)
-    return mao_cookies
+    """
+    V3版：根据测试，API不需要Cookie即可访问。此函数保留为空，以备将来需要。
+    """
+    logger.info("当前 API 无需 Cookie，跳过 Playwright 浏览器操作。")
+    return {}
 
-# ... get_maoyan_rank_titles, main, match_titles_to_tmdb 函数保持不变 ...
 def get_maoyan_rank_titles(types_to_fetch: List[str], platform: str, num: int) -> Tuple[List[Dict], List[Dict]]:
     movies_list = []
     tv_list = []
     
     headers = {'User-Agent': get_random_user_agent()}
-    cookies = get_cookies()
-    
-    if not cookies:
-        logger.warning("未能获取到 Cookies，热度榜单的请求可能会被风控拦截。")
+    cookies = get_cookies() # 这将返回一个空字典
 
     maoyan_url = 'https://piaofang.maoyan.com'
 
@@ -106,6 +87,7 @@ def get_maoyan_rank_titles(types_to_fetch: List[str], platform: str, num: int) -
     unique_tv_list = list({item['title']: item for item in tv_list}.values())
     return movies_list, unique_tv_list
 
+# ... main() 和 match_titles_to_tmdb() 函数保持不变 ...
 def match_titles_to_tmdb(titles: List[Dict], item_type: str, tmdb_api_key: str) -> List[Dict[str, str]]:
     matched_items = []
     for item in titles:
