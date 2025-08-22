@@ -42,24 +42,15 @@ class ListImporter:
 
     # ★★★ 核心重构：使用 os.system 替代所有子进程逻辑 ★★★
     def _process_maoyan_list(self, definition: Dict) -> List[Dict[str, str]]:
-        logger.info("  -> 检测到猫眼榜单，启动独立进程处理...")
+        logger.info("  -> 检测到猫眼榜单，启动独立进程实时获取...")
         
         maoyan_url = definition.get('url', '')
-        cache_filename = f"maoyan_cache_{hash(maoyan_url)}.json"
-        cache_file = os.path.join(config_manager.PERSISTENT_DATA_PATH, cache_filename)
         
-        try:
-            if os.path.exists(cache_file):
-                last_modified = datetime.fromtimestamp(os.path.getmtime(cache_file))
-                if datetime.now() - last_modified < timedelta(hours=24):
-                    logger.info(f"  -> 使用24小时内的有效猫眼榜单缓存: {cache_file}")
-                    with open(cache_file, 'r', encoding='utf-8') as f:
-                        return json.load(f)
-        except Exception as e:
-            logger.warning(f"读取猫眼缓存失败，将强制刷新: {e}")
+        # 这个文件现在只作为子进程返回结果的临时通道，不再是长期缓存
+        temp_output_file = os.path.join(config_manager.PERSISTENT_DATA_PATH, f"maoyan_temp_output_{hash(maoyan_url)}.json")
+        
+        # --- 移除了整个检查缓存是否存在的 try...except 块 ---
 
-        logger.info("  -> 缓存无效，正在运行猫眼数据获取脚本...")
-        
         content_key = maoyan_url.replace('maoyan://', '')
         parts = content_key.split('-')
         
@@ -85,13 +76,11 @@ class ListImporter:
             logger.error(f"严重错误：无法找到猫眼获取脚本 '{fetcher_script_path}'。")
             return []
 
-        # 为了安全地构建命令行字符串，对可能包含特殊字符的路径和key进行引用
-        # sys.executable 通常是安全的，但引用一下更保险
         command_parts = [
             f'"{sys.executable}"',
             f'"{fetcher_script_path}"',
             '--api-key', f'"{self.tmdb_api_key}"',
-            '--output-file', f'"{cache_file}"',
+            '--output-file', f'"{temp_output_file}"', # 使用临时文件名
             '--num', str(limit),
             '--platform', f'"{platform}"',
             '--types', *[f'"{t}"' for t in types_to_fetch]
@@ -99,10 +88,8 @@ class ListImporter:
         command_str = ' '.join(command_parts)
         
         try:
-            logger.trace(f"  -> 执行命令: {command_str}")
+            logger.debug(f"  -> 执行命令: {command_str}")
             
-            # 使用 os.system，它会阻塞直到命令完成
-            # 它的返回值是 shell 的退出码，0 表示成功
             exit_code = os.system(command_str)
             
             if exit_code != 0:
@@ -111,12 +98,20 @@ class ListImporter:
 
             logger.info("  -> 猫眼获取脚本成功完成。")
             
-            # 脚本成功，读取它生成的文件
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+            # 脚本成功，读取它生成的临时文件
+            with open(temp_output_file, 'r', encoding='utf-8') as f:
+                results = json.load(f)
+            
+            # 读取后立即删除临时文件
+            os.remove(temp_output_file)
+            
+            return results
 
         except Exception as e:
             logger.error(f"处理猫眼榜单时发生未知错误: {e}", exc_info=True)
+            # 确保即使出错也尝试删除临时文件
+            if os.path.exists(temp_output_file):
+                os.remove(temp_output_file)
             return []
 
     # ... 其他所有方法 (_match_by_ids, process, FilterEngine等) 保持完全不变 ...
