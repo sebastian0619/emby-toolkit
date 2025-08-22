@@ -2193,14 +2193,12 @@ class MediaProcessor:
     # --- 备份元数据 ---
     def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str):
         """
-        【V9 - 演员表重建最终版】
-        以 Emby 的完整演员表为唯一数据源，彻底重建备份文件中的 cast 列表，
-        并从数据库为每位演员补充完整元数据，确保豆瓣补充的演员不会丢失。
+        利用Emby完美演员表+数据库已有信息，重构JSON元数据。
         """
         item_type = item_details.get("Type")
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_details.get('Id')})")
         log_prefix = "元数据备份:"
-        logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 执行演员表重建式备份...")
+        logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 执行元数据备份...")
 
         # 1. 路径定义和基础文件复制 (不变)
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
@@ -2208,79 +2206,56 @@ class MediaProcessor:
         target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
 
         if not os.path.exists(source_cache_dir):
-            logger.warning(f"    - {log_prefix} 跳过，因为源缓存目录不存在: {source_cache_dir}")
+            logger.warning(f"  -> {log_prefix} 跳过，因为源缓存目录不存在: {source_cache_dir}")
             return
         try:
             shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-            logger.info(f"    -> {log_prefix} 步骤 1/2: 成功将基础元数据从 '{source_cache_dir}' 复制到 '{target_override_dir}'。")
+            logger.info(f"  -> {log_prefix} 步骤 1/3: 成功将基础元数据从 '{source_cache_dir}' 复制到 '{target_override_dir}'。")
         except Exception as e:
-            logger.error(f"    - {log_prefix} 复制元数据时失败: {e}", exc_info=True)
+            logger.error(f"  -> {log_prefix} 复制元数据时失败: {e}", exc_info=True)
             return
 
-        # 2. 获取 Emby 中的“完美演员表”作为我们的目标
+        # 2. 获取 Emby 中的“完美演员表”作为我们的目标 (不变)
         emby_people = item_details.get("People", [])
         if not emby_people:
-            logger.debug(f"    -> {log_prefix} Emby中没有演员信息，无需重建演员表。")
+            logger.debug(f"  -> {log_prefix} Emby中没有演员信息，无需重建演员表。")
             return
 
-        # 3. 核心：重建全新的 cast 列表
+        # 3. 核心：重建全新的 cast 列表 (不变)
         new_perfect_cast = []
         with get_central_db_connection(self.db_path) as conn:
             cursor = conn.cursor()
             for person in emby_people:
                 if person.get("Type") != "Actor":
                     continue
-
                 person_name_cn = person.get("Name")
                 role_cn = person.get("Role")
-                if not person_name_cn:
-                    continue
-
-                # 为这位 Emby 演员寻找其完整的元数据
+                if not person_name_cn: continue
                 actor_tmdb_id = None
-                
-                # 尝试通过反查翻译缓存找到 TMDB ID
-                cache_entry = self.actor_db_manager.get_translation_from_db(
-                    cursor, person_name_cn, by_translated_text=True
-                )
+                cache_entry = self.actor_db_manager.get_translation_from_db(cursor, person_name_cn, by_translated_text=True)
                 if cache_entry and cache_entry.get("original_text"):
-                    # 如果反查成功，我们可能能从映射表找到ID
                     map_entry_row = cursor.execute("SELECT tmdb_person_id FROM person_identity_map WHERE primary_name = ?", (cache_entry["original_text"],)).fetchone()
                     if map_entry_row: actor_tmdb_id = map_entry_row["tmdb_person_id"]
-
-                # 如果反查失败或未找到，直接用中文名去映射表里找 (对应TMDB官方中文名的情况)
                 if not actor_tmdb_id:
                     map_entry_row = cursor.execute("SELECT tmdb_person_id FROM person_identity_map WHERE primary_name = ?", (person_name_cn,)).fetchone()
                     if map_entry_row: actor_tmdb_id = map_entry_row["tmdb_person_id"]
-
                 if not actor_tmdb_id:
-                    logger.warning(f"    - 无法在数据库中为演员 '{person_name_cn}' 找到 TMDB ID，将跳过此演员。")
+                    logger.warning(f"  -> 无法在数据库中为演员 '{person_name_cn}' 找到 TMDB ID，将跳过此演员。")
                     continue
-
-                # 用找到的 TMDB ID 去获取最详细的元数据
                 full_metadata = self._get_actor_metadata_from_cache(actor_tmdb_id, cursor)
                 if not full_metadata:
-                    logger.warning(f"    - 无法在 ActorMetadata 缓存中为 TMDB ID '{actor_tmdb_id}' 找到元数据，将跳过此演员。")
+                    logger.warning(f"  -> 无法在 ActorMetadata 缓存中为 TMDB ID '{actor_tmdb_id}' 找到元数据，将跳过此演员。")
                     continue
-
-                # 构建一个符合 JSON 格式的、信息完整的演员字典
                 rebuilt_actor = {
-                    "adult": full_metadata.get("adult", False),
-                    "gender": full_metadata.get("gender", 0),
-                    "id": actor_tmdb_id,
-                    "known_for_department": full_metadata.get("known_for_department", "Acting"),
-                    "name": person_name_cn,  # 使用 Emby 中的（中文）名字
-                    "original_name": full_metadata.get("original_name"),
-                    "popularity": full_metadata.get("popularity", 0.0),
-                    "profile_path": full_metadata.get("profile_path"),
-                    "cast_id": None, # 这些信息无法重建，设为None
-                    "character": role_cn, # 使用 Emby 中的（中文）角色名
-                    "credit_id": None,
-                    "order": len(new_perfect_cast) # 按Emby的顺序简单排序
+                    "adult": full_metadata.get("adult", False), "gender": full_metadata.get("gender", 0),
+                    "id": actor_tmdb_id, "known_for_department": full_metadata.get("known_for_department", "Acting"),
+                    "name": person_name_cn, "original_name": full_metadata.get("original_name"),
+                    "popularity": full_metadata.get("popularity", 0.0), "profile_path": full_metadata.get("profile_path"),
+                    "cast_id": None, "character": role_cn, "credit_id": None, "order": len(new_perfect_cast)
                 }
                 new_perfect_cast.append(rebuilt_actor)
 
-        # 4. 将重建好的新列表写回 JSON 文件
+        # 4. 将重建好的新列表写回主 JSON 文件 (不变)
         main_json_filename = "all.json" if item_type == "Movie" else "series.json"
         json_path = os.path.join(target_override_dir, main_json_filename)
         if not os.path.exists(json_path): return
@@ -2288,23 +2263,43 @@ class MediaProcessor:
         try:
             with open(json_path, 'r+', encoding='utf-8') as f:
                 data = json.load(f)
-                
-                # 定位到 cast 列表并彻底替换它
-                if 'casts' in data and 'cast' in data['casts']:
-                    data['casts']['cast'] = new_perfect_cast
-                elif 'credits' in data and 'cast' in data['credits']:
-                    data['credits']['cast'] = new_perfect_cast
+                if 'casts' in data and 'cast' in data['casts']: data['casts']['cast'] = new_perfect_cast
+                elif 'credits' in data and 'cast' in data['credits']: data['credits']['cast'] = new_perfect_cast
                 else:
-                    logger.warning(f"    - 在 '{main_json_filename}' 中未找到 'cast' 列表，无法替换。")
+                    logger.warning(f"  -> 在 '{main_json_filename}' 中未找到 'cast' 列表，无法替换。")
                     return
-
                 f.seek(0)
                 json.dump(data, f, ensure_ascii=False, indent=2)
                 f.truncate()
-                logger.info(f"    -> {log_prefix} 步骤 2/2: 成功将 Emby 中的 {len(new_perfect_cast)} 位完整演员信息重建并写入备份文件。")
-
+                logger.info(f"  -> {log_prefix} 步骤 2/3: 成功将 Emby 中的 {len(new_perfect_cast)} 位完整演员信息重建并写入主备份文件。")
         except Exception as e:
-            logger.error(f"    - {log_prefix} 重建并写入 '{main_json_filename}' 时失败: {e}", exc_info=True)
+            logger.error(f"  -> {log_prefix} 重建并写入 '{main_json_filename}' 时失败: {e}", exc_info=True)
+            return # 主文件失败，后续也没必要进行了
+
+        # ★★★★★★★★★★★★★★★ 5. 新增：注入演员表到所有季/集文件 ★★★★★★★★★★★★★★★
+        if item_type == "Series":
+            logger.info(f"  -> {log_prefix} 步骤 3/3: 开始将演员表注入所有季/集备份文件...")
+            updated_children_count = 0
+            try:
+                for filename in os.listdir(target_override_dir):
+                    # 筛选出所有 season- 开头，但又不是 series.json 的文件
+                    if filename.startswith("season-") and filename.endswith(".json") and filename != "series.json":
+                        child_json_path = os.path.join(target_override_dir, filename)
+                        try:
+                            with open(child_json_path, 'r+', encoding='utf-8') as f_child:
+                                child_data = json.load(f_child)
+                                # 季和集文件都使用 'credits.cast' 结构
+                                if 'credits' in child_data and 'cast' in child_data['credits']:
+                                    child_data['credits']['cast'] = new_perfect_cast
+                                    f_child.seek(0)
+                                    json.dump(child_data, f_child, ensure_ascii=False, indent=2)
+                                    f_child.truncate()
+                                    updated_children_count += 1
+                        except Exception as e_child:
+                            logger.warning(f"  -> 更新子文件 '{filename}' 时失败: {e_child}")
+                logger.info(f"  -> {log_prefix} 成功将演员表注入了 {updated_children_count} 个季/集文件。")
+            except Exception as e_list:
+                logger.error(f"  -> {log_prefix} 遍历并更新季/集文件时发生错误: {e_list}", exc_info=True)
 
     def close(self):
         if self.douban_api: self.douban_api.close()
