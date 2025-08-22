@@ -2241,7 +2241,7 @@ class MediaProcessor:
                     continue
 
                 # ★★★ 新增日志 1: 明确显示我们正在用哪个 Emby ID 进行处理 ★★★
-                logger.debug(f"  -> 正在处理演员 '{person_name_cn}' (Emby ID: {emby_person_id})...")
+                logger.info(f"  -> 正在处理演员 '{person_name_cn}' (Emby ID: {emby_person_id})...")
                 
                 # 使用 Emby ID 去映射表里精确查找 TMDB ID
                 map_entry_row = cursor.execute("SELECT tmdb_person_id FROM person_identity_map WHERE emby_person_id = ?", (emby_person_id,)).fetchone()
@@ -2253,7 +2253,7 @@ class MediaProcessor:
                 actor_tmdb_id = map_entry_row["tmdb_person_id"]
 
                 # ★★★ 新增日志 2: 明确显示匹配成功的结果，这就是证据！ ★★★
-                logger.debug(f"  -> 精确匹配成功: Emby ID {emby_person_id} -> TMDB ID {actor_tmdb_id}")
+                logger.info(f"  -> 精确匹配成功: Emby ID {emby_person_id} -> TMDB ID {actor_tmdb_id}")
 
                 # 用找到的 TMDB ID 去获取最详细的元数据
                 full_metadata = self._get_actor_metadata_from_cache(actor_tmdb_id, cursor)
