@@ -21,7 +21,7 @@ FROM python:3.11-slim
 # 设置环境变量 (保持不变)
 ENV LANG="C.UTF-8" \
     TZ="Asia/Shanghai" \
-    HOME="/embyactor" \
+    HOME="/embytoolkit" \
     CONFIG_DIR="/config" \
     APP_DATA_DIR="/config" \
     TERM="xterm" \
@@ -122,8 +122,8 @@ COPY --from=frontend-build /app/emby-actor-ui/dist/. /app/static/
 # 7. 设置权限和用户。
 RUN chmod +x /entrypoint.sh && \
     mkdir -p ${HOME} && \
-    groupadd -r embyactor -g 918 && \
-    useradd -r embyactor -g embyactor -d ${HOME} -s /bin/bash -u 918
+    groupadd -r embytoolkit -g 918 && \
+    useradd -r embytoolkit -g embytoolkit -d ${HOME} -s /bin/bash -u 918
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
   CMD curl -f http://localhost:5257/api/health || exit 1    

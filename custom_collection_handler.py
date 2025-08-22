@@ -99,7 +99,7 @@ class ListImporter:
         command_str = ' '.join(command_parts)
         
         try:
-            logger.debug(f"  -> 执行命令: {command_str}")
+            logger.trace(f"  -> 执行命令: {command_str}")
             
             # 使用 os.system，它会阻塞直到命令完成
             # 它的返回值是 shell 的退出码，0 表示成功

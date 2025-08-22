@@ -978,7 +978,7 @@ def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, us
     """
     【通过移除所有成员的方式，来间接“清空”并删除一个Emby合集。
     """
-    logger.info(f"开始清空 Emby 合集 {collection_id} 的所有成员...")
+    logger.trace(f"  -> 开始清空 Emby 合集 {collection_id} 的所有成员...")
     
     # 步骤 1: 获取当前所有成员的ID
     member_ids = get_collection_members(collection_id, base_url, api_key, user_id)
@@ -992,11 +992,11 @@ def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, us
         return True # 合集已是空的，视为成功
 
     # 步骤 2: 调用我们已经验证过的 remove_items_from_collection 函数，移除所有成员
-    logger.info(f"  - 正在从合集 {collection_id} 中移除 {len(member_ids)} 个成员...")
+    logger.trace(f"  - 正在从合集 {collection_id} 中移除 {len(member_ids)} 个成员...")
     success = remove_items_from_collection(collection_id, member_ids, base_url, api_key)
     
     if success:
-        logger.info(f"✅ 成功发送清空合集 {collection_id} 的请求。")
+        logger.info(f"  -> ✅ 成功从Emby删除合集 {collection_id} 。")
     else:
         logger.error(f"❌ 发送清空合集 {collection_id} 的请求失败。")
         

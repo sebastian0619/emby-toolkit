@@ -140,7 +140,7 @@ def api_delete_custom_collection(collection_id):
 
         # 步骤 2: 如果存在关联的Emby ID，则调用Emby Handler，清空其内容
         if emby_id_to_empty:
-            logger.info(f"准备在 Emby 上通过清空成员的方式删除合集 '{collection_name}' (Emby ID: {emby_id_to_empty})...")
+            logger.info(f"  -> 正在删除合集 '{collection_name}' (Emby ID: {emby_id_to_empty})...")
             
             # ★★★ 调用我们全新的、真正有效的清空函数 ★★★
             emby_handler.empty_collection_in_emby(

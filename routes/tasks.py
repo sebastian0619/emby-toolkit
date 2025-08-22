@@ -54,7 +54,7 @@ def run_task():
         return jsonify({"error": "请求体中缺少 'task_name' 参数"}), 400
 
     task_name_str = data.pop('task_name')
-    logger.info(f"收到来自前端的通用任务执行请求: {task_name_str}, 参数: {data}")
+    logger.trace(f"收到来自前端的通用任务执行请求: {task_name_str}, 参数: {data}")
 
     try:
         task_registry = get_task_registry()
