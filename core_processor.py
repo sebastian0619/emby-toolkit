@@ -2249,7 +2249,7 @@ class MediaProcessor:
                     "title": item_details.get("Name"),
                     "original_title": item_details.get("OriginalTitle"),
                     "overview": item_details.get("Overview"),
-                    "tagline": item_details.get("Taglines", [None])[0],
+                    "tagline": (item_details.get("Taglines") or [None])[0],
                     "release_date": (item_details.get("PremiereDate") or "0000-01-01T00:00:00.000Z").split('T')[0],
                     "vote_average": item_details.get("CommunityRating", 0.0),
                     "genres": [{"name": g} for g in item_details.get("Genres", [])],
