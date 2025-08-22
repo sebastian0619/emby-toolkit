@@ -28,15 +28,19 @@ INFO "→ 设置用户权限..."
 groupmod -o -g "${PGID}" embyactor
 usermod -o -u "${PUID}" embyactor
 
-# 更改文件权限
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★★★ 核心优化：只对需要写入的目录进行递归权限修改 ★★★
+# ★★★ 移除了 /app 目录，因为应用代码只需要读取权限 ★★★
+INFO "→ 更改持久化目录权限 (这可能需要一些时间)..."
 chown -R embyactor:embyactor \
     "${HOME}" \
-    /app \
     "${CONFIG_DIR}"
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
 # 设置权限掩码
 umask "${UMASK}"
 
 # 启动应用
 INFO "→ 启动应用服务..."
-exec dumb-init gosu embyactor:embyactor python /app/web_app.py
+# ★★★ 推荐实践：明确指定 python 解释器的路径 ★★★
+exec dumb-init gosu embyactor:embyactor python3 /app/web_app.py
