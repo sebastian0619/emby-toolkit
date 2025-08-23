@@ -33,9 +33,10 @@ def api_reprocess_item(item_id):
     success = task_manager.submit_task(
         task_reprocess_single_item,
         f"任务已提交: {item_name_for_ui}",
-        item_id,
-        item_name_for_ui,
-        processor_type='media'
+        processor_type='media',
+        item_id=item_id,
+        item_name_for_ui=item_name_for_ui
+        
     )
     if success:
         return jsonify({"message": f"重新处理项目 '{item_name_for_ui}' 的任务已提交。"}), 202

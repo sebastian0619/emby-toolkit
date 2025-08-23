@@ -575,11 +575,11 @@ def emby_webhook():
         logger.info(f"Webhook事件触发，最终处理项目 '{final_item_name}' (ID: {id_to_process}, TMDbID: {tmdb_id}) 已提交到任务队列。")
         
         success = task_manager.submit_task(
-            webhook_processing_task,
-            f"Webhook处理: {final_item_name}",
-            id_to_process,
-            force_reprocess=True,
-            processor_type='media' 
+            task_function=webhook_processing_task,
+            task_name=f"Webhook处理: {final_item_name}",
+            processor_type='media', 
+            item_id=id_to_process,
+            force_reprocess=True
         )
         
         return jsonify({"status": "metadata_task_queued", "item_id": id_to_process}), 202

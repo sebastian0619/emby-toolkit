@@ -115,8 +115,9 @@ def api_trigger_single_watchlist_refresh(item_id):
     task_manager.submit_task(
         task_refresh_single_watchlist_item,
         f"手动刷新: {item_name}",
-        item_id,
-        processor_type='watchlist'
+        processor_type='watchlist',
+        item_id=item_id
+        
     )
     
     return jsonify({"message": f"《{item_name}》的刷新任务已在后台启动！"}), 202

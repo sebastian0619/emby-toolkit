@@ -101,10 +101,11 @@ def api_update_edited_cast_sa(item_id):
     task_manager.submit_task(
         task_manual_update, # 传递包装函数
         f"手动更新: {item_name}",
-        item_id,
-        edited_cast,
-        item_name,
-        processor_type='media'
+        processor_type='media',
+        item_id=item_id,
+        edited_cast=edited_cast,
+        item_name=item_name
+        
     )
     
     return jsonify({"message": "手动更新任务已在后台启动。"}), 202
