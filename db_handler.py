@@ -1004,6 +1004,7 @@ def update_custom_collection(collection_id: int, name: str, type: str, definitio
     """
     【V2 - 参数顺序修正版】
     修复了因函数调用和SQL执行参数顺序不匹配，导致更新静默失败的致命BUG。
+    新增了 rowcount 检查，确保更新操作真实有效。
     """
     sql = """
         UPDATE custom_collections
@@ -1014,12 +1015,20 @@ def update_custom_collection(collection_id: int, name: str, type: str, definitio
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # ★★★ 核心修复：将 collection_id 放到元组的最后，与 SQL 语句的 WHERE id = %s 完美对应 ★★★
+            # ★★★ 核心修复 1/2：将 collection_id 放到元组的最后，与 SQL 语句的 WHERE id = %s 完美对应 ★★★
             cursor.execute(sql, (name, type, definition_json, status, collection_id))
             
-            conn.commit()
-            logger.info(f"成功更新自定义合集 ID: {collection_id}。")
-            return True
+            # ★★★ 核心修复 2/2：检查是否真的有一行被更新了 ★★★
+            if cursor.rowcount > 0:
+                conn.commit()
+                logger.info(f"成功更新自定义合集 ID: {collection_id}。")
+                return True
+            else:
+                # 如果 rowcount 为 0，说明 WHERE id = %s 没有找到匹配的行
+                logger.warning(f"尝试更新自定义合集 ID {collection_id}，但在数据库中未找到该记录。")
+                conn.rollback() # 回滚空操作
+                return False
+
     except psycopg2.Error as e:
         logger.error(f"更新自定义合集 ID {collection_id} 时发生数据库错误: {e}", exc_info=True)
         return False
