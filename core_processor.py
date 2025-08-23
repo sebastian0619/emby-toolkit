@@ -2241,7 +2241,8 @@ class MediaProcessor:
                 logger.trace(f"  -> 正在处理演员 '{person_name_cn}' (Emby ID: {emby_person_id})...")
                 
                 # 使用 Emby ID 去映射表里精确查找 TMDB ID
-                map_entry_row = cursor.execute("SELECT tmdb_person_id FROM person_identity_map WHERE emby_person_id = %s", (emby_person_id,)).fetchone()
+                cursor.execute("SELECT tmdb_person_id FROM person_identity_map WHERE emby_person_id = %s", (emby_person_id,))
+                map_entry_row = cursor.fetchone()
                 
                 if not map_entry_row or not map_entry_row["tmdb_person_id"]:
                     logger.warning(f"  -> 无法在数据库中为演员 '{person_name_cn}' (Emby ID: {emby_person_id}) 找到对应的 TMDB ID，已跳过。")
