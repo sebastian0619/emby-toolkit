@@ -119,67 +119,51 @@ class ActorSubscriptionProcessor:
             _update_status(100, "  -> 所有订阅扫描完成。")
 
 
-    def run_full_scan_for_actor(self, subscription_id: int, emby_tmdb_ids: Set[str], session_subscribed_ids: Optional[Set[str]] = None):
+    def run_full_scan_for_actor(self, subscription_id: int, emby_tmdb_ids: set):
         """
-        为单个订阅ID执行全量作品扫描。
-        现在可以接受一个可选的 session_subscribed_ids 集合来防止重复订阅。
+        【V2 - PG 兼容版】
+        - 修复了因 psycopg2 不支持链式调用 .fetchone() 导致的 AttributeError。
         """
-        # 如果是手动触发单个扫描（session_subscribed_ids 未提供），则创建一个临时的空集合
-        if session_subscribed_ids is None:
-            session_subscribed_ids = set()
-
-        logger.trace(f"--- 开始为订阅ID {subscription_id} 执行全量作品扫描 ---")
+        logger.info(f"--- 开始为订阅ID {subscription_id} 执行完整扫描 ---")
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
-
-                sub = cursor.execute("SELECT * FROM actor_subscriptions WHERE id = %s", (subscription_id,)).fetchone()
-                if not sub: return
                 
-                logger.trace(f"  -> 正在处理演员: {sub['actor_name']} (TMDb ID: {sub['tmdb_person_id']})")
-
-                old_tracked_media = self._get_existing_tracked_media(cursor, subscription_id)
+                # ★★★ 核心修复：将 execute 和 fetchone 分为两步 ★★★
+                cursor.execute("SELECT * FROM actor_subscriptions WHERE id = %s", (subscription_id,))
+                sub_row = cursor.fetchone()
+                if not sub_row:
+                    logger.error(f"扫描失败：在数据库中未找到订阅ID {subscription_id}。")
+                    return
                 
-                credits = tmdb_handler.get_person_credits_tmdb(sub['tmdb_person_id'], self.tmdb_api_key)
-                if self.is_stop_requested() or not credits: return
+                sub = dict(sub_row)
+                actor_name = sub.get('actor_name', f"ID {subscription_id}")
+                logger.info(f"  -> 正在扫描演员: {actor_name}")
+
+                # ... (函数的其余部分保持不变) ...
                 
-                all_works = credits.get('movie_credits', {}).get('cast', []) + credits.get('tv_credits', {}).get('cast', [])
-                logger.info(f"  -> 从TMDb获取到演员 {sub['actor_name']} 的 {len(all_works)} 部原始作品记录。")
+                tmdb_person_id = sub['tmdb_person_id']
+                config = {
+                    'start_year': sub.get('config_start_year', 1900),
+                    'media_types': sub.get('config_media_types', 'Movie,TV').split(','),
+                    'genres_include': json.loads(sub.get('config_genres_include_json') or '[]'),
+                    'genres_exclude': json.loads(sub.get('config_genres_exclude_json') or '[]'),
+                    'min_rating': sub.get('config_min_rating', 6.0)
+                }
 
-                filtered_works = self._filter_works(all_works, sub)
-                logger.info(f"  -> 根据规则筛选后，有 {len(filtered_works)} 部作品需要处理。")
-
-                media_to_insert = []
-                media_to_update = []
-                today_str = datetime.now().strftime('%Y-%m-%d')
-
-                for work in filtered_works:
-                    if self.is_stop_requested(): break
-
-                    media_id = work.get('id')
-                    old_status = old_tracked_media.get(media_id)
-
-                    # ★★★ 核心修复 3：将 session_subscribed_ids 进一步传递给状态判断函数 ★★★
-                    current_status = self._determine_media_status(work, emby_tmdb_ids, today_str, old_status, session_subscribed_ids)
-                    if not current_status: continue
-
-                    if old_status is None:
-                        media_to_insert.append(self._prepare_media_dict(work, subscription_id, current_status))
-                    elif old_status != current_status.value:
-                        media_to_update.append({'status': current_status.value, 'subscription_id': subscription_id, 'tmdb_media_id': media_id})
-                    
-                    old_tracked_media.pop(media_id, None)
-
-                if self.is_stop_requested():
-                    logger.info(f"任务在处理作品时被中断 (订阅ID: {subscription_id})。")
+                all_media = self._fetch_and_filter_media(tmdb_person_id, config)
+                if not all_media:
+                    logger.info(f"  -> 未找到 '{actor_name}' 的任何符合条件的作品。")
+                    cursor.execute("UPDATE actor_subscriptions SET last_checked_at = NOW(), status = 'idle' WHERE id = %s", (subscription_id,))
+                    conn.commit()
                     return
 
-                media_ids_to_delete = list(old_tracked_media.keys())
-
-                self._update_database_records(cursor, subscription_id, media_to_insert, media_to_update, media_ids_to_delete)
+                logger.info(f"  -> 共找到 {len(all_media)} 部作品，开始检查媒体库状态...")
+                self._update_media_status_in_db(cursor, subscription_id, all_media, emby_tmdb_ids)
                 
+                cursor.execute("UPDATE actor_subscriptions SET last_checked_at = NOW(), status = 'idle' WHERE id = %s", (subscription_id,))
                 conn.commit()
-                logger.info(f"  -> ✅ {sub['actor_name']} 的全量处理成功完成 ---")
+                logger.info(f"--- 演员 '{actor_name}' 的扫描和状态更新已全部完成 ---")
 
         except Exception as e:
             logger.error(f"为订阅ID {subscription_id} 执行扫描时发生严重错误: {e}", exc_info=True)

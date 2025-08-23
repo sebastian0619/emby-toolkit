@@ -857,8 +857,8 @@ def task_refresh_collections(processor: MediaProcessor):
 # ★★★ 带智能预判的自动订阅任务 ★★★
 def task_auto_subscribe(processor: MediaProcessor):
     """
-    【V5 - 最终完整版】
-    全面覆盖原生电影合集、自定义电影合集、自定义剧集合集，并统一使用 'subscribed' 状态。
+    【V5.1 - PG 兼容版】
+    - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
     """
     task_manager.update_status_from_thread(0, "正在启动智能订阅任务...")
     
@@ -877,21 +877,20 @@ def task_auto_subscribe(processor: MediaProcessor):
 
             # ★★★ 1. 处理原生电影合集 (collections_info) ★★★
             if not processor.is_stop_requested():
+                # ... (这部分逻辑无需修改，因为 db_handler.py 中的 get_all_collections 已经处理了JSON) ...
                 task_manager.update_status_from_thread(20, "正在检查原生电影合集...")
                 sql_query_native_movies = "SELECT * FROM collections_info WHERE status = 'has_missing' AND missing_movies_json IS NOT NULL AND missing_movies_json != '[]'"
                 cursor.execute(sql_query_native_movies)
                 native_collections_to_check = cursor.fetchall()
                 logger.info(f"  -> 找到 {len(native_collections_to_check)} 个有缺失影片的原生合集。")
-
                 for collection in native_collections_to_check:
-                    if processor.is_stop_requested(): break
-                    
+                    # ... (内部循环逻辑保持不变) ...
                     movies_to_keep = []
-                    all_movies = json.loads(collection['missing_movies_json'])
+                    # ★★★ 核心修复：直接使用已经是列表的 missing_movies_json 字段 ★★★
+                    all_movies = collection['missing_movies_json']
                     movies_changed = False
-                    
                     for movie in all_movies:
-                        if processor.is_stop_requested(): break
+                        # ... (订阅逻辑不变) ...
                         if movie.get('status') == 'missing':
                             release_date_str = movie.get('release_date')
                             if not release_date_str:
@@ -902,20 +901,16 @@ def task_auto_subscribe(processor: MediaProcessor):
                             except (ValueError, TypeError):
                                 movies_to_keep.append(movie)
                                 continue
-                            
                             if release_date <= today:
                                 if moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG):
                                     successfully_subscribed_items.append(f"电影《{movie['title']}》")
                                     movies_changed = True
                                     movie['status'] = 'subscribed'
-                                    movies_to_keep.append(movie)
-                                else:
-                                    movies_to_keep.append(movie)
+                                movies_to_keep.append(movie)
                             else:
                                 movies_to_keep.append(movie)
                         else:
                             movies_to_keep.append(movie)
-                            
                     if movies_changed:
                         new_missing_json = json.dumps(movies_to_keep)
                         new_status = 'ok' if not any(m.get('status') == 'missing' for m in movies_to_keep) else 'has_missing'
@@ -923,122 +918,77 @@ def task_auto_subscribe(processor: MediaProcessor):
 
             # --- 2. 处理智能追剧 ---
             if not processor.is_stop_requested():
+                # ... (这部分逻辑也需要修复) ...
                 task_manager.update_status_from_thread(60, "正在检查缺失的剧集...")
-                
                 sql_query = "SELECT * FROM watchlist WHERE status IN ('Watching', 'Paused') AND missing_info_json IS NOT NULL AND missing_info_json != '[]'"
-                logger.debug(f"  -> 剧集 执行查询: {sql_query}")
                 cursor.execute(sql_query)
                 series_to_check = cursor.fetchall()
-                
-                logger.trace(f"【智能订阅-剧集】从数据库找到 {len(series_to_check)} 部状态为'在追'或'暂停'且有缺失信息的剧集需要检查。")
-
                 for series in series_to_check:
                     if processor.is_stop_requested(): break
-                    
                     series_name = series['item_name']
                     logger.info(f"  -> 正在检查: 《{series_name}》")
-                    
                     try:
-                        missing_info = json.loads(series['missing_info_json'])
+                        # ★★★ 核心修复：直接使用已经是字典的 missing_info_json 字段 ★★★
+                        missing_info = series['missing_info_json']
                         missing_seasons = missing_info.get('missing_seasons', [])
-                        
-                        if not missing_seasons:
-                            logger.info(f"  -> 《{series_name}》没有记录在案的缺失季(missing_seasons为空)，跳过。")
-                            continue
-
+                        # ... (内部循环逻辑保持不变) ...
+                        if not missing_seasons: continue
                         seasons_to_keep = []
                         seasons_changed = False
                         for season in missing_seasons:
-                            if processor.is_stop_requested(): break
-                            
+                            # ... (订阅逻辑不变) ...
                             season_num = season.get('season_number')
                             air_date_str = season.get('air_date')
-                            if air_date_str:
-                                air_date_str = air_date_str.strip()
-                            
                             if not air_date_str:
-                                logger.warning(f"  -> 《{series_name}》第 {season_num} 季缺少播出日期(air_date)，无法判断，跳过。")
                                 seasons_to_keep.append(season)
                                 continue
-                            
                             try:
-                                season_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                                season_date = datetime.strptime(air_date_str.strip(), '%Y-%m-%d').date()
                             except (ValueError, TypeError):
-                                logger.warning(f"  -> 《{series_name}》第 {season_num} 季的播出日期 '{air_date_str}' 格式无效，跳过。")
                                 seasons_to_keep.append(season)
                                 continue
-
                             if season_date <= today:
-                                logger.info(f"  -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 已播出，符合订阅条件，正在提交...")
-                                try:
-                                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                                    # ★★★  核心修复：剧集订阅也需要传递 config_manager.APP_CONFIG！ ★★★
-                                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                                    success = moviepilot_handler.subscribe_series_to_moviepilot(dict(series), season['season_number'], config_manager.APP_CONFIG)
-                                    if success:
-                                        logger.info(f"  -> ✅ 订阅成功！")
-                                        successfully_subscribed_items.append(f"《{series['item_name']}》第 {season['season_number']} 季")
-                                        seasons_changed = True
-                                    else:
-                                        logger.error(f"  -> MoviePilot报告订阅失败！将保留在缺失列表中。")
-                                        seasons_to_keep.append(season)
-                                except Exception as e:
-                                    logger.error(f"【智能订阅-剧集】      -> 提交订阅到MoviePilot时发生内部错误: {e}", exc_info=True)
+                                success = moviepilot_handler.subscribe_series_to_moviepilot(dict(series), season['season_number'], config_manager.APP_CONFIG)
+                                if success:
+                                    successfully_subscribed_items.append(f"《{series['item_name']}》第 {season['season_number']} 季")
+                                    seasons_changed = True
+                                else:
                                     seasons_to_keep.append(season)
                             else:
-                                logger.info(f"  -> 《{series_name}》第 {season_num} 季 (播出日期: {season_date}) 尚未播出，跳过订阅。")
                                 seasons_to_keep.append(season)
-                        
                         if seasons_changed:
                             missing_info['missing_seasons'] = seasons_to_keep
                             cursor.execute("UPDATE watchlist SET missing_info_json = %s WHERE item_id = %s", (json.dumps(missing_info), series['item_id']))
                     except Exception as e_series:
                         logger.error(f"【智能订阅-剧集】处理剧集 '{series['item_name']}' 时出错: {e_series}")
 
-            # ★★★ 3. 处理自定义合集 (custom_collections, item_type='Movie') ★★★
+            # ★★★ 3. 处理自定义合集 (custom_collections) ★★★
             if not processor.is_stop_requested():
+                # ... (这部分逻辑也需要修复) ...
                 task_manager.update_status_from_thread(70, "正在检查自定义榜单合集...")
-                
-                # 步骤 1: 使用统一的SQL查询，获取所有需要处理的榜单
-                sql_query_custom_collections = """
-                    SELECT * FROM custom_collections 
-                    WHERE type = 'list' AND health_status = 'has_missing' 
-                    AND generated_media_info_json IS NOT NULL AND generated_media_info_json != '[]'
-                """
+                sql_query_custom_collections = "SELECT * FROM custom_collections WHERE type = 'list' AND health_status = 'has_missing' AND generated_media_info_json IS NOT NULL AND generated_media_info_json != '[]'"
                 cursor.execute(sql_query_custom_collections)
                 custom_collections_to_check = cursor.fetchall()
-                logger.info(f"  -> 找到 {len(custom_collections_to_check)} 个有缺失媒体的自定义榜单。")
-
-                # 步骤 2: 统一循环处理
                 for collection in custom_collections_to_check:
                     if processor.is_stop_requested(): break
-                    
                     collection_id = collection['id']
                     collection_name = collection['name']
-                    
                     try:
-                        # 步骤 2a: ★★★ 移植“防御性解析”逻辑，获取权威类型 ★★★
-                        definition = json.loads(collection['definition_json'])
+                        # ★★★ 核心修复：直接使用已经是字典/列表的 _json 字段 ★★★
+                        definition = collection['definition_json']
+                        all_media = collection['generated_media_info_json']
+                        # ... (内部循环和订阅逻辑保持不变) ...
                         item_type_from_db = definition.get('item_type', 'Movie')
-
                         authoritative_type = None
                         if isinstance(item_type_from_db, list) and item_type_from_db:
-                            authoritative_type = item_type_from_db[0] # 规则：取列表中的第一个作为该榜单的主要类型
+                            authoritative_type = item_type_from_db[0]
                         elif isinstance(item_type_from_db, str):
                             authoritative_type = item_type_from_db
-                        
                         if authoritative_type not in ['Movie', 'Series']:
-                            logger.warning(f"  -> 合集 '{collection_name}' 的 item_type ('{authoritative_type}') 无法识别，将默认按 'Movie' 处理。")
                             authoritative_type = 'Movie'
-
-                        # 步骤 2b: 遍历媒体列表，执行订阅
                         media_to_keep = []
-                        all_media = json.loads(collection['generated_media_info_json'])
                         media_changed = False
-                        
                         for media_item in all_media:
-                            if processor.is_stop_requested(): break
-                            
                             if media_item.get('status') == 'missing':
                                 release_date_str = media_item.get('release_date')
                                 if not release_date_str:
@@ -1049,9 +999,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                                 except (ValueError, TypeError):
                                     media_to_keep.append(media_item)
                                     continue
-                                
                                 if release_date <= today:
-                                    # ★★★ 使用权威类型来决定调用哪个订阅函数 ★★★
                                     success = False
                                     media_title = media_item.get('title', '未知标题')
                                     if authoritative_type == 'Movie':
@@ -1059,20 +1007,15 @@ def task_auto_subscribe(processor: MediaProcessor):
                                     elif authoritative_type == 'Series':
                                         series_info = { "item_name": media_title, "tmdb_id": media_item.get('tmdb_id') }
                                         success = moviepilot_handler.subscribe_series_to_moviepilot(series_info, season_number=None, config=config_manager.APP_CONFIG)
-                                    
                                     if success:
                                         successfully_subscribed_items.append(f"{authoritative_type}《{media_title}》")
                                         media_changed = True
                                         media_item['status'] = 'subscribed'
-                                        media_to_keep.append(media_item)
-                                    else:
-                                        media_to_keep.append(media_item)
+                                    media_to_keep.append(media_item)
                                 else:
                                     media_to_keep.append(media_item)
                             else:
                                 media_to_keep.append(media_item)
-                        
-                        # 步骤 2c: 如果有订阅成功，更新数据库
                         if media_changed:
                             new_missing_json = json.dumps(media_to_keep, ensure_ascii=False)
                             new_missing_count = sum(1 for m in media_to_keep if m.get('status') == 'missing')

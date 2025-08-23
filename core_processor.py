@@ -1978,9 +1978,9 @@ class MediaProcessor:
     # ★★★ 全量备份到覆盖缓存 ★★★
     def sync_all_media_assets(self, update_status_callback: Optional[callable] = None, force_full_update: bool = False):
         """
-        【V2 - 深度模式支持版】
-        此版本通过比较Emby中的最后修改时间来智能判断是否需要更新备份（快速模式），
-        或者通过 force_full_update 参数跳过时间检查，进行全量补救（深度模式）。
+        【V2.1 - 时间戳兼容最终版】
+        - 修复了因数据类型不匹配 (str vs datetime) 导致快速同步模式失效的BUG。
+        - 确保在比较前将 Emby 返回的时间戳字符串转换为 datetime 对象。
         """
         sync_mode = "深度模式" if force_full_update else "快速模式"
         task_name = f"覆盖缓存备份 ({sync_mode})"
@@ -1995,17 +1995,14 @@ class MediaProcessor:
         try:
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT item_id, item_name, last_emby_modified_at FROM processed_log")
+                # 尝试获取带时间戳的列，如果失败则回退
+                try:
+                    cursor.execute("SELECT item_id, item_name, last_emby_modified_at FROM processed_log")
+                except psycopg2.errors.UndefinedColumn:
+                    logger.warning("数据库 processed_log 表缺少 'last_emby_modified_at' 字段，将执行全量备份。")
+                    force_full_update = True # 强制进入深度模式
+                    cursor.execute("SELECT item_id, item_name FROM processed_log")
                 items_to_check = cursor.fetchall()
-        except psycopg2.OperationalError as e:
-            if "no such column: last_emby_modified_at" in str(e):
-                error_msg = "数据库缺少 'last_emby_modified_at' 字段，请先更新表结构！"
-                logger.error(error_msg)
-                if update_status_callback: update_status_callback(-1, error_msg)
-            else:
-                logger.error(f"获取待检查项目列表时发生数据库错误: {e}", exc_info=True)
-                if update_status_callback: update_status_callback(-1, "数据库错误")
-            return
         except Exception as e:
             logger.error(f"获取待检查项目列表时发生未知错误: {e}", exc_info=True)
             if update_status_callback: update_status_callback(-1, "数据库未知错误")
@@ -2013,12 +2010,10 @@ class MediaProcessor:
 
         total = len(items_to_check)
         if total == 0:
-            logger.info("  -> 日志中没有任何项目，任务结束。")
             if update_status_callback: update_status_callback(100, "没有任何已处理的项目")
             return
 
         logger.info(f"  -> 将检查 {total} 个已处理的媒体项是否有更新。")
-        
         stats = {"updated": 0, "skipped_no_change": 0, "skipped_other": 0, "cleaned": 0}
 
         with get_central_db_connection() as conn_sync:
@@ -2030,49 +2025,49 @@ class MediaProcessor:
 
                 item_id = db_row['item_id']
                 item_name_from_db = db_row['item_name']
-                last_known_modified_at = db_row['last_emby_modified_at']
+                # last_known_modified_dt 现在是一个 datetime 对象或 None
+                last_known_modified_dt = db_row.get('last_emby_modified_at')
                 
                 if update_status_callback:
                     update_status_callback(int((i / total) * 100), f"({i+1}/{total}): 正在检查 {item_name_from_db}")
 
                 try:
-                    # ★★★ 核心修改：获取更完整的字段，因为深度模式下需要重建元数据 ★★★
                     item_details = emby_handler.get_emby_item_details(
                         item_id, self.emby_url, self.emby_api_key, self.emby_user_id, 
-                        fields="ProviderIds,Type,DateModified,Name,OriginalTitle,Overview,Tagline,PremiereDate,ProductionYear,CommunityRating,Genres,Studios,People,OfficialRating,DateCreated,ImageTags"
+                        fields="ProviderIds,Type,DateModified,Name"
                     )
-                    
                     if not item_details:
                         raise ValueError(f"项目在Emby中已不存在或无法访问 (ID: {item_id})")
 
-                    current_emby_modified_at = item_details.get("DateModified")
-
-                    # ★★★ 核心修改：根据模式决定是否执行备份 ★★★
+                    current_emby_modified_at_str = item_details.get("DateModified")
                     should_backup = False
-                    if force_full_update:
-                        # 深度模式：无条件执行
+                    
+                    if force_full_update or not last_known_modified_dt:
                         should_backup = True
-                    elif not last_known_modified_at or (current_emby_modified_at and current_emby_modified_at > last_known_modified_at):
-                        # 快速模式：按时间戳判断
-                        should_backup = True
+                    elif current_emby_modified_at_str:
+                        # ★★★ 核心修复：将 Emby 返回的字符串转换为 datetime 对象再进行比较 ★★★
+                        try:
+                            emby_modified_str_fixed = re.sub(r'\.(\d{6})\d*Z$', r'.\1Z', current_emby_modified_at_str)
+                            current_emby_modified_dt = datetime.fromisoformat(emby_modified_str_fixed.replace('Z', '+00:00'))
+                            if current_emby_modified_dt > last_known_modified_dt:
+                                should_backup = True
+                        except (ValueError, TypeError):
+                            should_backup = True # 解析失败则默认更新
                     
                     if should_backup:
                         logger.info(f"  -> 发现更新 '{item_name_from_db}'，准备执行备份...")
-                        
                         tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
                         if not tmdb_id:
-                            logger.warning(f"跳过 '{item_name_from_db}'，因为它缺少 TMDb ID。")
                             stats["skipped_other"] += 1
                             continue
 
                         self.sync_item_images(item_details)
                         self.sync_item_metadata(item_details, tmdb_id)
 
-                        self.log_db_manager.mark_assets_as_synced(cursor_sync, item_id, current_emby_modified_at)
+                        self.log_db_manager.mark_assets_as_synced(cursor_sync, item_id, current_emby_modified_at_str)
                         conn_sync.commit()
                         stats["updated"] += 1
                     else:
-                        logger.trace(f"'{item_name_from_db}' 未发生变化，跳过备份。")
                         stats["skipped_no_change"] += 1
 
                 except ValueError as e:
@@ -2080,14 +2075,12 @@ class MediaProcessor:
                     self.log_db_manager.remove_from_processed_log(cursor_sync, item_id)
                     conn_sync.commit()
                     stats["cleaned"] += 1
-
                 except Exception as e:
                     logger.error(f"处理项目 '{item_name_from_db}' (ID: {item_id}) 时发生未知错误: {e}", exc_info=True)
                     stats["skipped_other"] += 1
                 
                 time.sleep(0.1)
 
-        logger.trace(f"--- {task_name} 任务结束 ---")
         final_message = f"✅ 更新: {stats['updated']}, 无变化跳过: {stats['skipped_no_change']}, 清理: {stats['cleaned']}, 其他跳过: {stats['skipped_other']}。"
         logger.info(final_message)
         if update_status_callback:
