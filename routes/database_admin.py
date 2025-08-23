@@ -1,4 +1,4 @@
-# routes/database_admin.py
+# routes/database_admin.py (V2 - 高性能统计版)
 
 from flask import Blueprint, request, jsonify, Response
 import logging
@@ -22,6 +22,94 @@ from extensions import login_required, processor_ready_required, task_lock_requi
 # 1. 创建蓝图
 db_admin_bp = Blueprint('database_admin', __name__, url_prefix='/api')
 logger = logging.getLogger(__name__)
+
+# ★★★ 核心优化 1/2：创建一个新的、一次性获取所有统计数据的函数 ★★★
+def _get_all_stats_in_one_query(cursor: psycopg2.extensions.cursor) -> dict:
+    """
+    使用一条 SQL 查询，通过 FILTER 子句高效地计算所有统计数据。
+    """
+    sql = """
+    SELECT
+        (SELECT COUNT(*) FROM media_metadata) AS media_total,
+        COUNT(*) FILTER (WHERE item_type = 'Movie') AS media_movies,
+        COUNT(*) FILTER (WHERE item_type = 'Series') AS media_series,
+        (SELECT COUNT(*) FROM users) AS users_total,
+        (SELECT COUNT(*) FROM collections_info) AS collections_tmdb_total,
+        (SELECT COUNT(*) FROM collections_info WHERE has_missing = TRUE) AS collections_with_missing,
+        (SELECT COUNT(*) FROM custom_collections WHERE status = 'active') AS collections_custom_active,
+        (SELECT COUNT(*) FROM watchlist WHERE status = 'Watching') AS watchlist_active,
+        (SELECT COUNT(*) FROM watchlist WHERE status = 'Paused') AS watchlist_paused,
+        (SELECT COUNT(*) FROM watchlist WHERE status = 'Completed') AS watchlist_ended,
+        (SELECT COUNT(*) FROM actor_subscriptions WHERE status = 'active') AS actor_subscriptions_active,
+        (SELECT COUNT(*) FROM tracked_actor_media) AS tracked_media_total,
+        (SELECT COUNT(*) FROM tracked_actor_media WHERE status = 'IN_LIBRARY') AS tracked_media_in_library,
+        (SELECT COUNT(*) FROM person_identity_map) AS actor_mappings_count,
+        (SELECT COUNT(*) FROM translation_cache) AS translation_cache_count,
+        (SELECT COUNT(*) FROM processed_log) AS processed_log_count,
+        (SELECT COUNT(*) FROM failed_log) AS failed_log_count
+    FROM media_metadata
+    LIMIT 1;
+    """
+    try:
+        cursor.execute(sql)
+        result = cursor.fetchone()
+        return dict(result) if result else {}
+    except psycopg2.Error as e:
+        logger.error(f"执行聚合统计查询时出错: {e}")
+        return {}
+
+# --- 数据看板 ---
+@db_admin_bp.route('/database/stats', methods=['GET'])
+@login_required
+def api_get_database_stats():
+    """
+    【V2 - 高性能版】
+    通过一次数据库查询获取所有统计数据，并将其格式化为前端期望的结构。
+    """
+    try:
+        with db_handler.get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # ★★★ 核心优化 2/2：调用新的聚合查询函数 ★★★
+            raw_stats = _get_all_stats_in_one_query(cursor)
+
+            if not raw_stats:
+                raise RuntimeError("未能从数据库获取统计数据。")
+
+            # 将扁平的查询结果，重新组织成前端需要的嵌套字典结构
+            stats = {
+                'media_metadata': {
+                    "total": raw_stats.get('media_total', 0),
+                    "movies": raw_stats.get('media_movies', 0),
+                    "series": raw_stats.get('media_series', 0),
+                    "users": raw_stats.get('users_total', 0),
+                },
+                'collections': {
+                    "total_tmdb_collections": raw_stats.get('collections_tmdb_total', 0),
+                    "collections_with_missing": raw_stats.get('collections_with_missing', 0),
+                    "total_custom_collections": raw_stats.get('collections_custom_active', 0),
+                },
+                'subscriptions': {
+                    "watchlist_active": raw_stats.get('watchlist_active', 0),
+                    "watchlist_paused": raw_stats.get('watchlist_paused', 0),
+                    "watchlist_ended": raw_stats.get('watchlist_ended', 0),
+                    "actor_subscriptions_active": raw_stats.get('actor_subscriptions_active', 0),
+                    "tracked_media_total": raw_stats.get('tracked_media_total', 0),
+                    "tracked_media_in_library": raw_stats.get('tracked_media_in_library', 0),
+                },
+                'system': {
+                    "actor_mappings_count": raw_stats.get('actor_mappings_count', 0),
+                    "translation_cache_count": raw_stats.get('translation_cache_count', 0),
+                    "processed_log_count": raw_stats.get('processed_log_count', 0),
+                    "failed_log_count": raw_stats.get('failed_log_count', 0),
+                }
+            }
+
+        return jsonify({"status": "success", "data": stats})
+
+    except Exception as e:
+        logger.error(f"获取数据库统计信息时发生严重错误: {e}", exc_info=True)
+        return jsonify({"error": "获取数据库统计信息时发生服务器内部错误"}), 500
 
 def _count_table_rows(cursor: psycopg2.extensions.cursor, table_name: str, condition: str = "") -> int:
     """一个通用的表行数计数辅助函数，增加错误处理。"""
@@ -174,58 +262,6 @@ def api_import_database():
     except Exception as e:
         logger.error(f"处理数据库导入请求时发生错误: {e}", exc_info=True)
         return jsonify({"error": "处理上传文件时发生服务器错误"}), 500
-
-# --- 数据看板 ---
-@db_admin_bp.route('/database/stats', methods=['GET'])
-@login_required
-def api_get_database_stats():
-    """
-    从数据库中查询并聚合各种统计数据，用于在UI上展示。
-    """
-    stats = {}
-    try:
-        with db_handler.get_db_connection() as conn:
-            cursor = conn.cursor()
-
-            # --- 1. 核心媒体元数据统计 ---
-            stats['media_metadata'] = {
-                "total": _count_table_rows(cursor, "media_metadata"),
-                "movies": _count_table_rows(cursor, "media_metadata", "item_type = 'Movie'"),
-                "series": _count_table_rows(cursor, "media_metadata", "item_type = 'Series'"),
-                # ★★★ 新增：用户统计 ★★★
-                "users": _count_table_rows(cursor, "users"),
-            }
-
-            # --- 2. 合集管理统计 ---
-            stats['collections'] = {
-                "total_tmdb_collections": _count_table_rows(cursor, "collections_info"),
-                "collections_with_missing": _count_table_rows(cursor, "collections_info", "has_missing = TRUE"),
-                "total_custom_collections": _count_table_rows(cursor, "custom_collections", "status = 'active'"),
-            }
-
-            # --- 3. 订阅服务统计 ---
-            stats['subscriptions'] = {
-                "watchlist_active": _count_table_rows(cursor, "watchlist", "status = 'Watching'"),
-                "watchlist_paused": _count_table_rows(cursor, "watchlist", "status = 'Paused'"),
-                "watchlist_ended": _count_table_rows(cursor, "watchlist", "status = 'Completed'"),
-                "actor_subscriptions_active": _count_table_rows(cursor, "actor_subscriptions", "status = 'active'"),
-                "tracked_media_total": _count_table_rows(cursor, "tracked_actor_media"),
-                "tracked_media_in_library": _count_table_rows(cursor, "tracked_actor_media", "status = 'IN_LIBRARY'"),
-            }
-
-            # --- 4. 系统与缓存统计 ---
-            stats['system'] = {
-                "actor_mappings_count": _count_table_rows(cursor, "person_identity_map"),
-                "translation_cache_count": _count_table_rows(cursor, "translation_cache"),
-                "processed_log_count": _count_table_rows(cursor, "processed_log"),
-                "failed_log_count": _count_table_rows(cursor, "failed_log"),
-            }
-
-        return jsonify({"status": "success", "data": stats})
-
-    except Exception as e:
-        logger.error(f"获取数据库统计信息时发生严重错误: {e}", exc_info=True)
-        return jsonify({"error": "获取数据库统计信息时发生服务器内部错误"}), 500
 
 # --- 待复核列表管理 ---
 @db_admin_bp.route('/review_items', methods=['GET'])
