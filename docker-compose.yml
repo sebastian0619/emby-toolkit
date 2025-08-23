@@ -13,17 +13,48 @@ services:
       - APP_DATA_DIR=/config
       - PUID=1000
       - PGID=1000
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=embytoolkit      # <-- ★★★ 请修改为你自己的用户名
+      - DB_PASSWORD=embytoolkit # <-- ★★★ 请修改为你自己的强密码
+      - DB_NAME=embytoolkit         # <-- ★★★ 请修改为你自己的数据库名
     ports:
       - "5257:5257"
       - "8097:8097"
     networks:
       - emby-net
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5257/api/health"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 30s
+  
+  db:
+    image: postgres:16-alpine # 使用官方的、轻量的 PostgreSQL 镜像
+    container_name: emby-toolkit-db
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      # 这些值必须与上面 emby-toolkit 服务中的环境变量匹配
+      - POSTGRES_USER=embytoolkit      # <-- ★★★ 请修改，与上面保持一致
+      - POSTGRES_PASSWORD=embytoolkit # <-- ★★★ 请修改，与上面保持一致
+      - POSTGRES_DB=embytoolkit         # <-- ★★★ 请修改，与上面保持一致
+    networks:
+      - emby-net
+    ports:
+      # (可选) 将数据库端口映射到宿主机，方便使用Navicat等工具连接调试
+      # 映射到 5433 是为了避免与宿主机上可能已有的 5432 端口冲突
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U embytoolkit -d embytoolkit"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   nginx:
     image: nginx:1.25-alpine
@@ -39,3 +70,6 @@ services:
 networks:
   emby-net:
     driver: bridge
+  
+volumes:
+  postgres_data:

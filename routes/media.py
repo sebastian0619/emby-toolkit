@@ -101,10 +101,10 @@ def api_update_edited_cast_sa(item_id):
     task_manager.submit_task(
         task_manual_update, # 传递包装函数
         f"手动更新: {item_name}",
-        # --- 后面是传递给 task_manual_update 的参数 ---
         item_id,
         edited_cast,
-        item_name
+        item_name,
+        processor_type='media'
     )
     
     return jsonify({"message": "手动更新任务已在后台启动。"}), 202
@@ -346,7 +346,7 @@ def api_search_studios():
         return jsonify([])
         
     try:
-        studios = db_handler.search_unique_studios(config_manager.DB_PATH, search_term)
+        studios = db_handler.search_unique_studios(search_term)
         return jsonify(studios)
     except Exception as e:
         logger.error(f"搜索工作室时发生错误: {e}", exc_info=True)

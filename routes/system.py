@@ -64,8 +64,20 @@ def api_trigger_task_now(task_identifier: str):
 
     task_function, task_name = task_info
     kwargs = {}
+
+    # ★★★ 核心修复：在这里动态决定 processor_type ★★★
+    processor_type_to_use = 'media' # 默认值
+    if 'watchlist' in task_identifier:
+        processor_type_to_use = 'watchlist'
+    elif 'actor' in task_identifier:
+        processor_type_to_use = 'actor'
         
-    success = task_manager.submit_task(task_function, task_name, **kwargs)
+    success = task_manager.submit_task(
+        task_function, 
+        task_name, 
+        processor_type=processor_type_to_use,
+        **kwargs
+    )
     
     if success:
         return jsonify({"status": "success", "message": "任务已成功提交到后台队列。", "task_name": task_name}), 202
@@ -431,7 +443,7 @@ def api_get_genres_config():
     """
     try:
         # ★★★ 核心修复：直接调用新的数据库函数 ★★★
-        genres = db_handler.get_unique_genres(config_manager.DB_PATH)
+        genres = db_handler.get_unique_genres()
         # API直接返回一个字符串列表，例如 ["动作", "喜剧", "科幻"]
         return jsonify(genres)
     except Exception as e:
@@ -446,7 +458,7 @@ def api_get_studios_config():
     从媒体元数据缓存中动态获取所有唯一的工作室。
     """
     try:
-        studios = db_handler.get_unique_studios(config_manager.DB_PATH)
+        studios = db_handler.get_unique_studios()
         return jsonify(studios)
     except Exception as e:
         logger.error(f"动态获取工作室列表时发生错误: {e}", exc_info=True)

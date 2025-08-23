@@ -2,12 +2,12 @@
 
 import re
 import os
+import psycopg2
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
 import unicodedata
 import logging
-import sqlite3
 logger = logging.getLogger(__name__)
 # 尝试导入 pypinyin，如果失败则创建一个模拟函数
 try:
@@ -159,81 +159,70 @@ class LogDBManager:
     """
     专门负责与日志相关的数据库表 (processed_log, failed_log) 进行交互的类。
     """
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        logger.trace(f"LogDBManager 初始化，使用数据库: {self.db_path}")
+    def __init__(self):
+        pass
 
-    # 注意：这个类不自己管理连接，它假设操作都在一个外部事务中
-    def save_to_processed_log(self, cursor: sqlite3.Cursor, item_id: str, item_name: Optional[str] = None, score: Optional[float] = None):
-        """在一个外部事务中，保存已处理记录。"""
+    def save_to_processed_log(self, cursor: psycopg2.extensions.cursor, item_id: str, item_name: str, score: float = 10.0):
         try:
-            cursor.execute(
-                "REPLACE INTO processed_log (item_id, item_name, processed_at, score) VALUES (?, ?, CURRENT_TIMESTAMP, ?)",
-                (item_id, item_name or f"未知项目(ID:{item_id})", score)
-            )
-            logger.debug(f"已将 Item ID '{item_id}' 写入已处理。")
-        except sqlite3.Error as e:
+            sql = """
+                INSERT INTO processed_log (item_id, item_name, processed_at, score)
+                VALUES (%s, %s, NOW(), %s)
+                ON CONFLICT (item_id) DO UPDATE SET
+                    item_name = EXCLUDED.item_name,
+                    processed_at = NOW(),
+                    score = EXCLUDED.score;
+            """
+            cursor.execute(sql, (item_id, item_name, score))
+        except Exception as e:
             logger.error(f"写入已处理 失败 (Item ID: {item_id}): {e}")
-            raise # 重新抛出异常，让事务管理器处理
     
-    def remove_from_processed_log(self, cursor: sqlite3.Cursor, item_id: str):
-        """
-        【新增】从已处理日志 (processed_log) 中删除一个项目记录。
-        """
+    def remove_from_processed_log(self, cursor: psycopg2.extensions.cursor, item_id: str):
         try:
             logger.debug(f"正在从已处理日志中删除 Item ID: {item_id}...")
-            cursor.execute("DELETE FROM processed_log WHERE item_id = ?", (item_id,))
+            cursor.execute("DELETE FROM processed_log WHERE item_id = %s", (item_id,))
         except Exception as e:
             logger.error(f"从已处理日志删除失败 for item {item_id}: {e}", exc_info=True)
 
-    def remove_from_failed_log(self, cursor: sqlite3.Cursor, item_id: str):
-        """在一个外部事务中，从 failed_log 中删除记录。"""
+    def remove_from_failed_log(self, cursor: psycopg2.extensions.cursor, item_id: str):
         try:
-            cursor.execute("DELETE FROM failed_log WHERE item_id = ?", (item_id,))
-            if cursor.rowcount > 0:
-                logger.info(f"  - 已从【手动处理列表】中移除")
-        except sqlite3.Error as e:
-            logger.error(f"从 failed_log 删除 Item ID '{item_id}' 时失败: {e}")
-            raise
+            cursor.execute("DELETE FROM failed_log WHERE item_id = %s", (item_id,))
+        except Exception as e:
+            logger.error(f"从 failed_log 删除失败 (Item ID: {item_id}): {e}")
 
-    def save_to_failed_log(self, cursor: sqlite3.Cursor, item_id: str, item_name: str, reason: str, item_type: str, score: Optional[float] = None):
-        """在一个外部事务中，保存失败记录。"""
+    def save_to_failed_log(self, cursor: psycopg2.extensions.cursor, item_id: str, item_name: str, reason: str, item_type: str, score: Optional[float] = None):
         try:
-            cursor.execute(
-                "REPLACE INTO failed_log (item_id, item_name, reason, item_type, score, failed_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                (item_id, item_name, reason, item_type, score)
-            )
-            logger.trace(f"已将 Item ID '{item_id}' 写入待复核。")
-        except sqlite3.Error as e:
+            sql = """
+                INSERT INTO failed_log (item_id, item_name, reason, item_type, score, failed_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (item_id) DO UPDATE SET
+                    item_name = EXCLUDED.item_name,
+                    reason = EXCLUDED.reason,
+                    item_type = EXCLUDED.item_type,
+                    score = EXCLUDED.score,
+                    failed_at = NOW();
+            """
+            cursor.execute(sql, (item_id, item_name, reason, item_type, score))
+        except Exception as e:
             logger.error(f"写入 failed_log 失败 (Item ID: {item_id}): {e}")
-            raise
     
-    def mark_assets_as_synced(self, cursor: sqlite3.Cursor, item_id: str, emby_modified_at: str):
+    def mark_assets_as_synced(self, cursor: psycopg2.extensions.cursor, item_id: str, emby_modified_at: str):
         """
         【最终修正版】更新 processed_log 表，标记指定项目的资产已同步。
         同时记录当前的同步时间和从Emby获取的最后修改时间。
-        
-        Args:
-            cursor: 数据库游标对象。
-            item_id: 要更新的媒体项ID。
-            emby_modified_at: 从Emby API获取的该项目的 'DateModified' 时间戳。
         """
         try:
-            # 准备要写入数据库的两个时间戳
             current_sync_time = datetime.now().isoformat()
-            
             logger.debug(f"正在更新 Item ID {item_id} 的备份状态和时间戳...")
             
-            # ★★★ 核心修复：修正SQL语句和参数 ★★★
+            # ★★★ 核心修复：使用 %s 占位符和元组传参 ★★★
             cursor.execute(
-                "UPDATE processed_log SET assets_synced_at = ?, last_emby_modified_at = ? WHERE item_id = ?",
+                "UPDATE processed_log SET assets_synced_at = %s, last_emby_modified_at = %s WHERE item_id = %s",
                 (current_sync_time, emby_modified_at, item_id)
             )
             logger.trace(f"  -> 成功执行对 Item ID {item_id} 的数据库更新。")
 
         except Exception as e:
             logger.error(f"标记备份状态失败 for item {item_id}: {e}", exc_info=True)
-    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
 
 # --- 国家/地区名称映射功能 ---
 _country_map_cache = None

@@ -5,9 +5,9 @@ import logging
 import json
 import re
 import os
+import psycopg2
 import time
 from datetime import datetime
-import sqlite3
 
 # 导入底层模块
 import db_handler
@@ -23,7 +23,7 @@ from extensions import login_required, processor_ready_required, task_lock_requi
 db_admin_bp = Blueprint('database_admin', __name__, url_prefix='/api')
 logger = logging.getLogger(__name__)
 
-def _count_table_rows(cursor: sqlite3.Cursor, table_name: str, condition: str = "") -> int:
+def _count_table_rows(cursor: psycopg2.extensions.cursor, table_name: str, condition: str = "") -> int:
     """一个通用的表行数计数辅助函数，增加错误处理。"""
     try:
         # 使用参数化查询防止SQL注入，即使表名是内部控制的
@@ -34,8 +34,8 @@ def _count_table_rows(cursor: sqlite3.Cursor, table_name: str, condition: str = 
             query += f" WHERE {condition}"
         cursor.execute(query)
         result = cursor.fetchone()
-        return result[0] if result else 0
-    except sqlite3.Error as e:
+        return result['count'] if result else 0
+    except psycopg2.Error as e:
         logger.error(f"计算表 '{table_name}' 行数时出错: {e}")
         return -1 # 返回-1表示错误
 
@@ -46,7 +46,7 @@ def _count_table_rows(cursor: sqlite3.Cursor, table_name: str, condition: str = 
 @login_required
 def api_get_db_tables():
     try:
-        with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
+        with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
             tables = [row[0] for row in cursor.fetchall()]
@@ -72,8 +72,7 @@ def api_export_database():
             }, "data": {}
         }
 
-        with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
+        with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
             for table_name in tables_to_export:
                 if not re.match(r'^[a-zA-Z0-9_]+$', table_name):
@@ -163,6 +162,7 @@ def api_import_database():
         success = task_manager.submit_task(
             task_import_database,  # ★ 调用新的后台任务函数
             f"以 {import_mode_cn} 模式恢复数据库表",
+            processor_type='media',
             # 传递任务所需的所有参数
             file_content=file_content,
             tables_to_import=tables_to_import,
@@ -184,7 +184,7 @@ def api_get_database_stats():
     """
     stats = {}
     try:
-        with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
+        with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
 
             # --- 1. 核心媒体元数据统计 ---
@@ -199,7 +199,7 @@ def api_get_database_stats():
             # --- 2. 合集管理统计 ---
             stats['collections'] = {
                 "total_tmdb_collections": _count_table_rows(cursor, "collections_info"),
-                "collections_with_missing": _count_table_rows(cursor, "collections_info", "has_missing = 1"),
+                "collections_with_missing": _count_table_rows(cursor, "collections_info", "has_missing = TRUE"),
                 "total_custom_collections": _count_table_rows(cursor, "custom_collections", "status = 'active'"),
             }
 
@@ -214,7 +214,6 @@ def api_get_database_stats():
             }
 
             # --- 4. 系统与缓存统计 ---
-            db_size_bytes = os.path.getsize(config_manager.DB_PATH)
             stats['system'] = {
                 "actor_mappings_count": _count_table_rows(cursor, "person_identity_map"),
                 "translation_cache_count": _count_table_rows(cursor, "translation_cache"),
@@ -236,7 +235,7 @@ def api_get_review_items():
     per_page = request.args.get('per_page', 20, type=int)
     query_filter = request.args.get('query', '', type=str).strip()
     try:
-        items, total = db_handler.get_review_items_paginated(config_manager.DB_PATH, page, per_page, query_filter)
+        items, total = db_handler.get_review_items_paginated(page, per_page, query_filter)
         total_pages = (total + per_page - 1) // per_page if total > 0 else 0
         return jsonify({
             "items": items, "total_items": total, "total_pages": total_pages,
@@ -250,7 +249,7 @@ def api_get_review_items():
 def api_mark_item_processed(item_id):
     if task_manager.is_task_running(): return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
     try:
-        success = db_handler.mark_review_item_as_processed(config_manager.DB_PATH, item_id)
+        success = db_handler.mark_review_item_as_processed(item_id)
         if success: return jsonify({"message": f"项目 {item_id} 已成功标记为已处理。"}), 200
         else: return jsonify({"error": f"未在待复核列表中找到项目 {item_id}。"}), 404
     except Exception as e:
@@ -262,7 +261,7 @@ def api_mark_item_processed(item_id):
 @task_lock_required
 def api_clear_review_items():
     try:
-        count = db_handler.clear_all_review_items(config_manager.DB_PATH)
+        count = db_handler.clear_all_review_items()
         if count > 0:
             message = f"操作成功！已将 {count} 个项目移至已处理列表。"
         else:

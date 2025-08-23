@@ -1,6 +1,6 @@
 # Emby ToolKit (Emby 演员管理工具)
 
-[![GitHub stars](https://img.shields.io/github/stars/hbq0405/emby-toolkit.svg?style=social&label=Star)](https://github.com/hbq0405/emby-toolkit)
+[![GitHub stars](https://img.shields.io/github/stars/hbq0405/emby-toolkit.svg%sstyle=social&label=Star)](https://github.com/hbq0405/emby-toolkit)
 [![GitHub license](https://img.shields.io/github/license/hbq0405/emby-toolkit.svg)](https://github.com/hbq0405/emby-toolkit/blob/main/LICENSE)
 <!-- 你可以添加更多的徽章，例如构建状态、Docker Hub 拉取次数等 -->
 
@@ -48,6 +48,7 @@
     version: '3.8'
 
     services:
+      # --- 1. Emby-Toolkit 主程序 ---
       emby-toolkit:
         image: hbq0405/emby-toolkit:latest 
         container_name: emby-toolkit
@@ -67,10 +68,45 @@
           - PUID=1000                                 # 设置为你的用户ID，建议与宿主机用户ID保持一致
           - PGID=1000                                 # 设置为DOCKER组ID (一键更新用，‘grep docker /etc/group’可以查询)
           - UMASK=022                                 # 设置文件权限掩码，建议022
+          - DB_HOST=db                                # 数据库服务的主机名 (请勿修改)
+          - DB_PORT=5432                              # 数据库服务的端口 (请勿修改)
+          - DB_USER=embytoolkit                       # !!! (可选) 修改为你自己的数据库用户名
+          - DB_PASSWORD=embytoolkit          # !!! (必填) 请修改为一个强密码 !!!
+          - DB_NAME=embytoolkit                       # !!! (可选) 修改为你自己的数据库名
           - CONTAINER_NAME=emby-toolkit               # 以下两项都是一键更新用，不需要可以不配置
           - DOCKER_IMAGE_NAME=hbq0405/emby-toolkit:latest
         restart: unless-stopped
-      # 以下为虚拟库反代配置，不需要可以整个删掉
+        depends_on:                                   # 确保主程序只在数据库健康检查通过后才启动 
+          db:
+            condition: service_healthy
+      # --- 2. PostgreSQL 数据库服务 ---
+      db:
+        image: postgres:16-alpine
+        container_name: emby-toolkit-db
+        restart: unless-stopped
+        networks:
+          - emby-net
+        volumes:
+          # 将数据库的持久化数据存储在名为 'postgres_data' 的Docker卷中
+          # 这可以确保即使删除了容器，数据库数据也不会丢失
+          - postgres_data:/var/lib/postgresql/data
+        environment:
+          # --- 数据库认证配置 (核心) ---
+          # 这些值必须与上面的 'emby-toolkit' 服务中的环境变量完全匹配
+          - POSTGRES_USER=embytoolkit               # !!! (可选) 修改，与上面保持一致
+          - POSTGRES_PASSWORD=embytoolkit           # !!! (必填) 修改，与上面保持一致 !!!
+          - POSTGRES_DB=embytoolkit                 # !!! (可选) 修改，与上面保持一致
+        ports:
+          # (可选) 将数据库端口映射到宿主机，方便使用Navicat等工具连接调试
+          # 映射到 5433 是为了避免与宿主机上可能已有的 5432 端口冲突
+          - "5433:5432"
+        healthcheck:
+          # 健康检查，确保数据库服务已准备好接受连接
+          test: ["CMD-SHELL", "pg_isready -U embytoolkit -d embytoolkit"]
+          interval: 10s
+          timeout: 5s
+          retries: 5
+      # ---3.以下为虚拟库反代配置，不需要可以整个删掉
       nginx:
         image: nginx:1.25-alpine
         container_name: emby-proxy-nginx              
@@ -85,6 +121,8 @@
     networks:
       emby-net:
         driver: bridge                                # 创建一个容器内部网络
+    volumes:
+      postgres_data:
 
     ```
     然后在 `docker-compose.yml` 文件所在的目录下运行：

@@ -2,7 +2,6 @@
 from gevent import monkey
 monkey.patch_all()
 import os
-import sqlite3
 import shutil
 from datetime import datetime
 from jinja2 import Environment, FileSystemLoader
@@ -97,307 +96,219 @@ def task_process_single_item(processor: MediaProcessor, item_id: str, force_repr
 # --- 初始化数据库 ---
 def init_db():
     """
-    【最终版】初始化数据库，创建所有表的最终结构，并包含性能优化。
+    【PostgreSQL版】初始化数据库，创建所有表的最终结构。
     """
-    logger.info("正在初始化数据库，创建/验证所有表的最终结构...")
-    conn: Optional[sqlite3.Connection] = None
+    logger.info("正在初始化 PostgreSQL 数据库，创建/验证所有表的结构...")
+    
+    # get_central_db_connection 应该就是 db_handler.get_db_connection
+    # 确保它现在调用的是无参数版本
     try:
-        # 确保数据目录存在
-        if not os.path.exists(config_manager.PERSISTENT_DATA_PATH):
-            os.makedirs(config_manager.PERSISTENT_DATA_PATH, exist_ok=True)
+        with db_handler.get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                logger.info("  -> 数据库连接成功，开始建表...")
 
+                # --- 1. 创建基础表 (日志、缓存、用户) ---
+                logger.trace("  -> 正在创建基础表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS processed_log (
+                        item_id TEXT PRIMARY KEY, 
+                        item_name TEXT, 
+                        processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(), 
+                        score REAL,
+                        assets_synced_at TIMESTAMP WITH TIME ZONE,
+                        last_emby_modified_at TIMESTAMP WITH TIME ZONE
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS failed_log (
+                        item_id TEXT PRIMARY KEY, 
+                        item_name TEXT, 
+                        reason TEXT, 
+                        failed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(), 
+                        error_message TEXT, 
+                        item_type TEXT, 
+                        score REAL
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        id SERIAL PRIMARY KEY, 
+                        username TEXT UNIQUE NOT NULL, 
+                        password_hash TEXT NOT NULL, 
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS translation_cache (
+                        original_text TEXT PRIMARY KEY, 
+                        translated_text TEXT, 
+                        engine_used TEXT, 
+                        last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
 
-        with get_central_db_connection(config_manager.DB_PATH) as conn:
-            cursor = conn.cursor()
+                # --- 2. 创建核心功能表 ---
+                logger.trace("  -> 正在创建 'collections_info' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS collections_info (
+                        emby_collection_id TEXT PRIMARY KEY,
+                        name TEXT,
+                        tmdb_collection_id TEXT,
+                        status TEXT,
+                        has_missing BOOLEAN, 
+                        missing_movies_json JSONB,
+                        last_checked_at TIMESTAMP WITH TIME ZONE,
+                        poster_path TEXT,
+                        item_type TEXT DEFAULT 'Movie' NOT NULL,
+                        in_library_count INTEGER DEFAULT 0
+                    )
+                """)
 
-            # --- 1. ★★★ 性能优化：启用 WAL 模式  ★★★ ---
-            try:
-                cursor.execute("PRAGMA journal_mode=WAL;")
-                result = cursor.fetchone()
-                if result and result[0].lower() == 'wal':
-                    logger.trace("  -> 数据库已成功启用 WAL (Write-Ahead Logging) 模式。")
-                else:
-                    logger.warning(f"  -> 尝试启用 WAL 模式失败，当前模式: {result[0] if result else '未知'}。")
-            except Exception as e_wal:
-                logger.error(f"  -> 启用 WAL 模式时出错: {e_wal}")
+                logger.trace("  -> 正在创建 'custom_collections' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS custom_collections (
+                        id SERIAL PRIMARY KEY,
+                        name TEXT NOT NULL UNIQUE,
+                        type TEXT NOT NULL,
+                        definition_json JSONB NOT NULL,
+                        status TEXT DEFAULT 'active',
+                        emby_collection_id TEXT,
+                        last_synced_at TIMESTAMP WITH TIME ZONE,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        health_status TEXT,
+                        item_type TEXT,
+                        in_library_count INTEGER DEFAULT 0,
+                        missing_count INTEGER DEFAULT 0,
+                        generated_media_info_json JSONB,
+                        poster_path TEXT,
+                        sort_order INTEGER NOT NULL DEFAULT 0
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_type ON custom_collections (type)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_status ON custom_collections (status)")
 
-            # --- 2. 创建基础表 (日志、缓存、用户) ---
-            logger.trace("  -> 正在创建基础表...")
-            cursor.execute("CREATE TABLE IF NOT EXISTS processed_log (item_id TEXT PRIMARY KEY, item_name TEXT, processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, score REAL)")
-            cursor.execute("CREATE TABLE IF NOT EXISTS failed_log (item_id TEXT PRIMARY KEY, item_name TEXT, reason TEXT, failed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, error_message TEXT, item_type TEXT, score REAL)")
-            cursor.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            cursor.execute("CREATE TABLE IF NOT EXISTS translation_cache (original_text TEXT PRIMARY KEY, translated_text TEXT, engine_used TEXT, last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            
-            # ✨ 为老用户平滑升级 'processed_log' 表 (使用可扩展模式)
-            try:
-                cursor.execute("PRAGMA table_info(processed_log)")
-                existing_columns = {row[1] for row in cursor.fetchall()}
-                
-                # 定义需要检查和添加的字段。未来增加新字段，只需在此处添加键值对。
-                new_columns_to_add_processed = {
-                    "assets_synced_at": "TEXT",
-                    "last_emby_modified_at": "TEXT"
-                }
+                logger.trace("  -> 正在创建 'media_metadata' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS media_metadata (
+                        tmdb_id TEXT,
+                        item_type TEXT NOT NULL,
+                        title TEXT,
+                        original_title TEXT,
+                        release_year INTEGER,
+                        rating REAL,
+                        genres_json JSONB,
+                        actors_json JSONB,
+                        directors_json JSONB,
+                        studios_json JSONB,
+                        countries_json JSONB,
+                        last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        release_date DATE,
+                        date_added TIMESTAMP WITH TIME ZONE,
+                        tags_json JSONB,
+                        last_synced_at TIMESTAMP WITH TIME ZONE,
+                        PRIMARY KEY (tmdb_id, item_type)
+                    )
+                """)
 
-                for col_name, col_type in new_columns_to_add_processed.items():
-                    if col_name not in existing_columns:
-                        logger.info(f"    -> 检测到旧版 'processed_log' 表，正在添加 '{col_name}' 字段...")
-                        cursor.execute(f"ALTER TABLE processed_log ADD COLUMN {col_name} {col_type};")
-                        logger.info(f"    -> '{col_name}' 字段添加成功。")
-            except Exception as e_alter_processed:
-                logger.error(f"  -> 为 'processed_log' 表添加新字段时出错: {e_alter_processed}")
-            
-            # --- 3. 创建核心功能表 ---
-            # 电影合集检查
-            logger.trace("  -> 正在创建/升级 'collections_info' 表...")
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS collections_info (
-                    emby_collection_id TEXT PRIMARY KEY,
-                    name TEXT,
-                    tmdb_collection_id TEXT,
-                    status TEXT,
-                    has_missing BOOLEAN, 
-                    missing_movies_json TEXT,
-                    last_checked_at TIMESTAMP,
-                    poster_path TEXT
-                )
-            """)
+                logger.trace("  -> 正在创建 'watchlist' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS watchlist (
+                        item_id TEXT PRIMARY KEY,
+                        tmdb_id TEXT NOT NULL,
+                        item_name TEXT,
+                        item_type TEXT DEFAULT 'Series',
+                        status TEXT DEFAULT 'Watching',
+                        added_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        last_checked_at TIMESTAMP WITH TIME ZONE,
+                        tmdb_status TEXT,
+                        next_episode_to_air_json JSONB,
+                        missing_info_json JSONB,
+                        paused_until DATE DEFAULT NULL,
+                        force_ended BOOLEAN DEFAULT FALSE NOT NULL
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
 
-            # ✨ 为老用户平滑升级 'collections_info' 表的统一逻辑
-            try:
-                cursor.execute("PRAGMA table_info(collections_info)")
-                existing_columns = {row[1] for row in cursor.fetchall()}
-                
-                new_columns_to_add = {
-                    "item_type": "TEXT DEFAULT 'Movie' NOT NULL",
-                    "in_library_count": "INTEGER DEFAULT 0"
-                }
+                logger.trace("  -> 正在创建 'person_identity_map' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS person_identity_map (
+                        map_id SERIAL PRIMARY KEY, 
+                        primary_name TEXT NOT NULL, 
+                        emby_person_id TEXT UNIQUE,
+                        tmdb_person_id INTEGER UNIQUE, 
+                        imdb_id TEXT UNIQUE, 
+                        douban_celebrity_id TEXT UNIQUE,
+                        last_synced_at TIMESTAMP WITH TIME ZONE, 
+                        last_updated_at TIMESTAMP WITH TIME ZONE
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_id ON person_identity_map (emby_person_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_tmdb_id ON person_identity_map (tmdb_person_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_imdb_id ON person_identity_map (imdb_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_id ON person_identity_map (douban_celebrity_id)")
 
-                for col_name, col_type in new_columns_to_add.items():
-                    if col_name not in existing_columns:
-                        logger.info(f"    -> 检测到旧版 'collections_info' 表，正在添加 '{col_name}' 字段...")
-                        cursor.execute(f"ALTER TABLE collections_info ADD COLUMN {col_name} {col_type};")
-                        logger.info(f"    -> '{col_name}' 字段添加成功。")
-            except Exception as e_alter:
-                logger.error(f"  -> 为 'collections_info' 表添加新字段时出错: {e_alter}")
+                logger.trace("  -> 正在创建 'ActorMetadata' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS ActorMetadata (
+                        tmdb_id INTEGER PRIMARY KEY, 
+                        profile_path TEXT, 
+                        gender INTEGER, 
+                        adult BOOLEAN,
+                        popularity REAL, 
+                        original_name TEXT, 
+                        last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        FOREIGN KEY(tmdb_id) REFERENCES person_identity_map(tmdb_person_id) ON DELETE CASCADE
+                    )
+                """)
 
-            # 自定义合集
-            logger.trace("  -> 正在创建/升级 'custom_collections' 表...")
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS custom_collections (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL UNIQUE,
-                    type TEXT NOT NULL,
-                    definition_json TEXT NOT NULL,
-                    status TEXT DEFAULT 'active',
-                    emby_collection_id TEXT,
-                    last_synced_at TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            # ✨ 为老用户平滑升级 'custom_collections' 表的统一逻辑
-            try:
-                cursor.execute("PRAGMA table_info(custom_collections)")
-                existing_columns = {row[1] for row in cursor.fetchall()}
-                
-                new_columns_to_add = {
-                    "health_status": "TEXT",
-                    "item_type": "TEXT",
-                    "in_library_count": "INTEGER DEFAULT 0",
-                    "missing_count": "INTEGER DEFAULT 0",
-                    "generated_media_info_json": "TEXT",
-                    "poster_path": "TEXT",
-                    "sort_order": "INTEGER NOT NULL DEFAULT 0"
-                }
+                logger.trace("  -> 正在创建 'actor_subscriptions' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS actor_subscriptions (
+                        id SERIAL PRIMARY KEY,
+                        tmdb_person_id INTEGER NOT NULL UNIQUE,
+                        actor_name TEXT NOT NULL,
+                        profile_path TEXT,
+                        config_start_year INTEGER DEFAULT 1900,
+                        config_media_types TEXT DEFAULT 'Movie,TV',
+                        config_genres_include_json JSONB,
+                        config_genres_exclude_json JSONB,
+                        status TEXT DEFAULT 'active',
+                        last_checked_at TIMESTAMP WITH TIME ZONE,
+                        added_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        config_min_rating REAL DEFAULT 6.0
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_status ON actor_subscriptions (status)")
 
-                for col_name, col_type in new_columns_to_add.items():
-                    if col_name not in existing_columns:
-                        logger.info(f"    -> 检测到旧版 'custom_collections' 表，正在添加 '{col_name}' 字段...")
-                        cursor.execute(f"ALTER TABLE custom_collections ADD COLUMN {col_name} {col_type};")
-                        logger.info(f"    -> '{col_name}' 字段添加成功。")
-            except Exception as e_alter_cc:
-                logger.error(f"  -> 为 'custom_collections' 表添加新字段时出错: {e_alter_cc}")
-
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_type ON custom_collections (type)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_status ON custom_collections (status)")
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_name_unique ON custom_collections (name)")
-
-            # 媒体元数据表 (筛选引擎数据源)
-            logger.trace("  -> 正在创建/升级 'media_metadata' 表...")
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS media_metadata (
-                    tmdb_id TEXT,
-                    item_type TEXT NOT NULL,
-                    title TEXT,
-                    original_title TEXT,
-                    release_year INTEGER,
-                    rating REAL,
-                    genres_json TEXT,
-                    actors_json TEXT,
-                    directors_json TEXT,
-                    studios_json TEXT,
-                    countries_json TEXT,
-                    last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (tmdb_id, item_type)
-                )
-            """)
-
-            # ✨ 为老用户平滑升级 'media_metadata' 表的统一逻辑
-            try:
-                cursor.execute("PRAGMA table_info(media_metadata)")
-                existing_columns = {row[1] for row in cursor.fetchall()}
-                
-                new_columns_to_add = {
-                    "release_date": "TEXT",
-                    "date_added": "TEXT",
-                    "tags_json": "TEXT",
-                    "last_synced_at": "TEXT"
-                }
-
-                for col_name, col_type in new_columns_to_add.items():
-                    if col_name not in existing_columns:
-                        logger.info(f"    -> 检测到旧版 'media_metadata' 表，正在添加 '{col_name}' 字段...")
-                        cursor.execute(f"ALTER TABLE media_metadata ADD COLUMN {col_name} {col_type};")
-                        logger.info(f"    -> '{col_name}' 字段添加成功。")
-            except Exception as e_alter_mm:
-                logger.error(f"  -> 为 'media_metadata' 表添加新字段时出错: {e_alter_mm}")
-
-            # 剧集追踪 (追剧列表) 
-            logger.trace("  -> 正在创建/升级 'watchlist' 表...")
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS watchlist (
-                    item_id TEXT PRIMARY KEY,
-                    tmdb_id TEXT NOT NULL,
-                    item_name TEXT,
-                    item_type TEXT DEFAULT 'Series',
-                    status TEXT DEFAULT 'Watching',
-                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_checked_at TIMESTAMP,
-                    tmdb_status TEXT,
-                    next_episode_to_air_json TEXT,
-                    missing_info_json TEXT
-                )
-            """)
-
-            # ✨ 为老用户平滑升级 'watchlist' 表的统一逻辑
-            try:
-                cursor.execute("PRAGMA table_info(watchlist)")
-                existing_columns = {row[1] for row in cursor.fetchall()}
-                
-                new_columns_to_add = {
-                    "paused_until": "DATE DEFAULT NULL",
-                    "force_ended": "BOOLEAN DEFAULT 0 NOT NULL"
-                }
-
-                for col_name, col_type in new_columns_to_add.items():
-                    if col_name not in existing_columns:
-                        logger.info(f"    -> 检测到旧版 'watchlist' 表，正在添加 '{col_name}' 字段...")
-                        cursor.execute(f"ALTER TABLE watchlist ADD COLUMN {col_name} {col_type};")
-                        logger.info(f"    -> '{col_name}' 字段添加成功。")
-            except Exception as e_alter:
-                logger.error(f"  -> 为 'watchlist' 表添加新字段时出错: {e_alter}")
-            
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
-
-            # 演员身份映射
-            logger.trace("  -> 正在创建 'person_identity_map' 表...")
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS person_identity_map (
-                    map_id INTEGER PRIMARY KEY AUTOINCREMENT, primary_name TEXT NOT NULL, emby_person_id TEXT UNIQUE,
-                    tmdb_person_id INTEGER UNIQUE, imdb_id TEXT UNIQUE, douban_celebrity_id TEXT UNIQUE,
-                    last_synced_at TIMESTAMP, last_updated_at TIMESTAMP
-                )
-            """)
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_id ON person_identity_map (emby_person_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_tmdb_id ON person_identity_map (tmdb_person_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_imdb_id ON person_identity_map (imdb_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_id ON person_identity_map (douban_celebrity_id)")
-
-            # 演员元数据缓存
-            logger.trace("  -> 正在创建 'ActorMetadata' 表...")
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS ActorMetadata (
-                    tmdb_id INTEGER PRIMARY KEY, profile_path TEXT, gender INTEGER, adult BOOLEAN,
-                    popularity REAL, original_name TEXT, last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(tmdb_id) REFERENCES person_identity_map(tmdb_person_id) ON DELETE CASCADE
-                )
-            """)
-
-            # 演员订阅功能表
-            logger.trace("  -> 正在创建/升级 'actor_subscriptions' 表...")
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS actor_subscriptions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tmdb_person_id INTEGER NOT NULL UNIQUE,
-                    actor_name TEXT NOT NULL,
-                    profile_path TEXT,
-                    config_start_year INTEGER DEFAULT 1900,
-                    config_media_types TEXT DEFAULT 'Movie,TV',
-                    config_genres_include_json TEXT,
-                    config_genres_exclude_json TEXT,
-                    status TEXT DEFAULT 'active',
-                    last_checked_at TIMESTAMP,
-                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            # ✨ 为老用户平滑升级 'actor_subscriptions' 表的统一逻辑
-            try:
-                cursor.execute("PRAGMA table_info(actor_subscriptions)")
-                existing_columns = {row[1] for row in cursor.fetchall()}
-                
-                new_columns_to_add = {
-                    "config_min_rating": "REAL DEFAULT 6.0"
-                }
-
-                for col_name, col_type in new_columns_to_add.items():
-                    if col_name not in existing_columns:
-                        logger.info(f"    -> 检测到旧版 'actor_subscriptions' 表，正在添加 '{col_name}' 字段...")
-                        cursor.execute(f"ALTER TABLE actor_subscriptions ADD COLUMN {col_name} {col_type};")
-                        logger.info(f"    -> '{col_name}' 字段添加成功。")
-            except Exception as e_alter:
-                logger.error(f"  -> 为 'actor_subscriptions' 表添加新字段时出错: {e_alter}")
-            
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_tmdb_person_id ON actor_subscriptions (tmdb_person_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_status ON actor_subscriptions (status)")
-
-            # 追踪的演员媒体表
-            logger.trace("  -> 正在创建 'tracked_actor_media' 表...")
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS tracked_actor_media (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    subscription_id INTEGER NOT NULL,
-                    tmdb_media_id INTEGER NOT NULL,
-                    media_type TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    release_date TEXT,
-                    poster_path TEXT,
-                    status TEXT NOT NULL,
-                    emby_item_id TEXT,
-                    last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(subscription_id) REFERENCES actor_subscriptions(id) ON DELETE CASCADE,
-                    UNIQUE(subscription_id, tmdb_media_id)
-                )
-            """)
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_subscription_id ON tracked_actor_media (subscription_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_status ON tracked_actor_media (status)")
+                logger.trace("  -> 正在创建 'tracked_actor_media' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS tracked_actor_media (
+                        id SERIAL PRIMARY KEY,
+                        subscription_id INTEGER NOT NULL,
+                        tmdb_media_id INTEGER NOT NULL,
+                        media_type TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        release_date DATE,
+                        poster_path TEXT,
+                        status TEXT NOT NULL,
+                        emby_item_id TEXT,
+                        last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        FOREIGN KEY(subscription_id) REFERENCES actor_subscriptions(id) ON DELETE CASCADE,
+                        UNIQUE(subscription_id, tmdb_media_id)
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_subscription_id ON tracked_actor_media (subscription_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_status ON tracked_actor_media (status)")
 
             conn.commit()
-            logger.info("数据库初始化完成，所有表结构已更新至最新版本。")
+            logger.info("✅ PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")
 
-    except sqlite3.Error as e_sqlite:
-        logger.error(f"数据库初始化时发生 SQLite 错误: {e_sqlite}", exc_info=True)
-        if conn:
-            try: conn.rollback()
-            except Exception as e_rb: logger.error(f"SQLite 错误后回滚失败: {e_rb}")
-        raise # 重新抛出异常，让程序停止
+    except psycopg2.Error as e_pg:
+        logger.error(f"数据库初始化时发生 PostgreSQL 错误: {e_pg}", exc_info=True)
+        raise
     except Exception as e_global:
         logger.error(f"数据库初始化时发生未知错误: {e_global}", exc_info=True)
-        if conn:
-            try: conn.rollback()
-            except Exception as e_rb: logger.error(f"未知错误后回滚失败: {e_rb}")
-        raise # 重新抛出异常，让程序停止
+        raise
 
 # --- 保存配置并重新加载的函数 ---
 def save_config_and_reload(new_config: Dict[str, Any]):
@@ -429,7 +340,6 @@ def initialize_processors():
         return
 
     current_config = config_manager.APP_CONFIG.copy()
-    current_config['db_path'] = config_manager.DB_PATH
 
     # --- 1. 创建实例并存储在局部变量中 ---
     
@@ -617,9 +527,9 @@ def emby_webhook():
     if event_type == "library.deleted":
         logger.info(f"Webhook 收到删除事件，将从已处理日志中移除项目 '{original_item_name}' (ID: {original_item_id})。")
         try:
-            with get_central_db_connection(config_manager.DB_PATH) as conn:
+            with get_central_db_connection() as conn:
                 cursor = conn.cursor()
-                log_manager = LogDBManager(config_manager.DB_PATH)
+                log_manager = LogDBManager()
                 log_manager.remove_from_processed_log(cursor, original_item_id)
                 conn.commit()
             logger.info(f"成功从已处理日志中删除记录: {original_item_name}")

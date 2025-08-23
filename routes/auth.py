@@ -33,9 +33,9 @@ def init_auth():
         return
 
     try:
-        with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
+        with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
+            cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
             user = cursor.fetchone()
             
             if user is None:
@@ -46,7 +46,7 @@ def init_auth():
                 password_hash = generate_password_hash(DEFAULT_INITIAL_PASSWORD)
                 
                 cursor.execute(
-                    "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                    "INSERT INTO users (username, password_hash) VALUES (%s, %s)",
                     (username, password_hash)
                 )
                 conn.commit()
@@ -84,9 +84,9 @@ def login():
         return jsonify({"error": "缺少用户名或密码"}), 400
 
     try:
-        with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
+        with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
+            cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
             user = cursor.fetchone()
     except Exception as e:
         logger.error(f"登录时数据库查询失败: {e}", exc_info=True)
@@ -132,16 +132,16 @@ def change_password():
 
     user_id = session.get('user_id')
     try:
-        with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
+        with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+            cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
             user = cursor.fetchone()
 
             if not user or not check_password_hash(user['password_hash'], current_password):
                 return jsonify({"error": "当前密码不正确"}), 403
 
             new_password_hash = generate_password_hash(new_password)
-            cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_password_hash, user_id))
+            cursor.execute("UPDATE users SET password_hash = %s WHERE id = %s", (new_password_hash, user_id))
             conn.commit()
     except Exception as e:
         logger.error(f"修改密码时发生数据库错误: {e}", exc_info=True)

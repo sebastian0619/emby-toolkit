@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 @processor_ready_required
 def api_get_collections_status():
     try:
-        final_results = db_handler.get_all_collections(config_manager.DB_PATH)
+        final_results = db_handler.get_all_collections()
         return jsonify(final_results)
     except Exception as e:
         logger.error(f"读取合集状态时发生严重错误: {e}", exc_info=True)
@@ -65,7 +65,7 @@ def api_subscribe_all_missing():
     total_failed_count = 0
     
     try:
-        collections_to_process = db_handler.get_collections_with_missing_movies(config_manager.DB_PATH)
+        collections_to_process = db_handler.get_collections_with_missing_movies()
 
         if not collections_to_process:
             return jsonify({"message": "没有发现任何缺失的电影需要订阅。", "count": 0}), 200
@@ -91,7 +91,7 @@ def api_subscribe_all_missing():
                         total_failed_count += 1
             
             if needs_db_update:
-                db_handler.update_collection_movies(config_manager.DB_PATH, collection_id, movies)
+                db_handler.update_collection_movies(collection_id, movies)
         
         message = f"操作完成！成功提交 {total_subscribed_count} 部电影订阅。"
         if total_failed_count > 0:
@@ -119,7 +119,6 @@ def api_update_movie_status():
 
     try:
         success = db_handler.update_single_movie_status_in_collection(
-            db_path=config_manager.DB_PATH,
             collection_id=collection_id,
             movie_tmdb_id=movie_tmdb_id,
             new_status=new_status
@@ -147,7 +146,6 @@ def api_batch_mark_as_subscribed():
     try:
         # 调用一个新的、只操作数据库的函数
         updated_count = db_handler.batch_mark_movies_as_subscribed_in_collections(
-            db_path=config_manager.DB_PATH,
             collection_ids=collection_ids
         )
         

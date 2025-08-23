@@ -34,7 +34,8 @@ def api_reprocess_item(item_id):
         task_reprocess_single_item,
         f"任务已提交: {item_name_for_ui}",
         item_id,
-        item_name_for_ui
+        item_name_for_ui,
+        processor_type='media'
     )
     if success:
         return jsonify({"message": f"重新处理项目 '{item_name_for_ui}' 的任务已提交。"}), 202
@@ -48,7 +49,7 @@ def api_reprocess_item(item_id):
 @processor_ready_required
 def api_reprocess_all_review_items():
     from tasks import task_reprocess_all_review_items # 延迟导入
-    success = task_manager.submit_task(task_reprocess_all_review_items, "重新处理所有待复核项")
+    success = task_manager.submit_task(task_reprocess_all_review_items, "重新处理所有待复核项", processor_type='media')
     if success:
         return jsonify({"message": "重新处理所有待复核项的任务已提交。"}), 202
     else:
@@ -64,7 +65,8 @@ def api_add_all_series_to_watchlist():
     
     success = task_manager.submit_task(
         task_add_all_series_to_watchlist, 
-        "一键扫描全库剧集"
+        "一键扫描全库剧集",
+        processor_type='media'
     )
     
     if success:

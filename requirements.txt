@@ -6,6 +6,9 @@ gevent           # 高性能异步网络库，我们的服务器核心
 gevent-websocket # 为 gevent 添加 WebSocket 支持
 websocket-client # 【【【 新增：用于代理连接到远程 WebSocket 服务器 】】】
 
+# --- 数据库驱动 (Database Driver) ---
+psycopg2-binary  # ★★★ 新增：PostgreSQL 数据库驱动 ★★★
+
 # --- 核心功能 ---
 requests         # 用于发送所有HTTP请求
 beautifulsoup4   # 用于解析网页HTML

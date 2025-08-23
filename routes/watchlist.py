@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 def api_get_watchlist():
     logger.debug("API (Blueprint): 收到获取追剧列表的请求。")
     try:
-        items = db_handler.get_all_watchlist_items(config_manager.DB_PATH)
+        items = db_handler.get_all_watchlist_items()
         return jsonify(items)
     except Exception as e:
         logger.error(f"获取追剧列表时发生错误: {e}", exc_info=True)
@@ -46,7 +46,6 @@ def api_add_to_watchlist():
     
     try:
         db_handler.add_item_to_watchlist(
-            db_path=config_manager.DB_PATH,
             item_id=item_id,
             tmdb_id=tmdb_id,
             item_name=item_name,
@@ -72,7 +71,6 @@ def api_update_watchlist_status():
     logger.info(f"API (Blueprint): 收到请求，将项目 {item_id} 的追剧状态更新为 '{new_status}'。")
     try:
         success = db_handler.update_watchlist_item_status(
-            db_path=config_manager.DB_PATH,
             item_id=item_id,
             new_status=new_status
         )
@@ -92,7 +90,6 @@ def api_remove_from_watchlist(item_id):
     logger.info(f"API (Blueprint): 收到请求，将项目 {item_id} 从追剧列表移除。")
     try:
         success = db_handler.remove_item_from_watchlist(
-            db_path=config_manager.DB_PATH,
             item_id=item_id
         )
         if success:
@@ -113,12 +110,13 @@ def api_trigger_single_watchlist_refresh(item_id):
     if not extensions.watchlist_processor_instance:
         return jsonify({"error": "追剧处理模块未就绪"}), 503
 
-    item_name = db_handler.get_watchlist_item_name(config_manager.DB_PATH, item_id) or "未知剧集"
+    item_name = db_handler.get_watchlist_item_name(item_id) or "未知剧集"
 
     task_manager.submit_task(
         task_refresh_single_watchlist_item,
         f"手动刷新: {item_name}",
-        item_id
+        item_id,
+        processor_type='watchlist'
     )
     
     return jsonify({"message": f"《{item_name}》的刷新任务已在后台启动！"}), 202
@@ -143,7 +141,6 @@ def api_batch_force_end_watchlist_items():
     try:
         # 调用更新后的 db_handler 函数
         updated_count = db_handler.batch_force_end_watchlist_items(
-            db_path=config_manager.DB_PATH,
             item_ids=item_ids
         )
         
@@ -181,7 +178,6 @@ def api_batch_update_watchlist_status():
     try:
         # 调用 db_handler 中我们将要创建的新函数
         updated_count = db_handler.batch_update_watchlist_status(
-            db_path=config_manager.DB_PATH,
             item_ids=item_ids,
             new_status=new_status
         )

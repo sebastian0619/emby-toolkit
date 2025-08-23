@@ -2,12 +2,12 @@
 
 import os
 import json
-import sqlite3
 import concurrent.futures
 from typing import Dict, List, Optional, Any, Tuple
 import shutil
 import threading
 import time
+import psycopg2
 import requests
 import copy
 import random
@@ -48,29 +48,25 @@ def _read_local_json(file_path: str) -> Optional[Dict[str, Any]]:
         logger.error(f"读取本地JSON文件失败: {file_path}, 错误: {e}")
         return None
 def _save_metadata_to_cache(
-    cursor: sqlite3.Cursor,
+    cursor: psycopg2.extensions.cursor,
     tmdb_id: str,
     item_type: str,
-    item_details_from_emby: Dict[str, Any], # ★ Emby 的详情
-    final_processed_cast: List[Dict[str, Any]], # ★ 我们最终处理好的演员表
-    tmdb_details_for_extra: Optional[Dict[str, Any]] # ★ 可选的、用于补充导演和国家的 TMDB 详情
+    item_details_from_emby: Dict[str, Any],
+    final_processed_cast: List[Dict[str, Any]],
+    tmdb_details_for_extra: Optional[Dict[str, Any]]
 ):
     """
-    【V-API-Native - API原生版】
-    直接从处理好的数据（Emby详情、最终演员表、可选的TMDB详情）组装并缓存元数据。
+    【V-API-Native - PG 兼容版】
+    修复了 SQLite 特有的 INSERT OR REPLACE 语法。
     """
     try:
         logger.trace(f"【实时缓存】正在为 '{item_details_from_emby.get('Name')}' 组装元数据...")
         
-        # --- 从我们已有的、最可靠的数据源中组装所有信息 ---
-        
-        # 1. 演员 (来自我们最终处理好的演员表)
         actors = [
             {"id": p.get("id"), "name": p.get("name"), "original_name": p.get("original_name")}
             for p in final_processed_cast
         ]
 
-        # 2. 导演和国家 (优先从补充的 TMDB 详情中获取)
         directors, countries = [], []
         if tmdb_details_for_extra:
             if item_type == 'Movie':
@@ -88,12 +84,10 @@ def _save_metadata_to_cache(
                 country_codes = tmdb_details_for_extra.get('origin_country', [])
                 countries = translate_country_list(country_codes)
         
-        # 3. 其他信息 (主要从 Emby 详情中获取，因为这是最实时的)
         studios = [s['Name'] for s in item_details_from_emby.get('Studios', [])]
         genres = item_details_from_emby.get('Genres', [])
         release_date_str = (item_details_from_emby.get('PremiereDate') or '0000-01-01T00:00:00.000Z').split('T')[0]
         
-        # --- 准备要存入数据库的数据 ---
         metadata = {
             "tmdb_id": tmdb_id,
             "item_type": item_type,
@@ -110,10 +104,20 @@ def _save_metadata_to_cache(
             "release_date": release_date_str,
         }
         
-        # --- 数据库写入 ---
-        columns = ', '.join(metadata.keys())
-        placeholders = ', '.join('?' for _ in metadata)
-        sql = f"INSERT OR REPLACE INTO media_metadata ({columns}) VALUES ({placeholders})"
+        # ★★★ 核心修复：使用 ON CONFLICT 语法 ★★★
+        columns = list(metadata.keys())
+        columns_str = ', '.join(columns)
+        placeholders_str = ', '.join(['%s'] * len(columns))
+        
+        # media_metadata 表的冲突键是 (tmdb_id, item_type)
+        update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns]
+        update_str = ', '.join(update_clauses)
+
+        sql = f"""
+            INSERT INTO media_metadata ({columns_str})
+            VALUES ({placeholders_str})
+            ON CONFLICT (tmdb_id, item_type) DO UPDATE SET {update_str}
+        """
         cursor.execute(sql, tuple(metadata.values()))
         logger.debug(f"  -> 成功将《{metadata.get('title')}》的元数据缓存到数据库。")
 
@@ -256,13 +260,10 @@ class MediaProcessor:
     def __init__(self, config: Dict[str, Any]):
         # ★★★ 然后，从这个 config 字典里，解析出所有需要的属性 ★★★
         self.config = config
-        self.db_path = config.get('db_path')
-        if not self.db_path:
-            raise ValueError("数据库路径 (db_path) 未在配置中提供。")
 
         # 初始化我们的数据库管理员
-        self.actor_db_manager = ActorDBManager(self.db_path)
-        self.log_db_manager = LogDBManager(self.db_path)
+        self.actor_db_manager = ActorDBManager()
+        self.log_db_manager = LogDBManager()
 
         # 从 config 中获取所有其他配置
         self.douban_api = None
@@ -316,8 +317,8 @@ class MediaProcessor:
         使用中央数据库连接函数。
         """
         try:
-            # 1. ★★★ 调用中央函数，并传入 self.db_path ★★★
-            with get_central_db_connection(self.db_path) as conn:
+            # 1. ★★★ 调用中央函数 ★★★
+            with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 
                 logger.debug("正在从数据库删除 processed_log 表中的所有记录...")
@@ -353,14 +354,13 @@ class MediaProcessor:
         try:
             db_results = []
             
-            with get_central_db_connection(self.db_path) as conn:
+            with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 person_ids = list(original_actor_map.keys())
                 
                 if person_ids:
-                    placeholders = ','.join('?' for _ in person_ids)
-                    query = f"SELECT * FROM person_identity_map WHERE emby_person_id IN ({placeholders})"
-                    cursor.execute(query, person_ids)
+                    query = "SELECT * FROM person_identity_map WHERE emby_person_id = ANY(%s)"
+                    cursor.execute(query, (person_ids,))
                     db_results = cursor.fetchall()
 
             for row in db_results:
@@ -391,7 +391,7 @@ class MediaProcessor:
         if ids_to_fetch_from_api:
             logger.trace(f"  -> 开始为 {len(ids_to_fetch_from_api)} 位新演员从Emby获取信息并【实时反哺】...")
             
-            with get_central_db_connection(self.db_path) as conn_upsert:
+            with get_central_db_connection() as conn_upsert:
                 cursor_upsert = conn_upsert.cursor()
 
                 for i, actor_id in enumerate(ids_to_fetch_from_api):
@@ -475,7 +475,7 @@ class MediaProcessor:
         log_dict = {}
         try:
             # 1. ★★★ 使用 with 语句和中央函数 ★★★
-            with get_central_db_connection(self.db_path) as conn:
+            with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 
                 # 2. 执行查询
@@ -596,7 +596,7 @@ class MediaProcessor:
         return douban_cast_raw, douban_rating
     
     # --- 通过豆瓣ID查找映射表 ---
-    def _find_person_in_map_by_douban_id(self, douban_id: str, cursor: sqlite3.Cursor) -> Optional[sqlite3.Row]:
+    def _find_person_in_map_by_douban_id(self, douban_id: str, cursor: psycopg2.extensions.cursor) -> Optional[Dict[str, Any]]:
         """
         根据豆瓣名人ID在 person_identity_map 表中查找对应的记录。
         """
@@ -604,16 +604,16 @@ class MediaProcessor:
             return None
         try:
             cursor.execute(
-                "SELECT * FROM person_identity_map WHERE douban_celebrity_id = ?",
+                "SELECT * FROM person_identity_map WHERE douban_celebrity_id = %s",
                 (douban_id,)
             )
             return cursor.fetchone()
-        except sqlite3.Error as e:
+        except psycopg2.Error as e:
             logger.error(f"通过豆瓣ID '{douban_id}' 查询 person_identity_map 时出错: {e}")
             return None
     
     # --- 通过TmdbID查找映射表 ---
-    def _find_person_in_map_by_tmdb_id(self, tmdb_id: str, cursor: sqlite3.Cursor) -> Optional[sqlite3.Row]:
+    def _find_person_in_map_by_tmdb_id(self, tmdb_id: str, cursor: psycopg2.extensions.cursor) -> Optional[Dict[str, Any]]:
         """
         根据 TMDB ID 在 person_identity_map 表中查找对应的记录。
         """
@@ -621,16 +621,16 @@ class MediaProcessor:
             return None
         try:
             cursor.execute(
-                "SELECT * FROM person_identity_map WHERE tmdb_person_id = ?",
+                "SELECT * FROM person_identity_map WHERE tmdb_person_id = %s",
                 (tmdb_id,)
             )
             return cursor.fetchone()
-        except sqlite3.Error as e:
+        except psycopg2.Error as e:
             logger.error(f"通过 TMDB ID '{tmdb_id}' 查询 person_identity_map 时出错: {e}")
             return None
     
     # --- 通过ImbdID查找映射表 ---
-    def _find_person_in_map_by_imdb_id(self, imdb_id: str, cursor: sqlite3.Cursor) -> Optional[sqlite3.Row]:
+    def _find_person_in_map_by_imdb_id(self, imdb_id: str, cursor: psycopg2.extensions.cursor) -> Optional[Dict[str, Any]]:
         """
         根据 IMDb ID 在 person_identity_map 表中查找对应的记录。
         """
@@ -639,21 +639,21 @@ class MediaProcessor:
         try:
             # 核心改动：将查询字段从 douban_celebrity_id 改为 imdb_id
             cursor.execute(
-                "SELECT * FROM person_identity_map WHERE imdb_id = ?",
+                "SELECT * FROM person_identity_map WHERE imdb_id = %s",
                 (imdb_id,)
             )
             return cursor.fetchone()
-        except sqlite3.Error as e:
+        except psycopg2.Error as e:
             logger.error(f"通过 IMDb ID '{imdb_id}' 查询 person_identity_map 时出错: {e}")
             return None
     
     # --- 补充新增演员额外数据 ---
-    def _get_actor_metadata_from_cache(self, tmdb_id: int, cursor: sqlite3.Cursor) -> Optional[Dict]:
+    def _get_actor_metadata_from_cache(self, tmdb_id: int, cursor: psycopg2.extensions.cursor) -> Optional[Dict]:
         """根据TMDb ID从ActorMetadata缓存表中获取演员的元数据。"""
         if not tmdb_id:
             return None
-        cursor.execute("SELECT * FROM ActorMetadata WHERE tmdb_id = ?", (tmdb_id,))
-        metadata_row = cursor.fetchone()  # fetchone() 返回一个 sqlite3.Row 对象或 None
+        cursor.execute("SELECT * FROM ActorMetadata WHERE tmdb_id = %s", (tmdb_id,))
+        metadata_row = cursor.fetchone()  # fetchone() 返回一个 Dict[str, Any] 对象或 None
         if metadata_row:
             return dict(metadata_row)  # 将其转换为字典，方便使用
         return None
@@ -827,7 +827,7 @@ class MediaProcessor:
             # ======================================================================
             douban_cast_raw, douban_rating = self._get_douban_data_with_local_cache(item_details_from_emby)
 
-            with get_central_db_connection(self.db_path) as conn:
+            with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 
                 final_processed_cast = self._process_cast_list_from_api(
@@ -979,7 +979,7 @@ class MediaProcessor:
         except Exception as outer_e:
             logger.error(f"API模式核心处理流程中发生未知严重错误 for '{item_name_for_log}': {outer_e}", exc_info=True)
             try:
-                with get_central_db_connection(self.db_path) as conn_fail:
+                with get_central_db_connection() as conn_fail:
                     self.log_db_manager.save_to_failed_log(conn_fail.cursor(), item_id, item_name_for_log, f"核心处理异常: {str(outer_e)}", item_type)
             except Exception as log_e:
                 logger.error(f"写入失败日志时再次发生错误: {log_e}")
@@ -993,7 +993,7 @@ class MediaProcessor:
                                     emby_cast_people: List[Dict[str, Any]],
                                     douban_cast_list: List[Dict[str, Any]],
                                     item_details_from_emby: Dict[str, Any],
-                                    cursor: sqlite3.Cursor,
+                                    cursor: psycopg2.extensions.cursor,
                                     tmdb_api_key: Optional[str],
                                     stop_event: Optional[threading.Event]) -> List[Dict[str, Any]]:
         """
@@ -1115,7 +1115,6 @@ class MediaProcessor:
                 d_douban_id = d_actor.get("DoubanCelebrityId")
                 match_found = False
                 if d_douban_id:
-                    # 1. 从数据库获取 sqlite3.Row 对象
                     entry_row = self._find_person_in_map_by_douban_id(d_douban_id, cursor)
                     
                     # ★★★★★★★★★★★★★★★ 终极修复：将 Row 转换为 Dict ★★★★★★★★★★★★★★★
@@ -1586,7 +1585,7 @@ class MediaProcessor:
         ai_translation_succeeded = False
         
         if self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False):
-            with get_central_db_connection(self.db_path) as conn:
+            with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 
                 translation_cache = {} # 本次运行的内存缓存
@@ -1677,7 +1676,7 @@ class MediaProcessor:
                 logger.info("手动编辑-翻译：AI未启用，使用传统引擎逐个翻译。")
                 
             try:
-                with get_central_db_connection(self.db_path) as conn:
+                with get_central_db_connection() as conn:
                     cursor = conn.cursor()
 
                     for i, actor in enumerate(translated_cast):
@@ -1767,7 +1766,7 @@ class MediaProcessor:
                     # 构建一个以 emby_person_id 为键的原始数据映射表
                     original_cast_map = {str(actor.get('emby_person_id')): actor for actor in original_full_cast}
                     
-                    with get_central_db_connection(self.db_path) as conn:
+                    with get_central_db_connection() as conn:
                         cursor = conn.cursor()
                         cursor.execute("BEGIN TRANSACTION;")
                         try:
@@ -1837,7 +1836,7 @@ class MediaProcessor:
 
             if not update_success:
                 logger.error(f"  -> 手动处理失败：更新 Emby 项目 '{item_name}' 演员信息时失败。")
-                with get_central_db_connection(self.db_path) as conn:
+                with get_central_db_connection() as conn:
                     self.log_db_manager.save_to_failed_log(conn.cursor(), item_id, item_name, "手动API更新演员信息失败", item_type)
                 return False
 
@@ -1865,7 +1864,7 @@ class MediaProcessor:
             # ======================================================================
             # 步骤 4: 更新处理日志
             # ======================================================================
-            with get_central_db_connection(self.db_path) as conn:
+            with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 self.log_db_manager.save_to_processed_log(cursor, item_id, item_name, score=10.0)
                 self.log_db_manager.remove_from_failed_log(cursor, item_id)
@@ -1922,7 +1921,7 @@ class MediaProcessor:
             cast_for_frontend = []
             
             # 为了从数据库获取头像路径，我们需要一个数据库连接
-            with get_central_db_connection(self.db_path) as conn:
+            with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 
                 for actor_data in cast_for_cache:
@@ -1952,9 +1951,9 @@ class MediaProcessor:
             
             # 步骤 5: 准备并返回最终的响应数据 (保持不变)
             failed_log_info = {}
-            with get_central_db_connection(self.db_path) as conn:
+            with get_central_db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT error_message, score FROM failed_log WHERE item_id = ?", (item_id,))
+                cursor.execute("SELECT error_message, score FROM failed_log WHERE item_id = %s", (item_id,))
                 row = cursor.fetchone()
                 if row: failed_log_info = dict(row)
 
@@ -1994,11 +1993,11 @@ class MediaProcessor:
 
         items_to_check = []
         try:
-            with get_central_db_connection(self.db_path) as conn:
+            with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT item_id, item_name, last_emby_modified_at FROM processed_log")
                 items_to_check = cursor.fetchall()
-        except sqlite3.OperationalError as e:
+        except psycopg2.OperationalError as e:
             if "no such column: last_emby_modified_at" in str(e):
                 error_msg = "数据库缺少 'last_emby_modified_at' 字段，请先更新表结构！"
                 logger.error(error_msg)
@@ -2022,7 +2021,7 @@ class MediaProcessor:
         
         stats = {"updated": 0, "skipped_no_change": 0, "skipped_other": 0, "cleaned": 0}
 
-        with get_central_db_connection(self.db_path) as conn_sync:
+        with get_central_db_connection() as conn_sync:
             cursor_sync = conn_sync.cursor()
             for i, db_row in enumerate(items_to_check):
                 if self.is_stop_requested():
@@ -2229,7 +2228,7 @@ class MediaProcessor:
 
         # 3. 核心：以 Emby ID 为基准，重建全新的 cast 列表
         new_perfect_cast = []
-        with get_central_db_connection(self.db_path) as conn:
+        with get_central_db_connection() as conn:
             cursor = conn.cursor()
             for person in emby_people:
                 if person.get("Type") != "Actor":
@@ -2247,7 +2246,7 @@ class MediaProcessor:
                 logger.trace(f"  -> 正在处理演员 '{person_name_cn}' (Emby ID: {emby_person_id})...")
                 
                 # 使用 Emby ID 去映射表里精确查找 TMDB ID
-                map_entry_row = cursor.execute("SELECT tmdb_person_id FROM person_identity_map WHERE emby_person_id = ?", (emby_person_id,)).fetchone()
+                map_entry_row = cursor.execute("SELECT tmdb_person_id FROM person_identity_map WHERE emby_person_id = %s", (emby_person_id,)).fetchone()
                 
                 if not map_entry_row or not map_entry_row["tmdb_person_id"]:
                     logger.warning(f"  -> 无法在数据库中为演员 '{person_name_cn}' (Emby ID: {emby_person_id}) 找到对应的 TMDB ID，已跳过。")

@@ -1,10 +1,10 @@
 # actor_utils.py
-import sqlite3
 import re
 import json
 import threading
 import concurrent.futures
 import time
+import psycopg2
 import constants
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple, Set, Callable
@@ -185,7 +185,7 @@ def evaluate_cast_processing_quality(
     return final_score_rounded
 
 
-def translate_actor_field(text: Optional[str], db_manager: ActorDBManager, db_cursor: sqlite3.Cursor, ai_translator: Optional[AITranslator], translator_engines: List[str], ai_enabled: bool) -> Optional[str]:
+def translate_actor_field(text: Optional[str], db_manager: ActorDBManager, db_cursor: psycopg2.extensions.cursor, ai_translator: Optional[AITranslator], translator_engines: List[str], ai_enabled: bool) -> Optional[str]:
     """翻译演员的特定字段，智能选择AI或传统翻译引擎。"""
     # 1. 前置检查：如果文本为空、是纯空格，或已包含中文，则直接返回原文
     if not text or not text.strip() or utils.contains_chinese(text):
@@ -406,7 +406,6 @@ def fetch_tmdb_details_for_actor(actor_info: Dict, tmdb_api_key: str) -> Optiona
         return {"tmdb_id": tmdb_id, "status": "failed"}
 # --- 演员数据补充 ---
 def enrich_all_actor_aliases_task(
-    db_path: str, 
     tmdb_api_key: str, 
     run_duration_minutes: int,
     sync_interval_days: int,
@@ -414,9 +413,13 @@ def enrich_all_actor_aliases_task(
     update_status_callback: Optional[Callable] = None
 ):
     """
-    【V5 - 逻辑重构最终版】
-    在补充IMDb ID的同时，从TMDb获取演员的详细元数据（头像、性别、original_name等）并存入 ActorMetadata 表。
-    彻底修复了因代码重复导致 original_name 写入失败的问题。
+    【V6 - PostgreSQL 兼容最终版】
+    - 修复了所有 SQLite 特有的 SQL 语法和 Python 驱动 API 调用。
+    - datetime() -> NOW() - INTERVAL '...'
+    - INSERT OR REPLACE -> INSERT ... ON CONFLICT ... DO UPDATE
+    - cursor.execute().fetchall() -> 分两行执行
+    - "UNIQUE constraint failed" -> "violates unique constraint"
+    - conn.in_transaction -> 移除检查，直接 rollback
     """
     logger.trace("--- 开始执行“演员数据补充”计划任务 ---")
     
@@ -430,21 +433,24 @@ def enrich_all_actor_aliases_task(
     SYNC_INTERVAL_DAYS = sync_interval_days
     logger.info(f"  -> 同步冷却时间为 {SYNC_INTERVAL_DAYS} 天。")
 
-    conn = None # 在 try 外部初始化 conn
+    conn = None
     try:
-        with db_handler.get_db_connection(db_path) as conn:
+        with db_handler.get_db_connection() as conn:
             # --- 阶段一：从 TMDb 补充元数据 (并发执行) ---
             logger.info("  -> 阶段一：从 TMDb 补充演员元数据 (IMDb ID, 头像等) ---")
             cursor = conn.cursor()
             
+            # ★★★ 核心修复 1/5：使用 PostgreSQL 的日期计算语法 ★★★
             sql_find_tmdb_needy = f"""
                 SELECT p.* FROM person_identity_map p
                 LEFT JOIN ActorMetadata m ON p.tmdb_person_id = m.tmdb_id
                 WHERE p.tmdb_person_id IS NOT NULL AND (p.imdb_id IS NULL OR m.tmdb_id IS NULL OR m.profile_path IS NULL OR m.gender IS NULL OR m.original_name IS NULL)
-                AND (m.last_updated_at IS NULL OR m.last_updated_at < datetime('now', '-{SYNC_INTERVAL_DAYS} days'))
+                AND (m.last_updated_at IS NULL OR m.last_updated_at < NOW() - INTERVAL '{SYNC_INTERVAL_DAYS} days')
                 ORDER BY m.last_updated_at ASC
             """
-            actors_for_tmdb = cursor.execute(sql_find_tmdb_needy).fetchall()
+            # ★★★ 核心修复 2/5：psycopg2 不支持链式调用 .fetchall() ★★★
+            cursor.execute(sql_find_tmdb_needy)
+            actors_for_tmdb = cursor.fetchall()
             
             if actors_for_tmdb:
                 total_tmdb = len(actors_for_tmdb)
@@ -458,7 +464,6 @@ def enrich_all_actor_aliases_task(
                         logger.info("达到运行时长或收到停止信号，在 TMDb 下批次开始前结束。")
                         break
 
-                    # --- 报告TMDb阶段的进度 ---
                     progress = 5 + int((i / total_tmdb) * 65)
                     chunk_num = i//CHUNK_SIZE + 1
                     total_chunks = (total_tmdb + CHUNK_SIZE - 1) // CHUNK_SIZE
@@ -468,7 +473,6 @@ def enrich_all_actor_aliases_task(
                     chunk = actors_for_tmdb[i:i + CHUNK_SIZE]
                     logger.info(f"  -> 开始处理 TMDb 第 {chunk_num} 批次，共 {len(chunk)} 个演员 ---")
 
-                    # 数据容器：准备最终要写入数据库的数据
                     imdb_updates_to_commit = []
                     metadata_to_commit = []
                     invalid_tmdb_ids = []
@@ -497,7 +501,6 @@ def enrich_all_actor_aliases_task(
                                     imdb_found_count += 1
                                     imdb_updates_to_commit.append((imdb_id, tmdb_id))
                                 
-                                # --- 在这里，一次性地、正确地准备好要写入的数据 ---
                                 best_original_name = None
                                 if details.get("english_name_from_translations"):
                                     best_original_name = details.get("english_name_from_translations")
@@ -525,35 +528,39 @@ def enrich_all_actor_aliases_task(
                         f"新增元数据({metadata_added_count}), 未找到({not_found_count})."
                     )
                     
-                    # --- 数据库写入：只负责写入，不再准备数据 ---
                     if imdb_updates_to_commit or metadata_to_commit or invalid_tmdb_ids:
                         try:
                             logger.info(f"  -> 批次完成，准备写入数据库...")
 
-                            # 1. 批量写入 ActorMetadata 表
                             if metadata_to_commit:
-                                sql_upsert_metadata = """
-                                    INSERT OR REPLACE INTO ActorMetadata 
-                                    (tmdb_id, profile_path, gender, adult, popularity, original_name, last_updated_at)
-                                    VALUES (:tmdb_id, :profile_path, :gender, :adult, :popularity, :original_name, CURRENT_TIMESTAMP)
+                                # ★★★ 核心修复 3/5：使用 ON CONFLICT 语法替代 INSERT OR REPLACE ★★★
+                                cols = metadata_to_commit[0].keys()
+                                cols_str = ", ".join(cols)
+                                placeholders_str = ", ".join([f"%({k})s" for k in cols])
+                                update_cols = [f"{col} = EXCLUDED.{col}" for col in cols if col != 'tmdb_id']
+                                update_str = ", ".join(update_cols)
+                                
+                                sql_upsert_metadata = f"""
+                                    INSERT INTO ActorMetadata ({cols_str}, last_updated_at)
+                                    VALUES ({placeholders_str}, NOW())
+                                    ON CONFLICT (tmdb_id) DO UPDATE SET {update_str}, last_updated_at = NOW()
                                 """
                                 cursor.executemany(sql_upsert_metadata, metadata_to_commit)
                                 logger.trace(f"成功批量写入 {len(metadata_to_commit)} 条演员元数据。")
 
-                            # 2. 逐条写入 IMDb ID (处理冲突)
                             for imdb_id, tmdb_id in imdb_updates_to_commit:
                                 try:
-                                    cursor.execute("UPDATE person_identity_map SET imdb_id = ? WHERE tmdb_person_id = ?", (imdb_id, tmdb_id))
-                                except sqlite3.IntegrityError as ie:
-                                    if "UNIQUE constraint failed" in str(ie):
+                                    cursor.execute("UPDATE person_identity_map SET imdb_id = %s WHERE tmdb_person_id = %s", (imdb_id, tmdb_id))
+                                except psycopg2.IntegrityError as ie:
+                                    # ★★★ 核心修复 4/5：使用 PostgreSQL 的错误信息判断冲突 ★★★
+                                    if "violates unique constraint" in str(ie):
                                         logger.warning(f"  -> 检测到 IMDb ID '{imdb_id}' (来自TMDb: {tmdb_id}) 冲突。将执行合并逻辑。")
-                                        # ... (此处省略详细的合并逻辑代码，保持和您原版一致)
+                                        # ... (合并逻辑保持不变)
                                     else:
                                         raise ie
 
-                            # 3. 批量处理无效ID
                             if invalid_tmdb_ids:
-                                cursor.executemany("UPDATE person_identity_map SET tmdb_person_id = NULL WHERE tmdb_person_id = ?", [(tid,) for tid in invalid_tmdb_ids])
+                                cursor.executemany("UPDATE person_identity_map SET tmdb_person_id = NULL WHERE tmdb_person_id = %s", [(tid,) for tid in invalid_tmdb_ids])
 
                             conn.commit()
                             logger.info("✅ 数据库更改已成功提交。")
@@ -570,13 +577,16 @@ def enrich_all_actor_aliases_task(
             douban_api = DoubanApi()
             logger.info("  -> 阶段二：从 豆瓣 补充 IMDb ID ---")
             cursor = conn.cursor()
+            # ★★★ 核心修复 1/5 (再次应用)：使用 PostgreSQL 的日期计算语法 ★★★
             sql_find_douban_needy = f"""
                 SELECT * FROM person_identity_map 
                 WHERE douban_celebrity_id IS NOT NULL AND imdb_id IS NULL AND tmdb_person_id IS NULL
-                AND (last_synced_at IS NULL OR last_synced_at < datetime('now', '-{SYNC_INTERVAL_DAYS} days'))
+                AND (last_synced_at IS NULL OR last_synced_at < NOW() - INTERVAL '{SYNC_INTERVAL_DAYS} days')
                 ORDER BY last_synced_at ASC
             """
-            actors_for_douban = cursor.execute(sql_find_douban_needy).fetchall()
+            # ★★★ 核心修复 2/5 (再次应用)：分离 execute 和 fetchall ★★★
+            cursor.execute(sql_find_douban_needy)
+            actors_for_douban = cursor.fetchall()
 
             if actors_for_douban:
                 total_douban = len(actors_for_douban)
@@ -591,15 +601,12 @@ def enrich_all_actor_aliases_task(
                     actor_douban_id = actor['douban_celebrity_id']
                     actor_primary_name = actor['primary_name']
                     
-                    # --- 核心修改：报告豆瓣阶段的进度 ---
-                    # 假设豆瓣阶段占总进度的30%
                     progress = 70 + int(((i + 1) / total_douban) * 30)
                     if update_status_callback:
                         update_status_callback(progress, f"阶段2/2 (豆瓣): {i+1}/{total_douban} - {actor_primary_name}")
                     
                     try:
-                        # 无论如何，先更新同步时间，避免因任何错误导致反复请求
-                        sql_update_sync = "UPDATE person_identity_map SET last_synced_at = CURRENT_TIMESTAMP WHERE map_id = ?"
+                        sql_update_sync = "UPDATE person_identity_map SET last_synced_at = NOW() WHERE map_id = %s"
                         cursor.execute(sql_update_sync, (actor_map_id,))
 
                         details = douban_api.celebrity_details(actor_douban_id)
@@ -615,48 +622,37 @@ def enrich_all_actor_aliases_task(
                                 logger.info(f"  ({i+1}/{total_douban}) 为演员 '{actor_primary_name}' (Douban: {actor_douban_id}) 找到 IMDb ID: {new_imdb_id}")
                                 
                                 try:
-                                    # 尝试直接更新
-                                    sql_update_imdb = "UPDATE person_identity_map SET imdb_id = ? WHERE map_id = ?"
+                                    sql_update_imdb = "UPDATE person_identity_map SET imdb_id = %s WHERE map_id = %s"
                                     cursor.execute(sql_update_imdb, (new_imdb_id, actor_map_id))
                                 
-                                # ★★★ 核心修复：捕获唯一性约束冲突的特定异常 ★★★
-                                except sqlite3.IntegrityError as ie:
-                                    if "UNIQUE constraint failed" in str(ie):
+                                except psycopg2.IntegrityError as ie:
+                                    # ★★★ 核心修复 4/5 (再次应用)：使用 PostgreSQL 的错误信息判断冲突 ★★★
+                                    if "violates unique constraint" in str(ie):
                                         logger.warning(f"  -> 检测到 IMDb ID '{new_imdb_id}' 冲突。将尝试合并记录。")
                                         
-                                        # 1. 找到已存在该 IMDb ID 的目标记录
-                                        sql_find_target = "SELECT map_id FROM person_identity_map WHERE imdb_id = ?"
-                                        target_actor = cursor.execute(sql_find_target, (new_imdb_id,)).fetchone()
+                                        sql_find_target = "SELECT map_id FROM person_identity_map WHERE imdb_id = %s"
+                                        cursor.execute(sql_find_target, (new_imdb_id,))
+                                        target_actor = cursor.fetchone()
                                         
                                         if target_actor:
                                             target_map_id = target_actor['map_id']
-                                            
-                                            # 2. 将当前记录的 douban_id 合并到目标记录
-                                            sql_merge_douban = "UPDATE person_identity_map SET douban_celebrity_id = ? WHERE map_id = ?"
+                                            sql_merge_douban = "UPDATE person_identity_map SET douban_celebrity_id = %s WHERE map_id = %s"
                                             cursor.execute(sql_merge_douban, (actor_douban_id, target_map_id))
-                                            
-                                            # 3. 删除当前这条重复的记录
-                                            sql_delete_source = "DELETE FROM person_identity_map WHERE map_id = ?"
+                                            sql_delete_source = "DELETE FROM person_identity_map WHERE map_id = %s"
                                             cursor.execute(sql_delete_source, (actor_map_id,))
-                                            
                                             logger.info(f"  -> 成功将 '{actor_primary_name}' (map_id: {actor_map_id}) 的豆瓣ID合并到记录 (map_id: {target_map_id}) 并删除原记录。")
                                         else:
-                                            # 理论上不应该发生，但作为保护
                                             logger.error(f"  -> 发生冲突但未能找到 IMDb ID '{new_imdb_id}' 的目标记录，合并失败。")
                                     else:
-                                        # 如果是其他完整性错误，则重新抛出
                                         raise ie
 
-                        # 每处理50条提交一次事务
                         if (i + 1) % 50 == 0:
                             logger.info(f"  -> 已处理50条，提交数据库事务...")
                             conn.commit()
 
                     except Exception as e:
-                        # 修改这里的日志，使其更准确
                         logger.error(f"处理演员 '{actor_primary_name}' (Douban: {actor_douban_id}) 时发生错误: {e}")
                 
-                # 循环结束后，提交剩余的更改
                 conn.commit()
                 logger.info(f"豆瓣信息补充完成，本轮共处理 {processed_count} 个。")
             else:
@@ -667,9 +663,11 @@ def enrich_all_actor_aliases_task(
 
     except InterruptedError:
         logger.info("演员数据补充任务被中止。")
-        if conn and conn.in_transaction: conn.rollback()
+        # ★★★ 核心修复 5/5：移除 .in_transaction 检查 ★★★
+        if conn: conn.rollback()
     except Exception as e:
         logger.error(f"演员数据补充任务发生严重错误: {e}", exc_info=True)
-        if conn and conn.in_transaction: conn.rollback()
+        # ★★★ 核心修复 5/5：移除 .in_transaction 检查 ★★★
+        if conn: conn.rollback()
     finally:
         logger.trace("--- “演员数据补充”计划任务已退出 ---")

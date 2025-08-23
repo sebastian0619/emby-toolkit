@@ -1,6 +1,5 @@
 # watchlist_processor.py
 
-import sqlite3
 import time
 import json
 import os
@@ -51,9 +50,6 @@ class WatchlistProcessor:
         if not isinstance(config, dict):
             raise TypeError(f"配置参数(config)必须是一个字典，但收到了 {type(config).__name__} 类型。")
         self.config = config
-        self.db_path = self.config.get('db_path')
-        if not self.db_path:
-            raise ValueError("数据库路径 (db_path) 未在配置中提供。")
         self.tmdb_api_key = self.config.get("tmdb_api_key", "")
         self.emby_url = self.config.get("emby_server_url")
         self.emby_api_key = self.config.get("emby_api_key")
@@ -81,15 +77,15 @@ class WatchlistProcessor:
     def _update_watchlist_entry(self, item_id: str, item_name: str, updates: Dict[str, Any]):
         """统一更新追剧列表中的一个条目。"""
         try:
-            with get_central_db_connection(self.db_path) as conn:
+            with get_central_db_connection() as conn:
                 current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 updates['last_checked_at'] = current_time
                 
-                set_clauses = [f"{key} = ?" for key in updates.keys()]
+                set_clauses = [f"{key} = %s" for key in updates.keys()]
                 values = list(updates.values())
                 values.append(item_id)
                 
-                sql = f"UPDATE watchlist SET {', '.join(set_clauses)} WHERE item_id = ?"
+                sql = f"UPDATE watchlist SET {', '.join(set_clauses)} WHERE item_id = %s"
                 conn.execute(sql, tuple(values))
                 logger.info(f"  -> 成功更新数据库中 '{item_name}' 的追剧信息。")
         except Exception as e:
@@ -123,11 +119,11 @@ class WatchlistProcessor:
         translated_tmdb_status = translate_status(tmdb_status)
         if tmdb_status in ["Returning Series", "In Production", "Planned"]:
             try:
-                with get_central_db_connection(self.db_path) as conn:
+                with get_central_db_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
                         INSERT OR IGNORE INTO watchlist (item_id, tmdb_id, item_name, item_type, status)
-                        VALUES (?, ?, ?, ?, 'Watching')
+                        VALUES (%s, %s, %s, %s, 'Watching')
                     """, (item_id, tmdb_id, item_name, "Series"))
                     
                     if cursor.rowcount > 0:
@@ -236,8 +232,7 @@ class WatchlistProcessor:
         - 如果提供了 item_id，则无视 WHERE 子句，强制只处理该项目。
         """
         try:
-            with get_central_db_connection(self.db_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 
                 # ★★★ 核心修复：将传入的 where_clause 作为查询的基础 ★★★
@@ -246,7 +241,7 @@ class WatchlistProcessor:
                 
                 # 如果指定了item_id，则无视where_clause，强制处理这一部
                 if item_id:
-                    query = "SELECT * FROM watchlist WHERE item_id = ?"
+                    query = "SELECT * FROM watchlist WHERE item_id = %s"
                     params.append(item_id)
                 
                 cursor.execute(query, tuple(params))
@@ -271,7 +266,7 @@ class WatchlistProcessor:
         )
         if not item_details_for_check:
             logger.warning(f"  -> 剧集 '{item_name}' (ID: {item_id}) 在 Emby 中已不存在。将从追剧列表移除。")
-            db_handler.remove_item_from_watchlist(db_path=self.db_path, item_id=item_id)
+            db_handler.remove_item_from_watchlist(item_id=item_id)
             return 
 
         if not self.tmdb_api_key:
@@ -409,13 +404,12 @@ class WatchlistProcessor:
         
         series_to_process = []
         try:
-            with get_central_db_connection(self.db_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 query = "SELECT * FROM watchlist WHERE status = 'Watching'"
                 params = []
                 if item_id:
-                    query = "SELECT * FROM watchlist WHERE item_id = ?"
+                    query = "SELECT * FROM watchlist WHERE item_id = %s"
                     params.append(item_id)
                 cursor.execute(query, params)
                 series_to_process = [dict(row) for row in cursor.fetchall()]
@@ -519,9 +513,9 @@ class WatchlistProcessor:
     def _update_watchlist_status(self, item_id: str, status: str, item_name: str):
         """更新数据库中指定项目的状态。"""
         try:
-            with get_central_db_connection(self.db_path) as conn:
+            with get_central_db_connection() as conn:
                 current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                conn.execute("UPDATE watchlist SET status = ?, last_checked_at = ? WHERE item_id = ?", (status, current_time, item_id))
+                conn.execute("UPDATE watchlist SET status = %s, last_checked_at = %s WHERE item_id = %s", (status, current_time, item_id))
             logger.info(f"  成功更新 '{item_name}' 在数据库中的状态为 '{status}'。")
         except Exception as e:
             logger.error(f"  更新 '{item_name}' 状态为 '{status}' 时数据库出错: {e}")
@@ -529,8 +523,8 @@ class WatchlistProcessor:
     def _update_watchlist_timestamp(self, item_id: str, item_name: str):
         """仅更新数据库中指定项目的 last_checked_at 时间戳。"""
         try:
-            with get_central_db_connection(self.db_path) as conn:
+            with get_central_db_connection() as conn:
                 current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                conn.execute("UPDATE watchlist SET last_checked_at = ? WHERE item_id = ?", (current_time, item_id))
+                conn.execute("UPDATE watchlist SET last_checked_at = %s WHERE item_id = %s", (current_time, item_id))
         except Exception as e:
             logger.error(f"更新 '{item_name}' 的 last_checked_at 时间戳时失败: {e}")

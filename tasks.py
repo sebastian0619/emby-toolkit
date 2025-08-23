@@ -4,15 +4,15 @@ import time
 import re
 import os
 import json
-import sqlite3
+import psycopg2
 import logging
 import threading
 from datetime import datetime, date, timezone
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed 
 import concurrent.futures
 import gevent
 # 导入类型提示
-from typing import Optional
+from typing import Optional, List
 from core_processor import MediaProcessor
 from watchlist_processor import WatchlistProcessor
 from actor_subscription_processor import ActorSubscriptionProcessor
@@ -73,7 +73,6 @@ def task_sync_person_map(processor):
         config = processor.config
         
         sync_handler = UnifiedSyncHandler(
-            db_path=config_manager.DB_PATH,
             emby_url=config.get("emby_server_url"),
             emby_api_key=config.get("emby_api_key"),
             emby_user_id=config.get("emby_user_id"),
@@ -104,7 +103,6 @@ def task_enrich_aliases(processor: MediaProcessor):
         config = processor.config
         
         # 获取必要的配置项
-        db_path = config_manager.DB_PATH
         tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
 
         if not tmdb_api_key:
@@ -129,7 +127,6 @@ def task_enrich_aliases(processor: MediaProcessor):
 
         # 调用核心函数，并传递写死的值
         enrich_all_actor_aliases_task(
-            db_path=db_path,
             tmdb_api_key=tmdb_api_key,
             run_duration_minutes=duration_minutes,
             sync_interval_days=cooldown_days, # <--- 使用我们硬编码的冷却时间
@@ -225,13 +222,13 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
             return
 
         # 1. 从我们的缓存表中获取刚刚存入的元数据
-        item_metadata = db_handler.get_media_metadata_by_tmdb_id(config_manager.DB_PATH, tmdb_id)
+        item_metadata = db_handler.get_media_metadata_by_tmdb_id(tmdb_id)
         if not item_metadata:
             logger.warning(f"无法从本地缓存中找到TMDb ID为 {tmdb_id} 的元数据，无法匹配合集。")
             return
 
         # --- 2. 匹配 Filter (筛选) 类型的合集 ---
-        engine = FilterEngine(db_path=config_manager.DB_PATH)
+        engine = FilterEngine()
         matching_filter_collections = engine.find_matching_collections(item_metadata)
 
         if matching_filter_collections:
@@ -250,7 +247,6 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
         # --- 3. 匹配 List (榜单) 类型的合集 ---
         # 调用 db_handler 中的新函数来处理所有数据库逻辑
         updated_list_collections = db_handler.match_and_update_list_collections_on_item_add(
-            db_path=config_manager.DB_PATH,
             new_item_tmdb_id=tmdb_id,
             new_item_name=item_name
         )
@@ -377,256 +373,210 @@ def task_refresh_single_watchlist_item(processor: WatchlistProcessor, item_id: s
         logger.error(f"执行 '{task_name}' 时发生顶层错误: {e}", exc_info=True)
         progress_updater(-1, f"启动任务时发生错误: {e}")
 # ★★★ 执行数据库导入的后台任务 ★★★
-def task_import_database(processor, file_content: str, tables_to_import: list, import_mode: str):
+def task_import_database(processor, file_content: str, tables_to_import: List[str], import_mode: str):
     """
-    【后台任务 V12 - 最终完整正确版】
-    - 修正了所有摘要日志的收集和打印逻辑，确保在正确的循环层级执行，每个表只生成一条摘要。
+    【PostgreSQL 安全版 V2】
+    从 JSON 文件内容中恢复数据库表。此函数专门处理从 SQLite 备份到 PG 的复杂性。
+    - 智能处理数据类型转换。
+    - 大量使用 ON CONFLICT (UPSERT) 来安全地合并数据，取代复杂的内存计算。
+    - 在事务中运行，保证操作的原子性。
+    - 保留了对 translation_cache 的特殊优先级处理逻辑。
     """
     task_name = f"数据库导入 ({import_mode}模式)"
     logger.info(f"后台任务开始：{task_name}，处理表: {tables_to_import}。")
-    task_manager.update_status_from_thread(0, "准备开始导入...")
-    
-    AUTOINCREMENT_KEYS_TO_IGNORE = ['map_id', 'id']
-    TRANSLATION_SOURCE_PRIORITY = {'manual': 2, 'openai': 1, 'zhipuai': 1, 'gemini': 1}
-    
-    summary_lines = []
+    # task_manager.update_status_from_thread(0, "准备开始导入...") # 假设 task_manager 存在
 
-    TABLE_TRANSLATIONS = {
-        'person_identity_map': '演员映射表',
-        'ActorMetadata': '演员元数据',
-        'translation_cache': '翻译缓存',
-        'watchlist': '智能追剧列表',
-        'actor_subscriptions': '演员订阅配置',
-        'tracked_actor_media': '已追踪的演员作品',
-        'collections_info': '电影合集信息',
-        'processed_log': '已处理列表',
-        'failed_log': '待复核列表',
-        'users': '用户账户',
-        'custom_collections': '自建合集',
-        'media_metadata': '媒体元数据',
+    # ★ 关键：定义每个表的主键，用于'merge'模式下的 ON CONFLICT
+    # 这是从 SQLite 迁移到 PG 最重要的映射之一
+    # 注意：对于复合主键，格式是 "col1, col2"
+    TABLE_PRIMARY_KEYS = {
+        "person_identity_map": "map_id",
+        "ActorMetadata": "tmdb_id",
+        "translation_cache": "original_text",
+        "collections_info": "emby_collection_id",
+        "watchlist": "item_id",
+        "actor_subscriptions": "id",
+        "tracked_actor_media": "id",
+        "processed_log": "item_id",
+        "failed_log": "item_id",
+        "users": "id",
+        "custom_collections": "id",
+        "media_metadata": "tmdb_id, item_type",
     }
+    
+    TABLE_TRANSLATIONS = {
+        'person_identity_map': '演员映射表', 'ActorMetadata': '演员元数据',
+        'translation_cache': '翻译缓存', 'watchlist': '智能追剧列表',
+        'actor_subscriptions': '演员订阅配置', 'tracked_actor_media': '已追踪的演员作品',
+        'collections_info': '电影合集信息', 'processed_log': '已处理列表',
+        'failed_log': '待复核列表', 'users': '用户账户',
+        'custom_collections': '自建合集', 'media_metadata': '媒体元数据',
+    }
+
+    CLEANING_RULES = {
+        'ActorMetadata': {
+            'adult': bool  # bool() 函数可以完美地将 0 转为 False, 1 转为 True
+        },
+        'collections_info': {
+            'has_missing': bool
+        },
+        'watchlist': {
+            'force_ended': bool
+        }
+        # 未来如果发现其他表有类似问题，直接在这里添加规则即可
+    }
+
+    summary_lines = []
+    conn = None
 
     try:
         backup = json.loads(file_content)
         backup_data = backup.get("data", {})
-        stop_event = processor.get_stop_event()
 
-        for table_name in tables_to_import:
-            if table_name not in backup_data:
-                logger.warning(f"请求恢复的表 '{table_name}' 在备份文件中不存在，将跳过。")
+        with db_handler.get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                logger.info("数据库事务已开始。")
 
-        with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("BEGIN TRANSACTION;")
-            logger.info("数据库事务已开始。")
-
-            try:
-                # 外层循环：遍历所有要处理的表
                 for table_name in tables_to_import:
                     cn_name = TABLE_TRANSLATIONS.get(table_name, table_name)
-                    if stop_event and stop_event.is_set():
-                        logger.info("导入任务被用户中止。")
-                        break
-                    
                     table_data = backup_data.get(table_name, [])
+
                     if not table_data:
                         logger.debug(f"表 '{cn_name}' 在备份中没有数据，跳过。")
                         summary_lines.append(f"  - 表 '{cn_name}': 跳过 (备份中无数据)。")
                         continue
-
-                    # --- 特殊处理 person_identity_map ---
-                    if table_name == 'person_identity_map' and import_mode == 'merge':
-                        cn_name = TABLE_TRANSLATIONS.get(table_name, table_name)
-                        logger.info(f"模式[共享合并]: 正在为 '{cn_name}' 表执行合并策略...")
-                        
-                        cursor.execute("SELECT * FROM person_identity_map")
-                        local_rows = cursor.fetchall()
-                        id_to_local_row = {row['map_id']: dict(row) for row in local_rows}
-                        
-                        # --- 阶段 A: 在内存中计算最终合并方案 ---
-                        inserts, simple_updates, complex_merges = [], [], []
-                        
-                        live_tmdb_map = {row['tmdb_person_id']: row['map_id'] for row in local_rows if row['tmdb_person_id']}
-                        live_emby_map = {row['emby_person_id']: row['map_id'] for row in local_rows if row['emby_person_id']}
-                        live_imdb_map = {row['imdb_id']: row['map_id'] for row in local_rows if row['imdb_id']}
-                        live_douban_map = {row['douban_celebrity_id']: row['map_id'] for row in local_rows if row['douban_celebrity_id']}
-
-                        for backup_row in table_data:
-                            matched_map_ids = set()
-                            for key, lookup_map in [('tmdb_person_id', live_tmdb_map), ('emby_person_id', live_emby_map), ('imdb_id', live_imdb_map), ('douban_celebrity_id', live_douban_map)]:
-                                backup_id = backup_row.get(key)
-                                if backup_id and backup_id in lookup_map:
-                                    matched_map_ids.add(lookup_map[backup_id])
-                            
-                            if not matched_map_ids:
-                                inserts.append(backup_row)
-                            elif len(matched_map_ids) == 1:
-                                survivor_id = matched_map_ids.pop()
-                                consolidated_row = id_to_local_row[survivor_id].copy()
-                                needs_update = False
-                                for key in backup_row:
-                                    if backup_row.get(key) and not consolidated_row.get(key):
-                                        consolidated_row[key] = backup_row[key]
-                                        needs_update = True
-                                if needs_update:
-                                    simple_updates.append(consolidated_row)
-                            else:
-                                survivor_id = min(matched_map_ids)
-                                victim_ids = list(matched_map_ids - {survivor_id})
-                                complex_merges.append({'survivor_id': survivor_id, 'victim_ids': victim_ids, 'backup_row': backup_row})
-                                # 更新动态查找字典，将牺牲者的ID重定向到幸存者
-                                for vid in victim_ids:
-                                    victim_row = id_to_local_row[vid]
-                                    for key, lookup_map in [('tmdb_person_id', live_tmdb_map), ('emby_person_id', live_emby_map), ('imdb_id', live_imdb_map), ('douban_celebrity_id', live_douban_map)]:
-                                        if victim_row.get(key) and victim_row[key] in lookup_map:
-                                            lookup_map[victim_row[key]] = survivor_id
-
-                        # --- 阶段 B: 根据计算出的最终方案，执行数据库操作 ---
-                        
-                        # 1. 逐个处理最危险的复杂合并
-                        processed_complex_merges = 0
-                        deleted_from_complex = 0
-                        for merge_case in complex_merges:
-                            survivor_id = merge_case['survivor_id']
-                            victim_ids = merge_case['victim_ids']
-                            backup_row = merge_case['backup_row']
-                            
-                            # 重新获取最新的幸存者数据
-                            cursor.execute("SELECT * FROM person_identity_map WHERE map_id = ?", (survivor_id,))
-                            survivor_row = dict(cursor.fetchone())
-                            
-                            all_sources = [id_to_local_row[vid] for vid in victim_ids] + [backup_row]
-                            for source_row in all_sources:
-                                for key in source_row:
-                                    if source_row.get(key) and not survivor_row.get(key):
-                                        survivor_row[key] = source_row[key]
-                            
-                            # 腾位 -> 入住 -> 清理
-                            sql_clear = "UPDATE person_identity_map SET tmdb_person_id=NULL, emby_person_id=NULL, imdb_id=NULL, douban_celebrity_id=NULL WHERE map_id = ?"
-                            cursor.executemany(sql_clear, [(vid,) for vid in victim_ids])
-                            
-                            cols = [c for c in survivor_row.keys() if c not in AUTOINCREMENT_KEYS_TO_IGNORE]
-                            set_str = ", ".join([f'"{c}" = ?' for c in cols])
-                            sql_update = f"UPDATE person_identity_map SET {set_str} WHERE map_id = ?"
-                            data = [survivor_row.get(c) for c in cols] + [survivor_id]
-                            cursor.execute(sql_update, tuple(data))
-                            
-                            cursor.executemany("DELETE FROM person_identity_map WHERE map_id = ?", [(vid,) for vid in victim_ids])
-                            processed_complex_merges += 1
-                            deleted_from_complex += len(victim_ids)
-
-                        # 2. 批量处理简单的增补更新
-                        if simple_updates:
-                            unique_updates = {row['map_id']: row for row in simple_updates}.values()
-                            sql_update = "UPDATE person_identity_map SET primary_name = ?, tmdb_person_id = ?, imdb_id = ?, douban_celebrity_id = ? WHERE map_id = ?"
-                            data = [(r.get('primary_name'), r.get('tmdb_person_id'), r.get('imdb_id'), r.get('douban_celebrity_id'), r['map_id']) for r in unique_updates]
-                            cursor.executemany(sql_update, data)
-
-                        # 3. 批量处理全新的插入
-                        if inserts:
-                            sql_insert = "INSERT INTO person_identity_map (primary_name, tmdb_person_id, imdb_id, douban_celebrity_id) VALUES (?, ?, ?, ?)"
-                            data = [(r.get('primary_name'), r.get('tmdb_person_id'), r.get('imdb_id'), r.get('douban_celebrity_id')) for r in inserts]
-                            cursor.executemany(sql_insert, data)
-                        
-                        summary_lines.append(f"  - 表 '{cn_name}': 新增 {len(inserts)} 条, 简单增补 {len(simple_updates)} 条, 复杂合并 {processed_complex_merges} 组 (清理冗余 {deleted_from_complex} 条)。")
-
-                    # --- 特殊处理 translation_cache ---
-                    elif table_name == 'translation_cache' and import_mode == 'merge':
-                        cn_name = TABLE_TRANSLATIONS.get(table_name, table_name)
-                        logger.info(f"模式[共享合并]: 正在为 '{cn_name}' 表执行基于优先级的合并策略...")
-                        cursor.execute("SELECT original_text, translated_text, engine_used FROM translation_cache")
-                        local_cache_data = {row['original_text']: {'text': row['translated_text'], 'engine': row['engine_used'], 'priority': TRANSLATION_SOURCE_PRIORITY.get(row['engine_used'], 0)} for row in cursor.fetchall()}
-                        inserts, updates, kept = [], [], 0
-                        for backup_row in table_data:
-                            original_text = backup_row.get('original_text')
-                            if not original_text: continue
-                            backup_engine = backup_row.get('engine_used')
-                            backup_priority = TRANSLATION_SOURCE_PRIORITY.get(backup_engine, 0)
-                            if original_text not in local_cache_data:
-                                inserts.append(backup_row)
-                            else:
-                                local_data = local_cache_data[original_text]
-                                if backup_priority > local_data['priority']:
-                                    updates.append(backup_row)
-                                    logger.trace(f"  -> 冲突: '{original_text}'. 备份源({backup_engine}|P{backup_priority}) > 本地源({local_data['engine']}|P{local_data['priority']}). [决策: 更新]")
-                                else:
-                                    kept += 1
-                                    logger.trace(f"  -> 冲突: '{original_text}'. 本地源({local_data['engine']}|P{local_data['priority']}) >= 备份源({backup_engine}|P{backup_priority}). [决策: 保留]")
-                        if inserts:
-                            cols = list(inserts[0].keys()); col_str = ", ".join(f'"{c}"' for c in cols); val_ph = ", ".join(["?"] * len(cols))
-                            sql = f"INSERT INTO translation_cache ({col_str}) VALUES ({val_ph})"
-                            data = [[row.get(c) for c in cols] for row in inserts]
-                            cursor.executemany(sql, data)
-                        if updates:
-                            cols = list(updates[0].keys()); col_str = ", ".join(f'"{c}"' for c in cols); val_ph = ", ".join(["?"] * len(cols))
-                            sql = f"INSERT OR REPLACE INTO translation_cache ({col_str}) VALUES ({val_ph})"
-                            data = [[row.get(c) for c in cols] for row in updates]
-                            cursor.executemany(sql, data)
-                        summary_lines.append(f"  - 表 '{cn_name}': 新增 {len(inserts)} 条, 更新 {len(updates)} 条, 保留本地 {kept} 条。")
                     
-                    # --- 通用合并/覆盖逻辑 ---
-                    else:
-                        mode_str = "本地恢复" if import_mode == 'overwrite' else "共享合并"
-                        logger.info(f"模式[{mode_str}]: 正在处理表 '{cn_name}'...")
-                        if import_mode == 'overwrite':
-                            cursor.execute(f"DELETE FROM {table_name};")
-                        logical_key = db_handler.TABLE_PRIMARY_KEYS.get(table_name)
-                        if import_mode == 'merge' and not logical_key:
-                            logger.warning(f"表 '{cn_name}' 未定义主键，跳过合并。")
-                            summary_lines.append(f"  - 表 '{table_name}': 跳过 (未定义合并键)。")
-                            continue
-                        all_cols = list(table_data[0].keys())
-                        cols_for_op = [c for c in all_cols if c not in AUTOINCREMENT_KEYS_TO_IGNORE]
-                        col_str = ", ".join(f'"{c}"' for c in cols_for_op)
-                        val_ph = ", ".join(["?"] * len(cols_for_op))
-                        sql = ""
-                        if import_mode == 'merge':
-                            conflict_key_str = ""; logical_key_set = set()
-                            if isinstance(logical_key, str):
-                                conflict_key_str = logical_key; logical_key_set = {logical_key}
-                            elif isinstance(logical_key, tuple):
-                                conflict_key_str = ", ".join(logical_key); logical_key_set = set(logical_key)
-                            update_cols = [c for c in cols_for_op if c not in logical_key_set]
-                            update_str = ", ".join([f'"{col}" = excluded."{col}"' for col in update_cols])
-                            sql = (f"INSERT INTO {table_name} ({col_str}) VALUES ({val_ph}) "
-                                   f"ON CONFLICT({conflict_key_str}) DO UPDATE SET {update_str}")
-                        else:
-                            sql = f"INSERT INTO {table_name} ({col_str}) VALUES ({val_ph})"
-                        data = [[row.get(c) for c in cols_for_op] for row in table_data]
-                        cursor.executemany(sql, data)
-                        if import_mode == 'overwrite':
-                            summary_lines.append(f"  - 表 '{cn_name}': 清空并插入 {len(data)} 条。")
-                        else:
-                            summary_lines.append(f"  - 表 '{cn_name}': 合并处理了 {len(data)} 条。")
+                    logger.info(f"正在处理表: '{cn_name}'，共 {len(table_data)} 行。")
 
-                # --- 打印统一的摘要报告 ---
+                    # --- 模式1：覆盖模式 ---
+                    if import_mode == 'overwrite':
+                        logger.warning(f"执行覆盖模式：将清空表 '{table_name}' 中的所有数据！")
+                        # TRUNCATE ... RESTART IDENTITY 会重置自增ID，CASCADE 会处理外键依赖
+                        cursor.execute(f"TRUNCATE TABLE {table_name} RESTART IDENTITY CASCADE;")
+                        
+                        
+                        # 清空后直接批量插入
+                        all_cols = list(table_data[0].keys())
+                        # 过滤掉自增主键，让数据库自己生成
+                        cols_to_insert = [c for c in all_cols if c not in ['id', 'map_id']]
+                        data_to_insert = []
+                        table_rules = CLEANING_RULES.get(table_name, {})
+                        for row in table_data:
+                            cleaned_row_values = []
+                            for col_name in cols_to_insert:
+                                value = row.get(col_name)
+                                # 如果当前列有清洗规则，就应用它
+                                if col_name in table_rules:
+                                    value = table_rules[col_name](value) if value is not None else None
+                                cleaned_row_values.append(value)
+                            data_to_insert.append(cleaned_row_values)
+                        col_str = ", ".join(cols_to_insert)
+                        val_ph = ", ".join(["%s"] * len(cols_to_insert))
+                        sql = f"INSERT INTO {table_name} ({col_str}) VALUES ({val_ph})"
+                        
+                        data_to_insert = [[row.get(c) for c in cols_to_insert] for row in table_data]
+                        cursor.executemany(sql, data_to_insert)
+                        summary_lines.append(f"  - 表 '{cn_name}': 清空并插入 {len(data_to_insert)} 条。")
+                        continue # 处理完这个表，进入下一个循环
+
+                    # --- 模式2：合并模式 ---
+                    
+                    # ★ 特殊处理 translation_cache 的优先级合并逻辑 ★
+                    if table_name == 'translation_cache':
+                        logger.info(f"模式[共享合并]: 正在为 '{cn_name}' 表执行基于优先级的合并策略...")
+                        TRANSLATION_SOURCE_PRIORITY = {'manual': 2, 'openai': 1, 'zhipuai': 1, 'gemini': 1}
+                        
+                        cursor.execute("SELECT original_text, translated_text, engine_used FROM translation_cache")
+                        local_cache = {row['original_text']: row for row in cursor.fetchall()}
+                        
+                        rows_to_upsert = []
+                        kept_count = 0
+                        
+                        for backup_row in table_data:
+                            key = backup_row.get('original_text')
+                            if not key: continue
+                            
+                            local_row = local_cache.get(key)
+                            if not local_row:
+                                rows_to_upsert.append(backup_row)
+                                continue
+
+                            local_priority = TRANSLATION_SOURCE_PRIORITY.get(local_row.get('engine_used'), 0)
+                            backup_priority = TRANSLATION_SOURCE_PRIORITY.get(backup_row.get('engine_used'), 0)
+
+                            if backup_priority > local_priority:
+                                rows_to_upsert.append(backup_row)
+                            else:
+                                kept_count += 1
+                        
+                        if rows_to_upsert:
+                            cols = list(rows_to_upsert[0].keys())
+                            col_str = ", ".join(cols)
+                            val_ph = ", ".join(["%s"] * len(cols))
+                            update_str = ", ".join([f"{col} = EXCLUDED.{col}" for col in cols if col != 'original_text'])
+                            
+                            sql = f"""
+                                INSERT INTO translation_cache ({col_str}) VALUES ({val_ph})
+                                ON CONFLICT (original_text) DO UPDATE SET {update_str}
+                            """
+                            data = [[row.get(c) for c in cols] for row in rows_to_upsert]
+                            cursor.executemany(sql, data)
+
+                        summary_lines.append(f"  - 表 '{cn_name}': 合并/更新 {len(rows_to_upsert)} 条, 保留本地更优 {kept_count} 条。")
+
+                    # ★ 通用合并逻辑 (适用于包括 person_identity_map 在内的所有其他表) ★
+                    else:
+                        pk = TABLE_PRIMARY_KEYS.get(table_name)
+                        if not pk:
+                            logger.warning(f"表 '{cn_name}' 未定义主键，无法执行合并，已跳过。")
+                            summary_lines.append(f"  - 表 '{cn_name}': 跳过 (未定义合并键)。")
+                            continue
+
+                        all_cols = list(table_data[0].keys())
+                        # 在合并模式下，我们信任备份文件中的主键ID
+                        col_str = ", ".join(all_cols)
+                        val_ph = ", ".join(["%s"] * len(all_cols))
+                        
+                        # 主键列（们）
+                        pk_cols = [p.strip() for p in pk.split(',')]
+                        # 需要在冲突时更新的列（除了主键之外的所有列）
+                        update_cols = [c for c in all_cols if c not in pk_cols]
+                        update_str = ", ".join([f"{col} = EXCLUDED.{col}" for col in update_cols])
+
+                        # 构建强大的 UPSERT 语句
+                        sql = f"""
+                            INSERT INTO {table_name} ({col_str}) VALUES ({val_ph})
+                            ON CONFLICT ({pk}) DO UPDATE SET {update_str}
+                        """
+                        
+                        data_to_upsert = [[row.get(c) for c in all_cols] for row in table_data]
+                        data_to_upsert = []
+                        table_rules = CLEANING_RULES.get(table_name, {})
+                        for row in table_data:
+                            cleaned_row_values = []
+                            for col_name in all_cols: # 注意这里用 all_cols
+                                value = row.get(col_name)
+                                # 如果当前列有清洗规则，就应用它
+                                if col_name in table_rules:
+                                    value = table_rules[col_name](value) if value is not None else None
+                                cleaned_row_values.append(value)
+                            data_to_upsert.append(cleaned_row_values)
+                        cursor.executemany(sql, data_to_upsert)
+                        summary_lines.append(f"  - 表 '{cn_name}': 安全合并/更新了 {len(data_to_upsert)} 条记录。")
+
+                # --- 循环结束，打印最终摘要 ---
                 logger.info("="*11 + " 数据库导入摘要 " + "="*11)
-                if not summary_lines:
-                    logger.info("  -> 本次操作没有对任何表进行改动。")
-                else:
-                    for line in summary_lines:
-                        logger.info(line)
+                for line in summary_lines: logger.info(line)
                 logger.info("="*36)
 
-                if not (stop_event and stop_event.is_set()):
-                    conn.commit()
-                    logger.info("数据库事务已成功提交！所有选择的表已恢复。")
-                    task_manager.update_status_from_thread(100, "导入成功完成！")
-                else:
-                    conn.rollback()
-                    logger.warning("任务被中止，数据库操作已回滚。")
-                    task_manager.update_status_from_thread(-1, "任务已中止，所有更改已回滚。")
-
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"在事务处理期间发生严重错误，操作已回滚: {e}", exc_info=True)
-                task_manager.update_status_from_thread(-1, f"数据库错误，操作已回滚: {e}")
-                raise
+                conn.commit()
+                logger.info("✅ 数据库事务已成功提交！所有选择的表已恢复。")
+                # task_manager.update_status_from_thread(100, "导入成功完成！")
 
     except Exception as e:
-        logger.error(f"数据库恢复任务执行失败: {e}", exc_info=True)
-        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+        logger.error(f"数据库导入任务发生严重错误，所有更改将回滚: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
 # ★★★ 重新处理单个项目 ★★★
 def task_reprocess_single_item(processor: MediaProcessor, item_id: str, item_name_for_ui: str):
     """
@@ -725,7 +675,7 @@ def task_reprocess_all_review_items(processor: MediaProcessor):
     logger.trace("--- 开始执行“重新处理所有待复核项”任务 [强制在线获取模式] ---")
     try:
         # +++ 核心修改 1：同时查询 item_id 和 item_name +++
-        with db_handler.get_db_connection(processor.db_path) as conn:
+        with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
             # 从 failed_log 中同时获取 ID 和 Name
             cursor.execute("SELECT item_id, item_name FROM failed_log")
@@ -772,7 +722,7 @@ def task_full_image_sync(processor: MediaProcessor, force_full_update: bool = Fa
         force_full_update=force_full_update
     )
 # ✨ 辅助函数，并发刷新合集使用
-def _process_single_collection_concurrently(collection_data: dict, db_path: str, tmdb_api_key: str) -> dict:
+def _process_single_collection_concurrently(collection_data: dict, tmdb_api_key: str) -> dict:
     """
     【V4 - 纯粹电影版】
     在单个线程中处理单个电影合集的所有逻辑。
@@ -798,9 +748,9 @@ def _process_single_collection_concurrently(collection_data: dict, db_path: str,
         if not details or "parts" not in details:
             status = "tmdb_error"
         else:
-            with db_handler.get_db_connection(db_path) as conn:
+            with db_handler.get_db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT missing_movies_json FROM collections_info WHERE emby_collection_id = ?", (collection_id,))
+                cursor.execute("SELECT missing_movies_json FROM collections_info WHERE emby_collection_id = %s", (collection_id,))
                 row = cursor.fetchone()
                 previous_movies_map = {}
                 if row and row[0]:
@@ -833,7 +783,7 @@ def _process_single_collection_concurrently(collection_data: dict, db_path: str,
                 status = "has_missing"
 
     image_tag = collection_data.get("ImageTags", {}).get("Primary")
-    poster_path = f"/Items/{collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
+    poster_path = f"/Items/{collection_id}/Images/Primary%stag={image_tag}" if image_tag else None
 
     return {
         "emby_collection_id": collection_id, "name": collection_name, 
@@ -845,6 +795,11 @@ def _process_single_collection_concurrently(collection_data: dict, db_path: str,
     }
 # ★★★ 刷新合集的后台任务函数 ★★★
 def task_refresh_collections(processor: MediaProcessor):
+    """
+    【V2 - PG语法修正版】
+    - 修复了数据库批量写入时使用 SQLite 特有语法 INSERT OR REPLACE 的问题。
+    - 改为使用 PostgreSQL 标准的 ON CONFLICT ... DO UPDATE 语法，确保数据能被正确地插入或更新。
+    """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     task_manager.update_status_from_thread(0, "正在获取 Emby 合集列表...")
@@ -858,14 +813,16 @@ def task_refresh_collections(processor: MediaProcessor):
         task_manager.update_status_from_thread(5, f"共找到 {total} 个合集，准备开始并发处理...")
 
         # 清理数据库中已不存在的合集
-        with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
+        with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
             emby_current_ids = {c['Id'] for c in emby_collections}
+            # ★★★ 语法修正：PostgreSQL 的 cursor.fetchall() 返回字典列表，需要正确提取 ★★★
             cursor.execute("SELECT emby_collection_id FROM collections_info")
-            db_known_ids = {row[0] for row in cursor.fetchall()}
+            db_known_ids = {row['emby_collection_id'] for row in cursor.fetchall()}
             deleted_ids = db_known_ids - emby_current_ids
             if deleted_ids:
-                cursor.executemany("DELETE FROM collections_info WHERE emby_collection_id = ?", [(id,) for id in deleted_ids])
+                # executemany 需要一个元组列表
+                cursor.executemany("DELETE FROM collections_info WHERE emby_collection_id = %s", [(id,) for id in deleted_ids])
             conn.commit()
 
         tmdb_api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
@@ -874,15 +831,11 @@ def task_refresh_collections(processor: MediaProcessor):
         processed_count = 0
         all_results = []
         
-        # ✨ 核心修改：使用线程池进行并发处理
         with ThreadPoolExecutor(max_workers=5) as executor:
-            # 提交所有任务
-            futures = {executor.submit(_process_single_collection_concurrently, collection, config_manager.DB_PATH, tmdb_api_key): collection for collection in emby_collections}
+            futures = {executor.submit(_process_single_collection_concurrently, collection, tmdb_api_key): collection for collection in emby_collections}
             
-            # 实时获取已完成的结果并更新进度条
             for future in as_completed(futures):
                 if processor.is_stop_requested():
-                    # 如果用户请求停止，我们可以尝试取消未开始的任务
                     for f in futures: f.cancel()
                     break
                 
@@ -899,20 +852,32 @@ def task_refresh_collections(processor: MediaProcessor):
 
         if processor.is_stop_requested():
             logger.warning("任务被用户中断，部分数据可能未被处理。")
-            # 即使被中断，我们依然保存已成功处理的结果
         
-        # ✨ 所有并发任务完成后，在主线程中安全地、一次性地写入数据库
         if all_results:
             logger.info(f"并发处理完成，准备将 {len(all_results)} 条结果写入数据库...")
-            with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
+            with db_handler.get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("BEGIN TRANSACTION;")
                 try:
-                    cursor.executemany("""
-                        INSERT OR REPLACE INTO collections_info 
-                        (emby_collection_id, name, tmdb_collection_id, status, has_missing, missing_movies_json, last_checked_at, poster_path, in_library_count)
-                        VALUES (:emby_collection_id, :name, :tmdb_collection_id, :status, :has_missing, :missing_movies_json, :last_checked_at, :poster_path, :in_library_count)
-                    """, all_results)
+                    # ★★★ 核心修复：将 INSERT OR REPLACE 改为 ON CONFLICT ... DO UPDATE ★★★
+                    # 1. 定义所有列和占位符
+                    cols = all_results[0].keys()
+                    cols_str = ", ".join(cols)
+                    placeholders_str = ", ".join([f"%({k})s" for k in cols]) # 使用 %(key)s 格式
+                    
+                    # 2. 定义冲突时的更新规则
+                    update_cols = [f"{col} = EXCLUDED.{col}" for col in cols if col != 'emby_collection_id']
+                    update_str = ", ".join(update_cols)
+                    
+                    # 3. 构建最终的SQL
+                    sql = f"""
+                        INSERT INTO collections_info ({cols_str})
+                        VALUES ({placeholders_str})
+                        ON CONFLICT (emby_collection_id) DO UPDATE SET {update_str}
+                    """
+                    
+                    # 4. 使用 executemany 执行
+                    cursor.executemany(sql, all_results)
                     conn.commit()
                     logger.info("数据库写入成功！")
                 except Exception as e_db:
@@ -940,8 +905,7 @@ def task_auto_subscribe(processor: MediaProcessor):
         task_manager.update_status_from_thread(10, "智能订阅已启动...")
         successfully_subscribed_items = []
 
-        with db_handler.get_db_connection(config_manager.DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
+        with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
 
             # ★★★ 1. 处理原生电影合集 (collections_info) ★★★
@@ -988,7 +952,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                     if movies_changed:
                         new_missing_json = json.dumps(movies_to_keep)
                         new_status = 'ok' if not any(m.get('status') == 'missing' for m in movies_to_keep) else 'has_missing'
-                        cursor.execute("UPDATE collections_info SET missing_movies_json = ?, status = ? WHERE emby_collection_id = ?", (new_missing_json, new_status, collection['emby_collection_id']))
+                        cursor.execute("UPDATE collections_info SET missing_movies_json = %s, status = %s WHERE emby_collection_id = %s", (new_missing_json, new_status, collection['emby_collection_id']))
 
             # --- 2. 处理智能追剧 ---
             if not processor.is_stop_requested():
@@ -1060,7 +1024,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                         
                         if seasons_changed:
                             missing_info['missing_seasons'] = seasons_to_keep
-                            cursor.execute("UPDATE watchlist SET missing_info_json = ? WHERE item_id = ?", (json.dumps(missing_info), series['item_id']))
+                            cursor.execute("UPDATE watchlist SET missing_info_json = %s WHERE item_id = %s", (json.dumps(missing_info), series['item_id']))
                     except Exception as e_series:
                         logger.error(f"【智能订阅-剧集】处理剧集 '{series['item_name']}' 时出错: {e_series}")
 
@@ -1147,7 +1111,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                             new_missing_count = sum(1 for m in media_to_keep if m.get('status') == 'missing')
                             new_health_status = 'has_missing' if new_missing_count > 0 else 'ok'
                             cursor.execute(
-                                "UPDATE custom_collections SET generated_media_info_json = ?, health_status = ?, missing_count = ? WHERE id = ?", 
+                                "UPDATE custom_collections SET generated_media_info_json = %s, health_status = %s, missing_count = %s WHERE id = %s", 
                                 (new_missing_json, new_health_status, new_missing_count, collection_id)
                             )
                     except Exception as e_coll:
@@ -1168,27 +1132,24 @@ def task_auto_subscribe(processor: MediaProcessor):
 # ✨✨✨ 一键添加所有剧集到追剧列表的任务 ✨✨✨
 def task_add_all_series_to_watchlist(processor: MediaProcessor):
     """
-    后台任务：获取 Emby 中所有剧集，并批量添加到追剧列表。
+    【V2 - PG语法修正版】
+    - 修复了数据库写入时使用 SQLite 特有语法 INSERT OR IGNORE 和 ? 占位符的问题。
+    - 改为使用 PostgreSQL 标准的 ON CONFLICT ... DO NOTHING 语法。
     """
     task_name = "一键扫描全库剧集"
     logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
-        # 1. 从 processor 获取必要的配置
         emby_url = processor.emby_url
         emby_api_key = processor.emby_api_key
         emby_user_id = processor.emby_user_id
-        db_path = processor.db_path
         
-        # +++ 核心修改：智能获取要扫描的媒体库ID +++
         library_ids_to_process = config_manager.APP_CONFIG.get('emby_libraries_to_process', [])
         
-        # 如果用户没有在 config.ini 中指定，我们就自动获取所有媒体库
         if not library_ids_to_process:
             logger.info("未在配置中指定媒体库，将自动扫描所有媒体库...")
             all_libraries = emby_handler.get_emby_libraries(emby_url, emby_api_key, emby_user_id)
             if all_libraries:
-                # 只选择电影和剧集类型的库
                 library_ids_to_process = [
                     lib['Id'] for lib in all_libraries 
                     if lib.get('CollectionType') in ['tvshows', 'mixed']
@@ -1201,9 +1162,7 @@ def task_add_all_series_to_watchlist(processor: MediaProcessor):
             task_manager.update_status_from_thread(100, "任务完成：没有找到可供扫描的剧集媒体库。")
             return
 
-        # 2. 调用 emby_handler 获取所有剧集
         task_manager.update_status_from_thread(10, "正在从 Emby 获取所有剧集...")
-        # 注意：这里我们不再使用 get_all_series_from_emby，而是直接使用更通用的 get_emby_library_items
         all_series = emby_handler.get_emby_library_items(
             base_url=emby_url,
             api_key=emby_api_key,
@@ -1220,7 +1179,6 @@ def task_add_all_series_to_watchlist(processor: MediaProcessor):
             task_manager.update_status_from_thread(100, "任务完成：在指定的媒体库中未找到任何剧集。")
             return
 
-        # ... (后续的筛选和数据库写入逻辑保持不变) ...
         task_manager.update_status_from_thread(30, f"共找到 {total} 部剧集，正在筛选...")
         series_to_insert = []
         for series in all_series:
@@ -1241,53 +1199,39 @@ def task_add_all_series_to_watchlist(processor: MediaProcessor):
         total_to_add = len(series_to_insert)
         task_manager.update_status_from_thread(60, f"筛选出 {total_to_add} 部有效剧集，准备写入数据库...")
         
-        with db_handler.get_db_connection(db_path) as conn:
+        with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("BEGIN TRANSACTION;")
             try:
                 for series in series_to_insert:
+                    # ★★★ 核心修复：将 INSERT OR IGNORE 和 ? 改为 ON CONFLICT 和 %s ★★★
                     cursor.execute("""
-                        INSERT OR IGNORE INTO watchlist (item_id, tmdb_id, item_name, item_type, status)
-                        VALUES (?, ?, ?, ?, 'Watching')
+                        INSERT INTO watchlist (item_id, tmdb_id, item_name, item_type, status)
+                        VALUES (%s, %s, %s, %s, 'Watching')
+                        ON CONFLICT (item_id) DO NOTHING
                     """, (series["item_id"], series["tmdb_id"], series["item_name"], series["item_type"]))
-                    added_count += cursor.rowcount
+                    # cursor.rowcount 在 ON CONFLICT DO NOTHING 时，如果发生冲突，可能返回0，但插入成功时返回1
+                    if cursor.rowcount > 0:
+                        added_count += 1
                 conn.commit()
             except Exception as e_db:
                 conn.rollback()
                 raise RuntimeError(f"数据库批量写入时发生错误: {e_db}")
 
-        # 1. 先报告第一阶段任务的完成情况
         scan_complete_message = f"扫描完成！共发现 {total} 部剧集，新增 {added_count} 部。"
         logger.info(scan_complete_message)
         
-        # 2. 如果确实有新增剧集，或者即使用户没新增也想刷新一下，就触发后续任务
         if added_count > 0:
             logger.info("--- 任务链：即将自动触发【检查所有在追剧集】任务 ---")
-            
-            # 更新UI状态，告诉用户即将进入下一阶段
             task_manager.update_status_from_thread(99, "扫描完成，正在启动追剧检查...")
-            time.sleep(2) # 短暂暂停，让用户能看到状态变化
+            time.sleep(2)
 
-            # 提交新的任务
-            # 注意：这里我们不能直接调用 task_process_watchlist，因为它需要一个新的后台线程
-            # 我们需要通过 task_manager 来提交
-            # 并且，我们不能在这里等待它完成，因为我们自己就在一个任务线程里
-            
-            # 最简单的实现是让前端在收到特定消息后触发
-            # 但更健壮的后端实现如下：
-            
-            # 我们直接调用下一个任务的核心逻辑。
-            # 注意：这会在同一个线程中执行，UI进度条会从99%直接跳到下一个任务的进度
-            # 这是一个简单有效的实现。
             try:
-                # 我们需要 WatchlistProcessor，但当前函数只有 MediaProcessor
-                # 所以我们从 extensions 获取
                 watchlist_proc = extensions.watchlist_processor_instance
                 if watchlist_proc:
-                    # 直接调用 watchlist_processor 的核心方法
                     watchlist_proc.run_regular_processing_task(
                         progress_callback=task_manager.update_status_from_thread,
-                        item_id=None # None 表示处理所有
+                        item_id=None
                     )
                     final_message = "自动化流程完成：扫描与追剧检查均已结束。"
                     task_manager.update_status_from_thread(100, final_message)
@@ -1299,7 +1243,6 @@ def task_add_all_series_to_watchlist(processor: MediaProcessor):
                  task_manager.update_status_from_thread(-1, f"链式任务失败: {e_chain}")
 
         else:
-            # 如果没有新增剧集，就正常结束
             final_message = f"任务完成！共扫描到 {total} 部剧集，没有发现可新增的剧集。"
             logger.info(final_message)
             task_manager.update_status_from_thread(100, final_message)
@@ -1385,54 +1328,62 @@ def task_run_chain(processor: MediaProcessor, task_sequence: list):
 # --- 任务注册表 ---
 def get_task_registry(context: str = 'all'):
     """
-    【V2】返回一个包含所有可执行任务的字典，并可根据上下文筛选。
-    :param context: 'all' (默认) 返回所有任务, 'chain' 只返回适合任务链的任务。
+    【V4 - 最终完整版】
+    返回一个包含所有可执行任务的字典。
+    每个任务的定义现在是一个四元组：(函数, 描述, 处理器类型, 是否适合任务链)。
     """
     # 完整的任务注册表
+    # 格式: 任务Key: (任务函数, 任务描述, 处理器类型, 是否适合在任务链中运行)
     full_registry = {
-        'task-chain': (task_run_chain, "自动化任务链", False), # 第三个元素表示是否适合任务链
-        
+        'task-chain': (task_run_chain, "自动化任务链", 'media', False), # 任务链本身不能嵌套
+
         # --- 适合任务链的常规任务 ---
-        'full-scan': (task_run_full_scan, "全量处理媒体", True),
-        'sync-person-map': (task_sync_person_map, "同步演员映射", True),
-        'enrich-aliases': (task_enrich_aliases, "演员数据补充", True),
-        'populate-metadata': (task_populate_metadata_cache, "同步媒体数据", True),
-        'process-watchlist': (task_process_watchlist, "智能追剧更新", True),
-        'actor-cleanup': (task_actor_translation_cleanup, "演员姓名翻译", True),
-        'refresh-collections': (task_refresh_collections, "原生合集刷新", True),
-        'custom-collections': (task_process_all_custom_collections, "自建合集刷新", True),
-        'actor-tracking': (task_process_actor_subscriptions, "演员订阅扫描", True),
-        'generate-all-covers': (task_generate_all_covers, "生成所有封面", True),
-        'auto-subscribe': (task_auto_subscribe, "智能订阅缺失", True),
-        'sync-images-map': (task_full_image_sync, "覆盖缓存备份", True),
+        'full-scan': (task_run_full_scan, "全量处理媒体", 'media', True),
+        'sync-person-map': (task_sync_person_map, "同步演员映射", 'media', True),
+        'enrich-aliases': (task_enrich_aliases, "演员数据补充", 'media', True),
+        'populate-metadata': (task_populate_metadata_cache, "同步媒体数据", 'media', True),
+        'process-watchlist': (task_process_watchlist, "智能追剧更新", 'watchlist', True),
+        'actor-cleanup': (task_actor_translation_cleanup, "演员姓名翻译", 'media', True),
+        'refresh-collections': (task_refresh_collections, "原生合集刷新", 'media', True),
+        'custom-collections': (task_process_all_custom_collections, "自建合集刷新", 'media', True),
+        'actor-tracking': (task_process_actor_subscriptions, "演员订阅扫描", 'actor', True),
+        'generate-all-covers': (task_generate_all_covers, "生成所有封面", 'media', True),
+        'auto-subscribe': (task_auto_subscribe, "智能订阅缺失", 'media', True),
+        'sync-images-map': (task_full_image_sync, "覆盖缓存备份", 'media', True),
 
         # --- 不适合任务链的、需要特定参数的任务 ---
-        'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", False),
-        'process-single-custom-collection': (task_process_custom_collection, "生成单个自建合集", False),
-        # 更多需要参数的任务可以加在这里，例如：
-        # 'reprocess-single-item': (task_reprocess_single_item, "重新处理单个项目", False),
+        'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
+        'process-single-custom-collection': (task_process_custom_collection, "生成单个自建合集", 'media', False),
     }
 
     if context == 'chain':
-        return {key: (info[0], info[1]) for key, info in full_registry.items() if info[2]}
+        # ★★★ 核心修复 1/2：使用第四个元素 (布尔值) 来进行过滤 ★★★
+        # 这将完美恢复您原来的功能
+        return {
+            key: (info[0], info[1]) 
+            for key, info in full_registry.items() 
+            if info[3]  # info[3] 就是那个 True/False 标志
+        }
     
-    # 默认返回不包含第三个布尔值的简化版，以兼容旧的调用
-    return {key: (info[0], info[1]) for key, info in full_registry.items()}
+    # ★★★ 核心修复 2/2：默认情况下，返回前三个元素 ★★★
+    # 这确保了“万用插座”API (/api/tasks/run) 能够正确解包，无需修改
+    return {
+        key: (info[0], info[1], info[2]) 
+        for key, info in full_registry.items()
+    }
 
-# ★★★ 一键生成所有合集的后台任务，核心优化在于只获取一次Emby媒体库 ★★★
 # ★★★ 一键生成所有合集的后台任务，核心优化在于只获取一次Emby媒体库 ★★★
 def task_process_all_custom_collections(processor: MediaProcessor):
     """
-    【V3 - 终极完整版】处理所有已启用的自定义合集。
-    不仅在Emby中创建/更新，还为每个合集执行完整的健康状态分析并写入数据库。
+    【V3.1 - PG JSON 兼容版】
+    - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
     """
     task_name = "生成所有自建合集"
     logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
 
     try:
-        # --- 步骤 1: 获取所有启用的自定义合集定义 ---
         task_manager.update_status_from_thread(0, "正在获取所有启用的合集定义...")
-        active_collections = db_handler.get_all_active_custom_collections(config_manager.DB_PATH)
+        active_collections = db_handler.get_all_active_custom_collections()
         if not active_collections:
             logger.info("  -> 没有找到任何已启用的自定义合集，任务结束。")
             task_manager.update_status_from_thread(100, "没有已启用的合集。")
@@ -1441,7 +1392,6 @@ def task_process_all_custom_collections(processor: MediaProcessor):
         total = len(active_collections)
         logger.info(f"  -> 共找到 {total} 个已启用的自定义合集需要处理。")
 
-        # --- 步骤 2: 【核心优化】一次性获取所有需要的数据 ---
         task_manager.update_status_from_thread(2, "正在从Emby获取全库媒体数据...")
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
         if not libs_to_process_ids: raise ValueError("未在配置中指定要处理的媒体库。")
@@ -1459,7 +1409,6 @@ def task_process_all_custom_collections(processor: MediaProcessor):
         prefetched_collection_map = {coll.get('Name', '').lower(): coll for coll in all_emby_collections}
         logger.info(f"  -> 已预加载 {len(prefetched_collection_map)} 个现有合集的信息。")
 
-        # --- 步骤 3: 遍历所有合集，在内存中进行处理 ---
         for i, collection in enumerate(active_collections):
             if processor.is_stop_requested():
                 logger.warning("任务被用户中止。")
@@ -1468,40 +1417,34 @@ def task_process_all_custom_collections(processor: MediaProcessor):
             collection_id = collection['id']
             collection_name = collection['name']
             collection_type = collection['type']
-            definition = json.loads(collection['definition_json'])
-            item_type_for_collection = definition.get('item_type', 'Movie')
+            # ★★★ 核心修复：直接使用已经是字典的 definition_json 字段 ★★★
+            definition = collection['definition_json']
             
             progress = 10 + int((i / total) * 90)
             task_manager.update_status_from_thread(progress, f"({i+1}/{total}) 正在处理: {collection_name}")
 
             try:
-                definition = json.loads(collection['definition_json'])
                 item_types_for_collection = definition.get('item_type', ['Movie'])
-                # 3a. 生成目标TMDb ID列表
-                # --- 异步/同步调度逻辑 (与单个处理任务完全一致) ---
                 tmdb_items = []
                 if collection_type == 'list' and definition.get('url', '').startswith('maoyan://'):
-                    # 猫眼榜单，异步处理
                     importer = ListImporter(processor.tmdb_api_key)
                     greenlet = gevent.spawn(importer._execute_maoyan_fetch, definition)
-                    tmdb_items = greenlet.get() # 在当前任务线程中等待结果
+                    tmdb_items = greenlet.get()
                 else:
-                    # 筛选规则或普通RSS榜单，同步处理
                     if collection_type == 'list':
                         importer = ListImporter(processor.tmdb_api_key)
                         tmdb_items = importer.process(definition)
                     elif collection_type == 'filter':
-                        engine = FilterEngine(db_path=config_manager.DB_PATH)
+                        engine = FilterEngine()
                         tmdb_items = engine.execute_filter(definition)
                 
                 tmdb_ids = [item['id'] for item in tmdb_items]
 
                 if not tmdb_ids:
                     logger.warning(f"合集 '{collection_name}' 未能生成任何媒体ID，跳过。")
-                    db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, collection_id, {"emby_collection_id": None})
+                    db_handler.update_custom_collection_after_sync(collection_id, {"emby_collection_id": None})
                     continue
 
-                # 3b. 在Emby中创建/更新合集
                 result_tuple = emby_handler.create_or_update_collection_with_tmdb_ids(
                     collection_name=collection_name, 
                     tmdb_ids=tmdb_ids, 
@@ -1510,7 +1453,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                     user_id=processor.emby_user_id,
                     prefetched_emby_items=all_emby_items, 
                     prefetched_collection_map=prefetched_collection_map,
-                    item_types=item_types_for_collection # ★ 传递类型列表
+                    item_types=item_types_for_collection
                 )
                 
                 if not result_tuple:
@@ -1518,11 +1461,6 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                 
                 emby_collection_id, tmdb_ids_in_library = result_tuple
 
-                
-
-                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                # ★★★ 核心改造：在这里执行完整的健康状态分析和数据准备 ★★★
-                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                 update_data = {
                     "emby_collection_id": emby_collection_id,
                     "item_type": json.dumps(definition.get('item_type', ['Movie'])),
@@ -1532,21 +1470,22 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                 if collection_type == 'list':
                     previous_media_map = {}
                     try:
-                        previous_media_list = json.loads(collection.get('generated_media_info_json') or '[]')
+                        # ★★★ 核心修复：直接使用已经是列表的 generated_media_info_json 字段 ★★★
+                        previous_media_list = collection.get('generated_media_info_json') or []
                         previous_media_map = {str(m.get('tmdb_id')): m for m in previous_media_list}
-                    except (json.JSONDecodeError, TypeError):
+                    except TypeError:
                         logger.warning(f"解析合集 {collection_name} 的旧媒体JSON失败...")
 
                     existing_tmdb_ids = set(map(str, tmdb_ids_in_library))
                     image_tag = None
-                    if emby_collection_id: # 只有当合集存在时才去获取封面信息
+                    if emby_collection_id:
                         emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                         image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
                     
                     all_media_details = []
                     with ThreadPoolExecutor(max_workers=5) as executor:
                         future_to_item = {executor.submit(tmdb_handler.get_movie_details if item['type'] != 'Series' else tmdb_handler.get_tv_details_tmdb, item['id'], processor.tmdb_api_key): item for item in tmdb_items}
-                        for future in concurrent.futures.as_completed(future_to_item):
+                        for future in as_completed(future_to_item):
                             try:
                                 detail = future.result()
                                 if detail: all_media_details.append(detail)
@@ -1574,28 +1513,21 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                         "health_status": "has_missing" if has_missing else "ok",
                         "in_library_count": len(existing_tmdb_ids), "missing_count": missing_count,
                         "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False),
-                        "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag and emby_collection_id else None
+                        "poster_path": f"/Items/{emby_collection_id}/Images/Primary%stag={image_tag}" if image_tag and emby_collection_id else None
                     })
-                
-                # 对于 'filter' 类型，逻辑保持不变
                 else: 
                     update_data.update({
                         "health_status": "ok", "in_library_count": len(tmdb_ids_in_library),
                         "missing_count": 0, "generated_media_info_json": '[]', "poster_path": None
                     })
                 
-                # 统一将包含完整分析结果的数据写入数据库
-                db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, collection_id, update_data)
+                db_handler.update_custom_collection_after_sync(collection_id, update_data)
                 logger.info(f"  -> ✅ 合集 '{collection_name}' 处理完成，并已更新数据库状态。")
 
             except Exception as e_coll:
                 logger.error(f"处理合集 '{collection_name}' (ID: {collection_id}) 时发生错误: {e_coll}", exc_info=True)
                 continue
 
-        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # --- 新增：封面生成逻辑 ---
-        # 在所有合集都处理完毕后，统一开始生成封面
-        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
         try:
             cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, "cover_generator.json")
             cover_config = {}
@@ -1608,10 +1540,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                 task_manager.update_status_from_thread(95, "合集同步完成，开始生成封面...")
                 
                 cover_service = CoverGeneratorService(config=cover_config)
-                
-                # ★★★ 核心逻辑：再次查询数据库，获取所有刚刚被更新了 Emby ID 的合集 ★★★
-                # 这样做比在循环中传递变量更健壮
-                updated_collections = db_handler.get_all_active_custom_collections(config_manager.DB_PATH)
+                updated_collections = db_handler.get_all_active_custom_collections()
 
                 for collection in updated_collections:
                     collection_name = collection.get('name')
@@ -1619,7 +1548,6 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                     
                     if emby_collection_id:
                         logger.info(f"  -> 正在为合集 '{collection_name}' 生成封面")
-                        # 同样，您需要有方法确定服务器ID
                         server_id = 'main_emby' 
                         
                         library_info = emby_handler.get_emby_item_details(
@@ -1630,9 +1558,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                         )
                         
                         if library_info:
-                            # 从数据库记录中获取已入库的数量
                             item_count_to_pass = collection.get('in_library_count', 0)
-                            # ★★★ 新增逻辑：如果合集类型是榜单，则替换数字为文字 ★★★
                             if collection.get('type') == 'list':
                                 item_count_to_pass = '榜单'
                             
@@ -1648,7 +1574,6 @@ def task_process_all_custom_collections(processor: MediaProcessor):
 
         except Exception as e:
             logger.error(f"在任务末尾执行批量封面生成时失败: {e}", exc_info=True)
-        # --- 封面生成逻辑结束 ---
         
         final_message = "所有启用的自定义合集均已处理完毕！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
@@ -1663,47 +1588,38 @@ def task_process_all_custom_collections(processor: MediaProcessor):
 # --- 处理单个自定义合集的核心任务 ---
 def task_process_custom_collection(processor: MediaProcessor, custom_collection_id: int):
     """
-    【V8 - 状态持久化修复版】处理单个自定义合集。
-    - 修正了状态判断逻辑，确保在重新生成时能正确保留 'subscribed' 状态。
+    【V8.1 - PG JSON 兼容版】
+    - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
+    - 不再对从数据库中获取的 _json 字段执行 json.loads()。
     """
     task_name = f"处理自定义合集 (ID: {custom_collection_id})"
     logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
-        # --- 步骤 1: 获取定义并生成TMDb ID列表 ---
         task_manager.update_status_from_thread(0, "正在读取合集定义...")
-        collection = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, custom_collection_id)
+        collection = db_handler.get_custom_collection_by_id(custom_collection_id)
         if not collection: raise ValueError(f"未找到ID为 {custom_collection_id} 的自定义合集。")
         
         collection_name = collection['name']
         collection_type = collection['type']
-        definition = json.loads(collection['definition_json'])
+        # ★★★ 核心修复：直接使用已经是字典的 definition_json 字段 ★★★
+        definition = collection['definition_json']
         
         item_types_for_collection = definition.get('item_type', ['Movie'])
         
         tmdb_items = []
-        # --- 异步/同步调度逻辑 ---
         if collection_type == 'list' and definition.get('url', '').startswith('maoyan://'):
-            # 这是猫眼榜单，需要异步处理
             logger.info(f"检测到猫眼榜单 '{collection_name}'，将启动异步后台任务...")
             task_manager.update_status_from_thread(10, f"正在后台获取猫眼榜单: {collection_name}...")
-            
             importer = ListImporter(processor.tmdb_api_key)
-            
-            # ★★★ 使用 gevent.spawn 启动一个“跑腿”的协程 ★★★
-            # .get() 会阻塞，直到协程运行完毕并返回结果
-            # 但因为整个 task_process_custom_collection 任务本身就在一个独立的后台线程中运行，
-            # 所以这里的阻塞只会阻塞当前任务线程，完全不会卡住主程序的UI。
             greenlet = gevent.spawn(importer._execute_maoyan_fetch, definition)
-            tmdb_items = greenlet.get() # 等待异步任务完成并获取结果
-
+            tmdb_items = greenlet.get()
         else:
-            # 这是筛选规则或普通RSS榜单，同步处理即可
             if collection_type == 'list':
                 importer = ListImporter(processor.tmdb_api_key)
                 tmdb_items = importer.process(definition)
             elif collection_type == 'filter':
-                engine = FilterEngine(db_path=config_manager.DB_PATH)
+                engine = FilterEngine()
                 tmdb_items = engine.execute_filter(definition)
         
         tmdb_ids = [item['id'] for item in tmdb_items]
@@ -1712,7 +1628,6 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
             logger.warning(f"合集 '{collection_name}' 未能生成任何媒体ID，任务结束。")
             return
 
-        # --- 步骤 2: 在Emby中创建/更新合集 ---
         task_manager.update_status_from_thread(70, f"已生成 {len(tmdb_items)} 个ID，正在Emby中创建/更新合集...")
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
 
@@ -1723,7 +1638,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
             api_key=processor.emby_api_key, 
             user_id=processor.emby_user_id,
             library_ids=libs_to_process_ids, 
-            item_types=item_types_for_collection # ★ 传递类型列表
+            item_types=item_types_for_collection
         )
 
         if not result_tuple:
@@ -1733,33 +1648,32 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
 
         update_data = {
             "emby_collection_id": emby_collection_id,
-            "item_type": json.dumps(definition.get('item_type', ['Movie'])),
+            "item_type": json.dumps(definition.get('item_type', ['Movie'])), # 写入时需要转为字符串
             "last_synced_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
 
-        # ★★★ 核心修正：对 list 类型合集，无条件执行健康分析 ★★★
         if collection_type == 'list':
             task_manager.update_status_from_thread(90, "榜单合集已同步，正在并行获取详情...")
             
-            # ... (这部分健康分析的详细代码保持不变) ...
             previous_media_map = {}
             try:
-                previous_media_list = json.loads(collection.get('generated_media_info_json') or '[]')
+                # ★★★ 核心修复：直接使用已经是列表的 generated_media_info_json 字段 ★★★
+                previous_media_list = collection.get('generated_media_info_json') or []
                 previous_media_map = {str(m.get('tmdb_id')): m for m in previous_media_list}
-            except (json.JSONDecodeError, TypeError):
+            except TypeError:
                 logger.warning(f"解析合集 {collection_name} 的旧媒体JSON失败...")
 
             existing_tmdb_ids = set(map(str, tmdb_ids_in_library))
             
             image_tag = None
-            if emby_collection_id: # 只有当合集存在时才去获取封面信息
+            if emby_collection_id:
                 emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                 image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
             
             all_media_details = []
             with ThreadPoolExecutor(max_workers=5) as executor:
                 future_to_item = {executor.submit(tmdb_handler.get_movie_details if item['type'] != 'Series' else tmdb_handler.get_tv_details_tmdb, item['id'], processor.tmdb_api_key): item for item in tmdb_items}
-                for future in concurrent.futures.as_completed(future_to_item):
+                for future in as_completed(future_to_item):
                     try:
                         detail = future.result()
                         if detail: all_media_details.append(detail)
@@ -1790,8 +1704,6 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag and emby_collection_id else None
             })
             logger.info(f"  -> 已为RSS合集 '{collection_name}' 分析健康状态。")
-        
-        # 对于 'filter' 类型，逻辑保持不变
         else: 
             task_manager.update_status_from_thread(95, "筛选合集已生成，跳过缺失分析。")
             update_data.update({
@@ -1799,12 +1711,9 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 "missing_count": 0, "generated_media_info_json": '[]', "poster_path": None
             })
 
-        # 统一将包含完整分析结果的数据写入数据库
-        db_handler.update_custom_collection_after_sync(config_manager.DB_PATH, custom_collection_id, update_data)
+        db_handler.update_custom_collection_after_sync(custom_collection_id, update_data)
         logger.info(f"  -> 已更新自定义合集 '{collection_name}' (ID: {custom_collection_id}) 的同步状态和健康信息。")
 
-
-        # --- 封面生成逻辑 ---
         try:
             cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, "cover_generator.json")
             cover_config = {}
@@ -1812,50 +1721,31 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 with open(cover_config_path, 'r', encoding='utf-8') as f:
                     cover_config = json.load(f)
 
-            # 检查插件是否在配置中启用
             if cover_config.get("enabled"):
                 logger.info(f"  -> 检测到封面生成器已启用，将为合集 '{collection_name}' 生成封面...")
-                
-                # 实例化服务
                 cover_service = CoverGeneratorService(config=cover_config)
-                
-                # emby_collection_id 变量在上面已经获取到了
                 if emby_collection_id:
-                    # 您需要有一种方式来确定当前操作的服务器ID
-                    # 这里我们先用一个占位符，您需要根据项目结构替换它
                     server_id = 'main_emby' 
-                    
-                    # 获取合集的详细信息，作为 library_info 传递
                     library_info = emby_handler.get_emby_item_details(
                         emby_collection_id, 
                         processor.emby_url, 
                         processor.emby_api_key, 
                         processor.emby_user_id
                     )
-                    
                     if library_info:
-                        # update_data 字典里包含了我们刚刚计算好的数量信息
                         in_library_count = update_data.get('in_library_count', 0)
-                        
-                        # 同样，我们只关心已入库的数量
                         item_count_to_pass = in_library_count
-
-                        # ★★★ 新增逻辑：如果合集类型是榜单，则替换数字为文字 ★★★
-                        # collection_type 变量在函数开头已经定义
                         if collection_type == 'list':
                             item_count_to_pass = '榜单'
-
                         cover_service.generate_for_library(
                             emby_server_id=server_id,
                             library=library_info,
-                            item_count=item_count_to_pass # <--- 传递修正后的值
+                            item_count=item_count_to_pass
                         )
                     else:
                         logger.warning(f"无法获取 Emby 合集 {emby_collection_id} 的详情，跳过封面生成。")
-
         except Exception as e:
             logger.error(f"为合集 '{collection_name}' 生成封面时发生错误: {e}", exc_info=True)
-        # --- 封面生成逻辑结束 ---
 
         task_manager.update_status_from_thread(100, "自定义合集同步并分析完成！")
 
@@ -1867,9 +1757,10 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 50, force_full_update: bool = False):
     """
-    【V3 - 混合同步模式】
-    - 默认(force_full_update=False): 使用时间戳进行快速增量同步。
-    - 强制(force_full_update=True): 忽略时间戳，进行全量深度同步。
+    【V3.3 - 最终修复版】
+    - 彻底修复了快速同步模式下的时间戳比较逻辑。
+    - 之前的版本错误地尝试对 psycopg2 返回的 datetime 对象再次进行解析。
+    - 此版本直接使用 psycopg2 返回的 datetime 对象进行比较，完全解决了差异计算失效的问题。
     """
     task_name = "同步媒体数据"
     sync_mode = "深度同步" if force_full_update else "快速同步"
@@ -1881,7 +1772,6 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
         # ======================================================================
         task_manager.update_status_from_thread(0, f"阶段1/2: 计算媒体库差异 ({sync_mode})...")
         
-        # --- 1.1 & 1.2 (获取 Emby 和本地数据，逻辑不变) ---
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
         if not libs_to_process_ids:
             raise ValueError("未在配置中指定要处理的媒体库。")
@@ -1900,20 +1790,18 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
         logger.info(f"  -> 从 Emby 获取到 {len(emby_tmdb_ids)} 个有效的媒体项。")
 
         db_sync_info = {}
-        with db_handler.get_db_connection(processor.db_path) as conn:
+        with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT tmdb_id, last_synced_at FROM media_metadata")
             for row in cursor.fetchall():
-                db_sync_info[row["tmdb_id"]] = row["last_synced_at"]
+                db_sync_info[row["tmdb_id"]] = row["last_synced_at"] # <-- 这里存入的是 datetime 对象
         db_tmdb_ids = set(db_sync_info.keys())
         logger.info(f"  -> 从本地数据库 media_metadata 表中获取到 {len(db_tmdb_ids)} 个媒体项。")
 
-        # --- 1.3 计算差异 ---
         items_to_add_tmdb_ids = emby_tmdb_ids - db_tmdb_ids
         items_to_delete_tmdb_ids = db_tmdb_ids - emby_tmdb_ids
         common_ids = emby_tmdb_ids.intersection(db_tmdb_ids)
         
-        # ★★★ 核心修改: 根据 force_full_update 决定更新逻辑 ★★★
         if force_full_update:
             logger.info("  -> 深度同步模式：所有已存在项目都将被更新。")
             items_to_update_tmdb_ids = common_ids
@@ -1922,39 +1810,41 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
             items_to_update_tmdb_ids = set()
             for tmdb_id in common_ids:
                 emby_item = emby_items_map.get(tmdb_id)
-                last_synced_str = db_sync_info.get(tmdb_id)
+                # 为了清晰，重命名变量
+                last_synced_dt_from_db = db_sync_info.get(tmdb_id)
                 emby_modified_str = emby_item.get("DateModified")
 
-                if not emby_modified_str or not last_synced_str:
+                if not emby_modified_str or not last_synced_dt_from_db:
                     items_to_update_tmdb_ids.add(tmdb_id)
                     continue
                 
                 try:
-                    emby_modified_dt = datetime.fromisoformat(emby_modified_str.replace('Z', '+00:00'))
-                    last_synced_dt = datetime.fromisoformat(last_synced_str).replace(tzinfo=timezone.utc)
+                    emby_modified_str_fixed = re.sub(r'\.(\d{6})\d*Z$', r'.\1Z', emby_modified_str)
+                    emby_modified_dt = datetime.fromisoformat(emby_modified_str_fixed.replace('Z', '+00:00'))
+                    
+                    # ★★★ 最终修复：直接使用从数据库获取的 datetime 对象，不再调用 fromisoformat ★★★
+                    last_synced_dt = last_synced_dt_from_db
+
                     if emby_modified_dt > last_synced_dt:
                         items_to_update_tmdb_ids.add(tmdb_id)
-                except (ValueError, TypeError):
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"解析时间戳时遇到问题 (TMDb ID: {tmdb_id}), 将默认更新此项目。错误: {e}")
                     items_to_update_tmdb_ids.add(tmdb_id)
 
         logger.info(f"  -> 计算差异完成：新增 {len(items_to_add_tmdb_ids)} 项, 更新 {len(items_to_update_tmdb_ids)} 项, 删除 {len(items_to_delete_tmdb_ids)} 项。")
 
-        # --- 1.4 执行删除操作 (逻辑不变) ---
         if items_to_delete_tmdb_ids:
-            # ... (这部分代码和原来一样，无需修改)
             logger.info(f"  -> 正在从数据库中删除 {len(items_to_delete_tmdb_ids)} 个已不存在的媒体项...")
-            with db_handler.get_db_connection(processor.db_path) as conn:
+            with db_handler.get_db_connection() as conn:
                 cursor = conn.cursor()
                 ids_to_delete_list = list(items_to_delete_tmdb_ids)
                 for i in range(0, len(ids_to_delete_list), 500):
                     batch_ids = ids_to_delete_list[i:i+500]
-                    placeholders = ','.join('?' for _ in batch_ids)
-                    sql = f"DELETE FROM media_metadata WHERE tmdb_id IN ({placeholders})"
-                    cursor.execute(sql, batch_ids)
+                    sql = "DELETE FROM media_metadata WHERE tmdb_id = ANY(%s)"
+                    cursor.execute(sql, (batch_ids,))
                 conn.commit()
             logger.info("  -> 冗余数据清理完成。")
 
-        # --- 1.5 准备需要处理的项目列表 ---
         ids_to_process = items_to_add_tmdb_ids.union(items_to_update_tmdb_ids)
         items_to_process = [emby_items_map[tmdb_id] for tmdb_id in ids_to_process]
         
@@ -1966,7 +1856,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
         logger.info(f"  -> 总共需要处理 {total_to_process} 项，将分 { (total_to_process + batch_size - 1) // batch_size } 个批次。")
 
         # ======================================================================
-        # 步骤 2: 分批循环处理需要新增的媒体项
+        # 步骤 2: 分批循环处理需要新增/更新的媒体项
         # ======================================================================
         
         processed_count = 0
@@ -1985,12 +1875,10 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                 f"处理批次 {batch_number}/{total_batches}..."
             )
 
-            # --- 2.1 批量增强本批次的演员 ---
             batch_people_to_enrich = [p for item in batch_items for p in item.get("People", [])]
             enriched_people_list = processor._enrich_cast_from_db_and_api(batch_people_to_enrich)
             enriched_people_map = {str(p.get("Id")): p for p in enriched_people_list}
 
-            # --- 2.2 并发获取本批次的 TMDB 详情 ---
             logger.info(f"  -> 开始从Tmdb补充导演/国家数据...")
             tmdb_details_map = {}
             def fetch_tmdb_details(item):
@@ -2011,7 +1899,6 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                     if tmdb_id and details:
                         tmdb_details_map[tmdb_id] = details
             
-            # --- 2.3 组装本批次的数据 ---
             metadata_batch = []
             for item in batch_items:
                 tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
@@ -2059,19 +1946,28 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                 }
                 metadata_batch.append(metadata_to_save)
 
-            # --- 2.4 写入本批次的数据 ---
             if metadata_batch:
-                with db_handler.get_db_connection(processor.db_path) as conn:
+                with db_handler.get_db_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute("BEGIN TRANSACTION;")
                     for metadata in metadata_batch:
                         try:
-                            columns = ', '.join(metadata.keys())
-                            placeholders = ', '.join('?' for _ in metadata)
-                            sql = f"INSERT OR REPLACE INTO media_metadata ({columns}, last_synced_at) VALUES ({placeholders}, ?)"
+                            columns = list(metadata.keys())
+                            columns_str = ', '.join(columns)
+                            placeholders_str = ', '.join(['%s'] * len(columns))
+                            
+                            update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns]
+                            update_clauses.append("last_synced_at = EXCLUDED.last_synced_at")
+                            update_str = ', '.join(update_clauses)
+
+                            sql = f"""
+                                INSERT INTO media_metadata ({columns_str}, last_synced_at)
+                                VALUES ({placeholders_str}, %s)
+                                ON CONFLICT (tmdb_id, item_type) DO UPDATE SET {update_str}
+                            """
                             sync_time = datetime.now(timezone.utc).isoformat()
                             cursor.execute(sql, tuple(metadata.values()) + (sync_time,))
-                        except sqlite3.Error as e:
+                        except psycopg2.Error as e:
                             logger.error(f"写入 TMDB ID {metadata.get('tmdb_id')} 的元数据时发生数据库错误: {e}")
                     conn.commit()
                 logger.info(f"--- 批次 {batch_number}/{total_batches} 已成功写入数据库。---")

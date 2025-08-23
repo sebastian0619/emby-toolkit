@@ -1,6 +1,5 @@
 # actor_sync_handler.py (最终版)
 
-import sqlite3
 import time
 import json
 from typing import Optional, List, Dict, Any
@@ -13,9 +12,8 @@ from db_handler import ActorDBManager
 logger = logging.getLogger(__name__)
 
 class UnifiedSyncHandler:
-    def __init__(self, db_path: str, emby_url: str, emby_api_key: str, emby_user_id: Optional[str], tmdb_api_key: str):
-        self.db_path = db_path
-        self.actor_db_manager = ActorDBManager(self.db_path)
+    def __init__(self, emby_url: str, emby_api_key: str, emby_user_id: Optional[str], tmdb_api_key: str):
+        self.actor_db_manager = ActorDBManager()
         self.emby_url = emby_url
         self.emby_api_key = emby_api_key
         self.emby_user_id = emby_user_id
@@ -46,7 +44,7 @@ class UnifiedSyncHandler:
         if update_status_callback: update_status_callback(0, f"开始同步 {total_from_emby} 位演员...")
 
         # ✨ 使用带有合并逻辑的 upsert_person，但关闭在线丰富功能
-        with get_central_db_connection(self.db_path) as conn:
+        with get_central_db_connection() as conn:
             cursor = conn.cursor()
             
             for person_batch in emby_handler.get_all_persons_from_emby(self.emby_url, self.emby_api_key, self.emby_user_id, stop_event):

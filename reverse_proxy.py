@@ -55,35 +55,29 @@ def _get_real_emby_url_and_key():
     return base_url, api_key
 
 def handle_get_views():
+    """
+    【V2 - PG JSON 兼容版】
+    - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
+    """
     real_server_id = extensions.EMBY_SERVER_ID
     if not real_server_id:
         return "Proxy is not ready", 503
 
     try:
-        collections = db_handler.get_all_active_custom_collections(config_manager.DB_PATH)
+        collections = db_handler.get_all_active_custom_collections()
         fake_views_items = []
         for coll in collections:
-            # --- ★★★ 核心修改：仅根据真实 Emby 合集 ID 的存在性进行过滤 ★★★ ---
-            
-            # 如果数据库记录中没有对应的 Emby 合集 ID (emby_collection_id)，
-            # 这意味着该合集在 Emby 中从未被成功创建（因为没有匹配的媒体项）。
-            # 因此，我们不应为其生成虚拟库封面。
             real_emby_collection_id = coll.get('emby_collection_id')
             if not real_emby_collection_id:
                 logger.debug(f"  -> 虚拟库 '{coll['name']}' (ID: {coll['id']}) 因无对应的真实Emby合集而被隐藏。")
-                continue  # <-- 直接跳过，不生成任何视图项目
-
-            # --- 只有拥有真实 Emby 合集 ID 的库才会执行到这里 ---
+                continue
 
             db_id = coll['id']
             mimicked_id = to_mimicked_id(db_id)
-
-            # 因为我们已经确认 real_emby_collection_id 存在，所以可以直接使用它
             image_tags = {"Primary": f"{real_emby_collection_id}?timestamp={int(time.time())}"}
 
-            # 安全地加载 definition JSON
-            definition_json = coll.get('definition_json')
-            definition = json.loads(definition_json) if definition_json else {}
+            # ★★★ 核心修复：直接使用已经是字典的 definition_json 字段 ★★★
+            definition = coll.get('definition_json') or {}
             
             merged_libraries = definition.get('merged_libraries', [])
             name_suffix = f" (合并库: {len(merged_libraries)}个)" if merged_libraries else ""
@@ -111,7 +105,6 @@ def handle_get_views():
         
         logger.debug(f"已生成 {len(fake_views_items)} 个虚拟库。")
 
-        # --- 原生库合并逻辑 (保持不变) ---
         native_views_items = []
         should_merge_native = config_manager.APP_CONFIG.get('proxy_merge_native_libraries', True)
         if should_merge_native:
@@ -148,18 +141,21 @@ def handle_get_views():
         return "Internal Proxy Error", 500
 
 def handle_get_mimicked_library_details(user_id, mimicked_id):
-    ### UI回退点 ###
-    # 不再尝试“偷天换日”，而是创建一个简单、稳定、有效的详情对象。
+    """
+    【V2 - PG JSON 兼容版】
+    - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
+    """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
-        coll = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, real_db_id)
+        coll = db_handler.get_custom_collection_by_id(real_db_id)
         if not coll: return "Not Found", 404
 
         real_server_id = extensions.EMBY_SERVER_ID
         real_emby_collection_id = coll.get('emby_collection_id')
         image_tags = {"Primary": real_emby_collection_id} if real_emby_collection_id else {}
         
-        definition = json.loads(coll.get('definition_json', '{}'))
+        # ★★★ 核心修复：直接使用已经是字典的 definition_json 字段 ★★★
+        definition = coll.get('definition_json') or {}
         item_type_from_db = definition.get('item_type', 'Movie')
         collection_type = "mixed"
         if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
@@ -168,7 +164,7 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
 
         fake_library_details = {
             "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id,
-            "Type": "CollectionFolder", # 确保稳定性的关键
+            "Type": "CollectionFolder",
             "CollectionType": collection_type, "IsFolder": True, "ImageTags": image_tags,
         }
         return Response(json.dumps(fake_library_details), mimetype='application/json')
@@ -200,7 +196,7 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
-        collection_info = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, real_db_id)
+        collection_info = db_handler.get_custom_collection_by_id(real_db_id)
         if not collection_info or not collection_info.get('emby_collection_id'):
             return Response(json.dumps([]), mimetype='application/json')
 
@@ -228,15 +224,18 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
         return Response(json.dumps([]), mimetype='application/json')
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
+    """
+    【V2 - PG JSON 兼容版】
+    - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
+    """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
-        collection_info = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, real_db_id)
+        collection_info = db_handler.get_custom_collection_by_id(real_db_id)
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
-        # --- 1. 获取媒体内容的逻辑保持不变 ---
-        # ... (这部分获取 real_items_map 和合并 final_items 的代码完全不变) ...
-        definition = json.loads(collection_info.get('definition_json', '{}'))
+        # ★★★ 核心修复 1/2：直接使用已经是字典的 definition_json 字段 ★★★
+        definition = collection_info.get('definition_json') or {}
         real_items_map = {}
         real_emby_collection_id = collection_info.get('emby_collection_id')
         if real_emby_collection_id:
@@ -255,7 +254,9 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             for item in resp.json().get("Items", []):
                 tmdb_id = str(item.get('ProviderIds', {}).get('Tmdb'))
                 if tmdb_id: real_items_map[tmdb_id] = item
-        all_db_items = json.loads(collection_info.get('generated_media_info_json', '[]'))
+        
+        # ★★★ 核心修复 2/2：直接使用已经是列表的 generated_media_info_json 字段 ★★★
+        all_db_items = collection_info.get('generated_media_info_json') or []
         final_items = []
         processed_real_tmdb_ids = set()
         for db_item in all_db_items:
@@ -267,10 +268,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         for tmdb_id, real_item in real_items_map.items():
             if tmdb_id not in processed_real_tmdb_ids: final_items.append(real_item)
         
-        # --- 2. ★★★ 核心修改：加入“是否劫持”的判断开关 ★★★ ---
         sort_by_field = definition.get('default_sort_by')
-
-        # 只有当用户明确选择了排序字段 (且不是'none') 时，才执行劫持
         if sort_by_field and sort_by_field != 'none':
             sort_order = definition.get('default_sort_order', 'Ascending')
             is_descending = (sort_order == 'Descending')
@@ -286,10 +284,8 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 logger.warning(f"排序时遇到类型不匹配问题，已回退到按名称排序。")
                 final_items.sort(key=lambda item: item.get('SortName', ''))
         else:
-            # 如果用户选择'none'或未设置，则不执行任何排序，直接放行
             logger.debug("未设置虚拟库排序，将使用Emby原生排序。")
 
-        # --- 3. 返回最终的列表 (可能是排好序的，也可能是原生的) ---
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')
 
@@ -309,7 +305,7 @@ def handle_get_latest_items(user_id, params):
             except (ValueError, TypeError):
                 return Response(json.dumps([]), mimetype='application/json')
 
-            collection_info = db_handler.get_custom_collection_by_id(config_manager.DB_PATH, virtual_library_db_id)
+            collection_info = db_handler.get_custom_collection_by_id(virtual_library_db_id)
             if not collection_info or not collection_info.get('emby_collection_id'):
                 return Response(json.dumps([]), mimetype='application/json')
 

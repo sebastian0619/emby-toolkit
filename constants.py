@@ -9,11 +9,22 @@ GITHUB_REPO_NAME = "emby-toolkit" # 您的 GitHub 仓库名
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
 WEB_APP_PORT = 5257    # Web UI 监听的端口
 CONFIG_FILE_NAME = "config.ini" # 主配置文件名
-DB_NAME = "emby_actor_processor.sqlite" # 主数据库文件名
 TIMEZONE = "Asia/Shanghai" # 应用使用的时区，用于计划任务等
-#数据库
+
+# ==============================================================================
+# ✨ 数据库配置 (Database) - PostgreSQL
+# ==============================================================================
 CONFIG_SECTION_DATABASE = "Database"
-CONFIG_OPTION_DB_PATH = "db_path"
+CONFIG_OPTION_DB_HOST = "db_host"
+CONFIG_OPTION_DB_PORT = "db_port"
+CONFIG_OPTION_DB_USER = "db_user"
+CONFIG_OPTION_DB_PASSWORD = "db_password"
+CONFIG_OPTION_DB_NAME = "db_name"
+ENV_VAR_DB_HOST = "DB_HOST"
+ENV_VAR_DB_PORT = "DB_PORT"
+ENV_VAR_DB_USER = "DB_USER"
+ENV_VAR_DB_PASSWORD = "DB_PASSWORD"
+ENV_VAR_DB_NAME = "DB_NAME"
 
 # ==============================================================================
 # ✨ 反向代理配置 (Reverse Proxy)

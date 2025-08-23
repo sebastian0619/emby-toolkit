@@ -1,29 +1,20 @@
-# task_manager.py
+# task_manager.py (V2 - 精确调度版)
 import threading
 import json
-import sqlite3
 import logging
 from queue import Queue
-from typing import Optional, Callable, Any, Union
-
-from db_handler import get_db_connection
-from core_processor import MediaProcessor
-from watchlist_processor import WatchlistProcessor
-from actor_subscription_processor import ActorSubscriptionProcessor
-import config_manager
-import extensions
-# # --- 核心修改：改为定义全局变量，等待被注入 ---
-# media_processor_instance: Optional['MediaProcessor'] = None
-# watchlist_processor_instance: Optional['WatchlistProcessor'] = None
-# actor_subscription_processor_instance: Optional['ActorSubscriptionProcessor'] = None
-# update_status_from_thread: Optional[Callable] = None
+from typing import Optional, Callable, Any, Union, Literal
 
 # 导入类型提示，注意使用字符串避免循环导入
 from core_processor import MediaProcessor
 from watchlist_processor import WatchlistProcessor
 from actor_subscription_processor import ActorSubscriptionProcessor
+import extensions
 
 logger = logging.getLogger(__name__)
+
+# 定义处理器类型的字面量，提供类型提示和静态检查
+ProcessorType = Literal['media', 'watchlist', 'actor']
 
 # --- 任务状态和控制 ---
 background_task_status = {
@@ -33,54 +24,29 @@ background_task_status = {
     "message": "等待任务",
     "last_action": None
 }
-task_lock = threading.Lock()  # 用于确保后台任务串行执行
+task_lock = threading.Lock()
 
 # --- 任务队列和工人线程 ---
 task_queue = Queue()
 task_worker_thread: Optional[threading.Thread] = None
 task_worker_lock = threading.Lock()
 
-# +++ 回调函数移到这里 +++
 def update_status_from_thread(progress: int, message: str):
-    """
-    【新家】这个回调函数由处理器或任务函数调用，用于更新任务状态。
-    它直接修改本模块内的状态字典。
-    """
+    """由处理器或任务函数调用，用于更新任务状态。"""
     if progress >= 0:
         background_task_status["progress"] = progress
     background_task_status["message"] = message
-
-# def initialize_task_manager(
-#     media_proc: MediaProcessor,
-#     watchlist_proc: WatchlistProcessor,
-#     actor_sub_proc: ActorSubscriptionProcessor
-# ):
-#     """
-#     【公共接口】由主应用调用，注入所有必要的处理器实例和回调函数。
-#     """
-#     global media_processor_instance, watchlist_processor_instance, actor_subscription_processor_instance
-    
-#     media_processor_instance = media_proc
-#     watchlist_processor_instance = watchlist_proc
-#     actor_subscription_processor_instance = actor_sub_proc
-    
-#     logger.info("任务管理器 (TaskManager) 已成功接收并初始化所有处理器实例。")
 
 def get_task_status() -> dict:
     """获取当前后台任务的状态。"""
     return background_task_status.copy()
 
-
 def is_task_running() -> bool:
     """检查是否有后台任务正在运行。"""
     return task_lock.locked()
 
-
 def _execute_task_with_lock(task_function: Callable, task_name: str, processor: Union[MediaProcessor, WatchlistProcessor, ActorSubscriptionProcessor], *args, **kwargs):
-    """
-    【V2 - 工人专用版】通用后台任务执行器。
-    这个函数现在是 task_manager 的私有部分。
-    """
+    """【工人专用】通用后台任务执行器。"""
     global background_task_status
     
     with task_lock:
@@ -90,11 +56,10 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
 
         processor.clear_stop_signal()
 
-        background_task_status["is_running"] = True
-        background_task_status["current_action"] = task_name
-        background_task_status["last_action"] = task_name
-        background_task_status["progress"] = 0
-        background_task_status["message"] = f"{task_name} 初始化..."
+        background_task_status.update({
+            "is_running": True, "current_action": task_name, "last_action": task_name,
+            "progress": 0, "message": f"{task_name} 初始化..."
+        })
         logger.info(f"--- 后台任务 '{task_name}' 开始执行 ---")
 
         task_completed_normally = False
@@ -107,84 +72,61 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
             if not processor.is_stop_requested():
                 task_completed_normally = True
         finally:
-            final_message_for_status = "未知结束状态"
+            final_message = "未知结束状态"
             current_progress = background_task_status["progress"]
 
-            if processor and processor.is_stop_requested():
-                final_message_for_status = "任务已成功中断。"
+            if processor.is_stop_requested():
+                final_message = "任务已成功中断。"
             elif task_completed_normally:
-                final_message_for_status = "处理完成。"
+                final_message = "处理完成。"
                 current_progress = 100
             
-            update_status_from_thread(current_progress, final_message_for_status)
-            logger.info(f"--- 后台任务 '{task_name}' 结束，最终状态: {final_message_for_status} ---")
+            update_status_from_thread(current_progress, final_message)
+            logger.info(f"--- 后台任务 '{task_name}' 结束，最终状态: {final_message} ---")
 
-            # 注意：这里的 close() 逻辑可能需要根据实际情况调整
-            # 如果处理器是单例，我们可能不应该在这里关闭它，而是在应用退出时关闭
-            # 暂时保留，但这是一个潜在的优化点
-            # if processor:
-            #     processor.close()
-
-            background_task_status["is_running"] = False
-            background_task_status["current_action"] = "无"
-            background_task_status["progress"] = 0
-            background_task_status["message"] = "等待任务"
-            if processor:
-                processor.clear_stop_signal()
+            background_task_status.update({
+                "is_running": False, "current_action": "无", "progress": 0, "message": "等待任务"
+            })
+            processor.clear_stop_signal()
             logger.trace(f"后台任务 '{task_name}' 状态已重置。")
-
 
 def task_worker_function():
     """
-    通用工人线程，从队列中获取并处理各种后台任务。
+    【V2 - 精确调度版】
+    通用工人线程，根据提交任务时指定的 processor_type 来精确选择处理器。
     """
     logger.info("通用任务线程已启动，等待任务...")
     while True:
         try:
             task_info = task_queue.get()
-
             if task_info is None:
                 logger.info("工人线程收到停止信号，即将退出。")
                 break
 
-            task_function, task_name, args, kwargs = task_info
+            task_function, task_name, processor_type, args, kwargs = task_info
             
-            processor_to_use = None
+            # ★★★ 核心修复：使用精确的、基于类型的调度逻辑 ★★★
+            processor_map = {
+                'media': extensions.media_processor_instance,
+                'watchlist': extensions.watchlist_processor_instance,
+                'actor': extensions.actor_subscription_processor_instance
+            }
             
-            # +++ 核心修改：添加最高优先级的“特赦令” +++
-            if task_function.__name__ == 'task_add_all_series_to_watchlist':
-                processor_to_use = extensions.media_processor_instance
-                logger.trace(f"任务 '{task_name}' [特例] 将使用 MediaProcessor。")
-            
-            # --- 老顽固的旧逻辑，现在是第二优先级 ---
-            elif "追剧" in task_name or "watchlist" in task_function.__name__:
-                processor_to_use = extensions.watchlist_processor_instance
-                logger.trace(f"任务 '{task_name}' 将使用 WatchlistProcessor。")
-            
-            elif task_function.__name__ in ['task_process_actor_subscriptions', 'task_scan_actor_media']:
-                processor_to_use = extensions.actor_subscription_processor_instance
-                logger.trace(f"任务 '{task_name}' 将使用 ActorSubscriptionProcessor。")
-            
-            else:
-                processor_to_use = extensions.media_processor_instance
-                logger.trace(f"任务 '{task_name}' 将使用 MediaProcessor。")
+            processor_to_use = processor_map.get(processor_type)
+            logger.trace(f"任务 '{task_name}' 请求使用 '{processor_type}' 处理器。")
 
             if not processor_to_use:
-                logger.error(f"任务 '{task_name}' 无法执行：对应的处理器未初始化。")
+                logger.error(f"任务 '{task_name}' 无法执行：类型为 '{processor_type}' 的处理器未初始化或不存在。")
                 task_queue.task_done()
                 continue
 
             _execute_task_with_lock(task_function, task_name, processor_to_use, *args, **kwargs)
-            
             task_queue.task_done()
         except Exception as e:
             logger.error(f"通用工人线程发生未知错误: {e}", exc_info=True)
 
-
 def start_task_worker_if_not_running():
-    """
-    安全地启动通用工人线程。
-    """
+    """安全地启动通用工人线程。"""
     global task_worker_thread
     with task_worker_lock:
         if task_worker_thread is None or not task_worker_thread.is_alive():
@@ -194,11 +136,10 @@ def start_task_worker_if_not_running():
         else:
             logger.debug("通用任务线程已在运行。")
 
-
-def submit_task(task_function: Callable, task_name: str, *args, **kwargs) -> bool:
+def submit_task(task_function: Callable, task_name: str, processor_type: ProcessorType = 'media', *args, **kwargs) -> bool:
     """
-    【公共接口】将一个任务提交到通用队列中。
-    返回 True 表示提交成功，False 表示提交失败。
+    【V2 - 公共接口】将一个任务提交到通用队列中。
+    新增 processor_type 参数，用于精确指定任务所需的处理器。
     """
     from logger_setup import frontend_log_queue # 延迟导入以避免循环
 
@@ -208,26 +149,25 @@ def submit_task(task_function: Callable, task_name: str, *args, **kwargs) -> boo
             return False
 
         frontend_log_queue.clear()
-        logger.info(f"任务 '{task_name}' 已提交到队列，并已清空前端日志。")
+        logger.info(f"任务 '{task_name}' (处理器: {processor_type}) 已提交到队列，并已清空前端日志。")
         
-        task_info = (task_function, task_name, args, kwargs)
+        # ★★★ 核心修复：将 processor_type 加入任务信息元组 ★★★
+        task_info = (task_function, task_name, processor_type, args, kwargs)
         task_queue.put(task_info)
         start_task_worker_if_not_running()
         return True
-
 
 def stop_task_worker():
     """【公共接口】停止工人线程，用于应用退出。"""
     global task_worker_thread
     if task_worker_thread and task_worker_thread.is_alive():
         logger.info("正在发送停止信号给任务工人线程...")
-        task_queue.put(None) # 发送“毒丸”
+        task_queue.put(None)
         task_worker_thread.join(timeout=5)
         if task_worker_thread.is_alive():
             logger.warning("任务工人线程在5秒内未能正常退出。")
         else:
             logger.info("任务工人线程已成功停止。")
-
 
 def clear_task_queue():
     """【公共接口】清空任务队列，用于应用退出。"""

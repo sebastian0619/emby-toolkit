@@ -1,9 +1,9 @@
 # actor_subscription_processor.py
 
-import sqlite3
 import json
 import time
 import re
+import psycopg2
 from datetime import datetime, timedelta
 import logging
 from typing import Optional, Dict, Any, List, Set, Callable
@@ -30,7 +30,6 @@ class MediaType(Enum):
 class ActorSubscriptionProcessor:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.db_path = config.get('db_path')
         self.tmdb_api_key = config.get('tmdb_api_key')
         self.emby_url = config.get('emby_server_url')
         self.emby_api_key = config.get('emby_api_key')
@@ -60,8 +59,7 @@ class ActorSubscriptionProcessor:
         _update_status(0, "正在准备订阅列表...")
         
         try:
-            with get_db_connection(self.db_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT id, actor_name FROM actor_subscriptions WHERE status = 'active'")
                 subs_to_process = cursor.fetchall()
@@ -132,11 +130,10 @@ class ActorSubscriptionProcessor:
 
         logger.trace(f"--- 开始为订阅ID {subscription_id} 执行全量作品扫描 ---")
         try:
-            with get_db_connection(self.db_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with get_db_connection() as conn:
                 cursor = conn.cursor()
 
-                sub = cursor.execute("SELECT * FROM actor_subscriptions WHERE id = ?", (subscription_id,)).fetchone()
+                sub = cursor.execute("SELECT * FROM actor_subscriptions WHERE id = %s", (subscription_id,)).fetchone()
                 if not sub: return
                 
                 logger.trace(f"  -> 正在处理演员: {sub['actor_name']} (TMDb ID: {sub['tmdb_person_id']})")
@@ -187,12 +184,12 @@ class ActorSubscriptionProcessor:
         except Exception as e:
             logger.error(f"为订阅ID {subscription_id} 执行扫描时发生严重错误: {e}", exc_info=True)
 
-    def _get_existing_tracked_media(self, cursor: sqlite3.Cursor, subscription_id: int) -> Dict[int, str]:
+    def _get_existing_tracked_media(self, cursor: psycopg2.extensions.cursor, subscription_id: int) -> Dict[int, str]:
         """从数据库获取当前已追踪的媒体及其状态。"""
-        cursor.execute("SELECT tmdb_media_id, status FROM tracked_actor_media WHERE subscription_id = ?", (subscription_id,))
+        cursor.execute("SELECT tmdb_media_id, status FROM tracked_actor_media WHERE subscription_id = %s", (subscription_id,))
         return {row['tmdb_media_id']: row['status'] for row in cursor.fetchall()}
 
-    def _filter_works(self, works: List[Dict], sub_config: sqlite3.Row) -> List[Dict]:
+    def _filter_works(self, works: List[Dict], sub_config: Dict[str, Any]) -> List[Dict]:
         """根据订阅配置过滤从TMDb获取的作品列表。"""
         filtered = []
         handled_media_ids = set()
@@ -315,7 +312,7 @@ class ActorSubscriptionProcessor:
             'emby_item_id': None
         }
 
-    def _update_database_records(self, cursor: sqlite3.Cursor, subscription_id: int, to_insert: List[Dict], to_update: List[Dict], to_delete_ids: List[int]):
+    def _update_database_records(self, cursor: psycopg2.extensions.cursor, subscription_id: int, to_insert: List[Dict], to_update: List[Dict], to_delete_ids: List[int]):
         """执行数据库的增、删、改操作。"""
         if to_insert:
             logger.info(f"  -> 新增 {len(to_insert)} 条作品记录。")
@@ -337,8 +334,8 @@ class ActorSubscriptionProcessor:
             logger.info(f"  -> 删除 {len(to_delete_ids)} 条过时的作品记录。")
             delete_params = [(subscription_id, media_id) for media_id in to_delete_ids]
             cursor.executemany(
-                "DELETE FROM tracked_actor_media WHERE subscription_id = ? AND tmdb_media_id = ?",
+                "DELETE FROM tracked_actor_media WHERE subscription_id = %s AND tmdb_media_id = %s",
                 delete_params
             )
         
-        cursor.execute("UPDATE actor_subscriptions SET last_checked_at = CURRENT_TIMESTAMP WHERE id = ?", (subscription_id,))
+        cursor.execute("UPDATE actor_subscriptions SET last_checked_at = CURRENT_TIMESTAMP WHERE id = %s", (subscription_id,))

@@ -35,16 +35,21 @@ except OSError as e:
 
 # 从 constants 模块安全地获取文件名，如果不存在则使用默认值
 CONFIG_FILE_NAME = getattr(constants, 'CONFIG_FILE_NAME', "config.ini")
-DB_NAME = getattr(constants, 'DB_NAME', "emby_actor_processor.sqlite")
 
 # 最终的配置文件和数据库路径
 CONFIG_FILE_PATH = os.path.join(PERSISTENT_DATA_PATH, CONFIG_FILE_NAME)
-DB_PATH = os.path.join(PERSISTENT_DATA_PATH, DB_NAME)
 LOG_DIRECTORY = os.path.join(PERSISTENT_DATA_PATH, 'logs')
 
 
 # ✨✨✨ “配置清单” - 这是配置模块的核心 ✨✨✨
 CONFIG_DEFINITION = {
+     # [Database] - ★★★ 新增PostgreSQL配置 ★★★
+    constants.CONFIG_OPTION_DB_HOST: (constants.CONFIG_SECTION_DATABASE, 'string', 'localhost'),
+    constants.CONFIG_OPTION_DB_PORT: (constants.CONFIG_SECTION_DATABASE, 'int', 5432),
+    constants.CONFIG_OPTION_DB_USER: (constants.CONFIG_SECTION_DATABASE, 'string', 'postgres'),
+    constants.CONFIG_OPTION_DB_PASSWORD: (constants.CONFIG_SECTION_DATABASE, 'string', 'your_password'),
+    constants.CONFIG_OPTION_DB_NAME: (constants.CONFIG_SECTION_DATABASE, 'string', 'emby_toolkit'),
+
     # [Emby]
     constants.CONFIG_OPTION_EMBY_SERVER_URL: (constants.CONFIG_SECTION_EMBY, 'string', ""),
     constants.CONFIG_OPTION_EMBY_API_KEY: (constants.CONFIG_SECTION_EMBY, 'string', ""),
@@ -119,7 +124,10 @@ APP_CONFIG: Dict[str, Any] = {}
 
 # --- 加载配置 ---
 def load_config() -> Tuple[Dict[str, Any], bool]:
-    """【清单驱动版】从 config.ini 加载配置到全局的 APP_CONFIG 变量。"""
+    """
+    【清单驱动+环境变量覆盖版】
+    从 config.ini 加载配置，然后用环境变量覆盖数据库配置。
+    """
     global APP_CONFIG
     config_parser = configparser.ConfigParser()
     is_first_run = not os.path.exists(CONFIG_FILE_PATH)
@@ -132,13 +140,12 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
 
     app_cfg = {}
     
-    # 遍历配置清单，自动加载所有配置项
+    # 步骤 1: 像以前一样，从 config.ini 加载所有配置
     for key, (section, type, default) in CONFIG_DEFINITION.items():
         if not config_parser.has_section(section):
             config_parser.add_section(section)
             
         if type == 'boolean':
-            # 特殊处理首次运行时的认证开关
             if key == constants.CONFIG_OPTION_AUTH_ENABLED and is_first_run:
                 app_cfg[key] = True
             else:
@@ -152,6 +159,32 @@ def load_config() -> Tuple[Dict[str, Any], bool]:
             app_cfg[key] = [item.strip() for item in value_str.split(',') if item.strip()]
         else: # string
             app_cfg[key] = config_parser.get(section, key, fallback=default)
+
+    # ★★★ 步骤 2: 检查并应用环境变量覆盖 ★★★
+    logger.info("检查数据库环境变量...")
+    
+    # 定义环境变量和内部配置键的映射关系
+    env_to_config_map = {
+        constants.ENV_VAR_DB_HOST: constants.CONFIG_OPTION_DB_HOST,
+        constants.ENV_VAR_DB_PORT: constants.CONFIG_OPTION_DB_PORT,
+        constants.ENV_VAR_DB_USER: constants.CONFIG_OPTION_DB_USER,
+        constants.ENV_VAR_DB_PASSWORD: constants.CONFIG_OPTION_DB_PASSWORD,
+        constants.ENV_VAR_DB_NAME: constants.CONFIG_OPTION_DB_NAME,
+    }
+
+    for env_var, config_key in env_to_config_map.items():
+        env_value = os.environ.get(env_var)
+        if env_value:
+            # 如果环境变量存在，就覆盖掉从 config.ini 读到的值
+            logger.info(f"检测到环境变量 '{env_var}'，将覆盖配置 '{config_key}'。")
+            # 特殊处理端口号，需要是整数
+            if config_key == constants.CONFIG_OPTION_DB_PORT:
+                try:
+                    app_cfg[config_key] = int(env_value)
+                except ValueError:
+                    logger.error(f"环境变量 '{env_var}' 的值 '{env_value}' 不是一个有效的端口号，已忽略。")
+            else:
+                app_cfg[config_key] = env_value
 
     APP_CONFIG = app_cfg.copy()
     logger.info("全局配置 APP_CONFIG 已加载/更新。")

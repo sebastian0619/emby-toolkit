@@ -50,7 +50,6 @@ class DoubanApi:
     
 
     def __init__(self, cooldown_seconds: Optional[float] = None, user_cookie: Optional[str] = None):
-        # 完全移除了和 db_path 相关的逻辑
         if DoubanApi._session is None:
             with DoubanApi._session_lock:
                 if DoubanApi._session is None:
@@ -415,7 +414,6 @@ class DoubanApi:
 if __name__ == '__main__':
     # 测试代码现在不再需要创建数据库文件
     try:
-        # 不再需要 db_path
         api = DoubanApi(cooldown_seconds=2.0)
         
         # 测试API调用 (需要网络)

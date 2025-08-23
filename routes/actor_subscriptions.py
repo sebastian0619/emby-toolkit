@@ -2,8 +2,7 @@
 
 from flask import Blueprint, request, jsonify
 import logging
-import sqlite3
-
+import psycopg2
 # 导入需要的模块
 import db_handler
 import config_manager
@@ -55,7 +54,7 @@ def handle_actor_subscriptions():
     # ... (函数逻辑和原来完全一样) ...
     if request.method == 'GET':
         try:
-            subscriptions = db_handler.get_all_actor_subscriptions(config_manager.DB_PATH)
+            subscriptions = db_handler.get_all_actor_subscriptions()
             return jsonify(subscriptions)
         except Exception as e:
             return jsonify({"error": "获取订阅列表时发生服务器内部错误"}), 500
@@ -64,14 +63,13 @@ def handle_actor_subscriptions():
         data = request.json
         try:
             new_sub_id = db_handler.add_actor_subscription(
-                db_path=config_manager.DB_PATH,
                 tmdb_person_id=data.get('tmdb_person_id'),
                 actor_name=data.get('actor_name'),
                 profile_path=data.get('profile_path'),
                 config=data.get('config', {})
             )
             return jsonify({"message": f"演员 {data.get('actor_name')} 已成功订阅！", "id": new_sub_id}), 201
-        except sqlite3.IntegrityError:
+        except psycopg2.IntegrityError:
             return jsonify({"error": "该演员已经被订阅过了"}), 409
         except Exception as e:
             return jsonify({"error": "添加订阅时发生服务器内部错误"}), 500
@@ -82,21 +80,21 @@ def handle_single_actor_subscription(sub_id):
     # ... (函数逻辑和原来完全一样) ...
     if request.method == 'GET':
         try:
-            response_data = db_handler.get_single_subscription_details(config_manager.DB_PATH, sub_id)
+            response_data = db_handler.get_single_subscription_details(sub_id)
             return jsonify(response_data) if response_data else ({"error": "未找到指定的订阅"}, 404)
         except Exception as e:
             return jsonify({"error": "获取订阅详情时发生服务器内部错误"}), 500
     
     if request.method == 'PUT':
         try:
-            success = db_handler.update_actor_subscription(config_manager.DB_PATH, sub_id, request.json)
+            success = db_handler.update_actor_subscription(sub_id, request.json)
             return jsonify({"message": "订阅已成功更新！"}) if success else ({"error": "未找到指定的订阅"}, 404)
         except Exception as e:
             return jsonify({"error": "更新订阅时发生服务器内部错误"}), 500
 
     if request.method == 'DELETE':
         try:
-            db_handler.delete_actor_subscription(config_manager.DB_PATH, sub_id)
+            db_handler.delete_actor_subscription(sub_id)
             return jsonify({"message": "订阅已成功删除。"})
         except Exception as e:
             return jsonify({"error": "删除订阅时发生服务器内部错误"}), 500
@@ -108,5 +106,5 @@ def refresh_single_actor_subscription(sub_id):
     # ... (函数逻辑和原来完全一样) ...
     from tasks import task_scan_actor_media # 延迟导入
     actor_name = f"订阅ID {sub_id}" # 简化获取名字的逻辑
-    task_manager.submit_task(task_scan_actor_media, f"手动刷新演员: {actor_name}", sub_id)
+    task_manager.submit_task(task_scan_actor_media, f"手动刷新演员: {actor_name}", sub_id, processor_type='actor')
     return jsonify({"message": f"刷新演员 {actor_name} 作品的任务已提交！"}), 202

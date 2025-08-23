@@ -267,8 +267,8 @@ class FilterEngine:
     【V3 - 功能完整最终版】负责处理 'filter' 类型的自定义合集。
     补全了对'contains'操作符的处理逻辑，确保文本筛选功能正常。
     """
-    def __init__(self, db_path: str):
-        self.db_path = db_path
+    def __init__(self):
+        pass
 
     def _item_matches_rules(self, item_metadata: Dict[str, Any], rules: List[Dict[str, Any]], logic: str) -> bool:
         if not rules: return True
@@ -390,7 +390,7 @@ class FilterEngine:
         matched_items = []
         # ★ 核心修改: 循环处理每种类型
         for item_type in item_types_to_process:
-            all_media_metadata = db_handler.get_all_media_metadata(self.db_path, item_type=item_type)
+            all_media_metadata = db_handler.get_all_media_metadata(item_type=item_type)
             
             log_item_type_cn = "电影" if item_type == "Movie" else "电视剧"
 
@@ -414,6 +414,7 @@ class FilterEngine:
     
     def find_matching_collections(self, item_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
+        【V2 - PG JSON 兼容版】
         为单个媒体项查找所有匹配的自定义合集。
         """
         media_item_type = item_metadata.get('item_type')
@@ -423,7 +424,7 @@ class FilterEngine:
         matched_collections = []
         
         all_filter_collections = [
-            c for c in db_handler.get_all_custom_collections(self.db_path) 
+            c for c in db_handler.get_all_custom_collections() 
             if c['type'] == 'filter' and c['status'] == 'active' and c['emby_collection_id']
         ]
 
@@ -433,15 +434,14 @@ class FilterEngine:
 
         for collection_def in all_filter_collections:
             try:
-                definition = json.loads(collection_def['definition_json'])
+                # ★★★ 核心修复：直接使用已经是字典的 definition_json 字段 ★★★
+                definition = collection_def['definition_json']
                 
                 collection_item_types = definition.get('item_type', ['Movie'])
                 
-                # 2. 为兼容旧数据，如果获取到的是字符串，将其转换为列表
                 if isinstance(collection_item_types, str):
                     collection_item_types = [collection_item_types]
 
-                # 3. 使用 'in' 来判断新入库媒体的类型是否被合集所支持
                 if media_item_type not in collection_item_types:
                     logger.debug(f"  -> 跳过合集《{collection_def['name']}》，因为内容类型不匹配 (合集需要: {collection_item_types}, 实际是: '{media_item_type}')。")
                     continue
@@ -456,7 +456,7 @@ class FilterEngine:
                         'name': collection_def['name'],
                         'emby_collection_id': collection_def['emby_collection_id']
                     })
-            except (json.JSONDecodeError, TypeError) as e:
+            except TypeError as e: # 捕获可能的类型错误，例如如果 definition 不是字典
                 logger.warning(f"解析合集《{collection_def['name']}》的定义时出错: {e}，跳过。")
                 continue
         
