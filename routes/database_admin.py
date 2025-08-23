@@ -182,7 +182,6 @@ def api_export_database():
 
 @db_admin_bp.route('/database/import', methods=['POST'])
 @login_required
-@task_lock_required
 def api_import_database():
     """
     【通用队列版】接收备份文件、要导入的表名列表以及导入模式，
@@ -294,7 +293,6 @@ def api_mark_item_processed(item_id):
 # ✨✨✨ 清空待复核列表（并全部标记为已处理）的 API ✨✨✨
 @db_admin_bp.route('/actions/clear_review_items', methods=['POST'])
 @login_required
-@task_lock_required
 def api_clear_review_items():
     try:
         count = db_handler.clear_all_review_items()

@@ -58,7 +58,6 @@ def api_subscribe_moviepilot():
 
 @collections_bp.route('/subscribe_all_missing', methods=['POST'])
 @login_required
-@task_lock_required
 def api_subscribe_all_missing():
     logger.info("API (Blueprint): 收到一键订阅所有缺失电影的请求。")
     total_subscribed_count = 0

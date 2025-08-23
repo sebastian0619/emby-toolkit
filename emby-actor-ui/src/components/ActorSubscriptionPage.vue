@@ -135,7 +135,7 @@ const loadMore = () => {
 
 const handleRefreshSubscriptions = async () => {
   try {
-    const response = await axios.post('/api/tasks/trigger/actor-tracking');
+    const response = await axios.post('/api/tasks/run', { task_name: 'actor-tracking' });
     message.success(response.data.message || '演员订阅刷新任务已成功提交到后台！');
   } catch (error) {
     console.error("触发演员订阅刷新失败:", error);

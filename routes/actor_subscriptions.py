@@ -111,7 +111,6 @@ def handle_single_actor_subscription(sub_id):
 
 @actor_subscriptions_bp.route('/<int:sub_id>/refresh', methods=['POST'])
 @login_required
-@task_lock_required
 def refresh_single_actor_subscription(sub_id):
     # ★★★ 核心修复：现在我们确实需要导入函数对象了 ★★★
     from tasks import task_scan_actor_media 

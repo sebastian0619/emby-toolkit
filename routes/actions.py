@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 # ★★★ 重新处理单个项目 ★★★
 @actions_bp.route('/actions/reprocess_item/<item_id>', methods=['POST'])
 @login_required
-@task_lock_required
 def api_reprocess_item(item_id):
     from tasks import task_reprocess_single_item # 延迟导入
     import emby_handler
@@ -59,7 +58,6 @@ def api_reprocess_all_review_items():
 # +++ 一键添加所有剧集到追剧列表的 API +++
 @actions_bp.route('/actions/add_all_series_to_watchlist', methods=['POST'])
 @login_required
-@task_lock_required
 @processor_ready_required
 def api_add_all_series_to_watchlist():
     from tasks import task_add_all_series_to_watchlist # 延迟导入

@@ -58,7 +58,6 @@ def api_add_to_watchlist():
 
 @watchlist_bp.route('/update_status', methods=['POST'])
 @login_required
-@task_lock_required
 def api_update_watchlist_status():
     # ... (函数逻辑和原来完全一样) ...
     data = request.json
@@ -84,7 +83,6 @@ def api_update_watchlist_status():
 
 @watchlist_bp.route('/remove/<item_id>', methods=['POST'])
 @login_required
-@task_lock_required
 def api_remove_from_watchlist(item_id):
     # ... (函数逻辑和原来完全一样) ...
     logger.info(f"API (Blueprint): 收到请求，将项目 {item_id} 从追剧列表移除。")
@@ -102,7 +100,6 @@ def api_remove_from_watchlist(item_id):
 
 @watchlist_bp.route('/refresh/<item_id>', methods=['POST'])
 @login_required
-@task_lock_required
 def api_trigger_single_watchlist_refresh(item_id):
     # ... (函数逻辑和原来完全一样) ...
     from tasks import task_refresh_single_watchlist_item # 延迟导入任务函数
@@ -125,7 +122,6 @@ def api_trigger_single_watchlist_refresh(item_id):
 # --- 批量强制完结选中的追剧项目 ---
 @watchlist_bp.route('/batch_force_end', methods=['POST'])
 @login_required
-@task_lock_required
 def api_batch_force_end_watchlist_items():
     """
     【V2】接收前端请求，批量强制完结选中的追剧项目。
@@ -157,7 +153,6 @@ def api_batch_force_end_watchlist_items():
 # ★★★ 批量更新追剧状态的 API (用于“重新追剧”) ★★★
 @watchlist_bp.route('/batch_update_status', methods=['POST'])
 @login_required
-@task_lock_required
 def api_batch_update_watchlist_status():
     """
     接收前端请求，批量更新选中项目的追剧状态。

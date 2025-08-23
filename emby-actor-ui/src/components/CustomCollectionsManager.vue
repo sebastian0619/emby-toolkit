@@ -896,7 +896,7 @@ const updateMediaStatus = async (media, newStatus) => {
 const triggerMetadataSync = async () => {
   isSyncingMetadata.value = true;
   try {
-    const response = await axios.post('/api/tasks/trigger/populate-metadata');
+    const response = await axios.post('/api/tasks/run', { task_name: 'populate-metadata' });
     message.success(response.data.message || '快速同步元数据任务已在后台启动！');
   } catch (error) {
     message.error(error.response?.data?.error || '启动任务失败。');
