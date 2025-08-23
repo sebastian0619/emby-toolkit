@@ -1243,14 +1243,13 @@ def search_unique_studios(search_term: str, limit: int = 20) -> List[str]:
 # --- 搜索演员 ---
 def search_unique_actors(search_term: str, limit: int = 20) -> List[str]:
     """
-    (V6 - 中英双语兼容搜索版)
-    直接从 media_metadata 表中提取演员的 name 和 original_name 进行搜索。
-    用户可以用中文译名或原始外文名进行搜索。
+    【V6.1 - PG JSON 兼容版】
+    - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
+    - 不再对从数据库中获取的 actors_json 字段执行 json.loads()。
     """
     if not search_term:
         return []
     
-    # ★★★ 核心修改 1: 使用字典来存储 unique_name -> original_name 的映射 ★★★
     unique_actors_map = {}
     try:
         with get_db_connection() as conn:
@@ -1259,38 +1258,35 @@ def search_unique_actors(search_term: str, limit: int = 20) -> List[str]:
             rows = cursor.fetchall()
             
             for row in rows:
-                if row['actors_json']:
+                # ★★★ 核心修复：直接使用已经是列表的 actors_json 字段 ★★★
+                actors = row['actors_json']
+                if actors: # 确保它不是 None 或空列表
                     try:
-                        actors = json.loads(row['actors_json'])
                         for actor in actors:
                             actor_name = actor.get('name')
                             original_name = actor.get('original_name')
                             
                             if actor_name and actor_name.strip():
-                                # 使用 actor_name 作为键确保唯一性
                                 if actor_name not in unique_actors_map:
                                     unique_actors_map[actor_name.strip()] = (original_name or '').strip()
-
-                    except (json.JSONDecodeError, TypeError):
+                    except TypeError:
+                        # 增加一个保护，以防万一某行数据格式真的有问题
+                        logger.warning(f"处理 actors_json 时遇到意外的类型错误，内容: {actors}")
                         continue
         
         if not unique_actors_map:
             return []
 
-        # 步骤 2: 在提取出的名字集合中进行双语搜索
         search_term_lower = search_term.lower()
         starts_with_matches = []
         contains_matches = []
         
-        # ★★★ 核心修改 2: 遍历字典，同时检查 name 和 original_name ★★★
         for name, original_name in sorted(unique_actors_map.items()):
             name_lower = name.lower()
             original_name_lower = original_name.lower()
 
-            # 智能排序：优先匹配开头
             if name_lower.startswith(search_term_lower) or (original_name_lower and original_name_lower.startswith(search_term_lower)):
-                starts_with_matches.append(name) # 无论哪个匹配，都返回最终的 name
-            # 其次匹配包含
+                starts_with_matches.append(name)
             elif search_term_lower in name_lower or (original_name_lower and search_term_lower in original_name_lower):
                 contains_matches.append(name)
         
