@@ -7,7 +7,8 @@ import concurrent.futures
 from typing import Dict, List, Optional, Any, Tuple
 import shutil
 import threading
-from datetime import time, datetime
+import datetime
+import time as time_module
 import psycopg2
 import requests
 import copy
@@ -715,7 +716,7 @@ class MediaProcessor:
                 user_id=self.emby_user_id
             )
             # 加入一个微小的延迟，避免请求过于密集
-            time.sleep(0.2)
+            time_module.sleep(0.2)
 
         logger.info(f"  -> 剧集 '{series_name}' 的分集批量更新完成。")
     
@@ -1170,7 +1171,7 @@ class MediaProcessor:
                         logger.info("  -> 任务在处理豆瓣演员时被中止 (豆瓣API调用前)。")
                         raise InterruptedError("任务中止")
                     details = self.douban_api.celebrity_details(d_douban_id)
-                    time.sleep(0.3)
+                    time_module.sleep(0.3)
 
                     d_imdb_id = None
                     if details and not details.get("error"):
@@ -1557,7 +1558,7 @@ class MediaProcessor:
                 force_fetch_from_tmdb=force_fetch_from_tmdb
             )
             
-            time.sleep(float(self.config.get("delay_between_items_sec", 0.5)))
+            time_module.sleep(float(self.config.get("delay_between_items_sec", 0.5)))
         
         if not self.is_stop_requested() and update_status_callback:
             update_status_callback(100, "全量处理完成")
@@ -2080,7 +2081,7 @@ class MediaProcessor:
                     logger.error(f"处理项目 '{item_name_from_db}' (ID: {item_id}) 时发生未知错误: {e}", exc_info=True)
                     stats["skipped_other"] += 1
                 
-                time.sleep(0.1)
+                time_module.sleep(0.1)
 
         final_message = f"✅ 更新: {stats['updated']}, 无变化跳过: {stats['skipped_no_change']}, 清理: {stats['cleaned']}, 其他跳过: {stats['skipped_other']}。"
         logger.info(final_message)
