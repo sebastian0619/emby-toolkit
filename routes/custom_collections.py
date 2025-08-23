@@ -127,41 +127,47 @@ def api_update_custom_collections_order():
 # --- 联动删除Emby合集 ---
 @custom_collections_bp.route('/<int:collection_id>', methods=['DELETE'])
 @login_required
-def api_delete_custom_collection(collection_id):
-    """【V8 - 最终决战版】通过清空所有成员来联动删除Emby合集"""
+def api_get_custom_collection_status(collection_id):
+    """
+    【V3 - 最终健壮修复版】
+    获取单个自定义合集的详情，确保 definition 字段始终为正确的对象格式。
+    - 解决了编辑框因 definition 格式错误而无法加载规则的致命BUG。
+    """
     try:
-        # 步骤 1: 获取待删除合集的完整信息
-        collection_to_delete = db_handler.get_custom_collection_by_id(collection_id)
-        if not collection_to_delete:
-            return jsonify({"error": "未找到要删除的合集"}), 404
-
-        emby_id_to_empty = collection_to_delete.get('emby_collection_id')
-        collection_name = collection_to_delete.get('name')
-
-        # 步骤 2: 如果存在关联的Emby ID，则调用Emby Handler，清空其内容
-        if emby_id_to_empty:
-            logger.info(f"  -> 正在删除合集 '{collection_name}' (Emby ID: {emby_id_to_empty})...")
-            
-            # ★★★ 调用我们全新的、真正有效的清空函数 ★★★
-            emby_handler.empty_collection_in_emby(
-                collection_id=emby_id_to_empty,
-                base_url=config_manager.APP_CONFIG.get('emby_server_url'),
-                api_key=config_manager.APP_CONFIG.get('emby_api_key'),
-                user_id=config_manager.APP_CONFIG.get('emby_user_id')
-            )
-
-        # 步骤 3: 无论Emby端是否成功，都删除本地数据库中的记录
-        db_success = db_handler.delete_custom_collection(
-            collection_id=collection_id
-        )
-
-        if db_success:
-            return jsonify({"message": f"自定义合集 '{collection_name}' 已成功联动删除。"}), 200
+        collection_details = db_handler.get_custom_collection_by_id(collection_id)
+        if not collection_details:
+            return jsonify({"error": "未在自定义合集表中找到该合集"}), 404
+        
+        # 为“健康状态”弹窗准备 media_items 字段
+        collection_details['media_items'] = collection_details.get('generated_media_info_json', [])
+        
+        # ★★★ 核心修复：确保 definition 是一个对象，而不是字符串 ★★★
+        definition_data = collection_details.get('definition_json')
+        
+        if isinstance(definition_data, str):
+            # 如果从数据库读出的是字符串，则用 json.loads() 解析成对象
+            try:
+                collection_details['definition'] = json.loads(definition_data)
+            except (json.JSONDecodeError, TypeError):
+                logger.error(f"合集 {collection_id} 的 definition_json 字段无法被解析为JSON，内容: {definition_data}")
+                collection_details['definition'] = {} # 解析失败，返回空对象
+        elif isinstance(definition_data, dict):
+            # 如果它已经是字典（psycopg2自动解析JSONB字段），则直接使用
+            collection_details['definition'] = definition_data
         else:
-            return jsonify({"error": "数据库删除操作失败，请查看日志。"}), 500
+            # 其他意外情况（如None），提供一个空的默认值
+            collection_details['definition'] = {}
 
+        # 现在，我们可以安全地删除那些体积巨大或不再需要的原始字段
+        if 'generated_media_info_json' in collection_details:
+            del collection_details['generated_media_info_json']
+        if 'definition_json' in collection_details:
+             del collection_details['definition_json']
+            
+        return jsonify(collection_details)
+            
     except Exception as e:
-        logger.error(f"删除自定义合集 {collection_id} 时出错: {e}", exc_info=True)
+        logger.error(f"读取单个自定义合集状态 {collection_id} 时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
 
 # --- 获取单个自定义合集健康状态 ---
