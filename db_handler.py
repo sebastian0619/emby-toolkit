@@ -1499,16 +1499,10 @@ def update_single_media_status_in_custom_collection(collection_id: int, media_tm
 # --- 更新榜单合集 ---
 def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_item_name: str) -> List[Dict[str, Any]]:
     """
-    【V2 - 自动化闭环核心】
+    【V3 - PG JSONB 查询修复版】
     当新媒体入库时，查找所有匹配的'list'类型合集，更新其内部状态，并返回需要被操作的Emby合集信息。
-    - 查找所有包含该 new_item_tmdb_id 且状态不为 'in_library' 的活动榜单合集。
-    - 在内存中将这些媒体项的状态更新为 'in_library'。
-    - 重新计算每个受影响合集的健康度统计（入库数、缺失数）。
-    - 将所有更改一次性写入数据库事务。
-    
-    :param new_item_tmdb_id: 新入库媒体的 TMDb ID。
-    :param new_item_name: 新入库媒体的名称（用于日志记录）。
-    :return: 一个字典列表，包含所有被成功更新的合集的'emby_collection_id'和'name'，供上层调用Emby API。
+    - 修复了因对 JSONB 字段使用 LIKE 操作符导致的数据库错误。
+    - 改为使用 PostgreSQL 高效的 @> (contains) 操作符进行查询。
     """
     collections_to_update_in_emby = []
     
@@ -1516,20 +1510,28 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # 1. 查找所有可能相关的合集
+            # ★★★ 核心修复 1/2：修改 SQL 查询语句 ★★★
+            # 不再使用 LIKE，而是使用 @> 操作符，并对参数进行 ::jsonb 类型转换
             sql_find = """
                 SELECT * FROM custom_collections 
-                WHERE type = 'list' AND status = 'active' AND emby_collection_id IS NOT NULL
-                AND generated_media_info_json LIKE %s
+                WHERE type = 'list' 
+                  AND status = 'active' 
+                  AND emby_collection_id IS NOT NULL
+                  AND generated_media_info_json @> %s::jsonb
             """
-            cursor.execute(sql_find, (f'%"tmdb_id": "{new_item_tmdb_id}"%',))
+            
+            # ★★★ 核心修复 2/2：构建一个符合 @> 操作符要求的 JSON 字符串作为参数 ★★★
+            # 我们要查找的是一个数组，这个数组里包含一个 tmdb_id 是目标ID的对象
+            search_payload = json.dumps([{'tmdb_id': str(new_item_tmdb_id)}])
+            
+            cursor.execute(sql_find, (search_payload,))
             candidate_collections = cursor.fetchall()
 
             if not candidate_collections:
                 logger.debug(f"  -> 未在任何榜单合集中找到 TMDb ID: {new_item_tmdb_id}。")
                 return []
 
-            # 2. 在事务中处理所有匹配的合集
+            # --- 后续逻辑保持不变 ---
             cursor.execute("BEGIN TRANSACTION;")
             try:
                 for collection_row in candidate_collections:
@@ -1538,35 +1540,29 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                     collection_name = collection['name']
                     
                     try:
-                        media_list = json.loads(collection.get('generated_media_info_json') or '[]')
+                        # psycopg2 会自动将 jsonb 转为 list/dict，所以这里直接用
+                        media_list = collection.get('generated_media_info_json') or []
                         item_found_and_updated = False
                         
-                        # 在合集的媒体列表中查找新入库的项目
                         for media_item in media_list:
                             if str(media_item.get('tmdb_id')) == str(new_item_tmdb_id) and media_item.get('status') != 'in_library':
-                                
-                                # --- ✨✨✨ 核心修改：使用翻译字典生成日志 ✨✨✨ ---
                                 old_status_key = media_item.get('status', 'unknown')
                                 new_status_key = 'in_library'
-                                
                                 old_status_cn = STATUS_TRANSLATION_MAP.get(old_status_key, old_status_key)
                                 new_status_cn = STATUS_TRANSLATION_MAP.get(new_status_key, new_status_key)
 
                                 logger.info(f"  -> 数据库状态更新：项目《{new_item_name}》在合集《{collection_name}》中的状态将从【{old_status_cn}】更新为【{new_status_cn}】。")
                                 
-                                media_item['status'] = new_status_key # 数据库中仍然存储英文key
+                                media_item['status'] = new_status_key
                                 item_found_and_updated = True
                                 break
                         
-                        # 如果状态发生了变化，则回写数据库
                         if item_found_and_updated:
-                            # 重新计算统计数据
                             new_in_library_count = sum(1 for m in media_list if m.get('status') == 'in_library')
                             new_missing_count = sum(1 for m in media_list if m.get('status') == 'missing')
                             new_health_status = 'has_missing' if new_missing_count > 0 else 'ok'
                             new_json_data = json.dumps(media_list, ensure_ascii=False)
                             
-                            # 执行数据库更新
                             cursor.execute("""
                                 UPDATE custom_collections
                                 SET generated_media_info_json = %s,
@@ -1576,7 +1572,6 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                                 WHERE id = %s
                             """, (new_json_data, new_in_library_count, new_missing_count, new_health_status, collection_id))
                             
-                            # 记录需要通知 Emby 的合集信息
                             collections_to_update_in_emby.append({
                                 'emby_collection_id': collection['emby_collection_id'],
                                 'name': collection_name
@@ -1586,12 +1581,12 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                         logger.warning(f"解析或处理榜单合集《{collection_name}》的数据时出错: {e_json}，跳过。")
                         continue
                 
-                conn.commit() # 提交事务
+                conn.commit()
                 
             except Exception as e_trans:
-                conn.rollback() # 事务中发生任何错误，回滚
+                conn.rollback()
                 logger.error(f"在更新榜单合集数据库状态的事务中发生错误: {e_trans}", exc_info=True)
-                raise # 向上抛出异常
+                raise
 
         return collections_to_update_in_emby
 
