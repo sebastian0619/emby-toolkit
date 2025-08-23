@@ -264,8 +264,9 @@ class ListImporter:
 
 class FilterEngine:
     """
-    【V3 - 功能完整最终版】负责处理 'filter' 类型的自定义合集。
-    补全了对'contains'操作符的处理逻辑，确保文本筛选功能正常。
+    【V4 - PG JSON 兼容最终版】
+    - 修复了 _item_matches_rules 方法中因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
+    - 移除了所有对 _json 字段的多余 json.loads() 调用，解决了筛选规则静默失效的问题。
     """
     def __init__(self):
         pass
@@ -276,42 +277,38 @@ class FilterEngine:
         results = []
         for rule in rules:
             field, op, value = rule.get("field"), rule.get("operator"), rule.get("value")
-            
             match = False
-            
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★ 核心修正：为不同类型的字段应用不同的列表检查逻辑 ★
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             
             # 1. 检查字段是否为“对象列表”（演员/导演）
             if field in ['actors', 'directors']:
-                json_str = item_metadata.get(f"{field}_json")
-                if json_str:
+                # ★★★ 核心修复 1/2：直接使用已经是列表的 _json 字段 ★★★
+                item_object_list = item_metadata.get(f"{field}_json")
+                if item_object_list:
                     try:
-                        # 从 '[{"id": 123, "name": "A"},...]' 中提取出所有名字
-                        item_name_list = [p['name'] for p in json.loads(json_str) if 'name' in p]
+                        # 不再需要 json.loads()
+                        item_name_list = [p['name'] for p in item_object_list if 'name' in p]
                         
                         if op == 'is_one_of':
-                            # 检查规则中的任何一个名字是否存在于项目的名字列表中
                             if isinstance(value, list) and any(v in item_name_list for v in value):
                                 match = True
                         elif op == 'is_none_of':
-                            # 检查规则中的所有名字都不存在于项目的名字列表中
                             if isinstance(value, list) and not any(v in item_name_list for v in value):
                                 match = True
                         elif op == 'contains':
-                            # 检查规则中的单个名字是否存在于项目的名字列表中
                             if value in item_name_list:
                                 match = True
-                    except (json.JSONDecodeError, TypeError):
-                        pass # JSON解析失败则不匹配
+                    except TypeError:
+                        # 增加保护，以防万一某行数据格式真的有问题
+                        logger.warning(f"处理 {field}_json 时遇到意外的类型错误，内容: {item_object_list}")
+                        pass
 
-            # 2. 检查字段是否为“字符串列表”（类型/国家/工作室）
+            # 2. 检查字段是否为“字符串列表”（类型/国家/工作室/标签）
             elif field in ['genres', 'countries', 'studios', 'tags']:
-                json_str = item_metadata.get(f"{field}_json")
-                if json_str:
+                # ★★★ 核心修复 2/2：直接使用已经是列表的 _json 字段 ★★★
+                item_value_list = item_metadata.get(f"{field}_json")
+                if item_value_list:
                     try:
-                        item_value_list = json.loads(json_str)
+                        # 不再需要 json.loads()
                         if op == 'is_one_of':
                             if isinstance(value, list) and any(v in item_value_list for v in value):
                                 match = True
@@ -321,10 +318,11 @@ class FilterEngine:
                         elif op == 'contains':
                             if value in item_value_list:
                                 match = True
-                    except (json.JSONDecodeError, TypeError):
+                    except TypeError:
+                        logger.warning(f"处理 {field}_json 时遇到意外的类型错误，内容: {item_value_list}")
                         pass
 
-            # 3. 处理其他所有非列表字段（日期、数字等）
+            # 3. 处理其他所有非列表字段 (这部分逻辑是正确的，无需修改)
             elif field in ['release_date', 'date_added']:
                 item_date_str = item_metadata.get(field)
                 if item_date_str and str(value).isdigit():
@@ -339,14 +337,11 @@ class FilterEngine:
                             if item_date < cutoff_date: match = True
                     except (ValueError, TypeError): pass
 
-            # 4：处理标题字段
             elif field == 'title':
                 item_title = item_metadata.get('title')
                 if item_title and isinstance(value, str):
-                    # 为了不区分大小写，统一转为小写比较
                     item_title_lower = item_title.lower()
                     value_lower = value.lower()
-                    
                     if op == 'contains':
                         if value_lower in item_title_lower: match = True
                     elif op == 'does_not_contain':
@@ -356,7 +351,7 @@ class FilterEngine:
                     elif op == 'ends_with':
                         if item_title_lower.endswith(value_lower): match = True
             
-            else: # 处理 gte, lte, eq
+            else:
                 actual_item_value = item_metadata.get(field)
                 if actual_item_value is not None:
                     try:
@@ -370,85 +365,57 @@ class FilterEngine:
         if logic.upper() == 'AND': return all(results)
         else: return any(results)
 
+    # (execute_filter 和 find_matching_collections 函数保持不变，无需修改)
     def execute_filter(self, definition: Dict[str, Any]) -> List[Dict[str, str]]:
-        """
-        【拨乱反正最终版】根据规则，从整个媒体库中筛选出所有匹配的电影或剧集。
-        此版本确保永远只返回一个纯粹的 TMDb ID 字符串列表。
-        """
         logger.info("  -> 筛选引擎：开始执行全库扫描以生成合集...")
-        
         rules = definition.get('rules', [])
         logic = definition.get('logic', 'AND')
         item_types_to_process = definition.get('item_type', ['Movie'])
-        if isinstance(item_types_to_process, str): # 兼容旧格式
+        if isinstance(item_types_to_process, str):
             item_types_to_process = [item_types_to_process]
-
         if not rules:
             logger.warning("合集定义中没有任何规则，将返回空列表。")
             return []
-
         matched_items = []
-        # ★ 核心修改: 循环处理每种类型
         for item_type in item_types_to_process:
             all_media_metadata = db_handler.get_all_media_metadata(item_type=item_type)
-            
             log_item_type_cn = "电影" if item_type == "Movie" else "电视剧"
-
             if not all_media_metadata:
                 logger.warning(f"本地媒体元数据缓存中没有找到任何 {log_item_type_cn} 类型的项目。")
-                continue # 继续检查下一种类型
-            
+                continue
             logger.info(f"  -> 已加载 {len(all_media_metadata)} 条{log_item_type_cn}元数据，开始应用筛选规则...")
-
             for media_metadata in all_media_metadata:
                 if self._item_matches_rules(media_metadata, rules, logic):
                     tmdb_id = media_metadata.get('tmdb_id')
                     if tmdb_id:
-                        # ★ 返回带类型信息的字典
                         matched_items.append({'id': str(tmdb_id), 'type': item_type})
-
-        # 使用字典去重，确保 "Movie-123" 和 "Series-123" 可以共存
         unique_items = list({f"{item['type']}-{item['id']}": item for item in matched_items}.values())
         logger.info(f"  -> 筛选完成！共找到 {len(unique_items)} 部匹配的媒体项目。")
         return unique_items
     
     def find_matching_collections(self, item_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        【V2 - PG JSON 兼容版】
-        为单个媒体项查找所有匹配的自定义合集。
-        """
         media_item_type = item_metadata.get('item_type')
         media_type_cn = "剧集" if media_item_type == "Series" else "影片"
-        
         logger.info(f"  -> 正在为{media_type_cn}《{item_metadata.get('title')}》实时匹配自定义合集...")
         matched_collections = []
-        
         all_filter_collections = [
             c for c in db_handler.get_all_custom_collections() 
             if c['type'] == 'filter' and c['status'] == 'active' and c['emby_collection_id']
         ]
-
         if not all_filter_collections:
             logger.debug("没有发现任何已启用的筛选类合集，跳过匹配。")
             return []
-
         for collection_def in all_filter_collections:
             try:
-                # ★★★ 核心修复：直接使用已经是字典的 definition_json 字段 ★★★
                 definition = collection_def['definition_json']
-                
                 collection_item_types = definition.get('item_type', ['Movie'])
-                
                 if isinstance(collection_item_types, str):
                     collection_item_types = [collection_item_types]
-
                 if media_item_type not in collection_item_types:
                     logger.debug(f"  -> 跳过合集《{collection_def['name']}》，因为内容类型不匹配 (合集需要: {collection_item_types}, 实际是: '{media_item_type}')。")
                     continue
-
                 rules = definition.get('rules', [])
                 logic = definition.get('logic', 'AND')
-
                 if self._item_matches_rules(item_metadata, rules, logic):
                     logger.info(f"  -> 匹配成功！{media_type_cn}《{item_metadata.get('title')}》属于合集《{collection_def['name']}》。")
                     matched_collections.append({
@@ -456,8 +423,7 @@ class FilterEngine:
                         'name': collection_def['name'],
                         'emby_collection_id': collection_def['emby_collection_id']
                     })
-            except TypeError as e: # 捕获可能的类型错误，例如如果 definition 不是字典
+            except TypeError as e:
                 logger.warning(f"解析合集《{collection_def['name']}》的定义时出错: {e}，跳过。")
                 continue
-        
         return matched_collections
