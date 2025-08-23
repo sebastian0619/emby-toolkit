@@ -375,33 +375,20 @@ def task_refresh_single_watchlist_item(processor: WatchlistProcessor, item_id: s
 # ★★★ 执行数据库导入的后台任务 ★★★
 def task_import_database(processor, file_content: str, tables_to_import: List[str], import_mode: str):
     """
-    【PostgreSQL 安全版 V2】
-    从 JSON 文件内容中恢复数据库表。此函数专门处理从 SQLite 备份到 PG 的复杂性。
-    - 智能处理数据类型转换。
-    - 大量使用 ON CONFLICT (UPSERT) 来安全地合并数据，取代复杂的内存计算。
-    - 在事务中运行，保证操作的原子性。
-    - 保留了对 translation_cache 的特殊优先级处理逻辑。
+    【V2.1 - 数据类型兼容最终版】
+    - 修复了因代码逻辑错误导致数据清洗规则 (CLEANING_RULES) 未被应用的BUG。
+    - 确保了从 SQLite 备份的布尔值 (0/1) 能被正确转换为 PostgreSQL 的 boolean (False/True)。
     """
     task_name = f"数据库导入 ({import_mode}模式)"
     logger.info(f"后台任务开始：{task_name}，处理表: {tables_to_import}。")
-    # task_manager.update_status_from_thread(0, "准备开始导入...") # 假设 task_manager 存在
 
-    # ★ 关键：定义每个表的主键，用于'merge'模式下的 ON CONFLICT
-    # 这是从 SQLite 迁移到 PG 最重要的映射之一
-    # 注意：对于复合主键，格式是 "col1, col2"
     TABLE_PRIMARY_KEYS = {
-        "person_identity_map": "map_id",
-        "ActorMetadata": "tmdb_id",
-        "translation_cache": "original_text",
-        "collections_info": "emby_collection_id",
-        "watchlist": "item_id",
-        "actor_subscriptions": "id",
-        "tracked_actor_media": "id",
-        "processed_log": "item_id",
-        "failed_log": "item_id",
-        "users": "id",
-        "custom_collections": "id",
-        "media_metadata": "tmdb_id, item_type",
+        "person_identity_map": "map_id", "ActorMetadata": "tmdb_id",
+        "translation_cache": "original_text", "collections_info": "emby_collection_id",
+        "watchlist": "item_id", "actor_subscriptions": "id",
+        "tracked_actor_media": "id", "processed_log": "item_id",
+        "failed_log": "item_id", "users": "id",
+        "custom_collections": "id", "media_metadata": "tmdb_id, item_type",
     }
     
     TABLE_TRANSLATIONS = {
@@ -414,16 +401,9 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
     }
 
     CLEANING_RULES = {
-        'ActorMetadata': {
-            'adult': bool  # bool() 函数可以完美地将 0 转为 False, 1 转为 True
-        },
-        'collections_info': {
-            'has_missing': bool
-        },
-        'watchlist': {
-            'force_ended': bool
-        }
-        # 未来如果发现其他表有类似问题，直接在这里添加规则即可
+        'ActorMetadata': {'adult': bool},
+        'collections_info': {'has_missing': bool},
+        'watchlist': {'force_ended': bool}
     }
 
     summary_lines = []
@@ -448,41 +428,37 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                     
                     logger.info(f"正在处理表: '{cn_name}'，共 {len(table_data)} 行。")
 
-                    # --- 模式1：覆盖模式 ---
                     if import_mode == 'overwrite':
                         logger.warning(f"执行覆盖模式：将清空表 '{table_name}' 中的所有数据！")
-                        # TRUNCATE ... RESTART IDENTITY 会重置自增ID，CASCADE 会处理外键依赖
                         cursor.execute(f"TRUNCATE TABLE {table_name} RESTART IDENTITY CASCADE;")
                         
-                        
-                        # 清空后直接批量插入
                         all_cols = list(table_data[0].keys())
-                        # 过滤掉自增主键，让数据库自己生成
                         cols_to_insert = [c for c in all_cols if c not in ['id', 'map_id']]
                         data_to_insert = []
                         table_rules = CLEANING_RULES.get(table_name, {})
+                        
                         for row in table_data:
                             cleaned_row_values = []
                             for col_name in cols_to_insert:
                                 value = row.get(col_name)
-                                # 如果当前列有清洗规则，就应用它
                                 if col_name in table_rules:
                                     value = table_rules[col_name](value) if value is not None else None
                                 cleaned_row_values.append(value)
                             data_to_insert.append(cleaned_row_values)
+                        
                         col_str = ", ".join(cols_to_insert)
                         val_ph = ", ".join(["%s"] * len(cols_to_insert))
                         sql = f"INSERT INTO {table_name} ({col_str}) VALUES ({val_ph})"
                         
-                        data_to_insert = [[row.get(c) for c in cols_to_insert] for row in table_data]
+                        # ★★★ 核心修复：删除下面这行错误的代码！★★★
+                        # 错误的代码: data_to_insert = [[row.get(c) for c in cols_to_insert] for row in table_data]
+                        
                         cursor.executemany(sql, data_to_insert)
                         summary_lines.append(f"  - 表 '{cn_name}': 清空并插入 {len(data_to_insert)} 条。")
-                        continue # 处理完这个表，进入下一个循环
+                        continue
 
-                    # --- 模式2：合并模式 ---
-                    
-                    # ★ 特殊处理 translation_cache 的优先级合并逻辑 ★
                     if table_name == 'translation_cache':
+                        # ... (translation_cache 的逻辑保持不变) ...
                         logger.info(f"模式[共享合并]: 正在为 '{cn_name}' 表执行基于优先级的合并策略...")
                         TRANSLATION_SOURCE_PRIORITY = {'manual': 2, 'openai': 1, 'zhipuai': 1, 'gemini': 1}
                         
@@ -523,8 +499,6 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                             cursor.executemany(sql, data)
 
                         summary_lines.append(f"  - 表 '{cn_name}': 合并/更新 {len(rows_to_upsert)} 条, 保留本地更优 {kept_count} 条。")
-
-                    # ★ 通用合并逻辑 (适用于包括 person_identity_map 在内的所有其他表) ★
                     else:
                         pk = TABLE_PRIMARY_KEYS.get(table_name)
                         if not pk:
@@ -533,45 +507,38 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                             continue
 
                         all_cols = list(table_data[0].keys())
-                        # 在合并模式下，我们信任备份文件中的主键ID
                         col_str = ", ".join(all_cols)
                         val_ph = ", ".join(["%s"] * len(all_cols))
                         
-                        # 主键列（们）
                         pk_cols = [p.strip() for p in pk.split(',')]
-                        # 需要在冲突时更新的列（除了主键之外的所有列）
                         update_cols = [c for c in all_cols if c not in pk_cols]
                         update_str = ", ".join([f"{col} = EXCLUDED.{col}" for col in update_cols])
 
-                        # 构建强大的 UPSERT 语句
                         sql = f"""
                             INSERT INTO {table_name} ({col_str}) VALUES ({val_ph})
                             ON CONFLICT ({pk}) DO UPDATE SET {update_str}
                         """
                         
-                        data_to_upsert = [[row.get(c) for c in all_cols] for row in table_data]
                         data_to_upsert = []
                         table_rules = CLEANING_RULES.get(table_name, {})
                         for row in table_data:
                             cleaned_row_values = []
-                            for col_name in all_cols: # 注意这里用 all_cols
+                            for col_name in all_cols:
                                 value = row.get(col_name)
-                                # 如果当前列有清洗规则，就应用它
                                 if col_name in table_rules:
                                     value = table_rules[col_name](value) if value is not None else None
                                 cleaned_row_values.append(value)
                             data_to_upsert.append(cleaned_row_values)
+                        
                         cursor.executemany(sql, data_to_upsert)
                         summary_lines.append(f"  - 表 '{cn_name}': 安全合并/更新了 {len(data_to_upsert)} 条记录。")
 
-                # --- 循环结束，打印最终摘要 ---
                 logger.info("="*11 + " 数据库导入摘要 " + "="*11)
                 for line in summary_lines: logger.info(line)
                 logger.info("="*36)
 
                 conn.commit()
                 logger.info("✅ 数据库事务已成功提交！所有选择的表已恢复。")
-                # task_manager.update_status_from_thread(100, "导入成功完成！")
 
     except Exception as e:
         logger.error(f"数据库导入任务发生严重错误，所有更改将回滚: {e}", exc_info=True)
