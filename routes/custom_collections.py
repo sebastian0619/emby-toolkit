@@ -183,8 +183,14 @@ def api_get_custom_collection_status(collection_id):
         
         # ★★★ 核心修复：不再删除 definition_json，而是将其重命名为 definition ★★★
         # 前端编辑框需要一个名为 'definition' 的对象来填充表单
-        if 'definition_json' in collection_details:
-            collection_details['definition'] = collection_details['definition_json']
+        if 'definition_json' in collection_details and collection_details['definition_json']:
+            try:
+                # 关键修复：使用 json.loads() 将字符串转换为Python字典
+                collection_details['definition'] = json.loads(collection_details['definition_json'])
+            except (json.JSONDecodeError, TypeError):
+                # 如果解析失败或它已经是对象了，则直接赋值以作兼容
+                logger.warning(f"合集 {collection_id} 的 definition_json 字段解析失败，将尝试直接使用。")
+                collection_details['definition'] = collection_details['definition_json']
 
         # 现在，我们可以安全地删除那些体积巨大或不再需要的原始字段
         if 'generated_media_info_json' in collection_details:
