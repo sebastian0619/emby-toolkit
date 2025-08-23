@@ -7,7 +7,7 @@ import concurrent.futures
 from typing import Dict, List, Optional, Any, Tuple
 import shutil
 import threading
-import datetime
+from datetime import datetime
 import time as time_module
 import psycopg2
 import requests
