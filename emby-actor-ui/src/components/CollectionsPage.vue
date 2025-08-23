@@ -395,7 +395,7 @@ const subscribeAllMissingMovies = async () => {
 const triggerFullRefresh = async () => {
   isRefreshing.value = true;
   try {
-    const response = await axios.post('/api/tasks/trigger/refresh-collections');
+    const response = await axios.post('/api/tasks/run', { task_name: 'refresh-collections' });
     message.success(response.data.message || '刷新任务已在后台启动！');
   } catch (err) {
     message.error(err.response?.data?.error || '启动刷新任务失败。');

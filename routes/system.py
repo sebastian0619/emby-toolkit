@@ -53,36 +53,42 @@ def api_handle_trigger_stop_task():
         return jsonify({"error": "核心处理器未就绪"}), 503
 
 # ✨✨✨ “立即执行”API接口 ✨✨✨
-@system_bp.route('/tasks/trigger/<task_identifier>', methods=['POST'])
+@system_bp.route('/tasks/trigger/<string:task_key>', methods=['POST'])
 @login_required
 @task_lock_required
-def api_trigger_task_now(task_identifier: str):
-    task_registry = tasks.get_task_registry()
-    task_info = task_registry.get(task_identifier)
+def api_trigger_task_now(task_key: str):
+    """
+    【V2 - 精确调度修复版】
+    一个通用的端点，用于立即触发任何已注册的、无需参数的任务。
+    - 修复了因任务注册表升级为三元组而导致的解包错误。
+    - 现在能为触发的任务正确传递 processor_type。
+    """
+    from tasks import get_task_registry # 延迟导入
+
+    # ★★★ 核心修复 1/3: 明确使用 'all' 上下文获取完整的注册表 ★★★
+    registry = get_task_registry(context='all') 
+    task_info = registry.get(task_key)
+
     if not task_info:
-        return jsonify({"status": "error", "message": f"未知的任务标识符: {task_identifier}"}), 404
+        return jsonify({"error": f"任务 '{task_key}' 未在注册表中找到。"}), 404
 
-    task_function, task_name = task_info
-    kwargs = {}
-
-    # ★★★ 核心修复：在这里动态决定 processor_type ★★★
-    processor_type_to_use = 'media' # 默认值
-    if 'watchlist' in task_identifier:
-        processor_type_to_use = 'watchlist'
-    elif 'actor' in task_identifier:
-        processor_type_to_use = 'actor'
-        
+    try:
+        # ★★★ 核心修复 2/3: 正确解包三元组 ★★★
+        task_function, task_name, processor_type = task_info
+    except ValueError:
+        return jsonify({"error": f"任务 '{task_key}' 的注册信息格式不正确。"}), 500
+    
+    # ★★★ 核心修复 3/3: 将解包出的 processor_type 传递给 submit_task ★★★
     success = task_manager.submit_task(
-        task_function, 
-        task_name, 
-        processor_type=processor_type_to_use,
-        **kwargs
+        task_function=task_function,
+        task_name=task_name,
+        processor_type=processor_type
     )
     
     if success:
-        return jsonify({"status": "success", "message": "任务已成功提交到后台队列。", "task_name": task_name}), 202
+        return jsonify({"message": f"任务 '{task_name}' 已成功提交到后台！"}), 202
     else:
-        return jsonify({"status": "error", "message": "提交任务失败，已有任务在运行。"}), 409
+        return jsonify({"error": "提交任务失败，已有其他任务正在运行。"}), 409
     
 
 # --- API 端点：获取当前配置 ---

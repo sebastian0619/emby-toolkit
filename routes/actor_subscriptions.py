@@ -2,9 +2,10 @@
 
 from flask import Blueprint, request, jsonify
 import logging
-import psycopg2
+import psycopg2 # 导入 psycopg2 以捕获其特定的异常
+
 # 导入需要的模块
-import db_handler
+import db_handler # 使用新的 PostgreSQL db_handler
 import config_manager
 import tmdb_handler
 import task_manager
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 @login_required
 @processor_ready_required
 def api_search_actors():
-    # ... (函数逻辑和原来完全一样) ...
+    # ... (此函数不直接与本地数据库交互，无需修改) ...
     query = request.args.get('name', '').strip()
     if not query:
         return jsonify({"error": "必须提供搜索关键词 'name'"}), 400
@@ -51,17 +52,19 @@ def api_search_actors():
 @actor_subscriptions_bp.route('', methods=['GET', 'POST'])
 @login_required
 def handle_actor_subscriptions():
-    # ... (函数逻辑和原来完全一样) ...
     if request.method == 'GET':
         try:
+            # ★★★ 核心修改：调用新的 db_handler 函数，不再需要 db_path 参数
             subscriptions = db_handler.get_all_actor_subscriptions()
             return jsonify(subscriptions)
         except Exception as e:
+            logger.error(f"获取演员订阅列表失败: {e}", exc_info=True)
             return jsonify({"error": "获取订阅列表时发生服务器内部错误"}), 500
 
     if request.method == 'POST':
         data = request.json
         try:
+            # ★★★ 核心修改：调用新的 db_handler 函数，不再需要 db_path 参数
             new_sub_id = db_handler.add_actor_subscription(
                 tmdb_person_id=data.get('tmdb_person_id'),
                 actor_name=data.get('actor_name'),
@@ -69,42 +72,62 @@ def handle_actor_subscriptions():
                 config=data.get('config', {})
             )
             return jsonify({"message": f"演员 {data.get('actor_name')} 已成功订阅！", "id": new_sub_id}), 201
+        # ★★★ 核心修改：捕获 psycopg2 的 IntegrityError 异常
         except psycopg2.IntegrityError:
             return jsonify({"error": "该演员已经被订阅过了"}), 409
         except Exception as e:
+            logger.error(f"添加演员订阅失败: {e}", exc_info=True)
             return jsonify({"error": "添加订阅时发生服务器内部错误"}), 500
 
 @actor_subscriptions_bp.route('/<int:sub_id>', methods=['GET', 'PUT', 'DELETE'])
 @login_required
 def handle_single_actor_subscription(sub_id):
-    # ... (函数逻辑和原来完全一样) ...
     if request.method == 'GET':
         try:
+            # ★★★ 核心修改：调用新的 db_handler 函数，不再需要 db_path 参数
             response_data = db_handler.get_single_subscription_details(sub_id)
             return jsonify(response_data) if response_data else ({"error": "未找到指定的订阅"}, 404)
         except Exception as e:
+            logger.error(f"获取订阅详情 {sub_id} 失败: {e}", exc_info=True)
             return jsonify({"error": "获取订阅详情时发生服务器内部错误"}), 500
     
     if request.method == 'PUT':
         try:
+            # ★★★ 核心修改：调用新的 db_handler 函数，不再需要 db_path 参数
             success = db_handler.update_actor_subscription(sub_id, request.json)
             return jsonify({"message": "订阅已成功更新！"}) if success else ({"error": "未找到指定的订阅"}, 404)
         except Exception as e:
+            logger.error(f"更新订阅 {sub_id} 失败: {e}", exc_info=True)
             return jsonify({"error": "更新订阅时发生服务器内部错误"}), 500
 
     if request.method == 'DELETE':
         try:
+            # ★★★ 核心修改：调用新的 db_handler 函数，不再需要 db_path 参数
             db_handler.delete_actor_subscription(sub_id)
             return jsonify({"message": "订阅已成功删除。"})
         except Exception as e:
+            logger.error(f"删除订阅 {sub_id} 失败: {e}", exc_info=True)
             return jsonify({"error": "删除订阅时发生服务器内部错误"}), 500
 
 @actor_subscriptions_bp.route('/<int:sub_id>/refresh', methods=['POST'])
 @login_required
 @task_lock_required
 def refresh_single_actor_subscription(sub_id):
-    # ... (函数逻辑和原来完全一样) ...
-    from tasks import task_scan_actor_media # 延迟导入
-    actor_name = f"订阅ID {sub_id}" # 简化获取名字的逻辑
-    task_manager.submit_task(task_scan_actor_media, f"手动刷新演员: {actor_name}", sub_id, processor_type='actor')
+    # ★★★ 核心修复：现在我们确实需要导入函数对象了 ★★★
+    from tasks import task_scan_actor_media 
+
+    actor_name = f"订阅ID {sub_id}"
+
+    # ★★★ 核心修复：按照正确的参数顺序调用 submit_task ★★★
+    # 1. task_function: 任务函数本身 (task_scan_actor_media)
+    # 2. task_name:     任务的显示名称 (一个字符串)
+    # 3. processor_type: 指定使用 'actor' 处理器 (一个字符串)
+    # 4. *args:         所有要传递给 task_scan_actor_media 的额外参数 (sub_id)
+    task_manager.submit_task(
+        task_scan_actor_media, 
+        f"手动刷新演员: {actor_name}", 
+        'actor', 
+        sub_id
+    )
+    
     return jsonify({"message": f"刷新演员 {actor_name} 作品的任务已提交！"}), 202

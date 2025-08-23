@@ -133,32 +133,55 @@ const fetchDetails = async (id) => {
 };
 
 const resetConfig = () => {
-  if (!subscriptionData.value) return;
+  // 确保我们有数据和嵌套的 config 对象
+  if (!subscriptionData.value || !subscriptionData.value.config) return;
+
+  // 直接引用加载到的 config 对象，让代码更清晰
+  const config = subscriptionData.value.config;
+
+  // 使用加载到的数据填充表单的 v-model
   editableConfig.value = {
-    start_year: subscriptionData.value.config_start_year,
-    media_types: (subscriptionData.value.config_media_types || 'Movie,TV').split(','),
-    genres_include: JSON.parse(subscriptionData.value.config_genres_include_json || '[]'),
-    genres_exclude: JSON.parse(subscriptionData.value.config_genres_exclude_json || '[]'),
-    min_rating: subscriptionData.value.config_min_rating || 6.0,
+    // 正确地从 config.start_year 读取
+    start_year: config.start_year || 1900,
+    
+    // 正确地从 config.media_types 读取 (后端已返回数组，无需 split)
+    media_types: config.media_types || ['Movie', 'TV'],
+    
+    // 正确地从 config.genres_include_json 读取 (后端已返回数组)
+    genres_include: config.genres_include_json || [],
+    
+    // 正确地从 config.genres_exclude_json 读取 (后端已返回数组)
+    genres_exclude: config.genres_exclude_json || [],
+    
+    // 正确地从 config.min_rating 读取
+    min_rating: config.min_rating || 6.0,
   };
 };
 
 const saveConfig = async () => {
   if (!props.subscriptionId) return;
   try {
+    // ★★★ 核心修复：创建一个新的 payload 对象，确保其键名与后端完全匹配 ★★★
     const payload = {
       config: {
+        // 这些字段的键名已经是正确的，直接复制
         start_year: editableConfig.value.start_year,
-        media_types: editableConfig.value.media_types.join(','),
-        genres_include_json: JSON.stringify(editableConfig.value.genres_include),
-        genres_exclude_json: JSON.stringify(editableConfig.value.genres_exclude),
-        min_rating: editableConfig.value.min_rating || 0.0,
+        media_types: editableConfig.value.media_types,
+        min_rating: editableConfig.value.min_rating,
+
+        // 将前端的 'genres_include' 映射到后端期望的 'genres_include_json'
+        genres_include_json: editableConfig.value.genres_include,
+
+        // 将前端的 'genres_exclude' 映射到后端期望的 'genres_exclude_json'
+        genres_exclude_json: editableConfig.value.genres_exclude,
       }
     };
+
+    // 发送这个完美匹配后端需求的 payload
     await axios.put(`/api/actor-subscriptions/${props.subscriptionId}`, payload);
-    message.success('配置已成功保存！下次扫描将使用新配置。');
+    
+    message.success('配置已成功保存！');
     emit('subscription-updated');
-    // 保存后刷新一下数据，确保显示的是最新的
     fetchDetails(props.subscriptionId);
   } catch (err) {
     message.error(err.response?.data?.error || '保存配置失败。');
@@ -188,39 +211,38 @@ const handleRefresh = async () => {
   }
 };
 const handleToggleStatus = async () => {
-  if (!props.subscriptionId || !subscriptionData.value) return;
+  if (!props.subscriptionId || !subscriptionData.value || !subscriptionData.value.config) return;
 
   const newStatus = subscriptionData.value.status === 'active' ? 'paused' : 'active';
   const actionText = newStatus === 'paused' ? '暂停' : '恢复';
 
   try {
-    // 构造一个符合后端要求的、完整的 payload
-    // 我们将新的 status 和当前已保存的 config 一起发送
+    // 使用正确的、嵌套的 config 对象作为数据源
+    const currentConfig = subscriptionData.value.config;
+
     const payload = {
       status: newStatus,
       config: {
-        start_year: subscriptionData.value.config_start_year,
-        media_types: subscriptionData.value.config_media_types,
-        genres_include_json: subscriptionData.value.config_genres_include_json,
-        genres_exclude_json: subscriptionData.value.config_genres_exclude_json,
+        start_year: currentConfig.start_year,
+        // 为符合后端 API 要求，将数组转回字符串
+        media_types: currentConfig.media_types.join(','),
+        genres_include_json: JSON.stringify(currentConfig.genres_include_json),
+        genres_exclude_json: JSON.stringify(currentConfig.genres_exclude_json),
+        min_rating: currentConfig.min_rating
       }
     };
 
-    // 发送带有完整 payload 的 PUT 请求
     await axios.put(`/api/actor-subscriptions/${props.subscriptionId}`, payload);
 
     message.success(`订阅已成功${actionText}！`);
-    
-    // 通知父组件刷新列表
     emit('subscription-updated');
-    
-    // 重新获取当前详情以更新模态框内的状态
     await fetchDetails(props.subscriptionId);
 
   } catch (err) {
     message.error(err.response?.data?.error || `${actionText}订阅失败。`);
   }
 };
+
 watch(() => props.subscriptionId, (newId) => {
   if (newId && props.show) {
     fetchDetails(newId);

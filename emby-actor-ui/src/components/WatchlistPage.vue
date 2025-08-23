@@ -547,7 +547,7 @@ const removeFromWatchlist = async (itemId, itemName) => {
 const triggerAllWatchlistUpdate = async () => {
   isBatchUpdating.value = true;
   try {
-    const response = await axios.post('/api/tasks/trigger/process-watchlist');
+    const response = await axios.post('/api/tasks/run', { task_name: 'process-watchlist' });
     message.success(response.data.message || '所有追剧项目更新任务已启动！');
   } catch (err) {
     message.error(err.response?.data?.error || '启动更新任务失败。');

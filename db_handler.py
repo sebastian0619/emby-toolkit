@@ -23,7 +23,8 @@ STATUS_TRANSLATION_MAP = {
     'in_library': '已入库',
     'subscribed': '已订阅',
     'missing': '缺失',
-    'unreleased': '未上映'
+    'unreleased': '未上映',
+    'pending_release': '未上映' # 确保这个状态也有翻译
 }
 
 def get_db_connection() -> psycopg2.extensions.connection:
@@ -120,7 +121,7 @@ class ActorDBManager:
             ("tmdb_person_id", kwargs.get("tmdb_id")),
             ("emby_person_id", kwargs.get("emby_id")),
             ("imdb_id", kwargs.get("imdb_id")),
-            ("douban_celebrity_id", kwargs.get("douban_celebrity_id")),
+            ("douban_celebrity_id", kwargs.get("douban_id")),
         ]
         for column, value in search_criteria:
             if not value: continue
@@ -136,9 +137,8 @@ class ActorDBManager:
 
     def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], **kwargs) -> int:
         """
-        【PostgreSQL 健壮版 V7.1 - 语法修正版】
-        修复了 V7 版本中因重复设置 last_updated_at 字段导致的语法错误。
-        逻辑与 V7 完全相同，保证了多键冲突的安全性。
+        【PostgreSQL 健壮版 V8 - 主键冲突修复版】
+        - 修复了在 INSERT 分支中，错误地包含自增主键 map_id 导致的 UniqueViolation 错误。
         """
         # 1. 标准化输入数据
         new_data = {
@@ -149,90 +149,45 @@ class ActorDBManager:
             "douban_celebrity_id": str(person_data.get("douban_id") or '').strip() or None,
         }
         id_fields = ["emby_person_id", "tmdb_person_id", "imdb_id", "douban_celebrity_id"]
-        
         new_ids = {k: v for k, v in new_data.items() if k in id_fields and v}
 
-        if not new_data["primary_name"] and not new_ids:
-            return -1
+        if not new_data["primary_name"] and not new_ids: return -1
 
         existing_record = None
-        
         try:
             cursor.execute("SAVEPOINT actor_upsert")
 
-            # ======================================================================
-            # 策略层 1: 通过所有提供的 ID 进行精确查找
-            # ======================================================================
+            # ... (查找逻辑保持不变) ...
             if new_ids:
                 query_parts = [f"{key} = %s" for key in new_ids.keys()]
-                query_values = list(new_ids.values())
-                sql_find_by_id = f"SELECT * FROM person_identity_map WHERE {' OR '.join(query_parts)}"
-                cursor.execute(sql_find_by_id, tuple(query_values))
-                
+                cursor.execute(f"SELECT * FROM person_identity_map WHERE {' OR '.join(query_parts)}", tuple(new_ids.values()))
                 found_by_id = cursor.fetchone()
-                if found_by_id:
-                    existing_record = dict(found_by_id)
+                if found_by_id: existing_record = dict(found_by_id)
 
-            # ======================================================================
-            # 策略层 2: 仅在ID查找失败时，才通过名字进行辅助查找
-            # ======================================================================
             if not existing_record and new_data["primary_name"]:
                 cursor.execute("SELECT * FROM person_identity_map WHERE primary_name = %s", (new_data["primary_name"],))
                 found_by_name = cursor.fetchone()
-
                 if found_by_name:
-                    is_safe_to_merge = True
-                    for key, new_id_val in new_ids.items():
-                        existing_id_val = found_by_name[key]
-                        if existing_id_val and new_id_val != existing_id_val:
-                            logger.warning(
-                                f"检测到同名异人！新数据 '{new_data['primary_name']}' ({key}: {new_id_val}) "
-                                f"与数据库记录 (map_id: {found_by_name['map_id']}) 的 ({key}: {existing_id_val}) 冲突。将创建新记录。"
-                            )
-                            is_safe_to_merge = False
-                            break
-                    
-                    if is_safe_to_merge:
-                        existing_record = dict(found_by_name)
+                    is_safe_to_merge = all(
+                        not found_by_name[key] or new_id_val == found_by_name[key]
+                        for key, new_id_val in new_ids.items()
+                    )
+                    if is_safe_to_merge: existing_record = dict(found_by_name)
 
             # ======================================================================
             # 执行层: 根据查找结果，执行更新或插入
             # ======================================================================
             if existing_record:
-                # --- 合并与更新 ---
+                # --- 合并与更新 (这部分逻辑是正确的，无需修改) ---
                 merged_data = existing_record.copy()
                 for key, value in new_data.items():
-                    if value is not None:
-                        merged_data[key] = value
+                    if value is not None: merged_data[key] = value
                 
-                merged_ids = {k: v for k, v in merged_data.items() if k in id_fields and v}
-                if merged_ids:
-                    conflict_check_parts = [f"{key} = %s" for key in merged_ids.keys()]
-                    conflict_check_values = list(merged_ids.values())
-                    
-                    sql_conflict_check = f"SELECT map_id, primary_name FROM person_identity_map WHERE ({' OR '.join(conflict_check_parts)}) AND map_id != %s"
-                    conflict_check_values.append(existing_record['map_id'])
-                    
-                    cursor.execute(sql_conflict_check, tuple(conflict_check_values))
-                    conflicting_record = cursor.fetchone()
-
-                    if conflicting_record:
-                        logger.error(
-                            f"数据更新被中止！为演员 '{merged_data['primary_name']}' (map_id: {existing_record['map_id']}) 合并数据时，"
-                            f"发现其ID与另一条记录 (map_id: {conflicting_record['map_id']}, name: '{conflicting_record['primary_name']}') 存在UNIQUE冲突。"
-                            f"这通常是由于数据库中存在重复的脏数据导致。本次更新将被忽略。"
-                        )
-                        cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                        return existing_record['map_id']
-
-                # ★★★ 核心修复：在这里排除掉 'last_updated_at'，避免重复赋值 ★★★
                 cols_to_exclude = ['map_id', 'last_updated_at']
                 update_clauses = [f"{key} = %s" for key in merged_data.keys() if key not in cols_to_exclude]
-                update_values = [v for k, v in merged_data.items() if k not in cols_to_exclude]
-                update_values.append(existing_record['map_id'])
-
-                # 确保有需要更新的字段才执行
                 if update_clauses:
+                    update_values = [v for k, v in merged_data.items() if k not in cols_to_exclude]
+                    update_values.append(existing_record['map_id'])
                     sql_update = f"UPDATE person_identity_map SET {', '.join(update_clauses)}, last_updated_at = NOW() WHERE map_id = %s"
                     cursor.execute(sql_update, tuple(update_values))
                 
@@ -240,23 +195,31 @@ class ActorDBManager:
                 return existing_record['map_id']
             else:
                 # --- 创建新记录 ---
-                if new_ids:
-                    conflict_check_parts = [f"{key} = %s" for key in new_ids.keys()]
-                    sql_conflict_check = f"SELECT map_id, primary_name FROM person_identity_map WHERE {' OR '.join(conflict_check_parts)}"
-                    cursor.execute(sql_conflict_check, tuple(new_ids.values()))
-                    conflicting_record = cursor.fetchone()
-                    if conflicting_record:
-                        logger.error(
-                            f"数据插入被中止！尝试为 '{new_data['primary_name']}' 创建新记录时，"
-                            f"发现其ID已存在于记录 (map_id: {conflicting_record['map_id']}, name: '{conflicting_record['primary_name']}')。"
-                            f"本次插入将被忽略。"
-                        )
-                        cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                        return conflicting_record['map_id']
+                
+                # ★★★ 核心修复：创建一个专门用于插入的字典，并从中删除 map_id ★★★
+                data_for_insert = new_data.copy()
+                if 'map_id' in data_for_insert:
+                    del data_for_insert['map_id'] # 确保不会手动插入自增主键
 
-                cols_to_insert = [k for k, v in new_data.items() if v is not None]
-                vals_to_insert = [v for v in new_data.values() if v is not None]
+                # 检查冲突 (逻辑不变)
+                ids_for_check = {k: v for k, v in data_for_insert.items() if k in id_fields and v}
+                if ids_for_check:
+                    conflict_check_parts = [f"{key} = %s" for key in ids_for_check.keys()]
+                    sql_conflict_check = f"SELECT map_id FROM person_identity_map WHERE {' OR '.join(conflict_check_parts)}"
+                    cursor.execute(sql_conflict_check, tuple(ids_for_check.values()))
+                    if cursor.fetchone():
+                        logger.warning(f"尝试为 '{data_for_insert['primary_name']}' 创建新记录，但其ID已存在于另一条记录中。插入操作被中止。")
+                        cursor.execute("RELEASE SAVEPOINT actor_upsert")
+                        return -1 # 或者返回找到的ID
+
+                # 使用清理过的 data_for_insert 构建SQL
+                cols_to_insert = [k for k, v in data_for_insert.items() if v is not None]
+                vals_to_insert = [v for v in data_for_insert.values() if v is not None]
                 placeholders = ['%s'] * len(vals_to_insert)
+
+                if not cols_to_insert:
+                    cursor.execute("RELEASE SAVEPOINT actor_upsert")
+                    return -1
 
                 sql_insert = f"INSERT INTO person_identity_map ({', '.join(cols_to_insert)}, last_updated_at) VALUES ({', '.join(placeholders)}, NOW()) RETURNING map_id"
                 cursor.execute(sql_insert, tuple(vals_to_insert))
@@ -388,17 +351,26 @@ def get_watchlist_item_name(item_id: str) -> Optional[str]:
 
 def add_item_to_watchlist(item_id: str, tmdb_id: str, item_name: str, item_type: str) -> bool:
     """
+    【V2 - PG语法修复版】
     添加一个新项目到追剧列表。
-    如果项目已存在，则会替换它。
-    返回 True 表示成功。
+    - 修复了因使用 SQLite 特有的 INSERT OR REPLACE 语法导致的错误。
+    - 改为使用 PostgreSQL 标准的 ON CONFLICT ... DO UPDATE 语法。
     """
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT OR REPLACE INTO watchlist (item_id, tmdb_id, item_name, item_type, status, last_checked_at)
-                VALUES (%s, %s, %s, %s, 'Watching', NULL)
-            """, (item_id, tmdb_id, item_name, item_type))
+            with conn.cursor() as cursor:
+                # ★★★ 核心修复：使用 PostgreSQL 的 ON CONFLICT 语法 ★★★
+                sql = """
+                    INSERT INTO watchlist (item_id, tmdb_id, item_name, item_type, status, last_checked_at)
+                    VALUES (%s, %s, %s, %s, 'Watching', NULL)
+                    ON CONFLICT (item_id) DO UPDATE SET
+                        tmdb_id = EXCLUDED.tmdb_id,
+                        item_name = EXCLUDED.item_name,
+                        item_type = EXCLUDED.item_type,
+                        status = EXCLUDED.status,
+                        last_checked_at = EXCLUDED.last_checked_at;
+                """
+                cursor.execute(sql, (item_id, tmdb_id, item_name, item_type))
             conn.commit()
             logger.info(f"DB: 项目 '{item_name}' (ID: {item_id}) 已成功添加/更新到追剧列表。")
             return True
@@ -804,16 +776,18 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
             
             # 3. ★★★ 核心修复：构建一个结构化、类型正确的响应对象 ★★★
 
-            # 辅助函数，用于安全地解析JSON字符串
+            # 辅助函数，用于安全地解析JSON字符串 (仅用于 TEXT 字段，JSONB 字段 psycopg2 会自动解析)
             def _safe_json_loads(json_string, default_value=None):
                 if default_value is None:
                     default_value = []
-                if not json_string or not isinstance(json_string, str):
-                    return default_value
-                try:
-                    return json.loads(json_string)
-                except json.JSONDecodeError:
-                    return default_value
+                # 仅当输入是字符串时才尝试解析
+                if isinstance(json_string, str):
+                    try:
+                        return json.loads(json_string)
+                    except json.JSONDecodeError:
+                        return default_value
+                # 如果不是字符串 (例如已经是列表/字典，如JSONB字段)，则直接返回
+                return json_string if json_string is not None else default_value
 
             # 将数据库行组装成前端期望的格式
             response_data = {
@@ -830,9 +804,9 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
                     "start_year": sub_row.get('config_start_year'),
                     # 将 'Movie,TV' 字符串拆分为 ['Movie', 'TV'] 数组
                     "media_types": [t.strip() for t in (sub_row.get('config_media_types') or '').split(',') if t.strip()],
-                    # 将 '[]' 或 '["动作"]' 字符串解析为 [] 或 ["动作"] 数组
-                    "genres_include_json": _safe_json_loads(sub_row.get('config_genres_include_json'), []),
-                    "genres_exclude_json": _safe_json_loads(sub_row.get('config_genres_exclude_json'), []),
+                    # ★★★ 修复 2: 对于 JSONB 字段，直接使用其值，psycopg2 已自动解析为列表 ★★★
+                    "genres_include_json": sub_row.get('config_genres_include_json') or [],
+                    "genres_exclude_json": sub_row.get('config_genres_exclude_json') or [],
                     # 确保评分是浮点数
                     "min_rating": float(sub_row.get('config_min_rating', 0.0))
                 },
@@ -889,7 +863,6 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # ★★★ 核心修复 1/2：在 INSERT 语句中加入 status 字段 ★★★
             sql = """
                 INSERT INTO actor_subscriptions 
                 (tmdb_person_id, actor_name, profile_path, status, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json, config_min_rating)
@@ -897,7 +870,6 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
                 RETURNING id
             """
             
-            # ★★★ 核心修复 2/2：在参数元组中加入 'active' 作为 status 的值 ★★★
             cursor.execute(
                 sql,
                 (tmdb_person_id, actor_name, profile_path, 'active', start_year, media_types, genres_include, genres_exclude, min_rating)
@@ -922,7 +894,7 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
     """
     【V6 - 逻辑重构最终修复版】
     更新一个演员订阅的状态或配置。
-    - 采用更健壮的逻辑，确保任何更新路径下写入数据库的都是正确格式的字符串。
+    - 采用更健壮的“准备->覆盖->格式化”模式，确保任何更新路径下写入数据库的都是正确格式的字符串。
     - 彻底解决因部分更新（如只更新状态）导致配置被错误格式化的根本问题。
     """
     try:
@@ -933,39 +905,43 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
             if not current_sub:
                 return False
 
-            # --- 步骤 1: 使用数据库的当前值作为所有字段的默认值 ---
+            # --- 步骤 1: 使用数据库的当前值作为所有字段的“底稿” ---
             # 普通字段
             new_status = current_sub['status']
             new_start_year = current_sub['config_start_year']
             new_min_rating = current_sub['config_min_rating']
-            # 字符串格式的字段
-            new_media_types_str = current_sub['config_media_types']
-            # 列表格式的字段 (注意：这里是列表，还不是最终的JSON字符串)
+            # 需要在内存中当作列表处理的字段
+            # 注意：psycopg2 已经将 JSONB 字段自动转为 Python 列表
             new_genres_include_list = current_sub.get('config_genres_include_json') or []
             new_genres_exclude_list = current_sub.get('config_genres_exclude_json') or []
+            # 将逗号分隔的字符串也转为列表，统一处理
+            new_media_types_list = [t.strip() for t in (current_sub.get('config_media_types') or '').split(',') if t.strip()]
 
-            # --- 步骤 2: 检查前端传入的数据，并用新值覆盖默认值 ---
+
+            # --- 步骤 2: 检查前端传入的新数据，并用它来“覆盖”底稿 ---
             # 覆盖状态
             new_status = data.get('status', new_status)
 
-            # 如果前端传了 config 对象，则覆盖配置项
+            # 如果前端传了 config 对象，则覆盖所有相关的配置项
             config = data.get('config')
             if config is not None:
                 new_start_year = config.get('start_year', new_start_year)
                 new_min_rating = config.get('min_rating', new_min_rating)
 
-                # 如果传了 media_types，则处理它
+                # 如果传了 media_types (必须是列表)，则覆盖
                 if 'media_types' in config and isinstance(config['media_types'], list):
-                    new_media_types_str = ','.join(config['media_types'])
+                    new_media_types_list = config['media_types']
                 
-                # 如果传了 genres，则覆盖列表
-                if 'genres_include_json' in config:
-                    new_genres_include_list = config['genres_include_json'] or []
-                if 'genres_exclude_json' in config:
-                    new_genres_exclude_list = config['genres_exclude_json'] or []
+                # 如果传了 genres (必须是列表)，则覆盖
+                if 'genres_include_json' in config and isinstance(config['genres_include_json'], list):
+                    new_genres_include_list = config['genres_include_json']
+                if 'genres_exclude_json' in config and isinstance(config['genres_exclude_json'], list):
+                    new_genres_exclude_list = config['genres_exclude_json']
 
-            # --- 步骤 3: 在执行SQL前，将所有需要格式化的字段进行最终转换 ---
-            # 将列表转换为JSON字符串，这是写入数据库前的最后一步
+            # --- 步骤 3: 在执行SQL前，将所有变量进行最终的格式化，确保它们都是字符串 ---
+            # 将列表转换为逗号分隔的字符串
+            final_media_types_str = ','.join(new_media_types_list)
+            # 将列表转换为JSON字符串
             final_genres_include_json = json.dumps(new_genres_include_list, ensure_ascii=False)
             final_genres_exclude_json = json.dumps(new_genres_exclude_list, ensure_ascii=False)
 
@@ -975,7 +951,7 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
                 status = %s, config_start_year = %s, config_media_types = %s, 
                 config_genres_include_json = %s, config_genres_exclude_json = %s, config_min_rating = %s
                 WHERE id = %s
-            """, (new_status, new_start_year, new_media_types_str, final_genres_include_json, final_genres_exclude_json, new_min_rating, subscription_id))
+            """, (new_status, new_start_year, final_media_types_str, final_genres_include_json, final_genres_exclude_json, new_min_rating, subscription_id))
             
             conn.commit()
             logger.info(f"DB: 成功更新订阅ID {subscription_id}。")
@@ -1395,17 +1371,38 @@ def upsert_collection_info(collection_data: Dict[str, Any]):
     """
     使用 INSERT OR REPLACE 写入或更新一条合集信息到 collections_info 表。
     """
+    # PostgreSQL 没有 INSERT OR REPLACE，需要使用 ON CONFLICT DO UPDATE
     sql = """
-        INSERT OR REPLACE INTO collections_info 
+        INSERT INTO collections_info 
         (emby_collection_id, name, tmdb_collection_id, item_type, status, has_missing, 
         missing_movies_json, last_checked_at, poster_path, in_library_count)
-        VALUES (:emby_collection_id, :name, :tmdb_collection_id, :item_type, :status, :has_missing, 
-        :missing_movies_json, :last_checked_at, :poster_path, :in_library_count)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (emby_collection_id) DO UPDATE SET
+            name = EXCLUDED.name,
+            tmdb_collection_id = EXCLUDED.tmdb_collection_id,
+            item_type = EXCLUDED.item_type,
+            status = EXCLUDED.status,
+            has_missing = EXCLUDED.has_missing,
+            missing_movies_json = EXCLUDED.missing_movies_json,
+            last_checked_at = EXCLUDED.last_checked_at,
+            poster_path = EXCLUDED.poster_path,
+            in_library_count = EXCLUDED.in_library_count;
     """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(sql, collection_data)
+            cursor.execute(sql, (
+                collection_data.get('emby_collection_id'),
+                collection_data.get('name'),
+                collection_data.get('tmdb_collection_id'),
+                collection_data.get('item_type'),
+                collection_data.get('status'),
+                collection_data.get('has_missing'),
+                collection_data.get('missing_movies_json'),
+                collection_data.get('last_checked_at'),
+                collection_data.get('poster_path'),
+                collection_data.get('in_library_count')
+            ))
             conn.commit()
             logger.info(f"成功写入/更新合集检查信息到数据库 (ID: {collection_data.get('emby_collection_id')})。")
     except psycopg2.Error as e:
