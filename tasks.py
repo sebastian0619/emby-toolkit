@@ -1220,21 +1220,26 @@ def task_add_all_series_to_watchlist(processor: MediaProcessor):
 # --- 任务链 ---
 def task_run_chain(processor: MediaProcessor, task_sequence: list):
     """
-    【V2 - 核心修复版】自动化任务链。
-    按顺序执行指定的一系列任务，并为每个任务智能选择正确的处理器。
+    【V3 - 精确调度最终版】自动化任务链。
+    - 修复了因任务注册表升级为三元组而导致的解包错误。
+    - 现在能为链中的每一个子任务，精确地选择并传递正确的处理器。
     """
     task_name = "自动化任务链"
     total_tasks = len(task_sequence)
     logger.info(f"--- '{task_name}' 已启动，共包含 {total_tasks} 个子任务 ---")
     task_manager.update_status_from_thread(0, f"任务链启动，共 {total_tasks} 个任务。")
 
-    # 获取所有可用任务的定义
+    # ★★★ 核心修复 1/3：获取完整的、包含处理器类型的注册表 ★★★
     registry = get_task_registry()
     
-    # 遍历用户定义的任务序列
+    # ★★★ 核心修复 2/3：创建一个处理器查找表，用于动态选择 ★★★
+    processor_map = {
+        'media': extensions.media_processor_instance,
+        'watchlist': extensions.watchlist_processor_instance,
+        'actor': extensions.actor_subscription_processor_instance
+    }
+    
     for i, task_key in enumerate(task_sequence):
-        # 注意：这里的 processor.is_stop_requested() 依赖于 task_manager 传递进来的默认处理器
-        # 这是一个可以接受的设计，因为停止信号是全局的。
         if processor.is_stop_requested():
             logger.warning(f"'{task_name}' 被用户中止。")
             break
@@ -1244,47 +1249,34 @@ def task_run_chain(processor: MediaProcessor, task_sequence: list):
             logger.error(f"任务链警告：在注册表中未找到任务 '{task_key}'，已跳过。")
             continue
 
-        task_function, task_description = task_info
-        
+        # ★★★ 核心修复 3/3：正确解包三元组，并动态选择处理器 ★★★
+        try:
+            task_function, task_description, processor_type = task_info
+        except ValueError:
+            logger.error(f"任务链错误：任务 '{task_key}' 的注册信息格式不正确，已跳过。")
+            continue
+
         progress = int((i / total_tasks) * 100)
         status_message = f"({i+1}/{total_tasks}) 正在执行: {task_description}"
         logger.info(f"--- {status_message} ---")
         task_manager.update_status_from_thread(progress, status_message)
 
         try:
-            # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-            # --- 【【【 这 是 核 心 修 改 点 2/2：智能选择处理器】】】 ---
-            processor_to_use = None
-            # 根据任务的唯一标识符 (key) 来判断使用哪个处理器
-            if task_key in ['process-watchlist', 'refresh-single-watchlist-item']:
-                processor_to_use = extensions.watchlist_processor_instance
-                logger.trace(f"任务 '{task_description}' 将使用 WatchlistProcessor。")
-            elif task_key in ['actor-tracking', 'scan-actor-media']:
-                processor_to_use = extensions.actor_subscription_processor_instance
-                logger.debug(f"任务 '{task_description}' 将使用 ActorSubscriptionProcessor。")
-            else:
-                # 默认情况下，使用通用的 MediaProcessor
-                processor_to_use = extensions.media_processor_instance
-                logger.debug(f"任务 '{task_description}' 将使用默认的 MediaProcessor。")
-
-            if not processor_to_use:
-                logger.error(f"任务链中的子任务 '{task_description}' 无法执行：对应的处理器未初始化，已跳过。")
+            actual_processor_to_use = processor_map.get(processor_type)
+            if not actual_processor_to_use:
+                logger.error(f"任务链中的子任务 '{task_description}' 无法执行：类型为 '{processor_type}' 的处理器未初始化，已跳过。")
                 continue
 
-            # ★★★ 使用我们刚刚智能选择的 `processor_to_use` 来执行任务 ★★★
-            task_function(processor_to_use)
-            # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-            
-            # 子任务成功执行后，短暂等待，让状态更新能被前端捕获
-            time.sleep(1) 
+            # 使用我们为这个子任务精确选择的处理器来执行它
+            task_function(actual_processor_to_use)
+            time.sleep(1)
 
         except Exception as e:
             error_message = f"任务链中的子任务 '{task_description}' 执行失败: {e}"
             logger.error(error_message, exc_info=True)
-            # 更新UI状态以反映错误，但任务链会继续
             task_manager.update_status_from_thread(progress, f"子任务'{task_description}'失败，继续...")
-            time.sleep(3) # 让用户能看到错误信息
-            continue # 继续下一个任务
+            time.sleep(3)
+            continue
 
     final_message = f"'{task_name}' 执行完毕。"
     if processor.is_stop_requested():
