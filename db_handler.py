@@ -1002,7 +1002,8 @@ def get_custom_collection_by_id(collection_id: int) -> Optional[Dict[str, Any]]:
 
 def update_custom_collection(collection_id: int, name: str, type: str, definition_json: str, status: str) -> bool:
     """
-    更新一个已存在的自定义合集。
+    【V2 - 参数顺序修正版】
+    修复了因函数调用和SQL执行参数顺序不匹配，导致更新静默失败的致命BUG。
     """
     sql = """
         UPDATE custom_collections
@@ -1012,7 +1013,10 @@ def update_custom_collection(collection_id: int, name: str, type: str, definitio
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
+            
+            # ★★★ 核心修复：将 collection_id 放到元组的最后，与 SQL 语句的 WHERE id = %s 完美对应 ★★★
             cursor.execute(sql, (name, type, definition_json, status, collection_id))
+            
             conn.commit()
             logger.info(f"成功更新自定义合集 ID: {collection_id}。")
             return True
