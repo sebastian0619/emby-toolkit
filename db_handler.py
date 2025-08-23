@@ -781,25 +781,67 @@ def get_all_actor_subscriptions() -> List[Dict[str, Any]]:
 
 
 def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, Any]]:
-    """获取单个订阅的完整详情，包括其追踪的所有媒体。"""
+    """
+    【V2 - 格式化修复版】
+    获取单个订阅的完整详情，并确保返回给前端的数据格式正确。
+    - 将配置项嵌套在 'config' 对象中，使API结构更清晰。
+    - 将JSON字符串字段 (genres) 解析为Python列表。
+    - 将逗号分隔的字符串字段 (media_types) 拆分为Python列表。
+    """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
             # 1. 获取订阅主信息
             cursor.execute("SELECT * FROM actor_subscriptions WHERE id = %s", (subscription_id,))
-            subscription = cursor.fetchone()
-            if not subscription:
+            sub_row = cursor.fetchone()
+            if not sub_row:
                 return None
             
             # 2. 获取关联的已追踪媒体
             cursor.execute("SELECT * FROM tracked_actor_media WHERE subscription_id = %s ORDER BY release_date DESC", (subscription_id,))
             tracked_media = [dict(row) for row in cursor.fetchall()]
             
-            # 3. 组合数据
-            response_data = dict(subscription)
-            response_data['tracked_media'] = tracked_media
+            # 3. ★★★ 核心修复：构建一个结构化、类型正确的响应对象 ★★★
+
+            # 辅助函数，用于安全地解析JSON字符串
+            def _safe_json_loads(json_string, default_value=None):
+                if default_value is None:
+                    default_value = []
+                if not json_string or not isinstance(json_string, str):
+                    return default_value
+                try:
+                    return json.loads(json_string)
+                except json.JSONDecodeError:
+                    return default_value
+
+            # 将数据库行组装成前端期望的格式
+            response_data = {
+                "id": sub_row['id'],
+                "tmdb_person_id": sub_row['tmdb_person_id'],
+                "actor_name": sub_row['actor_name'],
+                "profile_path": sub_row['profile_path'],
+                "status": sub_row['status'],
+                "last_checked_at": sub_row['last_checked_at'],
+                "added_at": sub_row['added_at'],
+                
+                # 将所有配置项聚合到一个 'config' 对象中
+                "config": {
+                    "start_year": sub_row.get('config_start_year'),
+                    # 将 'Movie,TV' 字符串拆分为 ['Movie', 'TV'] 数组
+                    "media_types": [t.strip() for t in (sub_row.get('config_media_types') or '').split(',') if t.strip()],
+                    # 将 '[]' 或 '["动作"]' 字符串解析为 [] 或 ["动作"] 数组
+                    "genres_include_json": _safe_json_loads(sub_row.get('config_genres_include_json'), []),
+                    "genres_exclude_json": _safe_json_loads(sub_row.get('config_genres_exclude_json'), []),
+                    # 确保评分是浮点数
+                    "min_rating": float(sub_row.get('config_min_rating', 0.0))
+                },
+                
+                "tracked_media": tracked_media
+            }
+            
             return response_data
+            
     except Exception as e:
         logger.error(f"DB: 获取订阅详情 {subscription_id} 失败: {e}", exc_info=True)
         raise
@@ -826,11 +868,19 @@ def safe_json_dumps(value):
 
 def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: str, config: dict) -> int:
     """
+    【V3 - 最终修复版】
     新增一个演员订阅。
-    正确处理配置中的 JSON 字段，避免多层转义。
+    - 修复了因 INSERT 语句缺少 RETURNING id 导致的 psycopg2.ProgrammingError。
+    - 调整了 commit() 的位置，确保在获取ID后再提交事务。
+    - ★★★ 新增：为新订阅设置默认的 'active' 状态，解决编辑失败问题 ★★★
     """
     start_year = config.get('start_year', 1900)
-    media_types = config.get('media_types', 'Movie,TV')
+    media_types_list = config.get('media_types', ['Movie','TV'])
+    if isinstance(media_types_list, list):
+        media_types = ','.join(media_types_list)
+    else:
+        media_types = str(media_types_list)
+
     genres_include = safe_json_dumps(config.get('genres_include_json', []))
     genres_exclude = safe_json_dumps(config.get('genres_exclude_json', []))
     min_rating = config.get('min_rating', 6.0)
@@ -838,16 +888,28 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                """
+            
+            # ★★★ 核心修复 1/2：在 INSERT 语句中加入 status 字段 ★★★
+            sql = """
                 INSERT INTO actor_subscriptions 
-                (tmdb_person_id, actor_name, profile_path, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json, config_min_rating)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (tmdb_person_id, actor_name, profile_path, start_year, media_types, genres_include, genres_exclude, min_rating)
+                (tmdb_person_id, actor_name, profile_path, status, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json, config_min_rating)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """
+            
+            # ★★★ 核心修复 2/2：在参数元组中加入 'active' 作为 status 的值 ★★★
+            cursor.execute(
+                sql,
+                (tmdb_person_id, actor_name, profile_path, 'active', start_year, media_types, genres_include, genres_exclude, min_rating)
             )
+            
+            result = cursor.fetchone()
+            if not result:
+                raise psycopg2.Error("数据库未能返回新创建的演员订阅ID。")
+            
+            new_id = result['id']
             conn.commit()
-            new_id = cursor.fetchone()['id']
+            
             logger.info(f"DB: 成功添加演员订阅 '{actor_name}' (ID: {new_id})。")
             return new_id
     except psycopg2.IntegrityError:
@@ -858,8 +920,9 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
 
 def update_actor_subscription(subscription_id: int, data: dict) -> bool:
     """
+    【V2 - 写入格式化修复版】
     更新一个演员订阅的状态或配置。
-    处理 JSON 字段时避免多层转义。
+    - 修复了在保存时未将前端传来的数组转换回数据库字符串格式的问题。
     """
     try:
         with get_db_connection() as conn:
@@ -873,33 +936,47 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
             config = data.get('config')
 
             if config is not None:
+                # --- ★★★ 核心修复：在这里处理所有从前端传来的数据格式 ★★★ ---
+                
+                # 1. 处理普通字段
                 new_start_year = config.get('start_year', current_sub['config_start_year'])
-                new_media_types = config.get('media_types', current_sub['config_media_types'])
+                new_min_rating = config.get('min_rating', current_sub['config_min_rating'])
 
-                # 先拿配置传入值，没有则尝试从数据库旧值解析Python对象
+                # 2. 将 media_types 数组转换回逗号分隔的字符串
+                media_types_list = config.get('media_types')
+                if isinstance(media_types_list, list):
+                    new_media_types = ','.join(media_types_list)
+                else:
+                    # 如果前端没传这个值，则使用数据库的旧值
+                    new_media_types = current_sub['config_media_types']
+
+                # 3. 将 genres 数组用 safe_json_dumps 转换回 JSON 字符串
+                #    如果前端没传，就用数据库的旧值（已经是字符串了，safe_json_dumps也能处理）
                 genres_include_raw = config.get('genres_include_json', current_sub['config_genres_include_json'])
                 genres_exclude_raw = config.get('genres_exclude_json', current_sub['config_genres_exclude_json'])
-
                 new_genres_include = safe_json_dumps(genres_include_raw)
                 new_genres_exclude = safe_json_dumps(genres_exclude_raw)
-
-                new_min_rating = config.get('min_rating', current_sub['config_min_rating'])
+                
             else:
+                # 如果请求中完全没有 'config' 对象，则所有配置都保持不变
                 new_start_year = current_sub['config_start_year']
                 new_media_types = current_sub['config_media_types']
                 new_genres_include = current_sub['config_genres_include_json']
                 new_genres_exclude = current_sub['config_genres_exclude_json']
                 new_min_rating = current_sub['config_min_rating']
 
+            # 使用转换好的、格式正确的变量来更新数据库
             cursor.execute("""
                 UPDATE actor_subscriptions SET
                 status = %s, config_start_year = %s, config_media_types = %s, 
                 config_genres_include_json = %s, config_genres_exclude_json = %s, config_min_rating = %s
                 WHERE id = %s
             """, (new_status, new_start_year, new_media_types, new_genres_include, new_genres_exclude, new_min_rating, subscription_id))
+            
             conn.commit()
             logger.info(f"DB: 成功更新订阅ID {subscription_id}。")
             return True
+            
     except Exception as e:
         logger.error(f"DB: 更新订阅 {subscription_id} 失败: {e}", exc_info=True)
         raise

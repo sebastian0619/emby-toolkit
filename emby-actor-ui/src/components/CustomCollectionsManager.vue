@@ -914,17 +914,31 @@ const handleCreateClick = () => {
 
 const handleEditClick = (row) => {
   isEditing.value = true;
+  // 深拷贝从表格行获取的数据
   const rowCopy = JSON.parse(JSON.stringify(row));
-  try {
-    rowCopy.definition = JSON.parse(rowCopy.definition_json);
-  } catch {
-    rowCopy.definition = rowCopy.type === 'filter' 
-      ? { item_type: ['Movie'], logic: 'AND', rules: [] } 
+
+  // ★★★ 核心修复：不再需要手动解析 definition_json ★★★
+  // 后端现在直接提供了名为 'definition' 的对象，我们只需确保它存在即可。
+  if (!rowCopy.definition || typeof rowCopy.definition !== 'object') {
+    // 如果 definition 意外丢失，提供一个安全的回退
+    console.error("合集定义 'definition' 丢失或格式不正确:", row);
+    rowCopy.definition = rowCopy.type === 'filter'
+      ? { item_type: ['Movie'], logic: 'AND', rules: [] }
       : { item_type: ['Movie'], url: '' };
   }
-  delete rowCopy.definition_json;
+
+  // 确保旧数据也兼容排序字段，避免出错
+  if (!rowCopy.definition.default_sort_by) {
+    rowCopy.definition.default_sort_by = 'none';
+  }
+  if (!rowCopy.definition.default_sort_order) {
+    rowCopy.definition.default_sort_order = 'Ascending';
+  }
+
+  // 将处理好的数据赋值给表单模型
   currentCollection.value = rowCopy;
 
+  // 如果是榜单类型，需要额外处理UI以下拉框正确显示
   if (rowCopy.type === 'list') {
     const url = rowCopy.definition.url || '';
     const isBuiltIn = builtInLists.some(item => item.value === url);
