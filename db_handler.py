@@ -1107,29 +1107,29 @@ def get_all_media_metadata(item_type: str = 'Movie') -> List[Dict[str, Any]]:
 # ★★★ 从元数据表中提取所有唯一的类型 ★★★
 def get_unique_genres() -> List[str]:
     """
+    【V2 - PG JSON 兼容版】
     从 media_metadata 表中扫描所有电影，提取出所有不重复的类型(genres)。
     """
     unique_genres = set()
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # 我们只需要 genres_json 这一列
             cursor.execute("SELECT genres_json FROM media_metadata WHERE item_type = 'Movie'")
             rows = cursor.fetchall()
             
             for row in rows:
-                if row['genres_json']:
+                # ★★★ 核心修复：直接使用已经是列表的 genres_json 字段 ★★★
+                genres = row['genres_json']
+                if genres: # 确保它不是 None 或空列表
                     try:
-                        # 解析JSON数组
-                        genres = json.loads(row['genres_json'])
-                        # 将列表中的每个类型都加入到集合中，集合会自动处理重复
                         for genre in genres:
-                            if genre: # 确保不是空字符串
+                            if genre:
                                 unique_genres.add(genre.strip())
-                    except (json.JSONDecodeError, TypeError):
-                        continue # 如果某行数据有问题，跳过
+                    except TypeError:
+                        # 增加保护，以防万一某行数据格式真的有问题
+                        logger.warning(f"处理 genres_json 时遇到意外的类型错误，内容: {genres}")
+                        continue
                         
-        # 将集合转换为列表并排序
         sorted_genres = sorted(list(unique_genres))
         logger.trace(f"从数据库中成功提取出 {len(sorted_genres)} 个唯一的电影类型。")
         return sorted_genres
@@ -1141,28 +1141,26 @@ def get_unique_genres() -> List[str]:
 # ★★★ 从元数据表中提取所有唯一的工作室 ★★★
 def get_unique_studios() -> List[str]:
     """
-    【V2 - 视野扩展版】
-    从 media_metadata 表中扫描所有媒体项（电影和电视剧），
-    提取出所有不重复的工作室(studios)。
+    【V3 - PG JSON 兼容版】
+    从 media_metadata 表中扫描所有媒体项，提取出所有不重复的工作室(studios)。
     """
     unique_studios = set()
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            
-            # 【【【手术点：移除 WHERE item_type = 'Movie' 子句】】】
-            # 让查询覆盖整个表，不再局限于电影
             cursor.execute("SELECT studios_json FROM media_metadata")
             rows = cursor.fetchall()
             
             for row in rows:
-                if row['studios_json']:
+                # ★★★ 核心修复：直接使用已经是列表的 studios_json 字段 ★★★
+                studios = row['studios_json']
+                if studios:
                     try:
-                        studios = json.loads(row['studios_json'])
                         for studio in studios:
                             if studio:
                                 unique_studios.add(studio.strip())
-                    except (json.JSONDecodeError, TypeError):
+                    except TypeError:
+                        logger.warning(f"处理 studios_json 时遇到意外的类型错误，内容: {studios}")
                         continue
                         
         sorted_studios = sorted(list(unique_studios))
@@ -1176,6 +1174,7 @@ def get_unique_studios() -> List[str]:
 # ★★★ 从元数据表中提取所有唯一的标签 ★★★
 def get_unique_tags() -> List[str]:
     """
+    【V2 - PG JSON 兼容版】
     从 media_metadata 表中扫描所有媒体项，提取出所有不重复的标签(tags)。
     """
     unique_tags = set()
@@ -1186,13 +1185,15 @@ def get_unique_tags() -> List[str]:
             rows = cursor.fetchall()
             
             for row in rows:
-                if row['tags_json']:
+                # ★★★ 核心修复：直接使用已经是列表的 tags_json 字段 ★★★
+                tags = row['tags_json']
+                if tags:
                     try:
-                        tags = json.loads(row['tags_json'])
                         for tag in tags:
                             if tag:
                                 unique_tags.add(tag.strip())
-                    except (json.JSONDecodeError, TypeError):
+                    except TypeError:
+                        logger.warning(f"处理 tags_json 时遇到意外的类型错误，内容: {tags}")
                         continue
                         
         sorted_tags = sorted(list(unique_tags))
@@ -1208,6 +1209,7 @@ def search_unique_studios(search_term: str, limit: int = 20) -> List[str]:
     """
     (V3 - 智能排序版)
     从数据库中搜索工作室，并优先返回名称以 search_term 开头的结果。
+    (此函数无需修改，因为它依赖的 get_unique_studios() 已被修复)
     """
     if not search_term:
         return []
@@ -1219,25 +1221,20 @@ def search_unique_studios(search_term: str, limit: int = 20) -> List[str]:
 
     search_term_lower = search_term.lower()
     
-    # ★★★ 核心升级：创建两个列表来存放不同优先级的匹配结果 ★★★
     starts_with_matches = []
     contains_matches = []
     
     for studio in all_studios:
         studio_lower = studio.lower()
-        # 1. 优先检查是否以搜索词开头
         if studio_lower.startswith(search_term_lower):
             starts_with_matches.append(studio)
-        # 2. 如果不是开头匹配，再检查是否包含
         elif search_term_lower in studio_lower:
             contains_matches.append(studio)
             
-    # ★★★ 核心升级：将两个列表合并，高优先级的在前 ★★★
     final_matches = starts_with_matches + contains_matches
     
     logger.trace(f"智能搜索 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
     
-    # 只返回限定数量的结果
     return final_matches[:limit]
 
 # --- 搜索演员 ---
