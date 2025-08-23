@@ -169,17 +169,24 @@ def api_delete_custom_collection(collection_id):
 @login_required
 def api_get_custom_collection_status(collection_id):
     """
-    【PG JSON 兼容版】获取单个自定义合集的健康状态详情。
+    【V2 - 最终修复版】
+    获取单个自定义合集的详情，同时服务于“健康状态”弹窗和“编辑”弹窗。
+    - 修复了因错误删除 definition_json 导致编辑框为空的致命BUG。
     """
     try:
         collection_details = db_handler.get_custom_collection_by_id(collection_id)
         if not collection_details:
             return jsonify({"error": "未在自定义合集表中找到该合集"}), 404
         
-        # ★★★ 核心修复：直接使用已经是列表的 generated_media_info_json 字段 ★★★
-        # 并提供一个健壮的默认值
+        # 为“健康状态”弹窗准备 media_items 字段
         collection_details['media_items'] = collection_details.get('generated_media_info_json', [])
         
+        # ★★★ 核心修复：不再删除 definition_json，而是将其重命名为 definition ★★★
+        # 前端编辑框需要一个名为 'definition' 的对象来填充表单
+        if 'definition_json' in collection_details:
+            collection_details['definition'] = collection_details['definition_json']
+
+        # 现在，我们可以安全地删除那些体积巨大或不再需要的原始字段
         if 'generated_media_info_json' in collection_details:
             del collection_details['generated_media_info_json']
         if 'definition_json' in collection_details:
