@@ -578,7 +578,8 @@ def emby_webhook():
             webhook_processing_task,
             f"Webhook处理: {final_item_name}",
             id_to_process,
-            force_reprocess=True 
+            force_reprocess=True,
+            processor_type='media' 
         )
         
         return jsonify({"status": "metadata_task_queued", "item_id": id_to_process}), 202

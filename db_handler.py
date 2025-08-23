@@ -920,9 +920,10 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
 
 def update_actor_subscription(subscription_id: int, data: dict) -> bool:
     """
-    【V2 - 写入格式化修复版】
+    【V6 - 逻辑重构最终修复版】
     更新一个演员订阅的状态或配置。
-    - 修复了在保存时未将前端传来的数组转换回数据库字符串格式的问题。
+    - 采用更健壮的逻辑，确保任何更新路径下写入数据库的都是正确格式的字符串。
+    - 彻底解决因部分更新（如只更新状态）导致配置被错误格式化的根本问题。
     """
     try:
         with get_db_connection() as conn:
@@ -932,46 +933,49 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
             if not current_sub:
                 return False
 
-            new_status = data.get('status', current_sub['status'])
+            # --- 步骤 1: 使用数据库的当前值作为所有字段的默认值 ---
+            # 普通字段
+            new_status = current_sub['status']
+            new_start_year = current_sub['config_start_year']
+            new_min_rating = current_sub['config_min_rating']
+            # 字符串格式的字段
+            new_media_types_str = current_sub['config_media_types']
+            # 列表格式的字段 (注意：这里是列表，还不是最终的JSON字符串)
+            new_genres_include_list = current_sub.get('config_genres_include_json') or []
+            new_genres_exclude_list = current_sub.get('config_genres_exclude_json') or []
+
+            # --- 步骤 2: 检查前端传入的数据，并用新值覆盖默认值 ---
+            # 覆盖状态
+            new_status = data.get('status', new_status)
+
+            # 如果前端传了 config 对象，则覆盖配置项
             config = data.get('config')
-
             if config is not None:
-                # --- ★★★ 核心修复：在这里处理所有从前端传来的数据格式 ★★★ ---
+                new_start_year = config.get('start_year', new_start_year)
+                new_min_rating = config.get('min_rating', new_min_rating)
+
+                # 如果传了 media_types，则处理它
+                if 'media_types' in config and isinstance(config['media_types'], list):
+                    new_media_types_str = ','.join(config['media_types'])
                 
-                # 1. 处理普通字段
-                new_start_year = config.get('start_year', current_sub['config_start_year'])
-                new_min_rating = config.get('min_rating', current_sub['config_min_rating'])
+                # 如果传了 genres，则覆盖列表
+                if 'genres_include_json' in config:
+                    new_genres_include_list = config['genres_include_json'] or []
+                if 'genres_exclude_json' in config:
+                    new_genres_exclude_list = config['genres_exclude_json'] or []
 
-                # 2. 将 media_types 数组转换回逗号分隔的字符串
-                media_types_list = config.get('media_types')
-                if isinstance(media_types_list, list):
-                    new_media_types = ','.join(media_types_list)
-                else:
-                    # 如果前端没传这个值，则使用数据库的旧值
-                    new_media_types = current_sub['config_media_types']
+            # --- 步骤 3: 在执行SQL前，将所有需要格式化的字段进行最终转换 ---
+            # 将列表转换为JSON字符串，这是写入数据库前的最后一步
+            final_genres_include_json = json.dumps(new_genres_include_list, ensure_ascii=False)
+            final_genres_exclude_json = json.dumps(new_genres_exclude_list, ensure_ascii=False)
 
-                # 3. 将 genres 数组用 safe_json_dumps 转换回 JSON 字符串
-                #    如果前端没传，就用数据库的旧值（已经是字符串了，safe_json_dumps也能处理）
-                genres_include_raw = config.get('genres_include_json', current_sub['config_genres_include_json'])
-                genres_exclude_raw = config.get('genres_exclude_json', current_sub['config_genres_exclude_json'])
-                new_genres_include = safe_json_dumps(genres_include_raw)
-                new_genres_exclude = safe_json_dumps(genres_exclude_raw)
-                
-            else:
-                # 如果请求中完全没有 'config' 对象，则所有配置都保持不变
-                new_start_year = current_sub['config_start_year']
-                new_media_types = current_sub['config_media_types']
-                new_genres_include = current_sub['config_genres_include_json']
-                new_genres_exclude = current_sub['config_genres_exclude_json']
-                new_min_rating = current_sub['config_min_rating']
-
-            # 使用转换好的、格式正确的变量来更新数据库
+            # --- 步骤 4: 使用准备好的、格式完全正确的变量执行数据库更新 ---
             cursor.execute("""
                 UPDATE actor_subscriptions SET
                 status = %s, config_start_year = %s, config_media_types = %s, 
                 config_genres_include_json = %s, config_genres_exclude_json = %s, config_min_rating = %s
                 WHERE id = %s
-            """, (new_status, new_start_year, new_media_types, new_genres_include, new_genres_exclude, new_min_rating, subscription_id))
+            """, (new_status, new_start_year, new_media_types_str, final_genres_include_json, final_genres_exclude_json, new_min_rating, subscription_id))
             
             conn.commit()
             logger.info(f"DB: 成功更新订阅ID {subscription_id}。")
