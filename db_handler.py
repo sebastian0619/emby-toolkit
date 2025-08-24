@@ -299,39 +299,25 @@ def clear_all_review_items() -> int:
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # 1. 查询所有待复核（failed_log）记录
-                cursor.execute("SELECT item_id, item_name, score FROM failed_log")
-                rows = cursor.fetchall()  # List of tuples
-                
-                if not rows:
-                    logger.info("待复核列表为空，无需移动。")
-                    return 0
-                
-                # 2. 批量插入或更新到 processed_log
-                # 使用 psycopg2 的 mogrify 构造 VALUES 子句
-                values_sql = ",".join(
-                    cursor.mogrify("(%s, %s, COALESCE(%s, 10.0), NOW())", row).decode()
-                    for row in rows
-                )
-                insert_sql = f"""
+                # PostgreSQL可以用一条SQL完成这个操作，更安全
+                sql = """
+                    WITH moved_rows AS (
+                        DELETE FROM failed_log RETURNING item_id, item_name, score
+                    )
                     INSERT INTO processed_log (item_id, item_name, score, processed_at)
-                    VALUES {values_sql}
+                    SELECT item_id, item_name, COALESCE(score, 10.0), NOW() FROM moved_rows
                     ON CONFLICT (item_id) DO UPDATE SET
                         item_name = EXCLUDED.item_name,
                         score = EXCLUDED.score,
                         processed_at = NOW();
                 """
-                cursor.execute(insert_sql)
-                
-                # 3. 删除 failed_log 中对应的记录
-                item_ids = tuple(row[0] for row in rows)
-                cursor.execute("DELETE FROM failed_log WHERE item_id = ANY(%s)", (item_ids,))
-                
-                conn.commit()
-                logger.info(f"成功移动 {len(rows)} 条记录从待复核到已处理。")
-                return len(rows)
+                cursor.execute(sql)
+                moved_count = cursor.rowcount
+            conn.commit()
+            logger.info(f"成功移动 {moved_count} 条记录从待复核到已处理。")
+            return moved_count
     except Exception as e:
-        logger.error("清空并标记待复核列表时发生异常：%s", e, exc_info=True)
+        logger.error(f"清空并标记待复核列表时发生异常：{e}", exc_info=True)
         raise
 # ======================================================================
 # 模块 4: 智能追剧列表数据访问 (Watchlist Data Access)
