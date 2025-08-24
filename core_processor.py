@@ -865,8 +865,8 @@ class MediaProcessor:
                 min_score_for_review = float(self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW))
                 if processing_score < min_score_for_review:
                     reason = f"处理评分 ({processing_score:.2f}) 低于阈值 ({min_score_for_review})。"
+                    self.log_db_manager.remove_from_processed_log(cursor, item_id)
                     self.log_db_manager.save_to_failed_log(cursor, item_id, item_name_for_log, reason, item_type, score=processing_score)
-                    self.log_db_manager.remove_from_processed_log(cursor, item_id, item_name_for_log, reason, item_type, score=processing_score)
                 else:
                     self.log_db_manager.save_to_processed_log(cursor, item_id, item_name_for_log, score=processing_score)
                     self.log_db_manager.remove_from_failed_log(cursor, item_id)
