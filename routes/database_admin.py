@@ -256,7 +256,7 @@ def api_import_database():
             import_mode=import_mode
         )
         
-        return jsonify({"message": f"文件上传成功，已提交后台任务以 '{import_mode_cn}' 模式恢复 {len(tables_to_import)} 个表。"}), 202
+        return jsonify({"message": f"文件上传成功，已提交后台任务以 '{import_mode_cn}' 恢复 {len(tables_to_import)} 个表。"}), 202
 
     except Exception as e:
         logger.error(f"处理数据库导入请求时发生错误: {e}", exc_info=True)
