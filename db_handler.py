@@ -137,10 +137,10 @@ class ActorDBManager:
 
     def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], **kwargs) -> int:
         """
-        【PostgreSQL 健壮版 V8 - 主键冲突修复版】
-        - 修复了在 INSERT 分支中，错误地包含自增主键 map_id 导致的 UniqueViolation 错误。
+        以 emby_person_id 为主，补齐缺失的外部ID，插入冲突返回 -1，错误返回 -2。
+        更新时遇到字段冲突跳过，不影响返回。
         """
-        # 1. 标准化输入数据
+        # 标准化输入数据
         new_data = {
             "primary_name": str(person_data.get("name") or '').strip(),
             "emby_person_id": str(person_data.get("emby_id") or '').strip() or None,
@@ -148,89 +148,90 @@ class ActorDBManager:
             "imdb_id": str(person_data.get("imdb_id") or '').strip() or None,
             "douban_celebrity_id": str(person_data.get("douban_id") or '').strip() or None,
         }
-        id_fields = ["emby_person_id", "tmdb_person_id", "imdb_id", "douban_celebrity_id"]
-        new_ids = {k: v for k, v in new_data.items() if k in id_fields and v}
 
-        if not new_data["primary_name"] and not new_ids: return -1
+        if new_data["emby_person_id"] is None:
+            logger.warning("缺失 emby_person_id，无法执行 upsert")
+            return -2  # 视为错误，关键字段缺失
 
-        existing_record = None
+        id_fields = ["tmdb_person_id", "imdb_id", "douban_celebrity_id"]
+
         try:
             cursor.execute("SAVEPOINT actor_upsert")
 
-            # ... (查找逻辑保持不变) ...
-            if new_ids:
-                query_parts = [f"{key} = %s" for key in new_ids.keys()]
-                cursor.execute(f"SELECT * FROM person_identity_map WHERE {' OR '.join(query_parts)}", tuple(new_ids.values()))
-                found_by_id = cursor.fetchone()
-                if found_by_id: existing_record = dict(found_by_id)
-
-            if not existing_record and new_data["primary_name"]:
-                cursor.execute("SELECT * FROM person_identity_map WHERE primary_name = %s", (new_data["primary_name"],))
-                found_by_name = cursor.fetchone()
-                if found_by_name:
-                    is_safe_to_merge = all(
-                        not found_by_name[key] or new_id_val == found_by_name[key]
-                        for key, new_id_val in new_ids.items()
-                    )
-                    if is_safe_to_merge: existing_record = dict(found_by_name)
-
-            # ======================================================================
-            # 执行层: 根据查找结果，执行更新或插入
-            # ======================================================================
+            # 查找已有记录
+            cursor.execute("SELECT * FROM person_identity_map WHERE emby_person_id = %s", (new_data["emby_person_id"],))
+            existing_record = cursor.fetchone()
             if existing_record:
-                # --- 合并与更新 (这部分逻辑是正确的，无需修改) ---
-                merged_data = existing_record.copy()
-                for key, value in new_data.items():
-                    if value is not None: merged_data[key] = value
-                
-                cols_to_exclude = ['map_id', 'last_updated_at']
-                update_clauses = [f"{key} = %s" for key in merged_data.keys() if key not in cols_to_exclude]
-                if update_clauses:
-                    update_values = [v for k, v in merged_data.items() if k not in cols_to_exclude]
-                    update_values.append(existing_record['map_id'])
-                    sql_update = f"UPDATE person_identity_map SET {', '.join(update_clauses)}, last_updated_at = NOW() WHERE map_id = %s"
-                    cursor.execute(sql_update, tuple(update_values))
-                
+                existing_record = dict(existing_record)
+                update_fields = {}
+
+                # 补齐外部ID，仅在数据库空值时尝试写入
+                for f in id_fields:
+                    new_val = new_data.get(f)
+                    if new_val is not None and not existing_record.get(f):
+                        cursor.execute(
+                            f"SELECT map_id FROM person_identity_map WHERE {f} = %s AND emby_person_id <> %s",
+                            (new_val, new_data["emby_person_id"])
+                        )
+                        conflict = cursor.fetchone()
+                        if conflict:
+                            logger.warning(f"  -> 字段 {f}='{new_val}' 冲突于其他记录，跳过更新")
+                            # 不填充此字段，不修改update_fields
+                        else:
+                            update_fields[f] = new_val
+
+                # primary_name 相同则不更新，不同尝试更新
+                new_name = new_data["primary_name"]
+                old_name = existing_record.get("primary_name") or ""
+                if new_name and new_name != old_name:
+                    update_fields["primary_name"] = new_name
+
+                if update_fields:
+                    set_clauses = [f"{k} = %s" for k in update_fields.keys()]
+                    set_clauses.append("last_updated_at = NOW()")
+                    sql = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = %s"
+                    cursor.execute(sql, tuple(update_fields.values()) + (existing_record["map_id"],))
+
                 cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                return existing_record['map_id']
-            else:
-                # --- 创建新记录 ---
-                
-                # ★★★ 核心修复：创建一个专门用于插入的字典，并从中删除 map_id ★★★
-                data_for_insert = new_data.copy()
-                if 'map_id' in data_for_insert:
-                    del data_for_insert['map_id'] # 确保不会手动插入自增主键
+                return existing_record["map_id"]
 
-                # 检查冲突 (逻辑不变)
-                ids_for_check = {k: v for k, v in data_for_insert.items() if k in id_fields and v}
-                if ids_for_check:
-                    conflict_check_parts = [f"{key} = %s" for key in ids_for_check.keys()]
-                    sql_conflict_check = f"SELECT map_id FROM person_identity_map WHERE {' OR '.join(conflict_check_parts)}"
-                    cursor.execute(sql_conflict_check, tuple(ids_for_check.values()))
-                    if cursor.fetchone():
-                        logger.warning(f"尝试为 '{data_for_insert['primary_name']}' 创建新记录，但其ID已存在于另一条记录中。插入操作被中止。")
-                        cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                        return -1 # 或者返回找到的ID
-
-                # 使用清理过的 data_for_insert 构建SQL
-                cols_to_insert = [k for k, v in data_for_insert.items() if v is not None]
-                vals_to_insert = [v for v in data_for_insert.values() if v is not None]
-                placeholders = ['%s'] * len(vals_to_insert)
-
-                if not cols_to_insert:
+            # 新记录插入：检查有无冲突的ID（包括 emby_person_id 和其他外部ID）
+            conflict_conditions = []
+            conflict_values = []
+            for f in ["emby_person_id"] + id_fields:
+                v = new_data.get(f)
+                if v:
+                    conflict_conditions.append(f"{f} = %s")
+                    conflict_values.append(v)
+            if conflict_conditions:
+                cond_str = " OR ".join(conflict_conditions)
+                cursor.execute(f"SELECT map_id FROM person_identity_map WHERE {cond_str}", tuple(conflict_values))
+                conflict_rec = cursor.fetchone()
+                if conflict_rec:
+                    logger.warning(
+                        f"尝试为 '{new_data['primary_name']}' 创建新记录，但其ID已存在于另一条记录中，插入操作被中止。"
+                    )
                     cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                    return -1
+                    return -1  # 插入冲突跳过
 
-                sql_insert = f"INSERT INTO person_identity_map ({', '.join(cols_to_insert)}, last_updated_at) VALUES ({', '.join(placeholders)}, NOW()) RETURNING map_id"
-                cursor.execute(sql_insert, tuple(vals_to_insert))
-                result = cursor.fetchone()
-                cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                return result['map_id'] if result else -1
+            insert_fields = [k for k, v in new_data.items() if v is not None]
+            insert_placeholders = ["%s"] * len(insert_fields)
+            insert_values = [new_data[k] for k in insert_fields]
+
+            sql_insert = f"""
+                INSERT INTO person_identity_map ({', '.join(insert_fields)}, last_updated_at)
+                VALUES ({', '.join(insert_placeholders)}, NOW())
+                RETURNING map_id
+            """
+            cursor.execute(sql_insert, tuple(insert_values))
+            result = cursor.fetchone()
+            cursor.execute("RELEASE SAVEPOINT actor_upsert")
+            return result["map_id"] if result else -2
 
         except psycopg2.Error as e:
             cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
-            logger.error(f"为演员 '{new_data.get('primary_name')}' 执行 upsert 操作时发生数据库错误: {e}", exc_info=True)
-            return -1
+            logger.error(f"upsert_person 异常，emby_person_id={new_data.get('emby_person_id')}: {e}", exc_info=True)
+            return -2
         
 # ======================================================================
 # 模块 3: 日志表数据访问 (Log Tables Data Access)

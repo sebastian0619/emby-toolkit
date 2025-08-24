@@ -234,7 +234,7 @@ def init_db():
                     CREATE TABLE IF NOT EXISTS person_identity_map (
                         map_id SERIAL PRIMARY KEY, 
                         primary_name TEXT NOT NULL, 
-                        emby_person_id TEXT UNIQUE,
+                        emby_person_id TEXT NOT NULL UNIQUE,
                         tmdb_person_id INTEGER UNIQUE, 
                         imdb_id TEXT UNIQUE, 
                         douban_celebrity_id TEXT UNIQUE,
