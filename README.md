@@ -71,7 +71,7 @@
           - DB_HOST=db                                # 数据库服务的主机名 (请勿修改)
           - DB_PORT=5432                              # 数据库服务的端口 (请勿修改)
           - DB_USER=embytoolkit                       # !!! (可选) 修改为你自己的数据库用户名
-          - DB_PASSWORD=embytoolkit          # !!! (必填) 请修改为一个强密码 !!!
+          - DB_PASSWORD=embytoolkit                   # !!! (必填) 请修改为一个强密码 !!!
           - DB_NAME=embytoolkit                       # !!! (可选) 修改为你自己的数据库名
           - CONTAINER_NAME=emby-toolkit               # 以下两项都是一键更新用，不需要可以不配置
           - DOCKER_IMAGE_NAME=hbq0405/emby-toolkit:latest
@@ -98,15 +98,14 @@
           - POSTGRES_DB=embytoolkit                 # !!! (可选) 修改，与上面保持一致
         ports:
           # (可选) 将数据库端口映射到宿主机，方便使用Navicat等工具连接调试
-          # 映射到 5433 是为了避免与宿主机上可能已有的 5432 端口冲突
-          - "5433:5432"
+          - "5432:5432"
         healthcheck:
           # 健康检查，确保数据库服务已准备好接受连接
           test: ["CMD-SHELL", "pg_isready -U embytoolkit -d embytoolkit"]
           interval: 10s
           timeout: 5s
           retries: 5
-      # ---3.以下为虚拟库反代配置，不需要可以整个删掉
+      # ---3.虚拟库反代配置，不需要可以删掉
       nginx:
         image: nginx:1.25-alpine
         container_name: emby-proxy-nginx              
@@ -122,7 +121,7 @@
       emby-net:
         driver: bridge                                # 创建一个容器内部网络
     volumes:
-      postgres_data:
+      postgres_data:                                  # 创建一个Docker卷持久化保存数据库数据
 
     ```
     然后在 `docker-compose.yml` 文件所在的目录下运行：
