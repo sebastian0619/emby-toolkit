@@ -184,6 +184,8 @@ def init_db():
                         sort_order INTEGER NOT NULL DEFAULT 0
                     )
                 """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_type ON custom_collections (type)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_status ON custom_collections (status)")
 
                 logger.trace("  -> 正在创建 'media_metadata' 表...")
                 cursor.execute("""
@@ -225,6 +227,7 @@ def init_db():
                         force_ended BOOLEAN DEFAULT FALSE NOT NULL
                     )
                 """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
 
                 logger.trace("  -> 正在创建 'person_identity_map' 表...")
                 cursor.execute("""
@@ -239,6 +242,10 @@ def init_db():
                         last_updated_at TIMESTAMP WITH TIME ZONE
                     )
                 """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_id ON person_identity_map (emby_person_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_tmdb_id ON person_identity_map (tmdb_person_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_imdb_id ON person_identity_map (imdb_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_id ON person_identity_map (douban_celebrity_id)")
 
                 logger.trace("  -> 正在创建 'ActorMetadata' 表...")
                 cursor.execute("""
@@ -271,6 +278,7 @@ def init_db():
                         config_min_rating REAL DEFAULT 6.0
                     )
                 """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_status ON actor_subscriptions (status)")
 
                 logger.trace("  -> 正在创建 'tracked_actor_media' 表...")
                 cursor.execute("""
@@ -289,6 +297,8 @@ def init_db():
                         UNIQUE(subscription_id, tmdb_media_id)
                     )
                 """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_subscription_id ON tracked_actor_media (subscription_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_status ON tracked_actor_media (status)")
 
             conn.commit()
             logger.info("✅ PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")
