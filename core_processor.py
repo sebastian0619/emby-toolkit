@@ -24,7 +24,7 @@ from cachetools import TTLCache
 from db_handler import ActorDBManager
 from db_handler import get_db_connection as get_central_db_connection
 from ai_translator import AITranslator
-from utils import LogDBManager, get_override_path_for_item, translate_country_list, parse_emby_datetime
+from utils import LogDBManager, get_override_path_for_item, translate_country_list
 from watchlist_processor import WatchlistProcessor
 from douban import DoubanApi
 
@@ -49,7 +49,6 @@ def _read_local_json(file_path: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"读取本地JSON文件失败: {file_path}, 错误: {e}")
         return None
-
 def _save_metadata_to_cache(
     cursor: psycopg2.extensions.cursor,
     tmdb_id: str,
@@ -103,7 +102,7 @@ def _save_metadata_to_cache(
             "directors_json": json.dumps(directors, ensure_ascii=False),
             "studios_json": json.dumps(studios, ensure_ascii=False),
             "countries_json": json.dumps(countries, ensure_ascii=False),
-            "date_added": parse_emby_datetime(item_details_from_emby.get("DateCreated")),
+            "date_added": (item_details_from_emby.get("DateCreated") or '').split('T')[0] or None,
             "release_date": release_date_str,
         }
         

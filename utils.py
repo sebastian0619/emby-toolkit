@@ -3,7 +3,7 @@
 import re
 import os
 import psycopg2
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
 import unicodedata
@@ -223,23 +223,6 @@ class LogDBManager:
 
         except Exception as e:
             logger.error(f"标记备份状态失败 for item {item_id}: {e}", exc_info=True)
-
-def parse_emby_datetime(dt_str):
-    """把 Emby/TMDB 时间字符串，转成 datetime 对象"""
-    if not dt_str:
-        return None
-    # 修正多余纳秒部分，防止 fromisoformat 报错
-    dt_str_fixed = re.sub(r'\.(\d{6})\d*Z$', r'.\1Z', dt_str)
-    try:
-        # 把结尾Z替换成+00:00，变成合法ISO格式
-        return datetime.fromisoformat(dt_str_fixed.replace('Z', '+00:00'))
-    except Exception:
-        # 失败的话，只取日期部分，生成UTC时间0点
-        try:
-            date_part = dt_str.split('T')[0]
-            return datetime.strptime(date_part, '%Y-%m-%d').replace(tzinfo=timezone.utc)
-        except:
-            return None
 
 # --- 国家/地区名称映射功能 ---
 _country_map_cache = None

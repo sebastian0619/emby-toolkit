@@ -33,7 +33,7 @@ from extensions import TASK_REGISTRY
 from custom_collection_handler import ListImporter, FilterEngine
 from core_processor import _read_local_json
 from services.cover_generator import CoverGeneratorService
-from utils import get_country_translation_map, translate_country_list, parse_emby_datetime
+from utils import get_country_translation_map, translate_country_list
 
 logger = logging.getLogger(__name__)
 
@@ -1838,7 +1838,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                     "tmdb_id": tmdb_id, "item_type": full_details_emby.get("Type"),
                     "title": full_details_emby.get('Name'), "original_title": full_details_emby.get('OriginalTitle'),
                     "release_year": full_details_emby.get('ProductionYear'), "rating": full_details_emby.get('CommunityRating'),
-                    "release_date": release_date_str, "date_added": parse_emby_datetime(full_details_emby.get("DateCreated")),
+                    "release_date": release_date_str, "date_added": (full_details_emby.get("DateCreated") or '').split('T')[0] or None,
                     "genres_json": json.dumps(full_details_emby.get('Genres', []), ensure_ascii=False),
                     "actors_json": json.dumps(actors, ensure_ascii=False),
                     "directors_json": json.dumps(directors, ensure_ascii=False),
