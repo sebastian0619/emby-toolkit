@@ -99,7 +99,17 @@ const columns = [
       return typeMap[row.media_type] || row.media_type;
     }
   },
-  { title: '发行日期', key: 'release_date', width: 120 },
+  {
+  title: '发行日期',
+  key: 'release_date',
+  width: 120,
+  render(row) {
+  if (!row.release_date) return '';
+  const date = new Date(row.release_date);
+  // 使用 toLocaleDateString 带 zh-CN 区域，不带任何额外格式化，直接返回 yyyy/MM/dd
+  return date.toLocaleDateString('zh-CN');
+}
+},
   {
     title: '状态',
     key: 'status',

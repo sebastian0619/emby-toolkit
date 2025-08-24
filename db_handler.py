@@ -174,7 +174,7 @@ class ActorDBManager:
                         cursor.execute(f"SELECT map_id FROM person_identity_map WHERE {f} = %s AND emby_person_id <> %s", (new_val, new_data["emby_person_id"]))
                         conflict = cursor.fetchone()
                         if conflict:
-                            logger.warning(f"字段 {f}='{new_val}' 冲突于其他记录，跳过更新")
+                            logger.warning(f"  -> 字段 {f}='{new_val}' 冲突于其他记录，跳过更新")
                         else:
                             update_fields[f] = new_val
 
