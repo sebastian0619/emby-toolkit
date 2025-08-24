@@ -75,12 +75,13 @@ class WatchlistProcessor:
             return None
 
     def _update_watchlist_entry(self, item_id: str, item_name: str, updates: Dict[str, Any]):
-        """统一更新追剧列表中的一个条目。"""
+        """【V4 - 最终修复版】统一更新追剧列表中的一个条目。"""
         try:
             with get_central_db_connection() as conn:
-                # ★★★ 核心修复: 创建 cursor 对象 ★★★
                 with conn.cursor() as cursor:
-                    current_time = datetime.now(timezone.utc)
+                    # ★★★ 核心修正：使用 datetime.utcnow() 生成不带时区的UTC时间 ★★★
+                    # 这能最大限度地兼容各种数据库时区设置，避免类型冲突
+                    current_time = datetime.utcnow()
                     updates['last_checked_at'] = current_time
                     
                     set_clauses = [f"{key} = %s" for key in updates.keys()]
@@ -88,7 +89,7 @@ class WatchlistProcessor:
                     values.append(item_id)
                     
                     sql = f"UPDATE watchlist SET {', '.join(set_clauses)} WHERE item_id = %s"
-                    # ★★★ 核心修复: 使用 cursor 执行 ★★★
+                    
                     cursor.execute(sql, tuple(values))
                 conn.commit()
                 logger.info(f"  -> 成功更新数据库中 '{item_name}' 的追剧信息。")
@@ -532,20 +533,26 @@ class WatchlistProcessor:
         return True
 
     def _update_watchlist_status(self, item_id: str, status: str, item_name: str):
-        """更新数据库中指定项目的状态。"""
+        """【V4 - 最终修复版】更新数据库中指定项目的状态。"""
         try:
             with get_central_db_connection() as conn:
-                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                conn.execute("UPDATE watchlist SET status = %s, last_checked_at = %s WHERE item_id = %s", (status, current_time, item_id))
+                with conn.cursor() as cursor:
+                    # ★★★ 核心修正：统一使用 datetime.utcnow() ★★★
+                    current_time = datetime.utcnow()
+                    cursor.execute("UPDATE watchlist SET status = %s, last_checked_at = %s WHERE item_id = %s", (status, current_time, item_id))
+                conn.commit()
             logger.info(f"  成功更新 '{item_name}' 在数据库中的状态为 '{status}'。")
         except Exception as e:
             logger.error(f"  更新 '{item_name}' 状态为 '{status}' 时数据库出错: {e}")
 
     def _update_watchlist_timestamp(self, item_id: str, item_name: str):
-        """仅更新数据库中指定项目的 last_checked_at 时间戳。"""
+        """【V4 - 最终修复版】仅更新数据库中指定项目的 last_checked_at 时间戳。"""
         try:
             with get_central_db_connection() as conn:
-                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                conn.execute("UPDATE watchlist SET last_checked_at = %s WHERE item_id = %s", (current_time, item_id))
+                with conn.cursor() as cursor:
+                    # ★★★ 核心修正：统一使用 datetime.utcnow() ★★★
+                    current_time = datetime.utcnow()
+                    cursor.execute("UPDATE watchlist SET last_checked_at = %s WHERE item_id = %s", (current_time, item_id))
+                conn.commit()
         except Exception as e:
             logger.error(f"更新 '{item_name}' 的 last_checked_at 时间戳时失败: {e}")

@@ -2,6 +2,7 @@
 
 from flask import Blueprint, request, jsonify
 import logging
+import json
 from datetime import datetime, date
 # 导入需要的模块
 import db_handler
@@ -22,13 +23,22 @@ def api_get_watchlist():
     try:
         items = db_handler.get_all_watchlist_items()
 
-        # ★★★ 2. 在这里添加强制格式化逻辑 ★★★
-        # 这是一个决定性的修复，它不再依赖于任何全局设置
         for item in items:
+            # 1. 直接重命名字段，将 psycopg2 解析好的对象传递给前端
+            #    前端将收到一个名为 'next_episode_to_air' 的对象 (或 null)
+            item['next_episode_to_air'] = item.get('next_episode_to_air_json')
+            if 'next_episode_to_air_json' in item:
+                del item['next_episode_to_air_json']
+
+            # 2. 对缺失信息做同样处理
+            #    前端将收到一个名为 'missing_info' 的对象 (或 null)
+            item['missing_info'] = item.get('missing_info_json')
+            if 'missing_info_json' in item:
+                del item['missing_info_json']
+
+            # 3. 格式化日期 (保留原有逻辑)
             for key, value in item.items():
-                # 检查值是否是 datetime 或 date 对象
                 if isinstance(value, (datetime, date)):
-                    # 如果是，就用 .isoformat() 将其转换为标准 ISO 8601 字符串
                     item[key] = value.isoformat()
         
         return jsonify(items)

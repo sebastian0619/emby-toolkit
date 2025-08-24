@@ -414,32 +414,23 @@ const emptyStateDescription = computed(() => {
   return '还没有已完结的剧集。';
 });
 const missingData = computed(() => {
-  if (!selectedSeries.value || !selectedSeries.value.missing_info_json) {
-    return { missing_seasons: [], missing_episodes: [] };
-  }
-  try {
-    return JSON.parse(selectedSeries.value.missing_info_json);
-  } catch (e) {
-    return { missing_seasons: [], missing_episodes: [] };
-  }
+// ★★★ 直接使用后端传来的 'missing_info' 对象 ★★★
+return selectedSeries.value?.missing_info || { missing_seasons: [], missing_episodes: [] };
 });
 const nextEpisode = (item) => {
-  if (!item.next_episode_to_air_json) return null;
-  try { return JSON.parse(item.next_episode_to_air_json); }
-  catch (e) { return null; }
+  // ★★★ 直接返回后端传来的 'next_episode_to_air' 对象 ★★★
+  return item.next_episode_to_air || null;
 };
 const hasMissing = (item) => {
-  if (!item.missing_info_json) return false;
-  try {
-    const data = JSON.parse(item.missing_info_json);
-    return (data.missing_seasons?.length > 0) || (data.missing_episodes?.length > 0);
-  } catch (e) {
-    return false;
-  }
+  // ★★★ 直接检查 'missing_info' 对象 ★★★
+  const data = item.missing_info;
+  if (!data) return false;
+  return (data.missing_seasons?.length > 0) || (data.missing_episodes?.length > 0);
 };
 const getMissingCountText = (item) => {
+  // ★★★ 直接使用 'missing_info' 对象 ★★★
   if (!hasMissing(item)) return '';
-  const data = JSON.parse(item.missing_info_json);
+  const data = item.missing_info;
   const season_count = data.missing_seasons?.length || 0;
   const episode_count = data.missing_episodes?.length || 0;
   let parts = [];
