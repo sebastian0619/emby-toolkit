@@ -7,7 +7,7 @@ import os
 import sys
 from typing import List, Dict, Any, Optional, Tuple
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ★★★ 核心修正：再次回归 gevent.subprocess ★★★
@@ -324,18 +324,30 @@ class FilterEngine:
 
             # 3. 处理其他所有非列表字段 (这部分逻辑是正确的，无需修改)
             elif field in ['release_date', 'date_added']:
-                item_date_str = item_metadata.get(field)
-                if item_date_str and str(value).isdigit():
+                item_date_val = item_metadata.get(field)
+                if item_date_val and str(value).isdigit():
                     try:
-                        item_date = datetime.strptime(item_date_str, '%Y-%m-%d').date()
+                        # 兼容处理 datetime 和 date 类型
+                        if isinstance(item_date_val, datetime):
+                            item_date = item_date_val.date()
+                        elif isinstance(item_date_val, date):
+                            item_date = item_date_val
+                        else:
+                            # 兼容字符串格式
+                            item_date = datetime.strptime(str(item_date_val), '%Y-%m-%d').date()
+
                         today = datetime.now().date()
                         days = int(value)
                         cutoff_date = today - timedelta(days=days)
+
                         if op == 'in_last_days':
-                            if item_date >= cutoff_date and item_date <= today: match = True
+                            if cutoff_date <= item_date <= today:
+                                match = True
                         elif op == 'not_in_last_days':
-                            if item_date < cutoff_date: match = True
-                    except (ValueError, TypeError): pass
+                            if item_date < cutoff_date:
+                                match = True
+                    except (ValueError, TypeError):
+                        pass
 
             elif field == 'title':
                 item_title = item_metadata.get('title')
@@ -365,7 +377,6 @@ class FilterEngine:
         if logic.upper() == 'AND': return all(results)
         else: return any(results)
 
-    # (execute_filter 和 find_matching_collections 函数保持不变，无需修改)
     def execute_filter(self, definition: Dict[str, Any]) -> List[Dict[str, str]]:
         logger.info("  -> 筛选引擎：开始执行全库扫描以生成合集...")
         rules = definition.get('rules', [])
