@@ -867,12 +867,12 @@ class MediaProcessor:
                     reason = f"处理评分 ({processing_score:.2f}) 低于阈值 ({min_score_for_review})。"
                     self.log_db_manager.remove_from_processed_log(cursor, item_id)
                     self.log_db_manager.save_to_failed_log(cursor, item_id, item_name_for_log, reason, item_type, score=processing_score)
-                    logger.debug(f"  -> 评分低于阈值,已将 '{item_name_for_log}' 记录到待复核，请手动处理。")
+                    logger.info(f"  -> 评分低于阈值,已将 '{item_name_for_log}' 记录到待复核，请手动处理。")
                 else:
                     self.log_db_manager.save_to_processed_log(cursor, item_id, item_name_for_log, score=processing_score)
                     self.log_db_manager.remove_from_failed_log(cursor, item_id)
                     self.processed_items_cache[item_id] = item_name_for_log
-                    logger.debug(f"  -> 已将 '{item_name_for_log}' 添加到已处理，下次将跳过。")
+                    logger.info(f"  -> 已将 '{item_name_for_log}' 添加到已处理，下次将跳过。")
 
                 conn.commit()
 
