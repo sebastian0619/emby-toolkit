@@ -135,6 +135,7 @@
                       </n-form-item-grid-item>
                       <n-form-item-grid-item label="虚拟库访问端口" path="proxy_port">
                         <n-input-number v-model:value="configModel.proxy_port" :min="1025" :max="65535" :disabled="!configModel.proxy_enabled"/>
+                        <template #feedback><n-text depth="3" style="font-size:0.8em;">非host模式需要映射。</n-text></template>
                       </n-form-item-grid-item>
 
                       <n-divider title-placement="left" style="margin-top: 10px;">选择合并显示的原生媒体库</n-divider>
