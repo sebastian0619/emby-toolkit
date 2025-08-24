@@ -24,7 +24,16 @@ class UnifiedSyncHandler:
     def sync_emby_person_map_to_db(self,
                               update_status_callback: Optional[callable] = None,
                               stop_event: Optional[threading.Event] = None):
+
         logger.trace("开始统一的演员映射表同步任务 (流式处理)...")
+        if update_status_callback:
+            update_status_callback(0, "正在清理无 emby_person_id 的脏数据...")
+
+        with get_central_db_connection() as conn:
+            cursor = conn.cursor()
+            # **这里清理无 emby_person_id 的记录**
+            cursor.execute("DELETE FROM person_identity_map WHERE emby_person_id IS NULL OR emby_person_id = ''")
+            conn.commit()
         if update_status_callback:
             update_status_callback(0, "正在计算演员总数...")
 
