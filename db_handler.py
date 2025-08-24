@@ -137,61 +137,96 @@ class ActorDBManager:
 
     def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], **kwargs) -> int:
         """
-        以 emby_person_id 为主键，实现 UPSERT：
-        - 插入时若冲突自动更新（只补充空字段）
-        - 更新时只补充空字段，跳过已存在字段，避免唯一冲突
-        - 冲突安静跳过，错误返回-2
-        - 成功返回 map_id
+        以 emby_person_id 为主，补齐缺失的外部ID，冲突则跳过。
+        额外清理存量数据中缺少 emby_person_id 的脏数据。
         """
-        new_data = {
-            "primary_name": str(person_data.get("name") or '').strip(),
-            "emby_person_id": str(person_data.get("emby_id") or '').strip() or None,
-            "tmdb_person_id": int(person_data.get("tmdb_id")) if person_data.get("tmdb_id") else None,
-            "imdb_id": str(person_data.get("imdb_id") or '').strip() or None,
-            "douban_celebrity_id": str(person_data.get("douban_id") or '').strip() or None,
-        }
-
-        if not new_data["emby_person_id"]:
-            logger.warning("缺失 emby_person_id，无法执行 upsert")
-            return -2  # 关键字段为空直接错误
-
         try:
-            # 使用 PostgreSQL 原生 UPSERT 语法实现安静更新
-            sql = """
-            INSERT INTO person_identity_map (
-                emby_person_id, primary_name, tmdb_person_id, imdb_id, douban_celebrity_id, last_updated_at
-            ) VALUES (%s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (emby_person_id) DO UPDATE SET
-                primary_name = EXCLUDED.primary_name,
-                tmdb_person_id = COALESCE(person_identity_map.tmdb_person_id, EXCLUDED.tmdb_person_id),
-                imdb_id = COALESCE(person_identity_map.imdb_id, EXCLUDED.imdb_id),
-                douban_celebrity_id = COALESCE(person_identity_map.douban_celebrity_id, EXCLUDED.douban_celebrity_id),
-                last_updated_at = NOW()
-            RETURNING map_id
+            # 1. 清理存量脏数据
+            cursor.execute("DELETE FROM person_identity_map WHERE emby_person_id IS NULL OR emby_person_id = ''")
+
+            # 2. 标准化输入数据
+            new_data = {
+                "primary_name": str(person_data.get("name") or '').strip(),
+                "emby_person_id": str(person_data.get("emby_id") or '').strip() or None,
+                "tmdb_person_id": int(person_data.get("tmdb_id")) if person_data.get("tmdb_id") else None,
+                "imdb_id": str(person_data.get("imdb_id") or '').strip() or None,
+                "douban_celebrity_id": str(person_data.get("douban_id") or '').strip() or None,
+            }
+
+            # 必须有 emby_person_id
+            if new_data["emby_person_id"] is None:
+                logger.warning("缺失 emby_person_id，无法执行 upsert")
+                return -1
+
+            id_fields = ["tmdb_person_id", "imdb_id", "douban_celebrity_id"]
+            cursor.execute("SAVEPOINT actor_upsert")
+
+            # 3. 查找已有记录
+            cursor.execute("SELECT * FROM person_identity_map WHERE emby_person_id = %s", (new_data["emby_person_id"],))
+            existing_record = cursor.fetchone()
+            if existing_record:
+                existing_record = dict(existing_record)
+                # 补齐缺失字段
+                update_fields = {}
+                for f in id_fields:
+                    new_val = new_data.get(f)
+                    if new_val is not None and not existing_record.get(f):
+                        cursor.execute(f"SELECT map_id FROM person_identity_map WHERE {f} = %s AND emby_person_id <> %s", (new_val, new_data["emby_person_id"]))
+                        conflict = cursor.fetchone()
+                        if conflict:
+                            logger.warning(f"字段 {f}='{new_val}' 冲突于其他记录，跳过更新")
+                        else:
+                            update_fields[f] = new_val
+
+                new_name = new_data["primary_name"]
+                old_name = existing_record.get("primary_name") or ""
+                if new_name and new_name != old_name:
+                    update_fields["primary_name"] = new_name
+
+                if update_fields:
+                    set_clauses = [f"{k} = %s" for k in update_fields.keys()]
+                    set_clauses.append("last_updated_at = NOW()")
+                    sql = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = %s"
+                    cursor.execute(sql, tuple(update_fields.values()) + (existing_record["map_id"],))
+
+                cursor.execute("RELEASE SAVEPOINT actor_upsert")
+                return existing_record["map_id"]
+
+            # 4. 记录不存在，尝试插入
+            conflict_conditions = []
+            conflict_values = []
+            for f in ["emby_person_id"] + id_fields:
+                v = new_data.get(f)
+                if v:
+                    conflict_conditions.append(f"{f} = %s")
+                    conflict_values.append(v)
+            if conflict_conditions:
+                cond_str = " OR ".join(conflict_conditions)
+                cursor.execute(f"SELECT map_id FROM person_identity_map WHERE {cond_str}", tuple(conflict_values))
+                conflict_rec = cursor.fetchone()
+                if conflict_rec:
+                    logger.warning(f"新记录 emby_person_id='{new_data['emby_person_id']}' 存在外部ID冲突，跳过插入")
+                    cursor.execute("RELEASE SAVEPOINT actor_upsert")
+                    return -1
+
+            insert_fields = [k for k, v in new_data.items() if v is not None]
+            insert_placeholders = ["%s"] * len(insert_fields)
+            insert_values = [new_data[k] for k in insert_fields]
+
+            sql_insert = f"""
+                INSERT INTO person_identity_map ({', '.join(insert_fields)}, last_updated_at) 
+                VALUES ({', '.join(insert_placeholders)}, NOW())
+                RETURNING map_id
             """
-
-            cursor.execute(sql, (
-                new_data["emby_person_id"],
-                new_data["primary_name"],
-                new_data["tmdb_person_id"],
-                new_data["imdb_id"],
-                new_data["douban_celebrity_id"],
-            ))
-
+            cursor.execute(sql_insert, tuple(insert_values))
             result = cursor.fetchone()
-            if result and "map_id" in result:
-                return result["map_id"]
-            else:
-                return -2
+            cursor.execute("RELEASE SAVEPOINT actor_upsert")
+            return result["map_id"] if result else -1
 
-        except psycopg2.errors.UniqueViolation as e:
-            # 理论不会触发该异常，若出现，捕获日志，返回错误码
-            logger.warning(f"唯一约束冲突异常被捕获（理论不该出现）：{e}")
-            return -2
-
-        except Exception as e:
-            logger.error(f"upsert_person 执行异常：{e}", exc_info=True)
-            return -2
+        except psycopg2.Error as e:
+            cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
+            logger.error(f"upsert_person 异常，emby_person_id={person_data.get('emby_id')}: {e}", exc_info=True)
+            return -1
         
 # ======================================================================
 # 模块 3: 日志表数据访问 (Log Tables Data Access)
