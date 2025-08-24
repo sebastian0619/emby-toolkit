@@ -799,6 +799,55 @@ class MediaProcessor:
                     new_rating=douban_rating
                 )
 
+                # <--- 新增代码开始: 回读 Emby 获取最新 ID 并执行最终反哺 --->
+                if update_success:
+                    logger.info("  -> 核心更新成功，立即回读 Emby 以获取所有演员的最终 ID...")
+                    
+                    # 1. 立即回读，获取包含所有新演员ID的最新详情
+                    final_item_details_after_update = emby_handler.get_emby_item_details(
+                        item_id, self.emby_url, self.emby_api_key, self.emby_user_id
+                    )
+                    
+                    if final_item_details_after_update and final_item_details_after_update.get("People"):
+                        logger.info("  -> 开始执行最终的数据库反哺流程...")
+                        
+                        # 2. 创建一个从 TMDB ID 到 Emby Person 完整信息的映射，方便快速查找
+                        tmdb_to_emby_person_map = {
+                            person.get("ProviderIds", {}).get("Tmdb"): person
+                            for person in final_item_details_after_update.get("People")
+                            if person.get("ProviderIds", {}).get("Tmdb")
+                        }
+
+                        # 3. 遍历我们处理好的最终列表 (final_processed_cast)，它包含了最全的ID信息
+                        for actor_data in final_processed_cast:
+                            tmdb_id = str(actor_data.get("id"))
+                            
+                            # 4. 使用 TMDB ID 作为桥梁，在回读的数据中找到对应的 Emby Person
+                            emby_person_info = tmdb_to_emby_person_map.get(tmdb_id)
+                            
+                            if emby_person_info and emby_person_info.get("Id"):
+                                # 5. 找到了！现在我们拥有了所有ID，组装数据准备写入数据库
+                                person_for_db = {
+                                    "emby_id": emby_person_info.get("Id"),
+                                    "tmdb_id": tmdb_id,
+                                    "imdb_id": actor_data.get("imdb_id"),
+                                    "douban_id": actor_data.get("douban_id"),
+                                    "name": actor_data.get("name") # 使用我们翻译好的名字
+                                }
+                                
+                                # 6. 调用数据库管理器写入。现在 emby_id 总是存在，完美！
+                                self.actor_db_manager.upsert_person(
+                                    cursor=cursor,
+                                    person_data=person_for_db
+                                )
+                            else:
+                                logger.warning(f"  -> 反哺警告：未能为演员 '{actor_data.get('name')}' (TMDB ID: {tmdb_id}) 在回读数据中找到匹配的Emby Person。")
+                        
+                        logger.info("  -> 数据库反哺流程完成。")
+                        # 注意：conn.commit() 会在函数末尾的 with 语句块结束时统一执行，这里不需要单独提交。
+                    else:
+                        logger.error("  -> 致命错误：回读 Emby 详情失败或未包含演员信息，无法完成演员ID反哺。")
+
                 # +++ 对分集的处理 +++
                 if item_type == "Series" and update_success:
                     logger.info(f"  -> 自动处理：开始为 '{item_name_for_log}' 批量同步所有分集的演员表...")
@@ -1113,16 +1162,6 @@ class MediaProcessor:
                                 }
                                 final_cast_map[tmdb_id_from_map] = new_actor_entry
 
-                            logger.debug(f"  -> [实时反哺] 将新发现的映射关系 (Douban ID: {d_douban_id}) 保存回演员映射表...")
-                            self.actor_db_manager.upsert_person(
-                                cursor,
-                                {
-                                    "tmdb_id": tmdb_id_from_map,
-                                    "imdb_id": d_imdb_id,
-                                    "douban_id": d_douban_id,
-                                    "name": d_actor.get("Name") or (entry_from_map["primary_name"] if "primary_name" in entry_from_map else None)
-                                }
-                            )
                             match_found = True
 
                         if not match_found:
@@ -1212,20 +1251,6 @@ class MediaProcessor:
 
         # 将最终演员列表取自 final_cast_map，包含所有旧＋新演员
         current_cast_list = list(final_cast_map.values())
-
-        # ★★★ 在截断前进行一次全量反哺映射表 ★★★
-        logger.debug(f"  -> 截断前：将 {len(current_cast_list)} 位演员的完整映射关系反哺到演员映射表...")
-        for actor_data in current_cast_list:
-            self.actor_db_manager.upsert_person(
-                cursor,
-                {
-                    "tmdb_id": actor_data.get("id"),
-                    "name": actor_data.get("name"),
-                    "imdb_id": actor_data.get("imdb_id"),
-                    "douban_id": actor_data.get("douban_id"),
-                },
-            )
-        logger.trace("  -> 所有演员的ID映射关系已保存。")
 
         # 演员列表截断 (先截断！)
         max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)

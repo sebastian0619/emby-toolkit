@@ -449,8 +449,18 @@ const getMissingCountText = (item) => {
 };
 const formatTimestamp = (timestamp) => {
   if (!timestamp) return '从未';
-  try { return format(parseISO(timestamp), 'MM-dd HH:mm'); }
-  catch (e) { return 'N/A'; }
+  try {
+    // 核心：使用 new Date() 来解析后端传来的标准 ISO 时间字符串。
+    // 这个操作会创建一个 Date 对象，该对象在进行格式化时会自动使用浏览器的本地时区。
+    const localDate = new Date(timestamp);
+
+    // 然后，将这个已经转换为本地时区的 Date 对象交给 format 函数进行格式化。
+    return format(localDate, 'MM-dd HH:mm');
+  }
+  catch (e) {
+    console.error(`无法解析或格式化时间戳: "${timestamp}"`, e);
+    return 'N/A';
+  }
 };
 const formatAirDate = (dateString) => {
   if (!dateString) return '待定';

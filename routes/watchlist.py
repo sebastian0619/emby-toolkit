@@ -2,7 +2,7 @@
 
 from flask import Blueprint, request, jsonify
 import logging
-
+from datetime import datetime, date
 # 导入需要的模块
 import db_handler
 import config_manager
@@ -21,6 +21,16 @@ def api_get_watchlist():
     logger.debug("API (Blueprint): 收到获取追剧列表的请求。")
     try:
         items = db_handler.get_all_watchlist_items()
+
+        # ★★★ 2. 在这里添加强制格式化逻辑 ★★★
+        # 这是一个决定性的修复，它不再依赖于任何全局设置
+        for item in items:
+            for key, value in item.items():
+                # 检查值是否是 datetime 或 date 对象
+                if isinstance(value, (datetime, date)):
+                    # 如果是，就用 .isoformat() 将其转换为标准 ISO 8601 字符串
+                    item[key] = value.isoformat()
+        
         return jsonify(items)
     except Exception as e:
         logger.error(f"获取追剧列表时发生错误: {e}", exc_info=True)

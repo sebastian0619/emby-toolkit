@@ -5,7 +5,7 @@ import json
 import os
 import copy
 from typing import Optional, Dict, Any, List, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import threading
 import db_handler
 from db_handler import get_db_connection as get_central_db_connection
@@ -80,7 +80,7 @@ class WatchlistProcessor:
             with get_central_db_connection() as conn:
                 # ★★★ 核心修复: 创建 cursor 对象 ★★★
                 with conn.cursor() as cursor:
-                    current_time = datetime.now()
+                    current_time = datetime.now(timezone.utc)
                     updates['last_checked_at'] = current_time
                     
                     set_clauses = [f"{key} = %s" for key in updates.keys()]
@@ -135,7 +135,7 @@ class WatchlistProcessor:
         
         self.progress_callback(0, "准备检查待更新剧集...")
         try:
-            today_str = datetime.now().date().isoformat()
+            today_str = datetime.now(timezone.utc).date().isoformat()
             active_series = self._get_series_to_process(
                 f"WHERE status = '{STATUS_WATCHING}' OR (status = '{STATUS_PAUSED}' AND paused_until <= '{today_str}')",
                 item_id
@@ -310,7 +310,7 @@ class WatchlistProcessor:
             if last_air_date_str:
                 try:
                     last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
-                    if last_air_date <= datetime.now().date():
+                    if last_air_date <= datetime.now(timezone.utc).date():
                         is_season_finale = True
                         logger.info("  -> 符合“本季大结局”条件：已播出最后一集，且无明确的待播集。")
                 except ValueError:
@@ -333,7 +333,7 @@ class WatchlistProcessor:
             air_date_str = real_next_episode_to_air['air_date']
             try:
                 air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
-                days_until_air = (air_date - datetime.now().date()).days
+                days_until_air = (air_date - datetime.now(timezone.utc).date()).days
                 if days_until_air > 3:
                     final_status = STATUS_PAUSED
                     paused_until_date = air_date - timedelta(days=1)
@@ -344,10 +344,10 @@ class WatchlistProcessor:
             except ValueError:
                 logger.warning(f"  -> 解析TMDb待播日期 '{air_date_str}' 失败，将临时暂停。")
                 final_status = STATUS_PAUSED
-                paused_until_date = datetime.now().date() + timedelta(days=1)
+                paused_until_date = datetime.now(timezone.utc).date() + timedelta(days=1)
         else:
             final_status = STATUS_PAUSED
-            paused_until_date = datetime.now().date() + timedelta(days=7)
+            paused_until_date = datetime.now(timezone.utc).date() + timedelta(days=7)
             # 对暂停原因进行更详细的日志记录
             if not has_complete_metadata and not has_missing_media:
                  logger.info(f"  -> 剧集文件完整但元数据不全，状态变更为: {translate_internal_status(final_status)}，暂停7天以待元数据更新。")
