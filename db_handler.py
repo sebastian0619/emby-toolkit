@@ -581,7 +581,7 @@ def get_collections_with_missing_movies() -> List[Dict[str, Any]]:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT emby_collection_id, name, missing_movies_json FROM collections_info WHERE has_missing = 1")
+            cursor.execute("SELECT emby_collection_id, name, missing_movies_json FROM collections_info WHERE has_missing = TRUE")
             # 返回原始行，让业务逻辑层处理 JSON
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
@@ -612,25 +612,20 @@ def update_collection_movies(collection_id: str, movies: List[Dict[str, Any]]):
 
 
 def update_single_movie_status_in_collection(collection_id: str, movie_tmdb_id: str, new_status: str) -> bool:
-    """
-    更新合集中单个电影的状态。
-    返回 True 表示成功，False 表示合集或电影未找到。
-    """
+    """【修复 #2】更新合集中单个电影的状态。"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("BEGIN TRANSACTION;")
-            
             cursor.execute("SELECT missing_movies_json FROM collections_info WHERE emby_collection_id = %s", (collection_id,))
             row = cursor.fetchone()
             if not row:
                 conn.rollback()
-                return False # 合集未找到
+                return False
 
-            try:
-                movies = json.loads(row['missing_movies_json'])
-            except (json.JSONDecodeError, TypeError):
-                movies = []
+            movies = row.get('missing_movies_json')
+            if not isinstance(movies, list):
+                movies = [] # 安全兜底
 
             movie_found = False
             for movie in movies:
@@ -641,9 +636,8 @@ def update_single_movie_status_in_collection(collection_id: str, movie_tmdb_id: 
             
             if not movie_found:
                 conn.rollback()
-                return False # 电影未找到
+                return False
 
-            # 状态更新后，重新计算合集的 has_missing 标志
             still_has_missing = any(m.get('status') == 'missing' for m in movies)
             new_missing_json = json.dumps(movies, ensure_ascii=False)
             
@@ -1433,24 +1427,22 @@ def update_custom_collection_after_sync(collection_id: int, update_data: Dict[st
         return False
 
 def update_single_media_status_in_custom_collection(collection_id: int, media_tmdb_id: str, new_status: str) -> bool:
-    """
-    更新自定义合集中单个媒体项的状态，并重新计算合集的健康度。
-    """
+    """ 更新自定义合集中单个媒体项的状态。"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("BEGIN TRANSACTION;")
-            
             cursor.execute("SELECT generated_media_info_json FROM custom_collections WHERE id = %s", (collection_id,))
             row = cursor.fetchone()
             if not row:
                 conn.rollback()
                 return False
 
-            try:
-                media_items = json.loads(row['generated_media_info_json'] or '[]')
-            except (json.JSONDecodeError, TypeError):
-                media_items = []
+            # --- ▼▼▼ 核心修复：移除 json.loads，直接使用已解析的对象 ▼▼▼ ---
+            media_items = row.get('generated_media_info_json')
+            if not isinstance(media_items, list):
+                media_items = [] # 安全兜底
+            # --- ▲▲▲ 修复结束 ▲▲▲ ---
 
             item_found = False
             for item in media_items:
@@ -1463,11 +1455,9 @@ def update_single_media_status_in_custom_collection(collection_id: int, media_tm
                 conn.rollback()
                 return False
 
-            # 重新计算健康状态
             missing_count = sum(1 for item in media_items if item.get('status') == 'missing')
             new_health_status = 'has_missing' if missing_count > 0 else 'ok'
             
-            # 准备更新的数据
             update_data = {
                 "generated_media_info_json": json.dumps(media_items, ensure_ascii=False),
                 "missing_count": missing_count,
