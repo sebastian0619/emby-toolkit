@@ -449,7 +449,6 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
     """
     task_name = "数据库恢复 (覆盖模式)"
     logger.info(f"后台任务开始：{task_name}，将恢复表: {tables_to_import}。")
-
     TABLE_TRANSLATIONS = {
         'person_identity_map': '演员映射表', 'actor_metadata': '演员元数据',
         'translation_cache': '翻译缓存', 'watchlist': '智能追剧列表',
@@ -458,44 +457,74 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         'failed_log': '待复核列表', 'users': '用户账户',
         'custom_collections': '自建合集', 'media_metadata': '媒体元数据',
     }
-
     summary_lines = []
     conn = None
-
     try:
         backup = json.loads(file_content)
         backup_data = backup.get("data", {})
 
+        # --- 新增的逻辑: 强制排序 tables_to_import ---
+        # 定义表的依赖顺序。排在前面的表是父表或没有依赖的表。
+        # 这里只列出明确需要优先处理的表。
+        # 未列出的表将保持其在原始列表中的相对顺序，但会排在已定义依赖的表之后。
+        # 例如：person_identity_map 必须在 actor_metadata 之前
+        # 你可以根据实际情况添加更多依赖关系
+        
+        # 建立一个排序键函数
+        def get_table_sort_key(table_name):
+            table_name_lower = table_name.lower()
+            if table_name_lower == 'person_identity_map':
+                return 0  # 演员身份映射表，是 actor_metadata 和 actor_subscriptions 的基础
+            elif table_name_lower == 'users':
+                return 1  # 用户表，通常也是基础
+            elif table_name_lower == 'actor_subscriptions':
+                return 10 # 演员订阅配置，依赖于 person_identity_map (语义上)，被 tracked_actor_media 依赖
+            elif table_name_lower == 'actor_metadata':
+                return 11 # 演员元数据，依赖于 person_identity_map (外键)
+            elif table_name_lower == 'tracked_actor_media':
+                return 20 # 已追踪的演员作品，依赖于 actor_subscriptions (外键)
+            # 其他表，目前没有明确的外键依赖，可以放在后面
+            # 它们的相对顺序将由原始 tables_to_import 列表决定，如果它们有相同的默认权重
+            elif table_name_lower in [
+                'processed_log', 'failed_log', 'translation_cache',
+                'collections_info', 'custom_collections', 'media_metadata', 'watchlist'
+            ]:
+                return 100 # 默认权重
+            else:
+                return 999 # 未知表，确保它排在最后，以防万一
+
+        # 核心排序逻辑
+        actual_tables_to_import = [
+            t for t in tables_to_import if t in backup_data
+        ]
+        
+        sorted_tables_to_import = sorted(actual_tables_to_import, key=get_table_sort_key)
+        
+        logger.info(f"调整后的导入顺序：{sorted_tables_to_import}")
+        # --- 结束更新逻辑 ---
+
         with db_handler.get_db_connection() as conn:
             with conn.cursor() as cursor:
                 logger.info("数据库事务已开始。")
-
-                for table_name in tables_to_import:
+                # 使用排序后的列表进行迭代
+                for table_name in sorted_tables_to_import:
                     cn_name = TABLE_TRANSLATIONS.get(table_name.lower(), table_name)
                     table_data = backup_data.get(table_name, [])
-
                     if not table_data:
                         logger.debug(f"表 '{cn_name}' 在备份中没有数据，跳过。")
                         summary_lines.append(f"  - 表 '{cn_name}': 跳过 (备份中无数据)。")
                         continue
-                    
+
                     logger.info(f"正在处理表: '{cn_name}'，共 {len(table_data)} 行。")
-
-                    # 步骤1: 准备数据 (使用新的、简化的函数)
                     columns, prepared_data = _prepare_data_for_insert(table_name, table_data)
-                    
-                    # 步骤2: 执行数据库覆盖操作
                     _overwrite_table_data(cursor, table_name, columns, prepared_data)
-
                     summary_lines.append(f"  - 表 '{cn_name}': 成功恢复 {len(prepared_data)} 条记录。")
-
+                
                 logger.info("="*11 + " 数据库恢复摘要 " + "="*11)
                 for line in summary_lines: logger.info(line)
                 logger.info("="*36)
-
                 conn.commit()
                 logger.info("✅ 数据库事务已成功提交！所有选择的表已恢复。")
-
     except Exception as e:
         logger.error(f"数据库恢复任务发生严重错误，所有更改将回滚: {e}", exc_info=True)
         if conn:
