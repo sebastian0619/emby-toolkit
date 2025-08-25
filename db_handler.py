@@ -441,7 +441,7 @@ def batch_force_end_watchlist_items(item_ids: List[str]) -> int:
             cursor = conn.cursor()
             placeholders = ','.join('%s' for _ in item_ids)
             # 将状态更新为 Ended，并设置 force_ended 标志
-            sql = f"UPDATE watchlist SET status = 'Completed', force_ended = 1 WHERE item_id IN ({placeholders})"
+            sql = f"UPDATE watchlist SET status = 'Completed', force_ended = TRUE WHERE item_id IN ({placeholders})"
             
             cursor.execute(sql, item_ids)
             conn.commit()
