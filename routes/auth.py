@@ -19,15 +19,8 @@ DEFAULT_INITIAL_PASSWORD = "password"
 
 # 2. 将 init_auth 函数迁移到这里，因为它与认证功能紧密相关
 def init_auth():
-    """初始化认证系统，检查并创建默认用户。"""
+    """初始化认证系统，仅在数据库没有用户时创建默认用户。"""
     auth_enabled = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_ENABLED, False)
-    env_username = os.environ.get("AUTH_USERNAME")
-    
-    if env_username:
-        username = env_username.strip()
-    else:
-        username = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_USERNAME, constants.DEFAULT_USERNAME).strip()
-
     if not auth_enabled:
         logger.info("用户认证功能未启用。")
         return
@@ -35,29 +28,41 @@ def init_auth():
     try:
         with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
-            user = cursor.fetchone()
             
-            if user is None:
-                # 【修改3】: 使用固定的默认密码，而不是随机生成
-                logger.info(f"数据库中未找到用户 '{username}'，将为其创建并设置默认密码。")
-                
-                # 不再使用 random_password，直接使用我们定义的常量
-                password_hash = generate_password_hash(DEFAULT_INITIAL_PASSWORD)
-                
-                cursor.execute(
-                    "INSERT INTO users (username, password_hash) VALUES (%s, %s)",
-                    (username, password_hash)
-                )
-                conn.commit()
-                
-                # 【修改4】: 更新日志信息，明确告知默认密码和修改要求
-                logger.critical("=" * 60)
-                logger.critical(f"首次运行，已为用户 '{username}' 自动生成初始密码。")
-                logger.critical(f"用户名: {username}")
-                logger.critical(f"初始密码: {DEFAULT_INITIAL_PASSWORD}")
-                logger.critical("请立即使用此密码登录，系统将强制要求您修改密码。")
-                logger.critical("=" * 60)
+            # 【修改1】: 首先检查数据库中是否已存在任何用户
+            cursor.execute("SELECT id FROM users LIMIT 1")
+            user_exists = cursor.fetchone()
+
+            # 【修改2】: 只有在没有任何用户时，才执行创建逻辑
+            if user_exists:
+                logger.info("数据库中已存在用户，跳过初始用户创建。")
+                return
+
+            # 如果数据库为空，则继续创建第一个用户
+            logger.info("数据库中未发现任何用户，开始创建初始管理员账户。")
+            
+            env_username = os.environ.get("AUTH_USERNAME")
+            if env_username:
+                username = env_username.strip()
+            else:
+                username = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_USERNAME, constants.DEFAULT_USERNAME).strip()
+
+            password_hash = generate_password_hash(DEFAULT_INITIAL_PASSWORD)
+            
+            cursor.execute(
+                "INSERT INTO users (username, password_hash) VALUES (%s, %s)",
+                (username, password_hash)
+            )
+            conn.commit()
+            
+            # 打印首次运行的关键信息
+            logger.critical("=" * 60)
+            logger.critical(f"首次运行，已为用户 '{username}' 自动生成初始密码。")
+            logger.critical(f"用户名: {username}")
+            logger.critical(f"初始密码: {DEFAULT_INITIAL_PASSWORD}")
+            logger.critical("请使用此密码登录，并修改密码。")
+            logger.critical("=" * 60)
+
     except Exception as e:
         logger.error(f"初始化认证系统时发生错误: {e}", exc_info=True)
 
