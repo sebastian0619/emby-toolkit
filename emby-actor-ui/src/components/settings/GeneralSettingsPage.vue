@@ -231,7 +231,7 @@
                           <n-button @click="showExportModal" :loading="isExporting" class="action-button"><template #icon><n-icon :component="ExportIcon" /></template>导出数据</n-button>
                           <n-upload :custom-request="handleCustomImportRequest" :show-file-list="false" accept=".json"><n-button :loading="isImporting" class="action-button"><template #icon><n-icon :component="ImportIcon" /></template>导入数据</n-button></n-upload>
                         </n-space>
-                        <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON 文件。<br><b>导入：</b>从 JSON 备份文件中恢复数据，支持“共享合并”或“本地恢复”模式。</p>
+                        <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON 文件。<br><b>导入：</b>从 JSON 备份文件中恢复数据。</p>
                       </n-space>
                     </n-card>
                   </n-space>
