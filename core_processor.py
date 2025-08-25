@@ -989,217 +989,158 @@ class MediaProcessor:
             if not match_found_for_this_douban_actor:
                 unmatched_douban_actors.append(d_actor)
 
-        # 这里先把旧演员合并成列表，供后续新增和处理使用
+        # 1. 先将已有的演员（匹配合并的 + 未匹配的本地演员）构成当前的演员列表基础
         current_cast_list = merged_actors + unmatched_local_actors
-
-        # 先构造 final_cast_map，包含旧演员
         final_cast_map = {str(actor['id']): actor for actor in current_cast_list if actor.get('id') and str(actor.get('id')) != 'None'}
-        # 新增阶段开始
-        limit = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
-        try:
-            limit = int(limit)
-            if limit <= 0:
-                limit = 30
-        except (ValueError, TypeError):
-            limit = 30
 
-        current_actor_count = len(final_cast_map)
-        if current_actor_count >= limit:
-            logger.info(f"  -> 当前演员数 ({current_actor_count}) 已达上限 ({limit})，跳过所有新增演员的流程。")
+        # 2. 检查是否还有未匹配的豆瓣演员需要处理（即是否需要进入“新增演员”流程）
+        if not unmatched_douban_actors:
+            # 如果豆瓣API失败，unmatched_douban_actors 列表会是空的，直接进入这里
+            logger.info("  -> 豆瓣API未返回演员或所有演员已匹配，跳过新增演员流程，直接进入翻译阶段。")
         else:
-            logger.info(f"  -> 当前演员数 ({current_actor_count}) 低于上限 ({limit})，进入补充模式（处理来自豆瓣的新增演员）。")
+            # 只有在有未匹配的豆瓣演员时，才执行复杂的新增逻辑
+            logger.info(f"  -> 发现 {len(unmatched_douban_actors)} 位潜在的新增演员，开始执行新增流程...")
+            
+            # (将原有的新增逻辑整体放入这个 else 块中)
+            limit = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
+            try:
+                limit = int(limit)
+                if limit <= 0: limit = 30
+            except (ValueError, TypeError):
+                limit = 30
 
-            logger.debug(f" --- 匹配阶段 2: 用豆瓣ID查'演员映射表' ({len(unmatched_douban_actors)} 位演员) ---")
-            still_unmatched = []
-            for d_actor in unmatched_douban_actors:
-                if self.is_stop_requested():
-                    raise InterruptedError("任务中止")
-                d_douban_id = d_actor.get("DoubanCelebrityId")
-                match_found = False
-                if d_douban_id:
-                    entry_row = self._find_person_in_map_by_douban_id(d_douban_id, cursor)
-                    
-                    # ★★★★★★★★★★★★★★★ 终极修复：将 Row 转换为 Dict ★★★★★★★★★★★★★★★
-                    entry = dict(entry_row) if entry_row else None
-
-                    if entry and entry.get("tmdb_person_id"):
-                        tmdb_id_from_map = str(entry.get("tmdb_person_id"))
-                        if tmdb_id_from_map not in final_cast_map:
-                            logger.debug(f"  -> 匹配成功 (通过 豆瓣ID映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
-                            cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_map, cursor) or {}
-                            new_actor_entry = {
-                                "id": tmdb_id_from_map,
-                                "name": d_actor.get("Name"),
-                                "original_name": cached_metadata.get("original_name") or d_actor.get("OriginalName"),
-                                "character": d_actor.get("Role"),
-                                "adult": cached_metadata.get("adult", False),
-                                "gender": cached_metadata.get("gender", 0),
-                                "known_for_department": "Acting",
-                                "popularity": cached_metadata.get("popularity", 0.0),
-                                "profile_path": cached_metadata.get("profile_path"),
-                                "cast_id": None,
-                                "credit_id": None,
-                                "order": 999,
-                                "imdb_id": entry.get("imdb_id"),
-                                "douban_id": d_douban_id,
-                                "emby_person_id": entry.get("emby_person_id"),
-                                "_is_newly_added": True
-                            }
-                            final_cast_map[tmdb_id_from_map] = new_actor_entry
-                        match_found = True
-                if not match_found:
-                    still_unmatched.append(d_actor)
-            unmatched_douban_actors = still_unmatched
-
-            # ======================================================================
-            # 步骤 3: ★★★ 映射表匹配以及Tmdb反查 ★★★
-            # ======================================================================
-            logger.debug(f" --- 匹配阶段 3: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员) ---")
-            still_unmatched_final = []
-            for i, d_actor in enumerate(unmatched_douban_actors):
-                if self.is_stop_requested():
-                    raise InterruptedError("任务中止")
-
-                if len(final_cast_map) >= limit:
-                    logger.info(f"  -> 演员数已达上限 ({limit})，跳过剩余 {len(unmatched_douban_actors) - i} 位演员的API查询。")
-                    still_unmatched_final.extend(unmatched_douban_actors[i:])
-                    break
-                d_douban_id = d_actor.get("DoubanCelebrityId")
-                match_found = False
-                if d_douban_id and self.douban_api and self.tmdb_api_key:
-                    if self.is_stop_requested():
-                        logger.info("  -> 任务在处理豆瓣演员时被中止 (豆瓣API调用前)。")
-                        raise InterruptedError("任务中止")
-                    details = self.douban_api.celebrity_details(d_douban_id)
-                    time_module.sleep(0.3)
-
-                    d_imdb_id = None
-                    if details and not details.get("error"):
-                        try:
-                            info_list = details.get("extra", {}).get("info", [])
-                            if isinstance(info_list, list):
-                                for item in info_list:
-                                    if isinstance(item, list) and len(item) == 2 and item[0] == 'IMDb编号':
-                                        d_imdb_id = item[1]
-                                        break
-                        except Exception as e_parse:
-                            logger.warning(f"  -> 解析 IMDb ID 时发生意外错误: {e_parse}")
-
-                    if d_imdb_id:
-                        logger.debug(f"  -> 为 '{d_actor.get('Name')}' 获取到 IMDb ID: {d_imdb_id}，开始匹配...")
-
-                        entry_row_from_map = self._find_person_in_map_by_imdb_id(d_imdb_id, cursor)
-                        
-                        # ★★★★★★★★★★★★★★★ 终极修复：将 Row 转换为 Dict ★★★★★★★★★★★★★★★
-                        entry_from_map = dict(entry_row_from_map) if entry_row_from_map else None
-
-                        if entry_from_map and entry_from_map.get("tmdb_person_id"):
-                            tmdb_id_from_map = str(entry_from_map.get("tmdb_person_id"))
-
+            current_actor_count = len(final_cast_map)
+            if current_actor_count >= limit:
+                logger.info(f"  -> 当前演员数 ({current_actor_count}) 已达上限 ({limit})，跳过所有新增演员的流程。")
+            else:
+                logger.info(f"  -> 当前演员数 ({current_actor_count}) 低于上限 ({limit})，进入补充模式（处理来自豆瓣的新增演员）。")
+                logger.debug(f" --- 匹配阶段 2: 用豆瓣ID查'演员映射表' ({len(unmatched_douban_actors)} 位演员) ---")
+                still_unmatched = []
+                for d_actor in unmatched_douban_actors:
+                    if self.is_stop_requested(): raise InterruptedError("任务中止")
+                    d_douban_id = d_actor.get("DoubanCelebrityId")
+                    match_found = False
+                    if d_douban_id:
+                        entry_row = self._find_person_in_map_by_douban_id(d_douban_id, cursor)
+                        entry = dict(entry_row) if entry_row else None
+                        if entry and entry.get("tmdb_person_id"):
+                            tmdb_id_from_map = str(entry.get("tmdb_person_id"))
                             if tmdb_id_from_map not in final_cast_map:
-                                logger.debug(f"  -> 匹配成功 (通过 IMDb映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
+                                logger.debug(f"  -> 匹配成功 (通过 豆瓣ID映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
                                 cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_map, cursor) or {}
                                 new_actor_entry = {
-                                    "id": tmdb_id_from_map,
-                                    "name": d_actor.get("Name"),
+                                    "id": tmdb_id_from_map, "name": d_actor.get("Name"),
                                     "original_name": cached_metadata.get("original_name") or d_actor.get("OriginalName"),
-                                    "character": d_actor.get("Role"),
-                                    "order": 999,
-                                    "imdb_id": d_imdb_id,
-                                    "douban_id": d_douban_id,
-                                    "emby_person_id": entry_from_map.get("emby_person_id"), # 现在可以安全地使用 .get()
-                                    "_is_newly_added": True
+                                    "character": d_actor.get("Role"), "adult": cached_metadata.get("adult", False),
+                                    "gender": cached_metadata.get("gender", 0), "known_for_department": "Acting",
+                                    "popularity": cached_metadata.get("popularity", 0.0), "profile_path": cached_metadata.get("profile_path"),
+                                    "cast_id": None, "credit_id": None, "order": 999,
+                                    "imdb_id": entry.get("imdb_id"), "douban_id": d_douban_id,
+                                    "emby_person_id": entry.get("emby_person_id"), "_is_newly_added": True
                                 }
                                 final_cast_map[tmdb_id_from_map] = new_actor_entry
-
                             match_found = True
+                    if not match_found:
+                        still_unmatched.append(d_actor)
+                unmatched_douban_actors = still_unmatched
 
-                        if not match_found:
-                            logger.debug(f"  -> 数据库未找到 {d_imdb_id} 的映射，开始通过 TMDb API 反查...")
-                            if self.is_stop_requested():
-                                logger.info("  -> 任务在处理豆瓣演员时被中止 (TMDb API调用前)。")
-                                raise InterruptedError("任务中止")
-
-                            # 1. 默认使用豆瓣提供的外文名作为后备
-                            name_for_verification = d_actor.get("OriginalName")
-                            log_source = "豆瓣"
-
-                            # 2. 尝试从可能存在的、不完整的本地映射中获取更权威的名字
+                logger.debug(f" --- 匹配阶段 3: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员) ---")
+                still_unmatched_final = []
+                for i, d_actor in enumerate(unmatched_douban_actors):
+                    if self.is_stop_requested(): raise InterruptedError("任务中止")
+                    if len(final_cast_map) >= limit:
+                        logger.info(f"  -> 演员数已达上限 ({limit})，跳过剩余 {len(unmatched_douban_actors) - i} 位演员的API查询。")
+                        still_unmatched_final.extend(unmatched_douban_actors[i:])
+                        break
+                    d_douban_id = d_actor.get("DoubanCelebrityId")
+                    match_found = False
+                    if d_douban_id and self.douban_api and self.tmdb_api_key:
+                        if self.is_stop_requested(): raise InterruptedError("任务中止")
+                        details = self.douban_api.celebrity_details(d_douban_id)
+                        time_module.sleep(0.3)
+                        d_imdb_id = None
+                        if details and not details.get("error"):
+                            try:
+                                info_list = details.get("extra", {}).get("info", [])
+                                if isinstance(info_list, list):
+                                    for item in info_list:
+                                        if isinstance(item, list) and len(item) == 2 and item[0] == 'IMDb编号':
+                                            d_imdb_id = item[1]
+                                            break
+                            except Exception as e_parse:
+                                logger.warning(f"  -> 解析 IMDb ID 时发生意外错误: {e_parse}")
+                        if d_imdb_id:
+                            logger.debug(f"  -> 为 '{d_actor.get('Name')}' 获取到 IMDb ID: {d_imdb_id}，开始匹配...")
+                            entry_row_from_map = self._find_person_in_map_by_imdb_id(d_imdb_id, cursor)
+                            entry_from_map = dict(entry_row_from_map) if entry_row_from_map else None
                             if entry_from_map and entry_from_map.get("tmdb_person_id"):
                                 tmdb_id_from_map = str(entry_from_map.get("tmdb_person_id"))
-                                # 使用这个 tmdb_id 去查询元数据缓存
-                                cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_map, cursor)
-                                if cached_metadata and cached_metadata.get("original_name"):
-                                    # 如果成功获取，就覆盖掉来自豆瓣的名字
-                                    name_for_verification = cached_metadata.get("original_name")
-                                    log_source = "本地数据库"
-                                    logger.debug(f"  -> [验证准备] 成功从本地数据库为 TMDb ID {tmdb_id_from_map} 找到用于验证的 original_name: '{name_for_verification}'")
-
-                            logger.debug(f"  -> 将使用来自 [{log_source}] 的外文名 '{name_for_verification}' 进行 TMDb API 匹配验证。")
-
-                            names_to_verify = {
-                                "chinese_name": d_actor.get("Name"),
-                                "original_name": name_for_verification 
-                            }
-                            
-                            person_from_tmdb = tmdb_handler.find_person_by_external_id(
-                                external_id=d_imdb_id, 
-                                api_key=self.tmdb_api_key, 
-                                source="imdb_id",
-                                names_for_verification=names_to_verify
-                            )
-                            
-                            if person_from_tmdb and person_from_tmdb.get("id"):
-                                tmdb_id_from_find = str(person_from_tmdb.get("id"))
-
-                                if tmdb_id_from_find not in final_cast_map:
-                                    logger.debug(f"  -> 匹配成功 (通过 TMDb反查): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
-                                    # 用新找到的TMDB ID，对本地数据库进行最后一次检查，看是否已有关联的Emby ID
-                                    emby_pid_from_final_check = None
-                                    final_check_row = self._find_person_in_map_by_tmdb_id(tmdb_id_from_find, cursor)
-                                    if final_check_row:
-                                        final_check_entry = dict(final_check_row)
-                                        emby_pid_from_final_check = final_check_entry.get("emby_person_id")
-                                        if emby_pid_from_final_check:
-                                            logger.trace(f"  -> [最终检查] 发现该TMDB ID已关联Emby Person ID: {emby_pid_from_final_check}")
-                                    cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_find, cursor) or {}
+                                if tmdb_id_from_map not in final_cast_map:
+                                    logger.debug(f"  -> 匹配成功 (通过 IMDb映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
+                                    cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_map, cursor) or {}
                                     new_actor_entry = {
-                                        "id": tmdb_id_from_find,
-                                        "name": d_actor.get("Name"),
+                                        "id": tmdb_id_from_map, "name": d_actor.get("Name"),
                                         "original_name": cached_metadata.get("original_name") or d_actor.get("OriginalName"),
-                                        "character": d_actor.get("Role"),
-                                        "adult": cached_metadata.get("adult", False),
-                                        "gender": cached_metadata.get("gender", 0),
-                                        "known_for_department": "Acting",
-                                        "popularity": cached_metadata.get("popularity", 0.0),
-                                        "profile_path": cached_metadata.get("profile_path"),
-                                        "cast_id": None,
-                                        "credit_id": None,
-                                        "order": 999,
-                                        "imdb_id": d_imdb_id,
-                                        "douban_id": d_douban_id,
-                                        "emby_person_id": emby_pid_from_final_check,
+                                        "character": d_actor.get("Role"), "order": 999, "imdb_id": d_imdb_id,
+                                        "douban_id": d_douban_id, "emby_person_id": entry_from_map.get("emby_person_id"),
                                         "_is_newly_added": True
                                     }
-                                    final_cast_map[tmdb_id_from_find] = new_actor_entry
-                                    self.actor_db_manager.upsert_person(
-                                        cursor,
-                                        {
-                                            "tmdb_id": tmdb_id_from_find,
-                                            "imdb_id": d_imdb_id,
-                                            "douban_id": d_douban_id,
-                                            "name": d_actor.get("Name")
-                                        }
-                                    )
+                                    final_cast_map[tmdb_id_from_map] = new_actor_entry
                                 match_found = True
-                if not match_found:
-                    still_unmatched_final.append(d_actor)
-            if still_unmatched_final:
-                discarded_names = [d.get('Name') for d in still_unmatched_final]
-                logger.info(f"  -> 最终丢弃 {len(still_unmatched_final)} 位豆瓣演员 ---")
-            unmatched_douban_actors = still_unmatched_final
-
-        # 将最终演员列表取自 final_cast_map，包含所有旧＋新演员
+                            if not match_found:
+                                logger.debug(f"  -> 数据库未找到 {d_imdb_id} 的映射，开始通过 TMDb API 反查...")
+                                if self.is_stop_requested(): raise InterruptedError("任务中止")
+                                name_for_verification = d_actor.get("OriginalName")
+                                log_source = "豆瓣"
+                                if entry_from_map and entry_from_map.get("tmdb_person_id"):
+                                    tmdb_id_from_map = str(entry_from_map.get("tmdb_person_id"))
+                                    cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_map, cursor)
+                                    if cached_metadata and cached_metadata.get("original_name"):
+                                        name_for_verification = cached_metadata.get("original_name")
+                                        log_source = "本地数据库"
+                                        logger.debug(f"  -> [验证准备] 成功从本地数据库为 TMDb ID {tmdb_id_from_map} 找到用于验证的 original_name: '{name_for_verification}'")
+                                logger.debug(f"  -> 将使用来自 [{log_source}] 的外文名 '{name_for_verification}' 进行 TMDb API 匹配验证。")
+                                names_to_verify = {"chinese_name": d_actor.get("Name"), "original_name": name_for_verification}
+                                person_from_tmdb = tmdb_handler.find_person_by_external_id(
+                                    external_id=d_imdb_id, api_key=self.tmdb_api_key, source="imdb_id",
+                                    names_for_verification=names_to_verify
+                                )
+                                if person_from_tmdb and person_from_tmdb.get("id"):
+                                    tmdb_id_from_find = str(person_from_tmdb.get("id"))
+                                    if tmdb_id_from_find not in final_cast_map:
+                                        logger.debug(f"  -> 匹配成功 (通过 TMDb反查): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
+                                        emby_pid_from_final_check = None
+                                        final_check_row = self._find_person_in_map_by_tmdb_id(tmdb_id_from_find, cursor)
+                                        if final_check_row:
+                                            final_check_entry = dict(final_check_row)
+                                            emby_pid_from_final_check = final_check_entry.get("emby_person_id")
+                                            if emby_pid_from_final_check:
+                                                logger.trace(f"  -> [最终检查] 发现该TMDB ID已关联Emby Person ID: {emby_pid_from_final_check}")
+                                        cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_find, cursor) or {}
+                                        new_actor_entry = {
+                                            "id": tmdb_id_from_find, "name": d_actor.get("Name"),
+                                            "original_name": cached_metadata.get("original_name") or d_actor.get("OriginalName"),
+                                            "character": d_actor.get("Role"), "adult": cached_metadata.get("adult", False),
+                                            "gender": cached_metadata.get("gender", 0), "known_for_department": "Acting",
+                                            "popularity": cached_metadata.get("popularity", 0.0), "profile_path": cached_metadata.get("profile_path"),
+                                            "cast_id": None, "credit_id": None, "order": 999,
+                                            "imdb_id": d_imdb_id, "douban_id": d_douban_id,
+                                            "emby_person_id": emby_pid_from_final_check, "_is_newly_added": True
+                                        }
+                                        final_cast_map[tmdb_id_from_find] = new_actor_entry
+                                        self.actor_db_manager.upsert_person(
+                                            cursor,
+                                            {"tmdb_id": tmdb_id_from_find, "imdb_id": d_imdb_id, "douban_id": d_douban_id, "name": d_actor.get("Name")}
+                                        )
+                                    match_found = True
+                    if not match_found:
+                        still_unmatched_final.append(d_actor)
+                if still_unmatched_final:
+                    discarded_names = [d.get('Name') for d in still_unmatched_final]
+                    logger.info(f"  -> 最终丢弃 {len(still_unmatched_final)} 位豆瓣演员 ---")
+                unmatched_douban_actors = still_unmatched_final
+        
+        # 3. 无论是否执行了新增，都从 final_cast_map 中获取最终的演员列表
         current_cast_list = list(final_cast_map.values())
 
         # 演员列表截断 (先截断！)
