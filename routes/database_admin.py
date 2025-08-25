@@ -1,4 +1,4 @@
-# routes/database_admin.py (V2 - 高性能统计版)
+# routes/database_admin.py (V3 - PostgreSQL 适配增强版)
 
 from flask import Blueprint, request, jsonify, Response
 import logging
@@ -7,7 +7,8 @@ import re
 import os
 import psycopg2
 import time
-from datetime import datetime
+from datetime import datetime, date
+from psycopg2 import sql # 【增强1】: 导入 psycopg2.sql 模块，用于安全地构造SQL查询
 
 # 导入底层模块
 import db_handler
@@ -23,11 +24,24 @@ from extensions import login_required, processor_ready_required, task_lock_requi
 db_admin_bp = Blueprint('database_admin', __name__, url_prefix='/api')
 logger = logging.getLogger(__name__)
 
+# 【一个辅助函数，用于教 json.dumps 如何处理 datetime 对象
+def json_datetime_serializer(obj):
+    """
+    一个自定义的 JSON 序列化器，用于将 datetime 和 date 对象
+    转换为 ISO 8601 格式的字符串。
+    """
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    # 如果遇到其他无法序列化的类型，则抛出原始错误
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
 # ★★★ 核心优化 1/2：创建一个新的、一次性获取所有统计数据的函数 ★★★
+# (此部分代码无需修改，保持原样)
 def _get_all_stats_in_one_query(cursor: psycopg2.extensions.cursor) -> dict:
     """
     使用一条 SQL 查询，通过 FILTER 子句高效地计算所有统计数据。
     """
+    # ... 此函数内容不变 ...
     sql = """
     SELECT
         (SELECT COUNT(*) FROM media_metadata) AS media_total,
@@ -133,14 +147,24 @@ def _count_table_rows(cursor: psycopg2.extensions.cursor, table_name: str, condi
 @db_admin_bp.route('/database/tables', methods=['GET'])
 @login_required
 def api_get_db_tables():
+    """【修改2】: 使用 PostgreSQL 的 information_schema 来获取表列表。"""
     try:
         with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-            tables = [row[0] for row in cursor.fetchall()]
+            # PostgreSQL 使用 information_schema.tables 来查询表信息
+            # table_schema = 'public' 是查询默认的公共模式下的表
+            query = """
+                SELECT table_name FROM information_schema.tables 
+                WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+                ORDER BY table_name;
+            """
+            cursor.execute(query)
+            # cursor.fetchall() 返回的是元组列表，例如 [('users',), ('media_metadata',)]
+            tables = [row['table_name'] for row in cursor.fetchall()]
         return jsonify(tables)
     except Exception as e:
-        logger.error(f"获取数据库表列表时出错: {e}", exc_info=True)
+        # 更新日志，使其更准确地反映错误
+        logger.error(f"获取 PostgreSQL 表列表时出错: {e}", exc_info=True)
         return jsonify({"error": "无法获取数据库表列表"}), 500
 
 @db_admin_bp.route('/database/export', methods=['POST'])
@@ -164,14 +188,27 @@ def api_export_database():
             cursor = conn.cursor()
             for table_name in tables_to_export:
                 if not re.match(r'^[a-zA-Z0-9_]+$', table_name):
+                     logger.warning(f"检测到无效的表名 '{table_name}'，已跳过导出。")
                      continue
-                cursor.execute(f"SELECT * FROM {table_name}")
+                
+                query = sql.SQL("SELECT * FROM {table}").format(
+                    table=sql.Identifier(table_name)
+                )
+                cursor.execute(query)
+                
                 rows = cursor.fetchall()
                 backup_data["data"][table_name] = [dict(row) for row in rows]
 
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         filename = f"database_backup_{timestamp}.json"
-        json_output = json.dumps(backup_data, indent=2, ensure_ascii=False)
+        
+        # 【修改】: 在调用 json.dumps 时，使用 default 参数指定我们的自定义转换器
+        json_output = json.dumps(
+            backup_data, 
+            indent=2, 
+            ensure_ascii=False, 
+            default=json_datetime_serializer
+        )
 
         response = Response(json_output, mimetype='application/json; charset=utf-8')
         response.headers.set("Content-Disposition", "attachment", filename=filename)
@@ -184,8 +221,8 @@ def api_export_database():
 @login_required
 def api_import_database():
     """
-    【通用队列版】接收备份文件、要导入的表名列表以及导入模式，
-    并提交一个后台任务来处理恢复。
+    【V3 - 简化版】接收备份文件和要导入的表名列表，
+    并提交一个后台任务来处理数据恢复（仅支持覆盖模式）。
     """
     from tasks import task_import_database
     if 'file' not in request.files:
@@ -200,63 +237,51 @@ def api_import_database():
         return jsonify({"error": "必须通过 'tables' 字段指定要导入的表"}), 400
     tables_to_import = [table.strip() for table in tables_to_import_str.split(',')]
 
-    # ★ 关键：从表单获取导入模式，默认为 'merge'，更安全 ★
-    import_mode = request.form.get('mode', 'merge').lower()
-    if import_mode not in ['overwrite', 'merge']:
-        return jsonify({"error": "无效的导入模式。只支持 'overwrite' 或 'merge'"}), 400
-    
-    mode_translations = {
-        'overwrite': '本地恢复模式',
-        'merge': '共享合并模式',
-    }
-    # 使用 .get() 以防万一，如果找不到就用回英文原名
-    import_mode_cn = mode_translations.get(import_mode, import_mode)
+    # ★ 简化: 不再需要从前端获取 mode，因为后端只支持一种模式
+    # 但我们仍然需要进行服务器ID校验
+    import_mode = 'overwrite' # 硬编码为 'overwrite' 以触发安全校验
+    task_name = "数据库恢复 (覆盖模式)"
 
     try:
         file_content = file.stream.read().decode("utf-8-sig")
-        # ▼▼▼ 新增的安全校验逻辑 ▼▼▼
         backup_json = json.loads(file_content)
         backup_metadata = backup_json.get("metadata", {})
         backup_server_id = backup_metadata.get("source_emby_server_id")
 
-        # 只对最危险的“本地恢复”模式进行强制校验
+        # 安全校验逻辑仍然至关重要
         if import_mode == 'overwrite':
-            # 检查1：备份文件必须有ID指纹
             if not backup_server_id:
-                error_msg = "此备份文件缺少来源服务器ID，为安全起见，禁止使用“本地恢复”模式导入，这通常意味着它是一个旧版备份，请使用“共享合并”模式。"
+                error_msg = "此备份文件缺少来源服务器ID，为安全起见，禁止恢复。这通常意味着它是一个旧版备份或非本系统导出的文件。"
                 logger.warning(f"禁止导入: {error_msg}")
-                return jsonify({"error": error_msg}), 403 # 403 Forbidden
+                return jsonify({"error": error_msg}), 403
 
-            # 检查2：当前服务器必须能获取到ID
             current_server_id = extensions.EMBY_SERVER_ID
             if not current_server_id:
-                error_msg = "无法获取当前Emby服务器的ID，可能连接已断开。为安全起见，暂时禁止使用“本地恢复”模式。"
+                error_msg = "无法获取当前Emby服务器的ID，可能连接已断开。为安全起见，暂时禁止恢复操作。"
                 logger.warning(f"禁止导入: {error_msg}")
-                return jsonify({"error": error_msg}), 503 # 503 Service Unavailable
+                return jsonify({"error": error_msg}), 503
 
-            # 检查3：两个ID必须完全匹配
             if backup_server_id != current_server_id:
                 error_msg = (f"服务器ID不匹配！此备份来自另一个Emby服务器，"
-                           "直接使用“本地恢复”会造成数据严重混乱。操作已禁止。\n\n"
+                           "直接恢复会造成数据严重混乱。操作已禁止。\n\n"
                            f"备份来源ID: ...{backup_server_id[-12:]}\n"
-                           f"当前服务器ID: ...{current_server_id[-12:]}\n\n"
-                           "如果你确实想合并数据，请改用“共享合并”模式。")
+                           f"当前服务器ID: ...{current_server_id[-12:]}")
                 logger.warning(f"禁止导入: {error_msg}")
-                return jsonify({"error": error_msg}), 403 # 403 Forbidden
-        # ▲▲▲ 安全校验逻辑结束 ▲▲▲
-        logger.trace(f"已接收上传的备份文件 '{file.filename}'，将以 '{import_mode_cn}' 模式导入表: {tables_to_import}")
+                return jsonify({"error": error_msg}), 403
+        
+        logger.trace(f"已接收上传的备份文件 '{file.filename}'，将以 '{task_name}' 模式导入表: {tables_to_import}")
 
+        # ▼▼▼ 修复后的函数调用 ▼▼▼
         success = task_manager.submit_task(
-            task_import_database,  # ★ 调用新的后台任务函数
-            f"以 {import_mode_cn} 模式恢复数据库表",
+            task_import_database,
+            task_name, # 使用简化的任务名
             processor_type='media',
-            # 传递任务所需的所有参数
+            # 传递任务所需的所有参数，不再包含 import_mode
             file_content=file_content,
-            tables_to_import=tables_to_import,
-            import_mode=import_mode
+            tables_to_import=tables_to_import
         )
         
-        return jsonify({"message": f"文件上传成功，已提交后台任务以 '{import_mode_cn}' 恢复 {len(tables_to_import)} 个表。"}), 202
+        return jsonify({"message": f"文件上传成功，已提交后台任务以恢复 {len(tables_to_import)} 个表。"}), 202
 
     except Exception as e:
         logger.error(f"处理数据库导入请求时发生错误: {e}", exc_info=True)

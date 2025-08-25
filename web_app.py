@@ -4,6 +4,7 @@ monkey.patch_all()
 import os
 import shutil
 import threading
+import psycopg2 #临时用，过段时间删除
 from datetime import datetime
 from jinja2 import Environment, FileSystemLoader
 from actor_sync_handler import UnifiedSyncHandler
@@ -93,6 +94,72 @@ JOB_ID_REVIVAL_CHECK = "scheduled_revival_check"
 def task_process_single_item(processor: MediaProcessor, item_id: str, force_reprocess: bool):
     """任务：处理单个媒体项"""
     processor.process_single_item(item_id, force_reprocess)
+
+# --- 临时函数，过段时间删除
+def _migrate_actor_metadata_table(cursor):
+    """
+    一个一次性的数据迁移函数，用于将数据从旧的 "ActorMetadata" 表
+    安全地迁移到新的 "actor_metadata" 表，然后删除旧表。
+    此函数是幂等的，可以安全地多次运行。
+    """
+    try:
+        # 1. 检查旧表 "ActorMetadata" 是否存在
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'actormetadata'
+            );
+        """)
+        # ★★★ 修复 1/2: 使用字典键 'exists' 访问 ★★★
+        old_table_exists = cursor.fetchone()['exists']
+
+        if not old_table_exists:
+            logger.debug("旧表 'actormetadata' 不存在，无需迁移。")
+            return
+
+        logger.warning("检测到旧的 'actormetadata' 表，将开始自动数据迁移并清理...")
+
+        # 2. 确保新表 "actor_metadata" 存在
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'actor_metadata'
+            );
+        """)
+        # ★★★ 修复 2/2: 同样使用字典键 'exists' 访问 ★★★
+        if not cursor.fetchone()['exists']:
+            logger.error("迁移失败：新表 'actor_metadata' 不存在！请确保 init_db() 已正确运行。")
+            return
+
+        # 3. 将数据从旧表插入到新表
+        logger.info("  -> 正在将数据从 'actormetadata' 复制到 'actor_metadata'...")
+        cursor.execute("""
+            INSERT INTO actor_metadata (
+                tmdb_id, profile_path, gender, adult, 
+                popularity, original_name, last_updated_at
+            )
+            SELECT 
+                tmdb_id, profile_path, gender, adult, 
+                popularity, original_name, last_updated_at
+            FROM "actormetadata"
+            ON CONFLICT (tmdb_id) DO NOTHING;
+        """)
+        
+        moved_rows = cursor.rowcount
+        logger.info(f"  -> 成功迁移 {moved_rows} 条演员元数据。")
+
+        # 4. 直接删除旧表
+        logger.warning("  -> 正在删除旧表 'actormetadata'...")
+        cursor.execute('DROP TABLE "actormetadata" CASCADE;')
+
+        logger.info("✅ 演员元数据表自动迁移和清理已成功完成！")
+
+    except psycopg2.Error as e:
+        logger.error(f"自动迁移 'ActorMetadata' 表时发生数据库错误: {e}", exc_info=True)
+        cursor.connection.rollback()
+    except Exception as e:
+        logger.error(f"自动迁移 'ActorMetadata' 表时发生未知错误: {e}", exc_info=True)
+        cursor.connection.rollback()
 
 # --- 初始化数据库 ---
 def init_db():
@@ -248,9 +315,9 @@ def init_db():
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_imdb_id ON person_identity_map (imdb_id)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_id ON person_identity_map (douban_celebrity_id)")
 
-                logger.trace("  -> 正在创建 'ActorMetadata' 表...")
+                logger.trace("  -> 正在创建 'actor_metadata' 表...")
                 cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS ActorMetadata (
+                    CREATE TABLE IF NOT EXISTS actor_metadata (
                         tmdb_id INTEGER PRIMARY KEY, 
                         profile_path TEXT, 
                         gender INTEGER, 
@@ -300,6 +367,10 @@ def init_db():
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_subscription_id ON tracked_actor_media (subscription_id)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_status ON tracked_actor_media (status)")
+
+                # ★★★ 临时用，果断时间删除 ★★★
+                logger.info("  -> 检查并执行数据迁移...")
+                _migrate_actor_metadata_table(cursor)
 
             conn.commit()
             logger.info("✅ PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")

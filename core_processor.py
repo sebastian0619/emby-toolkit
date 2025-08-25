@@ -553,7 +553,7 @@ class MediaProcessor:
         """根据TMDb ID从ActorMetadata缓存表中获取演员的元数据。"""
         if not tmdb_id:
             return None
-        cursor.execute("SELECT * FROM ActorMetadata WHERE tmdb_id = %s", (tmdb_id,))
+        cursor.execute("SELECT * FROM actor_metadata WHERE tmdb_id = %s", (tmdb_id,))
         metadata_row = cursor.fetchone()  # fetchone() 返回一个 Dict[str, Any] 对象或 None
         if metadata_row:
             return dict(metadata_row)  # 将其转换为字典，方便使用
@@ -2069,7 +2069,7 @@ class MediaProcessor:
                 # 用找到的 TMDB ID 去获取最详细的元数据
                 full_metadata = self._get_actor_metadata_from_cache(actor_tmdb_id, cursor)
                 if not full_metadata:
-                    logger.warning(f"  -> 无法在 ActorMetadata 缓存中为 TMDB ID '{actor_tmdb_id}' 找到元数据，已跳过演员 '{person_name_cn}'。")
+                    logger.warning(f"  -> 无法在 actor_metadata 缓存中为 TMDB ID '{actor_tmdb_id}' 找到元数据，已跳过演员 '{person_name_cn}'。")
                     continue
 
                 # 构建一个符合 JSON 格式的、信息完整的演员字典

@@ -5,8 +5,11 @@ import re
 import os
 import json
 import psycopg2
+from psycopg2 import sql
+from psycopg2.extras import execute_values, Json
 import logging
 import threading
+from typing import Dict, Any
 from datetime import datetime, date, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed 
 import concurrent.futures
@@ -372,38 +375,88 @@ def task_refresh_single_watchlist_item(processor: WatchlistProcessor, item_id: s
         task_name = f"单项追剧刷新 (ID: {item_id})"
         logger.error(f"执行 '{task_name}' 时发生顶层错误: {e}", exc_info=True)
         progress_updater(-1, f"启动任务时发生错误: {e}")
-# ★★★ 执行数据库导入的后台任务 ★★★
-def task_import_database(processor, file_content: str, tables_to_import: List[str], import_mode: str):
+# --- 辅助函数 1: 数据清洗与准备 ---
+def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) -> tuple[List[str], List[tuple]]:
     """
-    【V2.1 - 数据类型兼容最终版】
-    - 修复了因代码逻辑错误导致数据清洗规则 (CLEANING_RULES) 未被应用的BUG。
-    - 确保了从 SQLite 备份的布尔值 (0/1) 能被正确转换为 PostgreSQL 的 boolean (False/True)。
+    一个极简的数据准备函数，专为 PG-to-PG 流程设计。
+    - 它只做一件事：将需要存入 JSONB 列的数据包装成 psycopg2 的 Json 对象。
     """
-    task_name = f"数据库导入 ({import_mode}模式)"
-    logger.info(f"后台任务开始：{task_name}，处理表: {tables_to_import}。")
-
-    TABLE_PRIMARY_KEYS = {
-        "person_identity_map": "map_id", "ActorMetadata": "tmdb_id",
-        "translation_cache": "original_text", "collections_info": "emby_collection_id",
-        "watchlist": "item_id", "actor_subscriptions": "id",
-        "tracked_actor_media": "id", "processed_log": "item_id",
-        "failed_log": "item_id", "users": "id",
-        "custom_collections": "id", "media_metadata": "tmdb_id, item_type",
+    # 定义哪些列是 JSONB 类型，需要特殊处理
+    JSONB_COLUMNS = {
+        'actor_subscriptions': {
+            'config_genres_include_json', 'config_genres_exclude_json', 
+            'config_tags_include_json', 'config_tags_exclude_json'
+        },
+        'custom_collections': {'definition_json', 'generated_media_info_json'},
+        'media_metadata': {
+            'genres_json', 'actors_json', 'directors_json', 
+            'studios_json', 'countries_json', 'tags_json'
+        },
+        'watchlist': {'next_episode_to_air_json', 'missing_info_json'},
+        'collections_info': {'missing_movies_json'},
     }
+
+    if not table_data:
+        return [], []
+
+    columns = list(table_data[0].keys())
+    # 使用小写表名来匹配规则
+    table_json_rules = JSONB_COLUMNS.get(table_name.lower(), set())
     
+    prepared_rows = []
+    for row_dict in table_data:
+        row_values = []
+        for col_name in columns:
+            value = row_dict.get(col_name)
+            
+            # ★ 核心逻辑: 如果列是 JSONB 类型且值非空，使用 Json 适配器包装 ★
+            if col_name in table_json_rules and value is not None:
+                # Json() 会告诉 psycopg2: "请将这个 Python 对象作为 JSON 处理"
+                value = Json(value)
+            
+            row_values.append(value)
+        prepared_rows.append(tuple(row_values))
+        
+    return columns, prepared_rows
+
+# --- 辅助函数 2: 数据库覆盖操作 (保持不变，但现在更可靠) ---
+def _overwrite_table_data(cursor, table_name: str, columns: List[str], data: List[tuple]):
+    """安全地清空并批量插入数据。"""
+    db_table_name = table_name.lower()
+
+    logger.warning(f"执行覆盖模式：将清空表 '{db_table_name}' 中的所有数据！")
+    truncate_query = sql.SQL("TRUNCATE TABLE {table} RESTART IDENTITY CASCADE;").format(
+        table=sql.Identifier(db_table_name)
+    )
+    cursor.execute(truncate_query)
+
+    insert_query = sql.SQL("INSERT INTO {table} ({cols}) VALUES %s").format(
+        table=sql.Identifier(db_table_name),
+        cols=sql.SQL(', ').join(map(sql.Identifier, columns))
+    )
+
+    execute_values(cursor, insert_query, data, page_size=500)
+    logger.info(f"成功向表 '{db_table_name}' 插入 {len(data)} 条记录。")
+
+
+# --- 主任务函数 (V4 - 纯PG重构版) ---
+def task_import_database(processor, file_content: str, tables_to_import: List[str]):
+    """
+    【V4 - 纯净重构版】
+    - 移除所有为兼容旧 SQLite 备份而设的数据清洗逻辑。
+    - 假设备份文件源自本系统的 PostgreSQL 数据库，数据类型是干净的。
+    - 使用 psycopg2.extras.Json 适配器专业地处理 JSONB 字段的插入。
+    """
+    task_name = "数据库恢复 (覆盖模式)"
+    logger.info(f"后台任务开始：{task_name}，将恢复表: {tables_to_import}。")
+
     TABLE_TRANSLATIONS = {
-        'person_identity_map': '演员映射表', 'ActorMetadata': '演员元数据',
+        'person_identity_map': '演员映射表', 'actor_metadata': '演员元数据',
         'translation_cache': '翻译缓存', 'watchlist': '智能追剧列表',
         'actor_subscriptions': '演员订阅配置', 'tracked_actor_media': '已追踪的演员作品',
         'collections_info': '电影合集信息', 'processed_log': '已处理列表',
         'failed_log': '待复核列表', 'users': '用户账户',
         'custom_collections': '自建合集', 'media_metadata': '媒体元数据',
-    }
-
-    CLEANING_RULES = {
-        'ActorMetadata': {'adult': bool},
-        'collections_info': {'has_missing': bool},
-        'watchlist': {'force_ended': bool}
     }
 
     summary_lines = []
@@ -418,7 +471,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                 logger.info("数据库事务已开始。")
 
                 for table_name in tables_to_import:
-                    cn_name = TABLE_TRANSLATIONS.get(table_name, table_name)
+                    cn_name = TABLE_TRANSLATIONS.get(table_name.lower(), table_name)
                     table_data = backup_data.get(table_name, [])
 
                     if not table_data:
@@ -428,112 +481,15 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                     
                     logger.info(f"正在处理表: '{cn_name}'，共 {len(table_data)} 行。")
 
-                    if import_mode == 'overwrite':
-                        logger.warning(f"执行覆盖模式：将清空表 '{table_name}' 中的所有数据！")
-                        cursor.execute(f"TRUNCATE TABLE {table_name} RESTART IDENTITY CASCADE;")
-                        
-                        all_cols = list(table_data[0].keys())
-                        cols_to_insert = [c for c in all_cols if c not in ['id', 'map_id']]
-                        data_to_insert = []
-                        table_rules = CLEANING_RULES.get(table_name, {})
-                        
-                        for row in table_data:
-                            cleaned_row_values = []
-                            for col_name in cols_to_insert:
-                                value = row.get(col_name)
-                                if col_name in table_rules:
-                                    value = table_rules[col_name](value) if value is not None else None
-                                cleaned_row_values.append(value)
-                            data_to_insert.append(cleaned_row_values)
-                        
-                        col_str = ", ".join(cols_to_insert)
-                        val_ph = ", ".join(["%s"] * len(cols_to_insert))
-                        sql = f"INSERT INTO {table_name} ({col_str}) VALUES ({val_ph})"
-                        
-                        # ★★★ 核心修复：删除下面这行错误的代码！★★★
-                        # 错误的代码: data_to_insert = [[row.get(c) for c in cols_to_insert] for row in table_data]
-                        
-                        cursor.executemany(sql, data_to_insert)
-                        summary_lines.append(f"  - 表 '{cn_name}': 清空并插入 {len(data_to_insert)} 条。")
-                        continue
+                    # 步骤1: 准备数据 (使用新的、简化的函数)
+                    columns, prepared_data = _prepare_data_for_insert(table_name, table_data)
+                    
+                    # 步骤2: 执行数据库覆盖操作
+                    _overwrite_table_data(cursor, table_name, columns, prepared_data)
 
-                    if table_name == 'translation_cache':
-                        # ... (translation_cache 的逻辑保持不变) ...
-                        logger.info(f"模式[共享合并]: 正在为 '{cn_name}' 表执行基于优先级的合并策略...")
-                        TRANSLATION_SOURCE_PRIORITY = {'manual': 2, 'openai': 1, 'zhipuai': 1, 'gemini': 1}
-                        
-                        cursor.execute("SELECT original_text, translated_text, engine_used FROM translation_cache")
-                        local_cache = {row['original_text']: row for row in cursor.fetchall()}
-                        
-                        rows_to_upsert = []
-                        kept_count = 0
-                        
-                        for backup_row in table_data:
-                            key = backup_row.get('original_text')
-                            if not key: continue
-                            
-                            local_row = local_cache.get(key)
-                            if not local_row:
-                                rows_to_upsert.append(backup_row)
-                                continue
+                    summary_lines.append(f"  - 表 '{cn_name}': 成功恢复 {len(prepared_data)} 条记录。")
 
-                            local_priority = TRANSLATION_SOURCE_PRIORITY.get(local_row.get('engine_used'), 0)
-                            backup_priority = TRANSLATION_SOURCE_PRIORITY.get(backup_row.get('engine_used'), 0)
-
-                            if backup_priority > local_priority:
-                                rows_to_upsert.append(backup_row)
-                            else:
-                                kept_count += 1
-                        
-                        if rows_to_upsert:
-                            cols = list(rows_to_upsert[0].keys())
-                            col_str = ", ".join(cols)
-                            val_ph = ", ".join(["%s"] * len(cols))
-                            update_str = ", ".join([f"{col} = EXCLUDED.{col}" for col in cols if col != 'original_text'])
-                            
-                            sql = f"""
-                                INSERT INTO translation_cache ({col_str}) VALUES ({val_ph})
-                                ON CONFLICT (original_text) DO UPDATE SET {update_str}
-                            """
-                            data = [[row.get(c) for c in cols] for row in rows_to_upsert]
-                            cursor.executemany(sql, data)
-
-                        summary_lines.append(f"  - 表 '{cn_name}': 合并/更新 {len(rows_to_upsert)} 条, 保留本地更优 {kept_count} 条。")
-                    else:
-                        pk = TABLE_PRIMARY_KEYS.get(table_name)
-                        if not pk:
-                            logger.warning(f"表 '{cn_name}' 未定义主键，无法执行合并，已跳过。")
-                            summary_lines.append(f"  - 表 '{cn_name}': 跳过 (未定义合并键)。")
-                            continue
-
-                        all_cols = list(table_data[0].keys())
-                        col_str = ", ".join(all_cols)
-                        val_ph = ", ".join(["%s"] * len(all_cols))
-                        
-                        pk_cols = [p.strip() for p in pk.split(',')]
-                        update_cols = [c for c in all_cols if c not in pk_cols]
-                        update_str = ", ".join([f"{col} = EXCLUDED.{col}" for col in update_cols])
-
-                        sql = f"""
-                            INSERT INTO {table_name} ({col_str}) VALUES ({val_ph})
-                            ON CONFLICT ({pk}) DO UPDATE SET {update_str}
-                        """
-                        
-                        data_to_upsert = []
-                        table_rules = CLEANING_RULES.get(table_name, {})
-                        for row in table_data:
-                            cleaned_row_values = []
-                            for col_name in all_cols:
-                                value = row.get(col_name)
-                                if col_name in table_rules:
-                                    value = table_rules[col_name](value) if value is not None else None
-                                cleaned_row_values.append(value)
-                            data_to_upsert.append(cleaned_row_values)
-                        
-                        cursor.executemany(sql, data_to_upsert)
-                        summary_lines.append(f"  - 表 '{cn_name}': 安全合并/更新了 {len(data_to_upsert)} 条记录。")
-
-                logger.info("="*11 + " 数据库导入摘要 " + "="*11)
+                logger.info("="*11 + " 数据库恢复摘要 " + "="*11)
                 for line in summary_lines: logger.info(line)
                 logger.info("="*36)
 
@@ -541,9 +497,13 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                 logger.info("✅ 数据库事务已成功提交！所有选择的表已恢复。")
 
     except Exception as e:
-        logger.error(f"数据库导入任务发生严重错误，所有更改将回滚: {e}", exc_info=True)
+        logger.error(f"数据库恢复任务发生严重错误，所有更改将回滚: {e}", exc_info=True)
         if conn:
-            conn.rollback()
+            try:
+                conn.rollback()
+                logger.warning("数据库事务已回滚。")
+            except Exception as rollback_e:
+                logger.error(f"尝试回滚事务时发生额外错误: {rollback_e}")
 # ★★★ 重新处理单个项目 ★★★
 def task_reprocess_single_item(processor: MediaProcessor, item_id: str, item_name_for_ui: str):
     """

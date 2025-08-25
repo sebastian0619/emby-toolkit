@@ -443,7 +443,7 @@ def enrich_all_actor_aliases_task(
             # ★★★ 核心修复 1/5：使用 PostgreSQL 的日期计算语法 ★★★
             sql_find_tmdb_needy = f"""
                 SELECT p.* FROM person_identity_map p
-                LEFT JOIN ActorMetadata m ON p.tmdb_person_id = m.tmdb_id
+                LEFT JOIN actor_metadata m ON p.tmdb_person_id = m.tmdb_id
                 WHERE p.tmdb_person_id IS NOT NULL AND (p.imdb_id IS NULL OR m.tmdb_id IS NULL OR m.profile_path IS NULL OR m.gender IS NULL OR m.original_name IS NULL)
                 AND (m.last_updated_at IS NULL OR m.last_updated_at < NOW() - INTERVAL '{SYNC_INTERVAL_DAYS} days')
                 ORDER BY m.last_updated_at ASC
@@ -541,7 +541,7 @@ def enrich_all_actor_aliases_task(
                                 update_str = ", ".join(update_cols)
                                 
                                 sql_upsert_metadata = f"""
-                                    INSERT INTO ActorMetadata ({cols_str}, last_updated_at)
+                                    INSERT INTO actor_metadata ({cols_str}, last_updated_at)
                                     VALUES ({placeholders_str}, NOW())
                                     ON CONFLICT (tmdb_id) DO UPDATE SET {update_str}, last_updated_at = NOW()
                                 """

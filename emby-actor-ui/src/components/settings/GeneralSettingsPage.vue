@@ -294,25 +294,26 @@
   </n-modal>
 
   <!-- 导入选项模态框 -->
-  <n-modal v-model:show="importModalVisible" preset="dialog" title="确认导入选项">
+  <n-modal v-model:show="importModalVisible" preset="dialog" title="恢复数据库备份">
     <n-space vertical>
       <div><p><strong>文件名:</strong> {{ fileToImport?.name }}</p></div>
-      <n-form-item label="导入模式" required>
-        <n-radio-group v-model:value="importOptions.mode">
-          <n-space>
-            <n-radio value="merge"><strong>共享合并</strong> 导入别人共享的备份，添加新数据，更新旧数据。</n-radio>
-            <n-radio value="overwrite"><strong class="warning-text">本地恢复</strong> (危险!): 仅能导入自己导出的备份！！！</n-radio>
-          </n-space>
-        </n-radio-group>
-      </n-form-item>
+      
+      <!-- ★ 修改点: 增加醒目的警告提示 -->
+      <n-alert title="高危操作警告" type="warning">
+        此操作将使用备份文件中的数据 <strong class="warning-text">覆盖</strong> 数据库中对应的表。这是一个 <strong class="warning-text">不可逆</strong> 的过程！<br>
+        <strong>请确保您正在使用自己导出的备份文件</strong>，否则可能因服务器ID不匹配而被拒绝，或导致数据错乱。
+      </n-alert>
+
+      <!-- ★ 修改点: 移除了导入模式的单选框 -->
+      
       <div>
-        <n-text strong>要导入的表 (从文件中自动读取)</n-text>
+        <n-text strong>选择要恢复的表 (从文件中自动读取)</n-text>
         <n-space style="margin-left: 20px; display: inline-flex; vertical-align: middle;">
           <n-button size="tiny" text type="primary" @click="selectAllForImport">全选</n-button>
           <n-button size="tiny" text type="primary" @click="deselectAllForImport">全不选</n-button>
         </n-space>
       </div>
-      <n-checkbox-group v-model:value="importOptions.tables" vertical style="margin-top: 8px;">
+      <n-checkbox-group v-model:value="tablesToImport" vertical style="margin-top: 8px;">
         <n-grid :y-gap="8" :cols="2">
           <n-gi v-for="table in tablesInBackupFile" :key="table">
             <n-checkbox :value="table">
@@ -325,7 +326,7 @@
     </n-space>
     <template #action>
       <n-button @click="cancelImport">取消</n-button>
-      <n-button type="primary" @click="confirmImport" :disabled="importOptions.tables.length === 0">开始导入</n-button>
+      <n-button type="primary" @click="confirmImport" :disabled="tablesToImport.length === 0">确认并开始恢复</n-button>
     </template>
   </n-modal>
 </template>
@@ -348,9 +349,9 @@ import { useConfig } from '../../composables/useConfig.js';
 import axios from 'axios';
 
 const tableInfo = {
-  'person_identity_map': { cn: '演员身份映射表', isSharable: true },
-  'ActorMetadata': { cn: '演员元数据', isSharable: true },
-  'translation_cache': { cn: '翻译缓存', isSharable: true },
+  'person_identity_map': { cn: '演员身份映射表', isSharable: false },
+  'actor_metadata': { cn: '演员元数据', isSharable: false },
+  'translation_cache': { cn: '翻译缓存', isSharable: false },
   'watchlist': { cn: '追剧列表', isSharable: false },
   'actor_subscriptions': { cn: '演员订阅配置', isSharable: false },
   'tracked_actor_media': { cn: '已追踪的演员作品', isSharable: false },
@@ -507,20 +508,7 @@ const isImporting = ref(false);
 const importModalVisible = ref(false);
 const fileToImport = ref(null);
 const tablesInBackupFile = ref([]);
-const importOptions = ref({
-  mode: 'merge',
-  tables: [],
-});
-
-watch(() => importOptions.value.mode, (newMode) => {
-  if (importModalVisible.value) {
-    if (newMode === 'merge') {
-      importOptions.value.tables = tablesInBackupFile.value.filter(t => tableInfo[t]?.isSharable);
-    } else {
-      importOptions.value.tables = [...tablesInBackupFile.value];
-    }
-  }
-});
+const tablesToImport = ref([]);
 
 const save = async () => {
   try {
@@ -561,7 +549,7 @@ const showExportModal = async () => {
   try {
     const response = await axios.get('/api/database/tables');
     allDbTables.value = response.data;
-    tablesToExport.value = response.data.filter(t => tableInfo[t]?.isSharable);
+    tablesToExport.value = [...response.data]; // 默认全选所有表
     exportModalVisible.value = true;
   } catch (error) {
     message.error('无法获取数据库表列表，请检查后端日志。');
@@ -620,11 +608,8 @@ const handleCustomImportRequest = ({ file }) => {
         return;
       }
       
-      if (importOptions.value.mode === 'merge') {
-        importOptions.value.tables = tablesInBackupFile.value.filter(t => tableInfo[t]?.isSharable);
-      } else {
-        importOptions.value.tables = [...tablesInBackupFile.value];
-      }
+      // 默认全选所有在备份文件中的表
+      tablesToImport.value = [...tablesInBackupFile.value];
       
       fileToImport.value = file.file;
       importModalVisible.value = true;
@@ -644,46 +629,31 @@ const confirmImport = () => {
   importModalVisible.value = false; 
   startImportProcess();   
 };
-const startImportProcess = (force = false) => {
+const startImportProcess = () => {
   isImporting.value = true;
   message.loading('正在上传并处理文件...', { duration: 0 });
 
   const formData = new FormData();
   formData.append('file', fileToImport.value);
-  formData.append('mode', importOptions.value.mode);
-  formData.append('tables', importOptions.value.tables.join(','));
-  if (force) {
-    formData.append('force_overwrite', 'true');
-  }
+  // ★ 核心修改: 硬编码 mode 为 'overwrite' 以匹配后端逻辑
+  formData.append('mode', 'overwrite');
+  formData.append('tables', tablesToImport.value.join(','));
 
   axios.post('/api/database/import', formData, {
     headers: { 'Content-Type': 'multipart/form-data' }
   })
   .then(response => {
-    isImporting.value = false;
     message.destroyAll();
-    message.success(response.data?.message || '导入任务已提交！');
+    message.success(response.data?.message || '恢复任务已提交！');
   })
   .catch(error => {
-    isImporting.value = false;
     message.destroyAll();
-    
-    const errorData = error.response?.data;
-    
-    if (error.response?.status === 409 && errorData?.confirm_required) {
-      dialog.warning({
-        title: '高危操作确认',
-        content: errorData.error, 
-        positiveText: '我明白风险，继续覆盖',
-        negativeText: '取消',
-        positiveButtonProps: { type: 'error' },
-        onPositiveClick: () => {
-          startImportProcess(true);
-        },
-      });
-    } else {
-      message.error(errorData?.error || '导入失败，未知错误。');
-    }
+    // ★ 核心修改: 简化错误处理，直接显示后端返回的错误信息
+    const errorMsg = error.response?.data?.error || '恢复失败，未知错误。';
+    message.error(errorMsg, { duration: 8000 }); // 延长显示时间，方便用户阅读
+  })
+  .finally(() => {
+    isImporting.value = false;
   });
 };
 const selectAllForImport = () => importOptions.value.tables = [...tablesInBackupFile.value];
@@ -758,7 +728,7 @@ onUnmounted(() => {
   line-height: 1.6;
 }
 .warning-text {
-  color: var(--n-warning-color);
+  color: var(--n-warning-color-suppl); /* 使用 Naive UI 的警告色 */
   font-weight: bold;
 }
 .sharable-label {
