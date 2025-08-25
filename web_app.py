@@ -3,6 +3,7 @@ from gevent import monkey
 monkey.patch_all()
 import os
 import shutil
+import threading
 from datetime import datetime
 from jinja2 import Environment, FileSystemLoader
 from actor_sync_handler import UnifiedSyncHandler
@@ -507,8 +508,25 @@ def emby_webhook():
     data = request.json
     event_type = data.get("Event") if data else "未知事件"
     logger.info(f"收到Emby Webhook: {event_type}")
-    
-    trigger_events = ["item.add", "library.new", "library.deleted"]  # 删除了 image.update
+
+    # --- ▼▼▼ 核心改造 1：定义一个独立的、可以在后台线程中运行的函数 ▼▼▼ ---
+    def _process_in_background(item_id_to_process, item_name_for_log):
+        """这个函数包含了所有实际的处理逻辑，它将在一个新线程中被调用。"""
+        logger.info(f"后台线程启动，开始处理: '{item_name_for_log}' (ID: {item_id_to_process})")
+        try:
+            # 直接调用核心处理任务，注意这里需要传递 processor 实例
+            # 我们从 extensions 中获取已经初始化好的实例
+            webhook_processing_task(
+                processor=extensions.media_processor_instance,
+                item_id=item_id_to_process,
+                force_reprocess=True
+            )
+            logger.info(f"后台线程成功完成处理: '{item_name_for_log}'")
+        except Exception as e:
+            logger.error(f"后台线程处理 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
+
+    # --- 您的原有逻辑，稍作调整 ---
+    trigger_events = ["item.add", "library.new", "library.deleted"]
     if event_type not in trigger_events:
         logger.info(f"Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
         return jsonify({"status": "event_ignored_not_in_trigger_list"}), 200
@@ -520,10 +538,9 @@ def emby_webhook():
     
     trigger_types = ["Movie", "Series", "Episode"]
     if not (original_item_id and original_item_type in trigger_types):
-        logger.debug(f"Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略（缺少ID或类型不匹配）。")
+        logger.debug(f"Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略。")
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
 
-    # ✨ 3. 新增删除事件的处理逻辑
     if event_type == "library.deleted":
         logger.info(f"Webhook 收到删除事件，将从已处理日志中移除项目 '{original_item_name}' (ID: {original_item_id})。")
         try:
@@ -540,22 +557,20 @@ def emby_webhook():
     
     if event_type in ["item.add", "library.new"]:
         id_to_process = original_item_id
-        type_to_process = original_item_type
         if original_item_type == "Episode":
-            logger.info(f"Webhook 收到分集 '{original_item_name}' (ID: {original_item_id})，正在向上查找其所属剧集...")
+            logger.info(f"Webhook 收到分集 '{original_item_name}'，正在向上查找其所属剧集...")
             series_id = emby_handler.get_series_id_from_child_id(
                 original_item_id,
                 extensions.media_processor_instance.emby_url,
                 extensions.media_processor_instance.emby_api_key,
                 extensions.media_processor_instance.emby_user_id
             )
-            if series_id:
-                id_to_process = series_id
-                type_to_process = "Series"
-                logger.info(f"成功找到所属剧集 ID: {id_to_process}。将处理此剧集。")
-            else:
-                logger.error(f"无法为分集 '{original_item_name}' 找到所属剧集ID，将跳过处理。")
+            if not series_id:
+                logger.error(f"无法为分集 '{original_item_name}' 找到所属剧集ID，跳过处理。")
                 return jsonify({"status": "event_ignored_series_not_found"}), 200
+            id_to_process = series_id
+            logger.info(f"成功找到所属剧集 ID: {id_to_process}。将处理此剧集。")
+
         full_item_details = emby_handler.get_emby_item_details(
             item_id=id_to_process,
             emby_server_url=extensions.media_processor_instance.emby_url,
@@ -565,24 +580,25 @@ def emby_webhook():
         if not full_item_details:
             logger.error(f"无法获取项目 {id_to_process} 的完整详情，处理中止。")
             return jsonify({"status": "event_ignored_details_fetch_failed"}), 200
-        final_item_name = full_item_details.get("Name", f"未知项目(ID:{id_to_process})")
-        provider_ids = full_item_details.get("ProviderIds", {})
-        tmdb_id = provider_ids.get("Tmdb")
-        if not tmdb_id:
-            logger.warning(f"项目 '{final_item_name}' (ID: {id_to_process}) 缺少 TMDb ID，无法进行处理。将跳过本次 Webhook 请求。")
+        
+        final_item_name = full_item_details.get("Name", f"未知(ID:{id_to_process})")
+        if not full_item_details.get("ProviderIds", {}).get("Tmdb"):
+            logger.warning(f"项目 '{final_item_name}' 缺少 TMDb ID，跳过处理。")
             return jsonify({"status": "event_ignored_no_tmdb_id"}), 200
             
-        logger.info(f"Webhook事件触发，最终处理项目 '{final_item_name}' (ID: {id_to_process}, TMDbID: {tmdb_id}) 已提交到任务队列。")
+        # --- ▼▼▼ 核心改造 2：创建并启动后台线程，然后立即返回 ▼▼▼ ---
+        logger.info(f"Webhook事件触发，将为项目 '{final_item_name}' (ID: {id_to_process}) 启动一个独立的后台处理线程。")
         
-        success = task_manager.submit_task(
-            task_function=webhook_processing_task,
-            task_name=f"Webhook处理: {final_item_name}",
-            processor_type='media', 
-            item_id=id_to_process,
-            force_reprocess=True
+        # 创建一个线程，目标是运行我们上面定义的 _process_in_background 函数
+        thread = threading.Thread(
+            target=_process_in_background,
+            args=(id_to_process, final_item_name)
         )
+        thread.daemon = True  # 设置为守护线程，主程序退出时它也会退出
+        thread.start() # 启动线程
         
-        return jsonify({"status": "metadata_task_queued", "item_id": id_to_process}), 202
+        # 立即返回202响应，告诉Emby我们已经接受了任务
+        return jsonify({"status": "processing_started_in_background", "item_id": id_to_process}), 202
 
     return jsonify({"status": "event_unhandled"}), 500
 
