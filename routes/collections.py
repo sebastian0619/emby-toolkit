@@ -130,7 +130,7 @@ def api_update_movie_status():
         logger.error(f"更新电影状态时发生数据库错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在处理请求时发生内部错误"}), 500
     
-# ★★★ 新增：批量将缺失电影的状态标记为“已订阅”（不触发真订阅） ★★★
+# ★★★ 批量将缺失电影的状态标记为“已订阅”（不触发真订阅） ★★★
 @collections_bp.route('/batch_mark_as_subscribed', methods=['POST'])
 @login_required
 def api_batch_mark_as_subscribed():

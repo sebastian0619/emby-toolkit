@@ -458,46 +458,33 @@ def batch_force_end_watchlist_items(item_ids: List[str]) -> int:
 # ★★★ 批量更新追剧状态的数据库函数 ★★★
 def batch_update_watchlist_status(item_ids: list, new_status: str) -> int:
     """
+    【V2 - 时间格式修复版】
     批量更新指定项目ID列表的追剧状态。
-    
-    当状态更新为 'Watching' (例如“重新追剧”) 时，此函数会自动：
-    1. 清除暂停日期 (`paused_until`)。
-    2. 重置强制完结标志 (`force_ended`)。
-    
-    Args:
-        item_ids: 需要更新的项目ID列表。
-        new_status: 要设置的新状态 ('Watching', 'Paused', 'Completed')。
-        
-    Returns:
-        成功更新的行数。
     """
     if not item_ids:
         return 0
         
     try:
-        with get_db_connection() as conn: # 假设你有一个 get_db_connection 函数
+        with get_db_connection() as conn:
             cursor = conn.cursor()
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            # 准备要更新的字段和值
-            updates = {
-                "status": new_status,
-                "last_checked_at": current_time
-            }
+            # 1. 准备要更新的字段和值，但不包括时间
+            updates = { "status": new_status }
             
-            # 核心逻辑：如果是“重新追剧”，则需要重置相关状态，让剧集恢复活力
+            # 2. 核心逻辑：如果是“重新追剧”，则需要重置相关状态
             if new_status == 'Watching':
                 updates["paused_until"] = None
-                updates["force_ended"] = 0
+                updates["force_ended"] = False # 使用布尔值更标准
             
+            # 3. ★★★ 核心修正：将 last_checked_at 的更新直接写入SQL ★★★
             set_clauses = [f"{key} = %s" for key in updates.keys()]
+            set_clauses.append("last_checked_at = NOW()") # 直接使用数据库的 NOW() 函数
+            
             values = list(updates.values())
             
-            # 使用参数化查询来防止SQL注入，这是处理列表的标准做法
             placeholders = ', '.join(['%s'] * len(item_ids))
             sql = f"UPDATE watchlist SET {', '.join(set_clauses)} WHERE item_id IN ({placeholders})"
             
-            # 将 item_ids 添加到值列表的末尾以匹配占位符
             values.extend(item_ids)
             
             cursor.execute(sql, tuple(values))
@@ -508,7 +495,6 @@ def batch_update_watchlist_status(item_ids: list, new_status: str) -> int:
             
     except Exception as e:
         logger.error(f"批量更新项目状态时数据库出错: {e}", exc_info=True)
-        # 重新抛出异常，让上层(API路由)可以捕获并返回500错误
         raise
 
 # --- 水印 ---
@@ -549,12 +535,20 @@ def get_all_collections() -> List[Dict[str, Any]]:
             final_results = []
             for row in cursor.fetchall():
                 row_dict = dict(row)
-                # 在数据访问层直接处理 JSON 解析，让上层更省心
-                try:
-                    row_dict['missing_movies'] = json.loads(row_dict.get('missing_movies_json', '[]'))
-                except (json.JSONDecodeError, TypeError):
+                
+                # --- ▼▼▼ 核心修改点 ▼▼▼ ---
+                # 1. 直接获取 psycopg2 已经解析好的 Python 对象 (列表)
+                missing_movies_data = row_dict.get('missing_movies_json')
+                
+                # 2. 做一个健壮性检查，确保它是一个列表
+                if isinstance(missing_movies_data, list):
+                    row_dict['missing_movies'] = missing_movies_data
+                else:
+                    # 如果数据格式不正确或为NULL，则提供一个安全的默认值
                     row_dict['missing_movies'] = []
-                del row_dict['missing_movies_json'] # 删除原始json字段
+                # --- ▲▲▲ 修改结束 ▲▲▲ ---
+
+                del row_dict['missing_movies_json'] # 删除原始json字段，保持API响应干净
                 final_results.append(row_dict)
                 
             return final_results
@@ -666,9 +660,10 @@ def update_single_movie_status_in_collection(collection_id: str, movie_tmdb_id: 
             conn.rollback()
         raise
 
-# ★★★ 新增：批量将指定合集中的'missing'电影状态更新为'subscribed' ★★★
+# ★★★ 批量将指定合集中的'missing'电影状态更新为'subscribed' ★★★
 def batch_mark_movies_as_subscribed_in_collections(collection_ids: List[str]) -> int:
     """
+    【V2 - PG 兼容修复版】
     批量将指定合集列表中的所有'missing'状态的电影更新为'subscribed'。
     这是一个纯粹的数据库操作，不会触发任何外部订阅。
 
@@ -683,7 +678,6 @@ def batch_mark_movies_as_subscribed_in_collections(collection_ids: List[str]) ->
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # 使用参数化查询获取所有相关的合集
             placeholders = ','.join('%s' for _ in collection_ids)
             sql_select = f"SELECT emby_collection_id, missing_movies_json FROM collections_info WHERE emby_collection_id IN ({placeholders})"
             cursor.execute(sql_select, collection_ids)
@@ -697,10 +691,14 @@ def batch_mark_movies_as_subscribed_in_collections(collection_ids: List[str]) ->
                 for collection_row in collections_to_process:
                     collection_id = collection_row['emby_collection_id']
                     
-                    try:
-                        movies = json.loads(collection_row['missing_movies_json'] or '[]')
-                    except (json.JSONDecodeError, TypeError):
+                    # --- ▼▼▼ 核心修改 1: 修复 TypeError ▼▼▼
+                    # 直接使用 psycopg2 解析好的列表，不再使用 json.loads()
+                    movies = collection_row.get('missing_movies_json')
+                    
+                    # 增加健壮性检查，如果数据不是列表则跳过
+                    if not isinstance(movies, list):
                         continue
+                    # --- ▲▲▲ 修改结束 ▲▲▲ ---
 
                     movies_changed_in_this_collection = False
                     for movie in movies:
@@ -709,14 +707,16 @@ def batch_mark_movies_as_subscribed_in_collections(collection_ids: List[str]) ->
                             total_updated_movies += 1
                             movies_changed_in_this_collection = True
                     
-                    # 只有当这个合集确实有状态被改变时，才回写数据库
                     if movies_changed_in_this_collection:
-                        # 既然所有 missing 都被改了，has_missing 标志肯定为 False
                         new_missing_json = json.dumps(movies, ensure_ascii=False)
+                        
+                        # --- ▼▼▼ 核心修改 2: 修复逻辑错误 ▼▼▼
+                        # 既然所有 missing 都被标记了，has_missing 状态应该变为 False
                         cursor.execute(
-                            "UPDATE collections_info SET missing_movies_json = %s, has_missing = TRUE WHERE emby_collection_id = %s",
+                            "UPDATE collections_info SET missing_movies_json = %s, has_missing = FALSE WHERE emby_collection_id = %s",
                             (new_missing_json, collection_id)
                         )
+                        # --- ▲▲▲ 修改结束 ▲▲▲ ---
                 
                 conn.commit()
                 logger.info(f"DB: 成功将 {len(collection_ids)} 个合集中的 {total_updated_movies} 部缺失电影标记为已订阅。")

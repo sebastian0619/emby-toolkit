@@ -691,20 +691,21 @@ def task_full_image_sync(processor: MediaProcessor, force_full_update: bool = Fa
 # ✨ 辅助函数，并发刷新合集使用
 def _process_single_collection_concurrently(collection_data: dict, tmdb_api_key: str) -> dict:
     """
-    【V4 - 纯粹电影版】
+    【V5 - 逻辑与类型双重修复版】
     在单个线程中处理单个电影合集的所有逻辑。
-    这个函数现在可以完全信任传入的 collection_data 就是一个常规电影合集。
     """
     collection_id = collection_data['Id']
     collection_name = collection_data.get('Name', '')
     today_str = datetime.now().strftime('%Y-%m-%d')
     item_type = 'Movie'
     
-    all_movies_with_status = []
-    emby_movie_tmdb_ids = set(collection_data.get("ExistingMovieTmdbIds", []))
+    # ★★★ 核心修复 1/2: 强制将所有来自Emby的ID转换为字符串集合，确保类型统一 ★★★
+    emby_movie_tmdb_ids = {str(id) for id in collection_data.get("ExistingMovieTmdbIds", [])}
+    
     in_library_count = len(emby_movie_tmdb_ids)
     status, has_missing = "ok", False
     provider_ids = collection_data.get("ProviderIds", {})
+    all_movies_with_status = []
     
     tmdb_id = provider_ids.get("TmdbCollection") or provider_ids.get("TmdbCollectionId") or provider_ids.get("Tmdb")
 
@@ -715,19 +716,28 @@ def _process_single_collection_concurrently(collection_data: dict, tmdb_api_key:
         if not details or "parts" not in details:
             status = "tmdb_error"
         else:
+            # ★★★ 核心修复 2/2: 修正数据库读取逻辑 ★★★
+            previous_movies_map = {}
             with db_handler.get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT missing_movies_json FROM collections_info WHERE emby_collection_id = %s", (collection_id,))
                 row = cursor.fetchone()
-                previous_movies_map = {}
-                if row and row[0]:
+                # 1. 使用字典键 'missing_movies_json' 访问，而不是索引 [0]
+                # 2. psycopg2 已经自动解析了 JSONB 字段，无需再 json.loads
+                if row and row.get('missing_movies_json'):
                     try:
-                        previous_movies_map = {str(m['tmdb_id']): m for m in json.loads(row[0])}
-                    except (json.JSONDecodeError, TypeError): pass
+                        previous_movies_map = {str(m['tmdb_id']): m for m in row['missing_movies_json']}
+                    except (TypeError, KeyError): 
+                        logger.warning(f"解析合集 '{collection_name}' 的历史数据时格式不兼容，将忽略。")
+                        pass
             
             for movie in details.get("parts", []):
+                # 确保 TMDB ID 也为字符串，与上面创建的集合类型一致
                 movie_tmdb_id = str(movie.get("id"))
-                if not movie.get("release_date"): continue
+                
+                # 跳过没有发布日期的电影，它们通常是未完成的项目
+                if not movie.get("release_date"): 
+                    continue
 
                 movie_status = "unknown"
                 if movie_tmdb_id in emby_movie_tmdb_ids:
@@ -750,14 +760,15 @@ def _process_single_collection_concurrently(collection_data: dict, tmdb_api_key:
                 status = "has_missing"
 
     image_tag = collection_data.get("ImageTags", {}).get("Primary")
-    poster_path = f"/Items/{collection_id}/Images/Primary%stag={image_tag}" if image_tag else None
+    poster_path = f"/Items/{collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
 
     return {
         "emby_collection_id": collection_id, "name": collection_name, 
         "tmdb_collection_id": tmdb_id, "item_type": item_type,
         "status": status, "has_missing": has_missing, 
-        "missing_movies_json": json.dumps(all_movies_with_status), 
-        "last_checked_at": time.time(), "poster_path": poster_path, 
+        "missing_movies_json": json.dumps(all_movies_with_status, ensure_ascii=False), 
+        "last_checked_at": datetime.now(timezone.utc), 
+        "poster_path": poster_path, 
         "in_library_count": in_library_count
     }
 # ★★★ 刷新合集的后台任务函数 ★★★
