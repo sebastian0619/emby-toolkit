@@ -1128,10 +1128,7 @@ class MediaProcessor:
                                             "emby_person_id": emby_pid_from_final_check, "_is_newly_added": True
                                         }
                                         final_cast_map[tmdb_id_from_find] = new_actor_entry
-                                        self.actor_db_manager.upsert_person(
-                                            cursor,
-                                            {"tmdb_id": tmdb_id_from_find, "imdb_id": d_imdb_id, "douban_id": d_douban_id, "name": d_actor.get("Name")}
-                                        )
+                                        
                                     match_found = True
                     if not match_found:
                         still_unmatched_final.append(d_actor)
