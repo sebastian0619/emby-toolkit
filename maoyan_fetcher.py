@@ -52,7 +52,7 @@ def get_maoyan_rank_titles(types_to_fetch: List[str], platform: str, num: int) -
     MAX_RETRIES = 3
     RETRY_DELAY_SECONDS = 3
 
-    # --- 1. 获取电影票房榜 (带重试) ---
+    # --- 1. 获取电影票房榜 (只保留重试逻辑) ---
     if 'movie' in types_to_fetch:
         url = f'{maoyan_url}/dashboard-ajax/movie'
         for attempt in range(MAX_RETRIES):
@@ -66,32 +66,24 @@ def get_maoyan_rank_titles(types_to_fetch: List[str], platform: str, num: int) -
                     for movie in data if movie.get('movieInfo', {}).get('movieName')
                 ][:num])
                 logger.info("电影票房榜获取成功。")
-                break
+                break # 成功后立即跳出重试循环
             except Exception as e:
                 logger.warning(f"获取电影票房榜失败 (第 {attempt + 1} 次尝试): {e}")
                 if attempt < MAX_RETRIES - 1:
                     delay = RETRY_DELAY_SECONDS * (attempt + 1)
                     logger.info(f"将在 {delay} 秒后重试...")
-                    time.sleep(delay)
+                    time.sleep(delay) # 这个sleep只在失败后触发，必须保留
                 else:
                     logger.error("获取电影票房榜在多次重试后彻底失败。")
 
-    # --- 2. 获取电视剧/综艺热度榜 (带重试和请求间隔) ---
+    # --- 2. 获取电视剧/综艺热度榜 (只保留重试逻辑) ---
     tv_heat_map = {'web-heat': '0', 'web-tv': '1', 'zongyi': '2'}
     platform_code_map = {'all': '', 'tencent': '3', 'iqiyi': '2', 'youku': '1', 'mango': '7'}
     platform_code = platform_code_map.get(platform, '')
     
     tv_types_to_fetch = [t for t in types_to_fetch if t in tv_heat_map]
     if tv_types_to_fetch:
-        # --- ▼▼▼ 新增优化：在请求不同类型的榜单前，增加随机延迟 ▼▼▼ ---
-        # 如果前面请求了电影榜，那么在请求第一个电视剧榜前先停一下
-        if 'movie' in types_to_fetch:
-            inter_type_delay = random.uniform(2, 5) # 随机休眠2到5秒
-            logger.info(f"完成电影榜获取，为避免速率限制，将随机等待 {inter_type_delay:.2f} 秒...")
-            time.sleep(inter_type_delay)
-        # --- ▲▲▲ 优化结束 ▲▲▲ ---
-
-        for i, tv_type in enumerate(tv_types_to_fetch):
+        for tv_type in tv_types_to_fetch:
             series_type_code = tv_heat_map[tv_type]
             url = f'{maoyan_url}/dashboard/webHeatData?seriesType={series_type_code}&platformType={platform_code}&showDate=2'
             for attempt in range(MAX_RETRIES):
@@ -105,22 +97,15 @@ def get_maoyan_rank_titles(types_to_fetch: List[str], platform: str, num: int) -
                         for item in data if item.get('seriesInfo', {}).get('name')
                     ][:num])
                     logger.info(f"热度榜 '{tv_type}' 获取成功。")
-                    break
+                    break # 成功后立即跳出重试循环
                 except Exception as e:
                     logger.warning(f"获取 {tv_type} 热度榜失败 (第 {attempt + 1} 次尝试): {e}")
                     if attempt < MAX_RETRIES - 1:
                         delay = RETRY_DELAY_SECONDS * (attempt + 1)
                         logger.info(f"将在 {delay} 秒后重试...")
-                        time.sleep(delay)
+                        time.sleep(delay) # 这个sleep只在失败后触发，必须保留
                     else:
                         logger.error(f"获取 {tv_type} 热度榜在多次重试后彻底失败。")
-            
-            # --- ▼▼▼ 新增优化：在请求完一个电视剧榜单后，也增加一个小的随机延迟 ▼▼▼ ---
-            if i < len(tv_types_to_fetch) - 1: # 如果不是最后一个，就等待
-                intra_type_delay = random.uniform(1, 3) # 随机休眠1到3秒
-                logger.info(f"完成 '{tv_type}' 榜获取，为避免速率限制，将随机等待 {intra_type_delay:.2f} 秒...")
-                time.sleep(intra_type_delay)
-            # --- ▲▲▲ 优化结束 ▲▲▲ ---
 
     unique_tv_list = list({item['title']: item for item in tv_list}.values())
     return movies_list, unique_tv_list
