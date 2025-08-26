@@ -580,13 +580,11 @@ def emby_webhook():
     event_type = data.get("Event") if data else "未知事件"
     logger.info(f"收到Emby Webhook: {event_type}")
 
-    # --- ▼▼▼ 核心改造 1：定义一个独立的、可以在后台线程中运行的函数 ▼▼▼ ---
+    # --- 后台处理函数：处理媒体刮削 ---
     def _process_in_background(item_id_to_process, item_name_for_log):
         """这个函数包含了所有实际的处理逻辑，它将在一个新线程中被调用。"""
         logger.info(f"后台线程启动，开始处理: '{item_name_for_log}' (ID: {item_id_to_process})")
         try:
-            # 直接调用核心处理任务，注意这里需要传递 processor 实例
-            # 我们从 extensions 中获取已经初始化好的实例
             webhook_processing_task(
                 processor=extensions.media_processor_instance,
                 item_id=item_id_to_process,
@@ -596,8 +594,23 @@ def emby_webhook():
         except Exception as e:
             logger.error(f"后台线程处理 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
 
-    # --- 您的原有逻辑，稍作调整 ---
-    trigger_events = ["item.add", "library.new", "library.deleted"]
+    # --- ▼▼▼ 新增的后台处理函数：处理元数据和资源文件定点同步 ▼▼▼ ---
+    def _sync_item_in_background(item_id_to_sync, item_name_for_log, update_description):
+        """为 metadata.update 事件执行定点同步的后台任务。"""
+        logger.info(f"后台定点同步线程启动: '{item_name_for_log}' (ID: {item_id_to_sync})")
+        try:
+            processor = extensions.media_processor_instance
+            # 1. 更新数据库中的媒体元数据缓存
+            processor.sync_single_item_to_metadata_cache(item_id_to_sync)
+            # 2. 备份图片和元数据文件到覆盖目录
+            processor.sync_single_item_assets(item_id_to_sync, update_description)
+            
+            logger.info(f"后台定点同步成功完成: '{item_name_for_log}'")
+        except Exception as e:
+            logger.error(f"后台定点同步 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
+
+    # --- Webhook 事件分发逻辑 ---
+    trigger_events = ["item.add", "library.new", "library.deleted", "metadata.update"] # 添加 metadata.update
     if event_type not in trigger_events:
         logger.info(f"Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
         return jsonify({"status": "event_ignored_not_in_trigger_list"}), 200
@@ -612,6 +625,7 @@ def emby_webhook():
         logger.debug(f"Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略。")
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
 
+    # --- 处理删除事件 ---
     if event_type == "library.deleted":
         logger.info(f"Webhook 收到删除事件，将从已处理日志中移除项目 '{original_item_name}' (ID: {original_item_id})。")
         try:
@@ -626,6 +640,7 @@ def emby_webhook():
             logger.error(f"处理删除事件时发生数据库错误: {e}", exc_info=True)
             return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
     
+    # --- 处理新增/入库事件 ---
     if event_type in ["item.add", "library.new"]:
         id_to_process = original_item_id
         if original_item_type == "Episode":
@@ -657,19 +672,40 @@ def emby_webhook():
             logger.warning(f"项目 '{final_item_name}' 缺少 TMDb ID，跳过处理。")
             return jsonify({"status": "event_ignored_no_tmdb_id"}), 200
             
-        # --- ▼▼▼ 核心改造 2：创建并启动后台线程，然后立即返回 ▼▼▼ ---
         logger.info(f"Webhook事件触发，将为项目 '{final_item_name}' (ID: {id_to_process}) 启动一个独立的后台处理线程。")
         
-        # 创建一个线程，目标是运行我们上面定义的 _process_in_background 函数
         thread = threading.Thread(
             target=_process_in_background,
             args=(id_to_process, final_item_name)
         )
-        thread.daemon = True  # 设置为守护线程，主程序退出时它也会退出
-        thread.start() # 启动线程
+        thread.daemon = True
+        thread.start()
         
-        # 立即返回202响应，告诉Emby我们已经接受了任务
         return jsonify({"status": "processing_started_in_background", "item_id": id_to_process}), 202
+
+    # --- ▼▼▼ 新增：处理元数据更新事件 ▼▼▼ ---
+    if event_type == "metadata.update":
+        # 1. 检查本地数据源路径是否已配置
+        if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_LOCAL_DATA_PATH):
+            logger.debug("Webhook收到metadata.update事件，但未配置本地数据源，将忽略。")
+            return jsonify({"status": "event_ignored_no_local_data_path"}), 200
+
+        # 2. 获取更新描述，用于精准同步图片
+        update_info = data.get("UpdateInfo", {})
+        update_description = update_info.get("Description", "")
+        
+        logger.info(f"Webhook事件触发定点同步，将为项目 '{original_item_name}' (ID: {original_item_id}) 启动后台同步线程。")
+        
+        # 3. 创建并启动后台同步线程
+        sync_thread = threading.Thread(
+            target=_sync_item_in_background,
+            args=(original_item_id, original_item_name, update_description)
+        )
+        sync_thread.daemon = True
+        sync_thread.start()
+        
+        # 4. 立即返回202响应
+        return jsonify({"status": "sync_started_in_background", "item_id": original_item_id}), 202
 
     return jsonify({"status": "event_unhandled"}), 500
 

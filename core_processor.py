@@ -7,7 +7,7 @@ import concurrent.futures
 from typing import Dict, List, Optional, Any, Tuple
 import shutil
 import threading
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 import time as time_module
 import psycopg2
 import requests
@@ -2123,6 +2123,141 @@ class MediaProcessor:
                 logger.info(f"  -> {log_prefix} 成功将演员表注入了 {updated_children_count} 个季/集文件。")
             except Exception as e_list:
                 logger.error(f"  -> {log_prefix} 遍历并更新季/集文件时发生错误: {e_list}", exc_info=True)
+
+    def sync_single_item_assets(self, item_id: str, update_description: Optional[str] = None):
+        """
+        【新增】为单个媒体项同步图片和元数据文件到覆盖缓存。
+        """
+        log_prefix = f"定点资源同步 (ID: {item_id}):"
+        logger.info(f"--- {log_prefix} 开始执行 ---")
+
+        if not self.local_data_path:
+            logger.warning(f"{log_prefix} 任务跳过，因为未配置本地数据源路径。")
+            return
+
+        try:
+            item_details = emby_handler.get_emby_item_details(
+                item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
+                fields="ProviderIds,Type,Name,People,ImageTags,IndexNumber,ParentIndexNumber"
+            )
+            if not item_details:
+                raise ValueError("在Emby中找不到该项目。")
+
+            tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+            if not tmdb_id:
+                logger.warning(f"{log_prefix} 项目 '{item_details.get('Name')}' 缺少TMDb ID，无法备份。")
+                return
+
+            # 1. 同步图片
+            self.sync_item_images(item_details, update_description)
+            
+            # 2. 同步元数据文件
+            self.sync_item_metadata(item_details, tmdb_id)
+
+            # 3. 更新数据库中的时间戳
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                self.log_db_manager.mark_assets_as_synced(cursor, item_id)
+                conn.commit()
+            
+            logger.info(f"--- {log_prefix} 成功完成 ---")
+
+        except Exception as e:
+            logger.error(f"{log_prefix} 执行时发生错误: {e}", exc_info=True)
+
+    def sync_single_item_to_metadata_cache(self, item_id: str):
+        """
+        【新增】为单个媒体项同步元数据到 media_metadata 数据库表。
+        这是 task_populate_metadata_cache 的单点执行版本。
+        """
+        log_prefix = f"定点元数据缓存 (ID: {item_id}):"
+        logger.info(f"--- {log_prefix} 开始执行 ---")
+        
+        try:
+            # 1. 获取完整的 Emby 详情
+            full_details_emby = emby_handler.get_emby_item_details(
+                item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
+                fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,People,Tags,DateModified"
+            )
+            if not full_details_emby:
+                raise ValueError("在Emby中找不到该项目。")
+
+            tmdb_id = full_details_emby.get("ProviderIds", {}).get("Tmdb")
+            if not tmdb_id:
+                logger.warning(f"{log_prefix} 项目 '{full_details_emby.get('Name')}' 缺少TMDb ID，无法缓存。")
+                return
+
+            # 2. 丰富演员信息
+            enriched_people_list = self._enrich_cast_from_db_and_api(full_details_emby.get("People", []))
+            enriched_people_map = {str(p.get("Id")): p for p in enriched_people_list}
+
+            # 3. 获取 TMDB 补充信息 (导演/国家)
+            tmdb_details = None
+            item_type = full_details_emby.get("Type")
+            if item_type == 'Movie':
+                tmdb_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
+            elif item_type == 'Series':
+                tmdb_details = tmdb_handler.get_tv_details_tmdb(tmdb_id, self.tmdb_api_key)
+
+            # 4. 组装元数据
+            actors = []
+            for person in full_details_emby.get("People", []):
+                enriched_person = enriched_people_map.get(str(person.get("Id")))
+                if enriched_person and enriched_person.get("ProviderIds", {}).get("Tmdb"):
+                    actors.append({'id': enriched_person["ProviderIds"]["Tmdb"], 'name': enriched_person.get('Name')})
+
+            directors, countries = [], []
+            if tmdb_details:
+                if item_type == 'Movie':
+                    credits = tmdb_details.get("credits", {}) or tmdb_details.get("casts", {})
+                    if credits:
+                        directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits.get('crew', []) if p.get('job') == 'Director']
+                    countries = translate_country_list([c['name'] for c in tmdb_details.get('production_countries', [])])
+                elif item_type == 'Series':
+                    credits = tmdb_details.get("credits", {})
+                    if credits:
+                        directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits.get('crew', []) if p.get('job') == 'Director']
+                    if not directors:
+                        directors = [{'id': c.get('id'), 'name': c.get('name')} for c in tmdb_details.get('created_by', [])]
+                    countries = translate_country_list(tmdb_details.get('origin_country', []))
+
+            studios = [s['Name'] for s in full_details_emby.get('Studios', []) if s.get('Name')]
+            tags = [tag['Name'] for tag in full_details_emby.get('TagItems', []) if tag.get('Name')]
+            release_date_str = (full_details_emby.get('PremiereDate') or '0000-01-01T00:00:00.000Z').split('T')[0]
+
+            metadata = {
+                "tmdb_id": tmdb_id, "item_type": item_type,
+                "title": full_details_emby.get('Name'), "original_title": full_details_emby.get('OriginalTitle'),
+                "release_year": full_details_emby.get('ProductionYear'), "rating": full_details_emby.get('CommunityRating'),
+                "release_date": release_date_str, "date_added": (full_details_emby.get("DateCreated") or '').split('T')[0] or None,
+                "genres_json": json.dumps(full_details_emby.get('Genres', []), ensure_ascii=False),
+                "actors_json": json.dumps(actors, ensure_ascii=False),
+                "directors_json": json.dumps(directors, ensure_ascii=False),
+                "studios_json": json.dumps(studios, ensure_ascii=False),
+                "countries_json": json.dumps(countries, ensure_ascii=False),
+                "tags_json": json.dumps(tags, ensure_ascii=False),
+            }
+
+            # 5. 写入数据库
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                cols = list(metadata.keys())
+                update_clauses = [f"{col} = EXCLUDED.{col}" for col in cols]
+                update_clauses.append("last_synced_at = EXCLUDED.last_synced_at")
+                
+                sql = f"""
+                    INSERT INTO media_metadata ({', '.join(cols)}, last_synced_at)
+                    VALUES ({', '.join(['%s'] * len(cols))}, %s)
+                    ON CONFLICT (tmdb_id, item_type) DO UPDATE SET {', '.join(update_clauses)}
+                """
+                sync_time = datetime.now(timezone.utc).isoformat()
+                cursor.execute(sql, tuple(metadata.values()) + (sync_time,))
+                conn.commit()
+            
+            logger.info(f"--- {log_prefix} 成功完成 ---")
+
+        except Exception as e:
+            logger.error(f"{log_prefix} 执行时发生错误: {e}", exc_info=True)
 
     def close(self):
         if self.douban_api: self.douban_api.close()
