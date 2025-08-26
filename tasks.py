@@ -1645,10 +1645,10 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 50, force_full_update: bool = False):
     """
-    【V3.3 - 最终修复版】
-    - 彻底修复了快速同步模式下的时间戳比较逻辑。
-    - 之前的版本错误地尝试对 psycopg2 返回的 datetime 对象再次进行解析。
-    - 此版本直接使用 psycopg2 返回的 datetime 对象进行比较，完全解决了差异计算失效的问题。
+    【V3.4 - 事务与日期修复版】
+    - 修复了当 PremiereDate 或 DateCreated 为空时，使用 '0000-01-01' 作为默认值导致的数据库范围错误。现在改用 None (即数据库中的 NULL)。
+    - 修复了批处理事务中，单个项目写入失败导致整个事务中止，从而使批次内后续所有项目都失败的问题。
+    - 新的逻辑使用 PostgreSQL 的 SAVEPOINT 机制，使得每个项目的写入都是一个独立的子事务，单个项目的失败只会被回滚，而不会影响整个批次。
     """
     task_name = "同步媒体数据"
     sync_mode = "深度同步" if force_full_update else "快速同步"
@@ -1656,7 +1656,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
     
     try:
         # ======================================================================
-        # 步骤 1: 计算差异 (根据模式选择不同逻辑)
+        # 步骤 1: 计算差异 (此部分逻辑不变)
         # ======================================================================
         task_manager.update_status_from_thread(0, f"阶段1/2: 计算媒体库差异 ({sync_mode})...")
         
@@ -1682,7 +1682,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
             cursor = conn.cursor()
             cursor.execute("SELECT tmdb_id, last_synced_at FROM media_metadata")
             for row in cursor.fetchall():
-                db_sync_info[row["tmdb_id"]] = row["last_synced_at"] # <-- 这里存入的是 datetime 对象
+                db_sync_info[row["tmdb_id"]] = row["last_synced_at"]
         db_tmdb_ids = set(db_sync_info.keys())
         logger.info(f"  -> 从本地数据库 media_metadata 表中获取到 {len(db_tmdb_ids)} 个媒体项。")
 
@@ -1698,7 +1698,6 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
             items_to_update_tmdb_ids = set()
             for tmdb_id in common_ids:
                 emby_item = emby_items_map.get(tmdb_id)
-                # 为了清晰，重命名变量
                 last_synced_dt_from_db = db_sync_info.get(tmdb_id)
                 emby_modified_str = emby_item.get("DateModified")
 
@@ -1710,10 +1709,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                     emby_modified_str_fixed = re.sub(r'\.(\d{6})\d*Z$', r'.\1Z', emby_modified_str)
                     emby_modified_dt = datetime.fromisoformat(emby_modified_str_fixed.replace('Z', '+00:00'))
                     
-                    # ★★★ 最终修复：直接使用从数据库获取的 datetime 对象，不再调用 fromisoformat ★★★
-                    last_synced_dt = last_synced_dt_from_db
-
-                    if emby_modified_dt > last_synced_dt:
+                    if emby_modified_dt > last_synced_dt_from_db:
                         items_to_update_tmdb_ids.add(tmdb_id)
                 except (ValueError, TypeError) as e:
                     logger.warning(f"解析时间戳时遇到问题 (TMDb ID: {tmdb_id}), 将默认更新此项目。错误: {e}")
@@ -1818,13 +1814,22 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                         countries = translate_country_list(tmdb_details.get('origin_country', []))
 
                 studios = [s['Name'] for s in full_details_emby.get('Studios', []) if s.get('Name')]
-                release_date_str = (full_details_emby.get('PremiereDate') or '0000-01-01T00:00:00.000Z').split('T')[0]
                 tags = [tag['Name'] for tag in full_details_emby.get('TagItems', []) if tag.get('Name')]
+                
+                # ★★★ 修复 1/2: 修正日期处理逻辑 ★★★
+                # 如果日期字符串存在，则取 'T' 之前的部分；如果不存在，则直接为 None
+                premiere_date_str = full_details_emby.get('PremiereDate')
+                release_date = premiere_date_str.split('T')[0] if premiere_date_str else None
+                
+                date_created_str = full_details_emby.get('DateCreated')
+                date_added = date_created_str.split('T')[0] if date_created_str else None
+
                 metadata_to_save = {
                     "tmdb_id": tmdb_id, "item_type": full_details_emby.get("Type"),
                     "title": full_details_emby.get('Name'), "original_title": full_details_emby.get('OriginalTitle'),
                     "release_year": full_details_emby.get('ProductionYear'), "rating": full_details_emby.get('CommunityRating'),
-                    "release_date": release_date_str, "date_added": (full_details_emby.get("DateCreated") or '').split('T')[0] or None,
+                    "release_date": release_date,
+                    "date_added": date_added,
                     "genres_json": json.dumps(full_details_emby.get('Genres', []), ensure_ascii=False),
                     "actors_json": json.dumps(actors, ensure_ascii=False),
                     "directors_json": json.dumps(directors, ensure_ascii=False),
@@ -1837,9 +1842,15 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
             if metadata_batch:
                 with db_handler.get_db_connection() as conn:
                     cursor = conn.cursor()
-                    cursor.execute("BEGIN TRANSACTION;")
-                    for metadata in metadata_batch:
+                    # ★★★ 修复 2/2: 改进事务处理逻辑 ★★★
+                    # 开启一个总事务
+                    cursor.execute("BEGIN;")
+                    for idx, metadata in enumerate(metadata_batch):
+                        savepoint_name = f"sp_{idx}"
                         try:
+                            # 为每个条目创建一个保存点
+                            cursor.execute(f"SAVEPOINT {savepoint_name};")
+                            
                             columns = list(metadata.keys())
                             columns_str = ', '.join(columns)
                             placeholders_str = ', '.join(['%s'] * len(columns))
@@ -1856,7 +1867,11 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                             sync_time = datetime.now(timezone.utc).isoformat()
                             cursor.execute(sql, tuple(metadata.values()) + (sync_time,))
                         except psycopg2.Error as e:
+                            # 如果发生错误，记录它，并回滚到这个条目之前的状态
                             logger.error(f"写入 TMDB ID {metadata.get('tmdb_id')} 的元数据时发生数据库错误: {e}")
+                            cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name};")
+                    
+                    # 提交整个事务（所有成功的条目）
                     conn.commit()
                 logger.info(f"--- 批次 {batch_number}/{total_batches} 已成功写入数据库。---")
             
