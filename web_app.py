@@ -589,32 +589,33 @@ def emby_webhook():
                 item_id=item_id_to_process,
                 force_reprocess=True
             )
-            logger.info(f"后台线程成功完成处理: '{item_name_for_log}'")
+            logger.info(f"后台现线程成功完成: '{item_name_for_log}'")
         except Exception as e:
-            logger.error(f"后台刮削 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
+            logger.error(f"后台线程处理 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
 
     # --- 后台处理函数：定点同步资源文件 (image.update) ---
     def _sync_assets_in_background(item_id, item_name, update_description, sync_timestamp):
-        logger.info(f"后台覆盖缓存同步启动: '{item_name}' (ID: {item_id})")
+        logger.info(f"覆盖缓存备份线程启动: '{item_name}' (ID: {item_id})")
         try:
             processor = extensions.media_processor_instance
             processor.sync_single_item_assets(item_id, update_description, sync_timestamp)
-            logger.info(f"后台覆盖缓存同步成功完成: '{item_name}'")
+            logger.info(f"覆盖缓存备份成功完成: '{item_name}'")
         except Exception as e:
-            logger.error(f"后台覆盖缓存同步 '{item_name}' 时发生严重错误: {e}", exc_info=True)
+            logger.error(f"覆盖缓存备份 '{item_name}' 时发生严重错误: {e}", exc_info=True)
 
     # --- 后台处理函数：定点同步元数据缓存 (metadata.update) ---
     def _sync_metadata_cache_in_background(item_id, item_name):
-        logger.info(f"后台元数据同步线程启动: '{item_name}' (ID: {item_id})")
+        logger.info(f"媒体元数据同步线程启动: '{item_name}' (ID: {item_id})")
         try:
             processor = extensions.media_processor_instance
             processor.sync_single_item_to_metadata_cache(item_id)
-            logger.info(f"后台元数据同步成功完成: '{item_name}'")
+            logger.info(f"媒体元数据同步成功完成: '{item_name}'")
         except Exception as e:
-            logger.error(f"后台元数据同步 '{item_name}' 时发生严重错误: {e}", exc_info=True)
+            logger.error(f"媒体元数据同步 '{item_name}' 时发生严重错误: {e}", exc_info=True)
 
     # --- Webhook 事件分发逻辑 ---
-    trigger_events = ["item.add", "library.new", "library.deleted", "metadata.update"]
+    # ▼▼▼ 核心修改 1/3: 将 image.update 添加到触发列表 ▼▼▼
+    trigger_events = ["item.add", "library.new", "library.deleted", "metadata.update", "image.update"]
     if event_type not in trigger_events:
         logger.info(f"Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
         return jsonify({"status": "event_ignored_not_in_trigger_list"}), 200
@@ -629,9 +630,9 @@ def emby_webhook():
         logger.debug(f"Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略。")
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
 
-    # --- 处理删除事件 ---
+    # --- 处理删除事件 (逻辑不变) ---
     if event_type == "library.deleted":
-        logger.info(f"Webhook 收到删除事件，将从已处理日志中移除项目 '{original_item_name}' (ID: {original_item_id})。")
+        # ... (此处代码省略，与您现有的逻辑相同) ...
         try:
             with get_central_db_connection() as conn:
                 log_manager = LogDBManager()
@@ -639,12 +640,11 @@ def emby_webhook():
                 conn.commit()
             return jsonify({"status": "processed_log_entry_removed", "item_id": original_item_id}), 200
         except Exception as e:
-            logger.error(f"处理删除事件时发生数据库错误: {e}", exc_info=True)
             return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
     
-    # --- 处理新增/入库事件 ---
+    # --- 处理新增/入库事件 (逻辑不变) ---
     if event_type in ["item.add", "library.new"]:
-        # ... (这部分逻辑保持不变) ...
+        # ... (此处代码省略，与您现有的逻辑相同) ...
         id_to_process = original_item_id
         if original_item_type == "Episode":
             series_id = emby_handler.get_series_id_from_child_id(
@@ -653,59 +653,51 @@ def emby_webhook():
             )
             if not series_id: return jsonify({"status": "event_ignored_series_not_found"}), 200
             id_to_process = series_id
-        
         full_item_details = emby_handler.get_emby_item_details(
             item_id=id_to_process, emby_server_url=extensions.media_processor_instance.emby_url,
             emby_api_key=extensions.media_processor_instance.emby_api_key, user_id=extensions.media_processor_instance.emby_user_id
         )
         if not full_item_details: return jsonify({"status": "event_ignored_details_fetch_failed"}), 200
-        
         final_item_name = full_item_details.get("Name", f"未知(ID:{id_to_process})")
         if not full_item_details.get("ProviderIds", {}).get("Tmdb"): return jsonify({"status": "event_ignored_no_tmdb_id"}), 200
-            
         thread = threading.Thread(target=_process_in_background, args=(id_to_process, final_item_name))
         thread.daemon = True
         thread.start()
         return jsonify({"status": "processing_started_in_background", "item_id": id_to_process}), 202
 
-    # --- ▼▼▼ 核心修改：处理元数据更新事件的智能分发 ▼▼▼ ---
-    if event_type == "metadata.update":
-        # 1. 首先检查本地数据源路径是否已配置，这是所有同步的前提
+    # --- ▼▼▼ 核心修改 2/3: 新增 image.update 事件的独立处理逻辑 ▼▼▼ ---
+    if event_type == "image.update":
         if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_LOCAL_DATA_PATH):
-            logger.debug("Webhook收到metadata.update事件，但未配置本地数据源，将忽略。")
+            logger.debug("Webhook 'image.update' 收到，但未配置本地数据源，将忽略。")
             return jsonify({"status": "event_ignored_no_local_data_path"}), 200
 
-        # 2. 获取更新描述，用于判断更新类型
-        update_info = data.get("UpdateInfo", {})
-        update_description = update_info.get("Description", "")
+        update_description = data.get("UpdateInfo", {}).get("Description", "")
+        webhook_received_at_iso = datetime.now(timezone.utc).isoformat()
+        logger.info(f"Webhook 'image.update' 触发资源文件同步 for '{original_item_name}' (原因: {update_description})")
         
-        # 3. 定义与图片相关的关键词
-        image_keywords = ["primary", "backdrop", "logo", "thumb", "banner", "art"]
+        thread = threading.Thread(
+            target=_sync_assets_in_background,
+            args=(original_item_id, original_item_name, update_description, webhook_received_at_iso)
+        )
+        thread.daemon = True
+        thread.start()
+        return jsonify({"status": "asset_sync_started", "item_id": original_item_id}), 202
 
-        # 4. 根据描述内容，决定启动哪个后台任务
-        if any(keyword in update_description.lower() for keyword in image_keywords):
-            # 这是图片更新，调用资源同步任务
-            logger.info(f"Webhook 'metadata.update' 触发资源文件同步 for '{original_item_name}' (原因: {update_description})")
-            webhook_received_at_iso = datetime.now(timezone.utc).isoformat()
-            
-            thread = threading.Thread(
-                target=_sync_assets_in_background,
-                args=(original_item_id, original_item_name, update_description, webhook_received_at_iso)
-            )
-            thread.daemon = True
-            thread.start()
-            return jsonify({"status": "asset_sync_started", "item_id": original_item_id}), 202
-        else:
-            # 这是其他元数据更新，调用元数据缓存同步任务
-            logger.info(f"Webhook 'metadata.update' 触发元数据缓存同步 for '{original_item_name}' (原因: {update_description or '未知'})")
-            
-            thread = threading.Thread(
-                target=_sync_metadata_cache_in_background,
-                args=(original_item_id, original_item_name)
-            )
-            thread.daemon = True
-            thread.start()
-            return jsonify({"status": "metadata_cache_sync_started", "item_id": original_item_id}), 202
+    # --- ▼▼▼ 核心修改 3/3: 简化 metadata.update 的处理逻辑 ▼▼▼ ---
+    if event_type == "metadata.update":
+        if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_LOCAL_DATA_PATH):
+            logger.debug("Webhook 'metadata.update' 收到，但未配置本地数据源，将忽略。")
+            return jsonify({"status": "event_ignored_no_local_data_path"}), 200
+        
+        logger.info(f"Webhook 'metadata.update' 触发元数据缓存同步 for '{original_item_name}'")
+        
+        thread = threading.Thread(
+            target=_sync_metadata_cache_in_background,
+            args=(original_item_id, original_item_name)
+        )
+        thread.daemon = True
+        thread.start()
+        return jsonify({"status": "metadata_cache_sync_started", "item_id": original_item_id}), 202
 
     return jsonify({"status": "event_unhandled"}), 500
 
