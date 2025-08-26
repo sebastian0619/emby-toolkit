@@ -594,8 +594,9 @@ def emby_webhook():
         except Exception as e:
             logger.error(f"后台线程处理 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
 
-    # --- ▼▼▼ 新增的后台处理函数：处理元数据和资源文件定点同步 ▼▼▼ ---
-    def _sync_item_in_background(item_id_to_sync, item_name_for_log, update_description):
+    # --- 后台处理函数：处理元数据和资源文件定点同步 ---
+    # ▼▼▼ 核心修改 1/3: 增加 sync_timestamp 参数 ▼▼▼
+    def _sync_item_in_background(item_id_to_sync, item_name_for_log, update_description, sync_timestamp):
         """为 metadata.update 事件执行定点同步的后台任务。"""
         logger.info(f"后台定点同步线程启动: '{item_name_for_log}' (ID: {item_id_to_sync})")
         try:
@@ -603,14 +604,15 @@ def emby_webhook():
             # 1. 更新数据库中的媒体元数据缓存
             processor.sync_single_item_to_metadata_cache(item_id_to_sync)
             # 2. 备份图片和元数据文件到覆盖目录
-            processor.sync_single_item_assets(item_id_to_sync, update_description)
+            # ▼▼▼ 核心修改 2/3: 将时间戳传递给核心方法 ▼▼▼
+            processor.sync_single_item_assets(item_id_to_sync, update_description, sync_timestamp)
             
             logger.info(f"后台定点同步成功完成: '{item_name_for_log}'")
         except Exception as e:
             logger.error(f"后台定点同步 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
 
     # --- Webhook 事件分发逻辑 ---
-    trigger_events = ["item.add", "library.new", "library.deleted", "metadata.update"] # 添加 metadata.update
+    trigger_events = ["item.add", "library.new", "library.deleted", "metadata.update"]
     if event_type not in trigger_events:
         logger.info(f"Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
         return jsonify({"status": "event_ignored_not_in_trigger_list"}), 200
@@ -683,28 +685,26 @@ def emby_webhook():
         
         return jsonify({"status": "processing_started_in_background", "item_id": id_to_process}), 202
 
-    # --- ▼▼▼ 新增：处理元数据更新事件 ▼▼▼ ---
+    # --- 处理元数据更新事件 ---
     if event_type == "metadata.update":
-        # 1. 检查本地数据源路径是否已配置
         if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_LOCAL_DATA_PATH):
             logger.debug("Webhook收到metadata.update事件，但未配置本地数据源，将忽略。")
             return jsonify({"status": "event_ignored_no_local_data_path"}), 200
 
-        # 2. 获取更新描述，用于精准同步图片
         update_info = data.get("UpdateInfo", {})
         update_description = update_info.get("Description", "")
         
+        # ▼▼▼ 核心修改 3/3: 生成时间戳并传递给线程 ▼▼▼
+        webhook_received_at_iso = datetime.now(timezone.utc).isoformat()
         logger.info(f"Webhook事件触发定点同步，将为项目 '{original_item_name}' (ID: {original_item_id}) 启动后台同步线程。")
         
-        # 3. 创建并启动后台同步线程
         sync_thread = threading.Thread(
             target=_sync_item_in_background,
-            args=(original_item_id, original_item_name, update_description)
+            args=(original_item_id, original_item_name, update_description, webhook_received_at_iso)
         )
         sync_thread.daemon = True
         sync_thread.start()
         
-        # 4. 立即返回202响应
         return jsonify({"status": "sync_started_in_background", "item_id": original_item_id}), 202
 
     return jsonify({"status": "event_unhandled"}), 500

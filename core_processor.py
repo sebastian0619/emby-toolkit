@@ -2124,9 +2124,11 @@ class MediaProcessor:
             except Exception as e_list:
                 logger.error(f"  -> {log_prefix} 遍历并更新季/集文件时发生错误: {e_list}", exc_info=True)
 
-    def sync_single_item_assets(self, item_id: str, update_description: Optional[str] = None):
+    def sync_single_item_assets(self, item_id: str, update_description: Optional[str] = None, sync_timestamp_iso: Optional[str] = None):
         """
-        【新增】为单个媒体项同步图片和元数据文件到覆盖缓存。
+        【新增】【V1.2 - 时间戳注入版】为单个媒体项同步图片和元数据文件。
+        - 接收一个可选的 ISO 格式时间戳，用于更新数据库。
+        - 不再依赖 Emby 的 DateModified 字段。
         """
         log_prefix = f"定点资源同步 (ID: {item_id}):"
         logger.info(f"--- {log_prefix} 开始执行 ---")
@@ -2136,6 +2138,7 @@ class MediaProcessor:
             return
 
         try:
+            # ▼▼▼ 核心修改 1/2: 不再请求 DateModified 字段 ▼▼▼
             item_details = emby_handler.get_emby_item_details(
                 item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
                 fields="ProviderIds,Type,Name,People,ImageTags,IndexNumber,ParentIndexNumber"
@@ -2154,10 +2157,15 @@ class MediaProcessor:
             # 2. 同步元数据文件
             self.sync_item_metadata(item_details, tmdb_id)
 
-            # 3. 更新数据库中的时间戳
+            # ▼▼▼ 核心修改 2/2: 使用传入的时间戳，如果不存在则生成当前时间 ▼▼▼
+            timestamp_to_log = sync_timestamp_iso or datetime.now(timezone.utc).isoformat()
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
-                self.log_db_manager.mark_assets_as_synced(cursor, item_id)
+                self.log_db_manager.mark_assets_as_synced(
+                    cursor, 
+                    item_id, 
+                    timestamp_to_log
+                )
                 conn.commit()
             
             logger.info(f"--- {log_prefix} 成功完成 ---")
