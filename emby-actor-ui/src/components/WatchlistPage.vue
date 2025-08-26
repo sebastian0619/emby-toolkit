@@ -347,7 +347,7 @@ const subscribeSeason = async (seasonNumber) => {
   const key = `s${seasonNumber}`;
   subscribing.value[key] = true;
   try {
-    await axios.post('/api/subscribe/moviepilot/series', {
+    await axios.post('/api/watchlist/subscribe/moviepilot/series', {
       tmdb_id: selectedSeries.value.tmdb_id,
       title: selectedSeries.value.item_name,
       season_number: seasonNumber

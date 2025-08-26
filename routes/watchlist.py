@@ -7,6 +7,7 @@ from datetime import datetime, date
 # 导入需要的模块
 import db_handler
 import config_manager
+import moviepilot_handler
 import task_manager
 import extensions
 from extensions import login_required, task_lock_required
@@ -205,3 +206,43 @@ def api_batch_update_watchlist_status():
     except Exception as e:
         logger.error(f"批量更新项目状态时发生未知错误: {e}", exc_info=True)
         return jsonify({"error": "批量更新项目状态时发生未知的服务器内部错误"}), 500
+    
+@watchlist_bp.route('/subscribe/moviepilot/series', methods=['POST'])
+@login_required
+def api_subscribe_series_to_moviepilot():
+    """
+    接收前端请求，将指定的一季剧集订阅到 MoviePilot。
+    """
+    data = request.json
+    tmdb_id = data.get('tmdb_id')
+    title = data.get('title')
+    season_number = data.get('season_number')
+
+    # 校验输入参数
+    if not all([tmdb_id, title, season_number is not None]):
+        return jsonify({"error": "请求参数无效，必须提供 tmdb_id, title 和 season_number。"}), 400
+
+    logger.info(f"API: 收到对《{title}》第 {season_number} 季 (TMDb ID: {tmdb_id}) 的 MoviePilot 订阅请求。")
+
+    try:
+        # 准备需要传递给 handler 的信息
+        series_info = {
+            "tmdb_id": tmdb_id,
+            "item_name": title  # 使用 item_name 以匹配 handler 的兼容性
+        }
+        
+        # 调用 handler 函数执行实际的订阅操作
+        success = moviepilot_handler.subscribe_series_to_moviepilot(
+            series_info=series_info,
+            season_number=season_number,
+            config=config_manager.APP_CONFIG
+        )
+
+        if success:
+            return jsonify({"message": f"《{title}》第 {season_number} 季的订阅任务已成功提交到 MoviePilot！"}), 200
+        else:
+            return jsonify({"error": "提交订阅到 MoviePilot 失败，请检查 MoviePilot 的日志。"}), 500
+
+    except Exception as e:
+        logger.error(f"订阅剧集到 MoviePilot 时发生未知错误: {e}", exc_info=True)
+        return jsonify({"error": "订阅时发生未知的服务器内部错误。"}), 500
