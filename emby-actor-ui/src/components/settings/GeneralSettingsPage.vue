@@ -340,7 +340,11 @@
     <n-alert title="高危操作警告" type="error" style="margin-bottom: 15px;">
       此操作将 <strong class="warning-text">永久删除</strong> 所选表中的所有数据，且 <strong class="warning-text">不可恢复</strong>！请务必谨慎操作。
     </n-alert>
-    <n-checkbox-group v-model:value="tablesToClear" vertical>
+    <n-checkbox-group 
+        v-model:value="tablesToClear" 
+        @update:value="handleClearSelectionChange" 
+        vertical
+      >
       <n-grid :y-gap="8" :cols="2">
         <n-gi v-for="table in allDbTables" :key="table">
           <n-checkbox :value="table">
@@ -388,6 +392,50 @@ const tableInfo = {
   'custom_collections': { cn: '自建合集', isSharable: false },
   'media_metadata': { cn: '媒体元数据', isSharable: false },
 };
+
+// ★★★ START: 新增的依赖关系自动勾选逻辑 ★★★
+
+// 定义表之间的依赖关系
+// 键 (key) 是父表，值 (value) 是必须随之一起勾选的子表数组
+// 定义表之间的依赖关系 (这个可以保留或重新添加)
+const tableDependencies = {
+  'person_identity_map': ['media_metadata', 'actor_metadata'],
+  'actor_subscriptions': ['tracked_actor_media']
+};
+
+/**
+ * 当清空表的复选框组选项变化时触发此函数。
+ * @param {string[]} currentSelection - 组件传递过来的、当前所有已勾选项的数组。
+ */
+const handleClearSelectionChange = (currentSelection) => {
+  // 使用 Set 数据结构可以更高效地处理和避免重复项
+  const selectionSet = new Set(currentSelection);
+
+  // 遍历依赖规则
+  for (const parentTable in tableDependencies) {
+    // 检查父表是否在当前的勾选集合中
+    if (selectionSet.has(parentTable)) {
+      const children = tableDependencies[parentTable];
+      // 遍历所有必须一起勾选的子表
+      for (const childTable of children) {
+        // 如果子表不在集合中，就添加进去
+        if (!selectionSet.has(childTable)) {
+          selectionSet.add(childTable);
+        }
+      }
+    }
+  }
+
+  // 检查 Set 的大小是否和原始数组长度不同。
+  // 如果不同，说明我们添加了新的子表，需要更新 v-model。
+  if (selectionSet.size !== tablesToClear.value.length) {
+    // 将 Set 转回数组，并更新到 ref 上
+    tablesToClear.value = Array.from(selectionSet);
+  }
+};
+
+// ★★★ END: 新增的、正确的依赖关系处理逻辑 ★★★
+
 
 const formRef = ref(null);
 const formRules = {
