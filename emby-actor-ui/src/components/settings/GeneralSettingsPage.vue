@@ -230,8 +230,9 @@
                         <n-space align="center">
                           <n-button @click="showExportModal" :loading="isExporting" class="action-button"><template #icon><n-icon :component="ExportIcon" /></template>导出数据</n-button>
                           <n-upload :custom-request="handleCustomImportRequest" :show-file-list="false" accept=".json"><n-button :loading="isImporting" class="action-button"><template #icon><n-icon :component="ImportIcon" /></template>导入数据</n-button></n-upload>
+                          <n-button @click="showClearTablesModal" :loading="isClearing" class="action-button" type="error" ghost><template #icon><n-icon :component="ClearIcon" /></template>清空指定表</n-button>
                         </n-space>
-                        <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON 文件。<br><b>导入：</b>从 JSON 备份文件中恢复数据。</p>
+                        <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON 文件。<br><b>导入：</b>从 JSON 备份文件中恢复数据。<br><b>清空：</b>删除指定表中的所有数据，此操作不可逆。</p>
                       </n-space>
                     </n-card>
                   </n-space>
@@ -329,21 +330,46 @@
       <n-button type="primary" @click="confirmImport" :disabled="tablesToImport.length === 0">确认并开始恢复</n-button>
     </template>
   </n-modal>
+
+  <!-- 清空指定表模态框 -->
+  <n-modal v-model:show="clearTablesModalVisible" preset="dialog" title="清空指定数据表">
+    <n-space justify="end" style="margin-bottom: 10px;">
+      <n-button text type="primary" @click="selectAllForClear">全选</n-button>
+      <n-button text type="primary" @click="deselectAllForClear">全不选</n-button>
+    </n-space>
+    <n-alert title="高危操作警告" type="error" style="margin-bottom: 15px;">
+      此操作将 <strong class="warning-text">永久删除</strong> 所选表中的所有数据，且 <strong class="warning-text">不可恢复</strong>！请务必谨慎操作。
+    </n-alert>
+    <n-checkbox-group v-model:value="tablesToClear" vertical>
+      <n-grid :y-gap="8" :cols="2">
+        <n-gi v-for="table in allDbTables" :key="table">
+          <n-checkbox :value="table">
+            {{ tableInfo[table]?.cn || table }}
+          </n-checkbox>
+        </n-gi>
+      </n-grid>
+    </n-checkbox-group>
+    <template #action>
+      <n-button @click="clearTablesModalVisible = false">取消</n-button>
+      <n-button type="error" @click="handleClearTables" :disabled="tablesToClear.length === 0" :loading="isClearing">确认清空</n-button>
+    </template>
+  </n-modal>
 </template>
 
 <script setup>
-import { ref, watch, computed, onMounted, onUnmounted } from 'vue'; 
+import { ref, watch, computed, onMounted, onUnmounted, nextTick } from 'vue'; 
 import draggable from 'vuedraggable';
 import { 
   NCard, NForm, NFormItem, NInputNumber, NSwitch, NButton, NGrid, NGi, 
   NSpin, NAlert, NInput, NSelect, NSpace, useMessage, useDialog,
   NFormItemGridItem, NCheckboxGroup, NCheckbox, NText, NRadioGroup, NRadio,
-  NTag, NIcon, NUpload, NModal, NDivider, NInputGroup, NTabs, NTabPane // ★★★ 引入 NTabs, NTabPane ★★★
+  NTag, NIcon, NUpload, NModal, NDivider, NInputGroup, NTabs, NTabPane
 } from 'naive-ui';
 import { 
   MoveOutline as DragHandleIcon,
   DownloadOutline as ExportIcon, 
-  CloudUploadOutline as ImportIcon
+  CloudUploadOutline as ImportIcon,
+  TrashOutline as ClearIcon // 新增：清空图标
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import axios from 'axios';
@@ -510,6 +536,69 @@ const fileToImport = ref(null);
 const tablesInBackupFile = ref([]);
 const tablesToImport = ref([]);
 
+// 清空指定表相关状态
+const clearTablesModalVisible = ref(false);
+const tablesToClear = ref([]);
+
+// 新增状态变量，表示清空操作中
+const isClearing = ref(false);
+
+// 显示清空指定表模态框
+const showClearTablesModal = async () => {
+  console.log('showClearTablesModal called');
+  try {
+    const response = await axios.get('/api/database/tables');
+    allDbTables.value = response.data;
+    tablesToClear.value = []; // 默认不选择任何表
+    clearTablesModalVisible.value = true;
+    console.log('Fetched tables:', allDbTables.value);
+  } catch (error) {
+    console.error('Error fetching database tables:', error);
+    message.error('无法获取数据库表列表，请检查后端日志。');
+  }
+};
+
+// 处理清空指定表操作
+const handleClearTables = async () => {
+  // 1. 检查用户是否选择了任何表。
+  if (tablesToClear.value.length === 0) {
+    // 理论上按钮是禁用的，但作为安全措施，还是加上判断。
+    message.warning('请至少选择一个要清空的数据表。');
+    return;
+  }
+
+  // 2. 立即开始加载状态
+  isClearing.value = true;
+
+  try {
+    // 3. ★ 直接调用后端API，不再有任何中间弹窗 ★
+    const response = await axios.post('/api/actions/clear_tables', {
+      tables: tablesToClear.value
+    });
+
+    // 4. 操作成功
+    message.success(response.data.message || '成功清空所选数据表！');
+    
+    // 5. 关闭模态框并清空选择
+    clearTablesModalVisible.value = false;
+    tablesToClear.value = [];
+
+  } catch (error) {
+    // 6. 操作失败，显示错误信息
+    console.error('清空操作API调用失败:', error);
+    const errorMsg = error.response?.data?.error || '清空操作失败，请检查后端日志。';
+    message.error(errorMsg);
+    // 失败时，模态框可以保持打开，方便用户重试
+
+  } finally {
+    // 7. 无论成功还是失败，最终都结束加载状态
+    isClearing.value = false;
+  }
+};
+
+const selectAllForClear = () => tablesToClear.value = [...allDbTables.value];
+const deselectAllForClear = () => tablesToClear.value = [];
+
 const save = async () => {
   try {
     await formRef.value?.validate();
@@ -656,8 +745,8 @@ const startImportProcess = () => {
     isImporting.value = false;
   });
 };
-const selectAllForImport = () => importOptions.value.tables = [...tablesInBackupFile.value];
-const deselectAllForImport = () => importOptions.value.tables = [];
+const selectAllForImport = () => tablesToImport.value = [...tablesInBackupFile.value];
+const deselectAllForImport = () => tablesToImport.value = [];
 
 
 // --- 生命周期钩子 ---

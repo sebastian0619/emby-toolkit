@@ -329,3 +329,39 @@ def api_clear_review_items():
     except Exception as e:
         logger.error("API调用api_clear_review_items时发生错误", exc_info=True)
         return jsonify({"error": "服务器在处理时发生内部错误"}), 500
+
+# 新增：清空指定表列表的接口
+@db_admin_bp.route('/actions/clear_tables', methods=['POST'])
+@login_required
+def api_clear_tables():
+    logger.info("接收到清空指定表请求。")
+    try:
+        data = request.get_json()
+        if not data or 'tables' not in data or not isinstance(data['tables'], list):
+            logger.warning(f"清空表请求体无效: {data}")
+            return jsonify({"error": "请求体必须包含'tables'字段，且为字符串数组"}), 400
+        
+        tables = data['tables']
+        if not tables:
+            logger.warning("清空表请求中表列表为空。")
+            return jsonify({"error": "表列表不能为空"}), 400
+        
+        logger.info(f"准备清空以下表: {tables}")
+        total_deleted = 0
+        for table_name in tables:
+            # 简单校验表名格式，防止注入
+            if not isinstance(table_name, str) or not table_name.isidentifier():
+                logger.warning(f"非法表名跳过清空: {table_name}")
+                continue
+            
+            logger.info(f"正在清空表: {table_name}")
+            deleted_count = db_handler.clear_table(table_name)
+            total_deleted += deleted_count
+            logger.info(f"表 {table_name} 清空完成，删除了 {deleted_count} 行。")
+        
+        message = f"操作成功！共清空 {len(tables)} 个表，删除 {total_deleted} 行数据。"
+        logger.info(message)
+        return jsonify({"message": message}), 200
+    except Exception as e:
+        logger.error(f"API调用api_clear_tables时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在处理时发生内部错误"}), 500

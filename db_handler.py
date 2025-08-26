@@ -969,6 +969,27 @@ def delete_actor_subscription(subscription_id: int) -> bool:
         logger.error(f"DB: 删除订阅 {subscription_id} 失败: {e}", exc_info=True)
         raise
 
+# 新增：清空指定表的函数，返回受影响的行数
+def clear_table(table_name: str) -> int:
+    """
+    清空指定的数据库表，返回删除的行数。
+    注意：请确保传入的表名是受信任的，避免SQL注入风险。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 使用 psycopg2.sql 模块安全构造SQL
+            from psycopg2 import sql
+            query = sql.SQL("DELETE FROM {}").format(sql.Identifier(table_name))
+            cursor.execute(query)
+            deleted_count = cursor.rowcount
+            conn.commit()
+            logger.info(f"清空表 {table_name}，删除了 {deleted_count} 行。")
+            return deleted_count
+    except Exception as e:
+        logger.error(f"清空表 {table_name} 时发生错误: {e}", exc_info=True)
+        raise
+
 # ======================================================================
 # 模块 6: 自定义电影合集数据访问 (custom_collections Data Access)
 # ======================================================================
