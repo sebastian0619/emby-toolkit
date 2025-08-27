@@ -1351,6 +1351,36 @@ class MediaProcessor:
             if update_status_callback: update_status_callback(100, "未找到可处理的项目。")
             return
 
+        # --- 新增：清理已删除的媒体项 ---
+        if update_status_callback: update_status_callback(20, "正在检查并清理已删除的媒体项...")
+        
+        with get_central_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT item_id, item_name FROM processed_log")
+            processed_log_entries = cursor.fetchall()
+            
+            processed_ids_in_db = {entry['item_id'] for entry in processed_log_entries}
+            emby_ids_in_library = {item.get('Id') for item in all_items if item.get('Id')}
+            
+            # 找出在 processed_log 中但不在 Emby 媒体库中的项目
+            deleted_items_to_clean = processed_ids_in_db - emby_ids_in_library
+            
+            if deleted_items_to_clean:
+                logger.info(f"发现 {len(deleted_items_to_clean)} 个已从 Emby 媒体库删除的项目，正在从 processed_log 中移除...")
+                for deleted_item_id in deleted_items_to_clean:
+                    self.log_db_manager.remove_from_processed_log(cursor, deleted_item_id)
+                    # 同时从内存缓存中移除
+                    if deleted_item_id in self.processed_items_cache:
+                        del self.processed_items_cache[deleted_item_id]
+                    logger.debug(f"  -> 已从 processed_log 中移除 ItemID: {deleted_item_id}")
+                conn.commit()
+                logger.info("已删除媒体项的清理工作完成。")
+            else:
+                logger.info("未发现需要从 processed_log 中清理的已删除媒体项。")
+        
+        if update_status_callback: update_status_callback(30, "已删除媒体项清理完成，开始处理现有媒体...")
+
+        # --- 现有媒体项处理循环 ---
         for i, item in enumerate(all_items):
             if self.is_stop_requested(): break
             
@@ -1360,11 +1390,16 @@ class MediaProcessor:
             if not force_reprocess_all and item_id in self.processed_items_cache:
                 logger.info(f"正在跳过已处理的项目: {item_name}")
                 if update_status_callback:
-                    update_status_callback(int(((i + 1) / total) * 100), f"跳过: {item_name}")
+                    # 调整进度条的起始点，使其在清理后从 30% 开始
+                    progress_after_cleanup = 30
+                    current_progress = progress_after_cleanup + int(((i + 1) / total) * (100 - progress_after_cleanup))
+                    update_status_callback(current_progress, f"跳过: {item_name}")
                 continue
 
             if update_status_callback:
-                update_status_callback(int(((i + 1) / total) * 100), f"处理中 ({i+1}/{total}): {item_name}")
+                progress_after_cleanup = 30
+                current_progress = progress_after_cleanup + int(((i + 1) / total) * (100 - progress_after_cleanup))
+                update_status_callback(current_progress, f"处理中 ({i+1}/{total}): {item_name}")
             
             self.process_single_item(
                 item_id, 
