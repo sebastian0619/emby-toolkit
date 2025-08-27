@@ -24,7 +24,7 @@ from cachetools import TTLCache
 from db_handler import ActorDBManager
 from db_handler import get_db_connection as get_central_db_connection
 from ai_translator import AITranslator
-from utils import LogDBManager, get_override_path_for_item, translate_country_list
+from utils import LogDBManager, get_override_path_for_item, translate_country_list, get_unified_rating
 from watchlist_processor import WatchlistProcessor
 from douban import DoubanApi
 
@@ -2235,7 +2235,7 @@ class MediaProcessor:
             # 1. 获取完整的 Emby 详情
             full_details_emby = emby_handler.get_emby_item_details(
                 item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
-                fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,People,Tags,DateModified"
+                fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,People,Tags,DateModified,OfficialRating"
             )
             if not full_details_emby:
                 raise ValueError("在Emby中找不到该项目。")
@@ -2283,10 +2283,15 @@ class MediaProcessor:
             tags = [tag['Name'] for tag in full_details_emby.get('TagItems', []) if tag.get('Name')]
             release_date_str = (full_details_emby.get('PremiereDate') or '0000-01-01T00:00:00.000Z').split('T')[0]
 
+            official_rating = full_details_emby.get('OfficialRating') # 获取原始分级，可能为 None
+            unified_rating = get_unified_rating(official_rating)    # 即使 official_rating 是 None，函数也能处理
+
             metadata = {
                 "tmdb_id": tmdb_id, "item_type": item_type,
                 "title": full_details_emby.get('Name'), "original_title": full_details_emby.get('OriginalTitle'),
                 "release_year": full_details_emby.get('ProductionYear'), "rating": full_details_emby.get('CommunityRating'),
+                "official_rating": official_rating, # 保留原始值用于调试
+                "unified_rating": unified_rating,   # 存入计算后的统一分级
                 "release_date": release_date_str, "date_added": (full_details_emby.get("DateCreated") or '').split('T')[0] or None,
                 "genres_json": json.dumps(full_details_emby.get('Genres', []), ensure_ascii=False),
                 "actors_json": json.dumps(actors, ensure_ascii=False),
