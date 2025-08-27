@@ -224,24 +224,18 @@ class LogDBManager:
         except Exception as e:
             logger.error(f"标记备份状态失败 for item {item_id}: {e}", exc_info=True)
 
-# --- ★★★ 新增：统一分级映射功能 ★★★ ---
+# --- ★★★ 新增：统一分级映射功能 (V2 - 健壮版) ★★★ ---
+# (此代码块替换掉原来的整个分级映射部分)
+
 # 1. 定义我们自己的、统一的、友好的分级体系
-# 列表的顺序将决定前端下拉框的显示顺序
 UNIFIED_RATING_CATEGORIES = [
-    '全年龄',      # G, U, 0, 6 等
-    '家长辅导',    # PG, 7, 10 等
-    '青少年',      # PG-13, 12, 13, 14, 15, 16 等
-    '成人',        # R, 17, 18, M, MA 等
-    '限制级',      # NC-17, X, XXX, UR 等
-    '未知'
+    '全年龄', '家长辅导', '青少年', '成人', '限制级', '未知'
 ]
 
 # 2. 创建从 Emby 原始分级到我们统一体系的映射字典
-# 键: Emby 的原始分级值 (小写)
-# 值: 我们定义好的统一分类
 RATING_MAP = {
     # --- 全年龄 ---
-    'g': '全年龄', 'tv-g': '全年龄', 'approved': '全年龄',
+    'g': '全年龄', 'tv-g': '全年龄', 'approved': '全年龄', 'e': '全年龄',
     'u': '全年龄', 'uc': '全年龄',
     '0': '全年龄', '6': '全年龄', '6+': '全年龄',
     'all': '全年龄', 'unrated': '全年龄', 'nr': '全年龄',
@@ -258,7 +252,7 @@ RATING_MAP = {
     '15': '青少年', '16': '青少年',
 
     # --- 成人 ---
-    'r': '成人', 'm': '成人', 'tv-ma': '成人',
+    'r': '成人', 'm': '成人', 'ma': '成人', 'tv-ma': '成人',
     '17': '成人', '18': '成人', '19': '成人',
 
     # --- 限制级 ---
@@ -268,15 +262,27 @@ RATING_MAP = {
 
 def get_unified_rating(official_rating_str: str) -> str:
     """
+    【V2 - 健壮版】
     根据 Emby 的 OfficialRating 字符串，返回统一后的分级。
+    能正确处理带国家前缀 (us-R) 和不带前缀 (R) 的各种情况。
     """
-    if not official_rating_str or '-' not in official_rating_str:
+    if not official_rating_str:
         return '未知'
 
-    # 提取 '-' 后面的部分并转为小写，例如从 'us-PG-13' 得到 'pg-13'
-    rating_value = official_rating_str.split('-', 1)[1].lower()
+    # 先转为小写，方便匹配
+    rating_value = str(official_rating_str).lower()
 
-    # 从字典中查找映射，如果找不到，则返回 '未知'
+    # 如果包含国家代码 (e.g., "us-r"), 则提取后面的部分
+    if '-' in rating_value:
+        # 这是一个小技巧，可以安全地处理 "us-r" 和 "pg-13"
+        # 对于 "us-r", parts[-1] 是 "r"
+        # 对于 "pg-13", parts[-1] 是 "13"
+        # 但为了更准确，我们直接检查整个分割后的部分
+        parts = rating_value.split('-', 1)
+        if len(parts) > 1:
+            rating_value = parts[1]
+
+    # 直接在字典中查找处理后的值
     return RATING_MAP.get(rating_value, '未知')
 # --- ★★★ 新增结束 ★★★ ---
 

@@ -1822,14 +1822,15 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                 date_created_str = full_details_emby.get('DateCreated')
                 date_added = date_created_str.split('T')[0] if date_created_str else None
 
-                official_rating = full_details_emby.get('OfficialRating') # 获取原始分级
-                unified_rating = get_unified_rating(official_rating)    # <<< 计算统一分级
+                official_rating = full_details_emby.get('OfficialRating') # 获取原始分级，可能为 None
+                unified_rating = get_unified_rating(official_rating)    # 即使 official_rating 是 None，函数也能处理
 
                 metadata_to_save = {
                     "tmdb_id": tmdb_id, "item_type": full_details_emby.get("Type"),
                     "title": full_details_emby.get('Name'), "original_title": full_details_emby.get('OriginalTitle'),
                     "release_year": full_details_emby.get('ProductionYear'), "rating": full_details_emby.get('CommunityRating'),
-                    "official_rating": full_details_emby.get('OfficialRating'),
+                    "official_rating": official_rating, # 保留原始值用于调试
+                    "unified_rating": unified_rating,   # 存入计算后的统一分级
                     "release_date": release_date,
                     "date_added": date_added,
                     "genres_json": json.dumps(full_details_emby.get('Genres', []), ensure_ascii=False),
