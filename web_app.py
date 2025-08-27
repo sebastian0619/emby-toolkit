@@ -5,7 +5,7 @@ import os
 import shutil
 import threading
 import psycopg2 #临时用，过段时间删除
-from datetime import datetime
+from datetime import datetime, timezone # Added timezone for image.update
 from jinja2 import Environment, FileSystemLoader
 from actor_sync_handler import UnifiedSyncHandler
 from db_handler import ActorDBManager
@@ -47,6 +47,8 @@ from croniter import croniter
 from scheduler_manager import scheduler_manager
 from reverse_proxy import proxy_app
 import logging
+import collections # Added for deque
+from gevent import spawn_later # Added for debouncing
 # --- 导入蓝图 ---
 from routes.watchlist import watchlist_bp
 from routes.collections import collections_bp
@@ -89,6 +91,12 @@ JOB_ID_FULL_SCAN = "scheduled_full_scan"
 JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
 JOB_ID_PROCESS_WATCHLIST = "scheduled_process_watchlist"
 JOB_ID_REVIVAL_CHECK = "scheduled_revival_check"
+
+# Webhook 批量处理相关
+WEBHOOK_BATCH_QUEUE = collections.deque()
+WEBHOOK_BATCH_LOCK = threading.Lock()
+WEBHOOK_BATCH_DEBOUNCE_TIME = 5 # 秒，在此时间内收集事件
+WEBHOOK_BATCH_DEBOUNCER = None
 
 # --- 数据库辅助函数 ---
 def task_process_single_item(processor: MediaProcessor, item_id: str, force_reprocess: bool):
@@ -609,8 +617,63 @@ def emby_webhook():
         except Exception as e:
             logger.error(f"实时媒体元数据同步 '{item_name}' 时发生严重错误: {e}", exc_info=True)
 
+    # --- 批量处理函数：处理队列中的所有新增/入库事件 ---
+    def _process_batch_webhook_events():
+        global WEBHOOK_BATCH_DEBOUNCER
+        with WEBHOOK_BATCH_LOCK:
+            items_to_process = list(set(WEBHOOK_BATCH_QUEUE)) # 去重
+            WEBHOOK_BATCH_QUEUE.clear()
+            WEBHOOK_BATCH_DEBOUNCER = None # 重置 debouncer
+
+        if not items_to_process:
+            logger.debug("批量处理队列为空，无需处理。")
+            return
+
+        logger.info(f"开始批量处理 {len(items_to_process)} 个 Emby Webhook 新增/入库事件。")
+        for item_id, item_name, item_type in items_to_process:
+            logger.info(f"批量处理中: '{item_name}' (ID: {item_id}, 类型: {item_type})")
+            try:
+                # 这里的逻辑与之前的单个处理逻辑相同
+                id_to_process = item_id
+                if item_type == "Episode":
+                    series_id = emby_handler.get_series_id_from_child_id(
+                        item_id, extensions.media_processor_instance.emby_url,
+                        extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id
+                    )
+                    if not series_id:
+                        logger.warning(f"批量处理中，剧集 '{item_name}' (ID: {item_id}) 未找到所属剧集，跳过。")
+                        continue
+                    id_to_process = series_id
+                
+                full_item_details = emby_handler.get_emby_item_details(
+                    item_id=id_to_process, emby_server_url=extensions.media_processor_instance.emby_url,
+                    emby_api_key=extensions.media_processor_instance.emby_api_key, user_id=extensions.media_processor_instance.emby_user_id
+                )
+                if not full_item_details:
+                    logger.warning(f"批量处理中，无法获取 '{item_name}' (ID: {id_to_process}) 的详情，跳过。")
+                    continue
+                
+                final_item_name = full_item_details.get("Name", f"未知(ID:{id_to_process})")
+                if not full_item_details.get("ProviderIds", {}).get("Tmdb"):
+                    logger.warning(f"批量处理中，'{final_item_name}' (ID: {id_to_process}) 缺少 Tmdb ID，跳过。")
+                    continue
+                
+                # 提交到任务队列，而不是直接在当前线程处理
+                task_manager.submit_task(
+                    webhook_processing_task,
+                    task_name=f"Webhook批量处理: {final_item_name}",
+                    processor_type='media', # 指定处理器类型
+                    item_id=id_to_process,
+                    force_reprocess=True
+                )
+                logger.info(f"已将 '{final_item_name}' (ID: {id_to_process}) 添加到任务队列进行处理。")
+
+            except Exception as e:
+                logger.error(f"批量处理 '{item_name}' (ID: {item_id}) 时发生错误: {e}", exc_info=True)
+        logger.info("批量处理 Emby Webhook 新增/入库事件完成。")
+
+
     # --- Webhook 事件分发逻辑 ---
-    # ▼▼▼ 核心修改 1/3: 将 image.update 添加到触发列表 ▼▼▼
     trigger_events = ["item.add", "library.new", "library.deleted", "metadata.update", "image.update"]
     if event_type not in trigger_events:
         logger.info(f"Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
@@ -628,7 +691,6 @@ def emby_webhook():
 
     # --- 处理删除事件 (逻辑不变) ---
     if event_type == "library.deleted":
-        # ... (此处代码省略，与您现有的逻辑相同) ...
         try:
             with get_central_db_connection() as conn:
                 log_manager = LogDBManager()
@@ -638,30 +700,24 @@ def emby_webhook():
         except Exception as e:
             return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
     
-    # --- 处理新增/入库事件 (逻辑不变) ---
+    # --- 处理新增/入库事件 (使用批量处理) ---
     if event_type in ["item.add", "library.new"]:
-        # ... (此处代码省略，与您现有的逻辑相同) ...
-        id_to_process = original_item_id
-        if original_item_type == "Episode":
-            series_id = emby_handler.get_series_id_from_child_id(
-                original_item_id, extensions.media_processor_instance.emby_url,
-                extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id
-            )
-            if not series_id: return jsonify({"status": "event_ignored_series_not_found"}), 200
-            id_to_process = series_id
-        full_item_details = emby_handler.get_emby_item_details(
-            item_id=id_to_process, emby_server_url=extensions.media_processor_instance.emby_url,
-            emby_api_key=extensions.media_processor_instance.emby_api_key, user_id=extensions.media_processor_instance.emby_user_id
-        )
-        if not full_item_details: return jsonify({"status": "event_ignored_details_fetch_failed"}), 200
-        final_item_name = full_item_details.get("Name", f"未知(ID:{id_to_process})")
-        if not full_item_details.get("ProviderIds", {}).get("Tmdb"): return jsonify({"status": "event_ignored_no_tmdb_id"}), 200
-        thread = threading.Thread(target=_process_in_background, args=(id_to_process, final_item_name))
-        thread.daemon = True
-        thread.start()
-        return jsonify({"status": "processing_started_in_background", "item_id": id_to_process}), 202
+        global WEBHOOK_BATCH_DEBOUNCER
+        with WEBHOOK_BATCH_LOCK:
+            # 将事件添加到队列
+            WEBHOOK_BATCH_QUEUE.append((original_item_id, original_item_name, original_item_type))
+            logger.debug(f"Webhook事件 '{event_type}' (项目: {original_item_name}) 已添加到批量队列。当前队列大小: {len(WEBHOOK_BATCH_QUEUE)}")
+            
+            # 如果没有正在运行的 debouncer，则启动一个
+            if WEBHOOK_BATCH_DEBOUNCER is None or WEBHOOK_BATCH_DEBOUNCER.ready():
+                logger.info(f"启动 Webhook 批量处理 debouncer，将在 {WEBHOOK_BATCH_DEBOUNCE_TIME} 秒后执行。")
+                WEBHOOK_BATCH_DEBOUNCER = spawn_later(WEBHOOK_BATCH_DEBOUNCE_TIME, _process_batch_webhook_events)
+            else:
+                logger.debug("Webhook 批量处理 debouncer 正在运行中，事件已加入队列。")
+        
+        return jsonify({"status": "added_to_batch_queue", "item_id": original_item_id}), 202
 
-    # --- ▼▼▼ 核心修改 2/3: 新增 image.update 事件的独立处理逻辑 ▼▼▼ ---
+    # --- 处理 image.update 事件 ---
     if event_type == "image.update":
         if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_LOCAL_DATA_PATH):
             logger.debug("Webhook 'image.update' 收到，但未配置本地数据源，将忽略。")
@@ -679,7 +735,7 @@ def emby_webhook():
         thread.start()
         return jsonify({"status": "asset_sync_started", "item_id": original_item_id}), 202
 
-    # --- ▼▼▼ 核心修改 3/3: 简化 metadata.update 的处理逻辑 ▼▼▼ ---
+    # --- 处理 metadata.update 事件 ---
     if event_type == "metadata.update":
         if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_LOCAL_DATA_PATH):
             logger.debug("Webhook 'metadata.update' 收到，但未配置本地数据源，将忽略。")
@@ -697,8 +753,7 @@ def emby_webhook():
 
     return jsonify({"status": "event_unhandled"}), 500
 
-# ★★★ END: 1. ★★★
-#--- 兜底路由，必须放最后 ---
+# --- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve(path):
