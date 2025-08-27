@@ -310,10 +310,6 @@ def init_db():
                         last_updated_at TIMESTAMP WITH TIME ZONE
                     )
                 """)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_emby_id ON person_identity_map (emby_person_id)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_tmdb_id ON person_identity_map (tmdb_person_id)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_imdb_id ON person_identity_map (imdb_id)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_douban_id ON person_identity_map (douban_celebrity_id)")
 
                 logger.trace("  -> 正在创建 'actor_metadata' 表...")
                 cursor.execute("""

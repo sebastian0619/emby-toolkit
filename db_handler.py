@@ -141,9 +141,6 @@ class ActorDBManager:
         额外清理存量数据中缺少 emby_person_id 的脏数据。
         """
         try:
-            # 1. 清理存量脏数据
-            cursor.execute("DELETE FROM person_identity_map WHERE emby_person_id IS NULL OR emby_person_id = ''")
-
             # 2. 标准化输入数据
             new_data = {
                 "primary_name": str(person_data.get("name") or '').strip(),
