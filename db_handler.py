@@ -1,5 +1,6 @@
 # db_handler.py
 import psycopg2
+from psycopg2 import sql
 from psycopg2.extras import RealDictCursor # 关键：让查询结果返回字典
 import json
 from datetime import date, timedelta, datetime
@@ -966,7 +967,7 @@ def delete_actor_subscription(subscription_id: int) -> bool:
         logger.error(f"DB: 删除订阅 {subscription_id} 失败: {e}", exc_info=True)
         raise
 
-# 新增：清空指定表的函数，返回受影响的行数
+# --- 清空指定表的函数，返回受影响的行数 ---
 def clear_table(table_name: str) -> int:
     """
     清空指定的数据库表，返回删除的行数。
@@ -986,6 +987,66 @@ def clear_table(table_name: str) -> int:
     except Exception as e:
         logger.error(f"清空表 {table_name} 时发生错误: {e}", exc_info=True)
         raise
+
+# --- 一键矫正自增序列 ---
+def correct_all_sequences() -> list:
+    """
+    自动查找所有使用 SERIAL/IDENTITY 列的表，并校准它们的序列。
+    这可以修复因手动导入数据或 TRUNCATE 操作导致的“取号机”失准问题。
+    返回一个包含已校准表名的列表。
+    """
+    corrected_tables = []
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            # 1. 查找所有使用了序列作为默认值的列 (即 SERIAL, BIGSERIAL 等)
+            cursor.execute("""
+                SELECT
+                    c.table_name,
+                    c.column_name
+                FROM
+                    information_schema.columns c
+                WHERE
+                    c.table_schema = 'public' AND c.column_default LIKE 'nextval%';
+            """)
+            tables_with_sequences = cursor.fetchall()
+
+            if not tables_with_sequences:
+                logger.info("未找到任何使用自增序列的表，无需校准。")
+                return []
+
+            logger.info(f"开始校准 {len(tables_with_sequences)} 个表的自增序列...")
+
+            # 2. 遍历每个表并校准其序列
+            for row in tables_with_sequences:
+                table_name = row['table_name']
+                column_name = row['column_name']
+                
+                # 使用 setval 将序列的下一个值设置为当前表ID的最大值 + 1
+                # COALESCE(MAX(...), 0) 确保即使表是空的，也能正常工作
+                query = sql.SQL("""
+                    SELECT setval(
+                        pg_get_serial_sequence({table}, {column}),
+                        COALESCE((SELECT MAX({id_col}) FROM {table_ident}), 0)
+                    )
+                """).format(
+                    table=sql.Literal(table_name),
+                    column=sql.Literal(column_name),
+                    id_col=sql.Identifier(column_name),
+                    table_ident=sql.Identifier(table_name)
+                )
+                
+                cursor.execute(query)
+                logger.info(f"  -> 已成功校准表 '{table_name}' 的序列。")
+                corrected_tables.append(table_name)
+            
+            conn.commit()
+            return corrected_tables
+
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"校准自增序列时发生严重错误: {e}", exc_info=True)
+            raise
 
 # ======================================================================
 # 模块 6: 自定义合集数据访问 (custom_collections Data Access)

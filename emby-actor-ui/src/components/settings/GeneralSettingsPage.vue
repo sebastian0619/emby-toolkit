@@ -231,6 +231,22 @@
                           <n-button @click="showExportModal" :loading="isExporting" class="action-button"><template #icon><n-icon :component="ExportIcon" /></template>导出数据</n-button>
                           <n-upload :custom-request="handleCustomImportRequest" :show-file-list="false" accept=".json"><n-button :loading="isImporting" class="action-button"><template #icon><n-icon :component="ImportIcon" /></template>导入数据</n-button></n-upload>
                           <n-button @click="showClearTablesModal" :loading="isClearing" class="action-button" type="error" ghost><template #icon><n-icon :component="ClearIcon" /></template>清空指定表</n-button>
+                          <!-- ▼▼▼ 一键矫正计数器 ▼▼▼ -->
+                          <n-popconfirm @positive-click="handleCorrectSequences">
+                            <template #trigger>
+                              <n-button
+                                type="warning"
+                                ghost
+                                :loading="isCorrecting"
+                                class="action-button"
+                              >
+                                <template #icon><n-icon :component="BuildIcon" /></template>
+                                校准ID计数器
+                              </n-button>
+                            </template>
+                            确定要校准所有表的ID自增计数器吗？<br />
+                            这是一个安全的操作，用于修复导入数据后无法新增条目的问题。
+                          </n-popconfirm>
                         </n-space>
                         <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON 文件。<br><b>导入：</b>从 JSON 备份文件中恢复数据。<br><b>清空：</b>删除指定表中的所有数据，此操作不可逆。</p>
                       </n-space>
@@ -378,7 +394,8 @@ import {
   MoveOutline as DragHandleIcon,
   DownloadOutline as ExportIcon, 
   CloudUploadOutline as ImportIcon,
-  TrashOutline as ClearIcon // 新增：清空图标
+  TrashOutline as ClearIcon,
+  BuildOutline as BuildIcon
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import axios from 'axios';
@@ -650,6 +667,7 @@ const tablesToClear = ref([]);
 
 // 新增状态变量，表示清空操作中
 const isClearing = ref(false);
+const isCorrecting = ref(false);
 
 // 显示清空指定表模态框
 const showClearTablesModal = async () => {
@@ -856,6 +874,18 @@ const startImportProcess = () => {
 const selectAllForImport = () => tablesToImport.value = [...tablesInBackupFile.value];
 const deselectAllForImport = () => tablesToImport.value = [];
 
+// ▼▼▼ 一键矫正 ▼▼▼
+const handleCorrectSequences = async () => {
+  isCorrecting.value = true;
+  try {
+    const response = await axios.post('/api/database/correct-sequences');
+    message.success(response.data.message || 'ID计数器校准成功！');
+  } catch (error) {
+    message.error(error.response?.data?.error || '校准失败，请检查后端日志。');
+  } finally {
+    isCorrecting.value = false;
+  }
+};
 
 // --- 生命周期钩子 ---
 onMounted(() => {

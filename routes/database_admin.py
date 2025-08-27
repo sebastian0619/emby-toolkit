@@ -330,7 +330,7 @@ def api_clear_review_items():
         logger.error("API调用api_clear_review_items时发生错误", exc_info=True)
         return jsonify({"error": "服务器在处理时发生内部错误"}), 500
 
-# 新增：清空指定表列表的接口
+# --- 清空指定表列表的接口 ---
 @db_admin_bp.route('/actions/clear_tables', methods=['POST'])
 @login_required
 def api_clear_tables():
@@ -364,4 +364,26 @@ def api_clear_tables():
         return jsonify({"message": message}), 200
     except Exception as e:
         logger.error(f"API调用api_clear_tables时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在处理时发生内部错误"}), 500
+
+# --- 一键矫正自增序列 ---
+@db_admin_bp.route('/database/correct-sequences', methods=['POST'])
+@login_required
+def api_correct_all_sequences():
+    """
+    触发一个任务，校准数据库中所有表的自增ID序列。
+    """
+    try:
+        # 直接调用 db_handler 中的核心函数
+        corrected_tables = db_handler.correct_all_sequences()
+        
+        if corrected_tables:
+            message = f"操作成功！已成功校准 {len(corrected_tables)} 个表的ID计数器。"
+        else:
+            message = "操作完成，未发现需要校准的表。"
+            
+        return jsonify({"message": message, "corrected_tables": corrected_tables}), 200
+        
+    except Exception as e:
+        logger.error(f"API调用api_correct_all_sequences时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在处理时发生内部错误"}), 500
