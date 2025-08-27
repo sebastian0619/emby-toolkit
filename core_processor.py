@@ -4,7 +4,7 @@ import os
 import re
 import json
 import concurrent.futures
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Set
 import shutil
 import threading
 from datetime import datetime, date, timedelta, timezone
@@ -1794,12 +1794,13 @@ class MediaProcessor:
     # ★★★ 全量备份到覆盖缓存 ★★★
     def sync_all_media_assets(self, update_status_callback: Optional[callable] = None, force_full_update: bool = False):
         """
-        【V2.1 - 时间戳兼容最终版】
-        - 修复了因数据类型不匹配 (str vs datetime) 导致快速同步模式失效的BUG。
-        - 确保在比较前将 Emby 返回的时间戳字符串转换为 datetime 对象。
+        【V4 - 增量与全量融合版】
+        - 快速模式 (默认): 高效找出并并发处理 Emby 中的新增媒体项。
+        - 深度模式 (force_full_update=True): 强制并发处理 Emby 中的所有媒体项。
+        - 两种模式均采用并发处理，大幅提升执行效率。
         """
-        sync_mode = "深度模式" if force_full_update else "快速模式"
-        task_name = f"覆盖缓存备份 ({sync_mode})"
+        sync_mode = "深度模式 (全量)" if force_full_update else "快速模式 (增量)"
+        task_name = f"同步媒体资源 ({sync_mode})"
         logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
 
         if not self.local_data_path:
@@ -1807,98 +1808,112 @@ class MediaProcessor:
             if update_status_callback: update_status_callback(-1, "未配置本地数据源路径")
             return
 
-        items_to_check = []
         try:
-            with get_central_db_connection() as conn:
-                cursor = conn.cursor()
-                # 尝试获取带时间戳的列，如果失败则回退
-                try:
-                    cursor.execute("SELECT item_id, item_name, last_emby_modified_at FROM processed_log")
-                except psycopg2.errors.UndefinedColumn:
-                    logger.warning("数据库 processed_log 表缺少 'last_emby_modified_at' 字段，将执行全量备份。")
-                    force_full_update = True # 强制进入深度模式
-                    cursor.execute("SELECT item_id, item_name FROM processed_log")
-                items_to_check = cursor.fetchall()
-        except Exception as e:
-            logger.error(f"获取待检查项目列表时发生未知错误: {e}", exc_info=True)
-            if update_status_callback: update_status_callback(-1, "数据库未知错误")
-            return
+            # --- 步骤 1: 获取 Emby 媒体库中的所有项目 ---
+            if update_status_callback: update_status_callback(5, "正在获取 Emby 媒体库项目...")
+            
+            all_emby_items = emby_handler.get_emby_library_items(
+                base_url=self.emby_url,
+                api_key=self.emby_api_key,
+                user_id=self.emby_user_id,
+                library_ids=self.config.get('libraries_to_process', []),
+                fields="ProviderIds,Type,DateModified,Name"
+            )
+            if all_emby_items is None:
+                raise RuntimeError("从 Emby 获取媒体项列表失败。")
 
-        total = len(items_to_check)
-        if total == 0:
-            if update_status_callback: update_status_callback(100, "没有任何已处理的项目")
-            return
+            emby_item_map = {item['Id']: item for item in all_emby_items}
+            all_emby_ids = set(emby_item_map.keys())
 
-        logger.info(f"  -> 将检查 {total} 个已处理的媒体项是否有更新。")
-        stats = {"updated": 0, "skipped_no_change": 0, "skipped_other": 0, "cleaned": 0}
+            # --- 步骤 2: 根据模式确定需要处理的项目列表 ---
+            items_to_process_ids: Set[str]
+            
+            if force_full_update:
+                # 深度模式：处理所有 Emby 项目
+                logger.info(f"深度模式已激活，将处理所有 {len(all_emby_ids)} 个 Emby 项目。")
+                items_to_process_ids = all_emby_ids
+            else:
+                # 快速模式：计算差集，只处理新项目
+                if update_status_callback: update_status_callback(15, "正在获取本地已处理日志...")
+                with get_central_db_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT item_id FROM processed_log")
+                    processed_ids = {row['item_id'] for row in cursor.fetchall()}
+                
+                items_to_process_ids = all_emby_ids - processed_ids
+                logger.info(f"快速模式：从 {len(all_emby_ids)} 个 Emby 项目中发现 {len(items_to_process_ids)} 个新项目。")
 
-        with get_central_db_connection() as conn_sync:
-            cursor_sync = conn_sync.cursor()
-            for i, db_row in enumerate(items_to_check):
+            total_to_process = len(items_to_process_ids)
+            if total_to_process == 0:
+                message = "深度模式检查完成，媒体库为空。" if force_full_update else "快速模式检查完成，没有发现新项目。"
+                logger.info(message)
+                if update_status_callback: update_status_callback(100, message)
+                return
+
+            if update_status_callback: update_status_callback(30, f"准备处理 {total_to_process} 个项目...")
+
+            # --- 步骤 3: 并发处理目标项目 (无论来源是全量还是增量) ---
+            stats = {"success": 0, "skipped": 0, "failed": 0}
+            lock = threading.Lock()
+
+            def worker_process_item(item_id: str):
+                """线程工作单元：处理单个项目"""
                 if self.is_stop_requested():
-                    logger.info(f"'{task_name}' 任务被中止。")
-                    break
-
-                item_id = db_row['item_id']
-                item_name_from_db = db_row['item_name']
-                # last_known_modified_dt 现在是一个 datetime 对象或 None
-                last_known_modified_dt = db_row.get('last_emby_modified_at')
-                
-                if update_status_callback:
-                    update_status_callback(int((i / total) * 100), f"({i+1}/{total}): 正在检查 {item_name_from_db}")
-
+                    return "stopped"
                 try:
-                    item_details = emby_handler.get_emby_item_details(
-                        item_id, self.emby_url, self.emby_api_key, self.emby_user_id, 
-                        fields="ProviderIds,Type,DateModified,Name"
-                    )
+                    item_details = emby_item_map.get(item_id)
                     if not item_details:
-                        raise ValueError(f"项目在Emby中已不存在或无法访问 (ID: {item_id})")
+                        raise ValueError("无法在 Emby 映射中找到项目详情")
 
-                    current_emby_modified_at_str = item_details.get("DateModified")
-                    should_backup = False
+                    tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+                    if not tmdb_id:
+                        logger.warning(f"项目 '{item_details.get('Name')}' (ID: {item_id}) 缺少 TMDb ID，跳过。")
+                        return "skipped"
+
+                    self.sync_item_images(item_details)
+                    self.sync_item_metadata(item_details, tmdb_id)
+
+                    with get_central_db_connection() as conn_thread:
+                        cursor_thread = conn_thread.cursor()
+                        self.log_db_manager.mark_assets_as_synced(
+                            cursor_thread, item_id, item_details.get("DateModified")
+                        )
+                        conn_thread.commit()
                     
-                    if force_full_update or not last_known_modified_dt:
-                        should_backup = True
-                    elif current_emby_modified_at_str:
-                        # ★★★ 核心修复：将 Emby 返回的字符串转换为 datetime 对象再进行比较 ★★★
-                        try:
-                            emby_modified_str_fixed = re.sub(r'\.(\d{6})\d*Z$', r'.\1Z', current_emby_modified_at_str)
-                            current_emby_modified_dt = datetime.fromisoformat(emby_modified_str_fixed.replace('Z', '+00:00'))
-                            if current_emby_modified_dt > last_known_modified_dt:
-                                should_backup = True
-                        except (ValueError, TypeError):
-                            should_backup = True # 解析失败则默认更新
-                    
-                    if should_backup:
-                        logger.info(f"  -> 发现更新 '{item_name_from_db}'，准备执行备份...")
-                        tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-                        if not tmdb_id:
-                            stats["skipped_other"] += 1
-                            continue
-
-                        self.sync_item_images(item_details)
-                        self.sync_item_metadata(item_details, tmdb_id)
-
-                        self.log_db_manager.mark_assets_as_synced(cursor_sync, item_id, current_emby_modified_at_str)
-                        conn_sync.commit()
-                        stats["updated"] += 1
-                    else:
-                        stats["skipped_no_change"] += 1
-
-                except ValueError as e:
-                    logger.warning(f"项目 '{item_name_from_db}' (ID: {item_id}) 在 Emby 中已无法访问，将从日志中清理。")
-                    self.log_db_manager.remove_from_processed_log(cursor_sync, item_id)
-                    conn_sync.commit()
-                    stats["cleaned"] += 1
+                    return "success"
                 except Exception as e:
-                    logger.error(f"处理项目 '{item_name_from_db}' (ID: {item_id}) 时发生未知错误: {e}", exc_info=True)
-                    stats["skipped_other"] += 1
-                
-                time_module.sleep(0.1)
+                    logger.error(f"处理项目 (ID: {item_id}) 时发生错误: {e}", exc_info=True)
+                    return "failed"
 
-        final_message = f"✅ 更新: {stats['updated']}, 无变化跳过: {stats['skipped_no_change']}, 清理: {stats['cleaned']}, 其他跳过: {stats['skipped_other']}。"
-        logger.info(final_message)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_id = {executor.submit(worker_process_item, item_id): item_id for item_id in items_to_process_ids}
+
+                for future in concurrent.futures.as_completed(future_to_id):
+                    if self.is_stop_requested():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
+                    
+                    result = future.result()
+                    with lock:
+                        if result == "success":
+                            stats["success"] += 1
+                        elif result == "skipped":
+                            stats["skipped"] += 1
+                        elif result == "failed":
+                            stats["failed"] += 1
+                        
+                        processed_count = sum(stats.values())
+                        progress = 30 + int((processed_count / total_to_process) * 70)
+                        if update_status_callback:
+                            update_status_callback(progress, f"进度: {processed_count}/{total_to_process}")
+
+        except Exception as e:
+            logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
+            if update_status_callback: update_status_callback(-1, f"任务失败: {e}")
+            return
+
+        final_message = f"✅ 成功: {stats['success']}, 跳过: {stats['skipped']}, 失败: {stats['failed']}。"
+        logger.info(f"'{task_name}' 完成。{final_message}")
         if update_status_callback:
             update_status_callback(100, final_message)
    
