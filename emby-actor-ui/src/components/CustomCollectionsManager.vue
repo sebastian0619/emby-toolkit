@@ -235,6 +235,26 @@
                     style="flex-grow: 1;"
                   />
                 </template>
+                <template v-else-if="rule.field === 'unified_rating'">
+                  <n-select
+                    v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                    v-model:value="rule.value"
+                    multiple
+                    placeholder="选择一个或多个统一分级"
+                    :options="unifiedRatingOptions" 
+                    :disabled="!rule.operator"
+                    style="flex-grow: 1; min-width: 220px;"
+                  />
+                  <n-select
+                    v-else
+                    v-model:value="rule.value"
+                    placeholder="选择一个统一分级"
+                    :options="unifiedRatingOptions" 
+                    :disabled="!rule.operator"
+                    clearable
+                    style="flex-grow: 1;"
+                  />
+                </template>
                 <template v-else-if="rule.field === 'actors'">
                   <n-select
                     v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
@@ -675,6 +695,7 @@ const ruleConfig = {
   countries: { label: '国家/地区', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
   studios: { label: '工作室', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
   tags: { label: '标签', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
+  unified_rating: { label: '统一分级', type: 'select', operators: ['is_one_of', 'is_none_of', 'eq'] },
   release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
   date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
 };
@@ -684,6 +705,21 @@ const operatorLabels = {
   gte: '大于等于', lte: '小于等于', eq: '等于',
   in_last_days: '最近N天内', not_in_last_days: 'N天以前',
   is_one_of: '是其中之一', is_none_of: '不是任何一个'
+};
+
+// 新的 ref 和获取分级选项的函数
+const unifiedRatingOptions = ref([]);
+const fetchUnifiedRatingOptions = async () => {
+  try {
+    // 调用我们新的API
+    const response = await axios.get('/api/custom_collections/config/unified_ratings');
+    unifiedRatingOptions.value = response.data.map(name => ({
+      label: name,
+      value: name
+    }));
+  } catch (error) {
+    message.error('获取统一分级列表失败。');
+  }
 };
 
 const fieldOptions = computed(() => 
@@ -1094,6 +1130,7 @@ onMounted(() => {
   fetchCountryOptions();
   fetchGenreOptions();
   fetchTagOptions();
+  fetchUnifiedRatingOptions();
 });
 </script>
 

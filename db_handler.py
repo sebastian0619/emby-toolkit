@@ -988,7 +988,7 @@ def clear_table(table_name: str) -> int:
         raise
 
 # ======================================================================
-# 模块 6: 自定义电影合集数据访问 (custom_collections Data Access)
+# 模块 6: 自定义合集数据访问 (custom_collections Data Access)
 # ======================================================================
 
 def create_custom_collection(name: str, type: str, definition_json: str) -> int:
@@ -1373,6 +1373,18 @@ def search_unique_actors(search_term: str, limit: int = 20) -> List[str]:
     except psycopg2.Error as e:
         logger.error(f"提取并搜索唯一演员时发生数据库错误: {e}", exc_info=True)
         return []
+
+# --- 搜索分级 ---
+def get_unique_official_ratings():
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT split_part(official_rating, '-', 2) as rating
+            FROM media_metadata
+            WHERE official_rating IS NOT NULL AND official_rating LIKE '%-%'
+            ORDER BY rating;
+        """)
+        return [row['rating'] for row in cursor.fetchall()]
 
 # ★★★ 新增：写入或更新一条完整的合集检查信息 ★★★
 def upsert_collection_info(collection_data: Dict[str, Any]):

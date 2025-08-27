@@ -36,7 +36,7 @@ from extensions import TASK_REGISTRY
 from custom_collection_handler import ListImporter, FilterEngine
 from core_processor import _read_local_json
 from services.cover_generator import CoverGeneratorService
-from utils import get_country_translation_map, translate_country_list
+from utils import get_country_translation_map, translate_country_list, get_unified_rating
 
 logger = logging.getLogger(__name__)
 
@@ -1686,7 +1686,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
         emby_items_index = emby_handler.get_emby_library_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
-            fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,People,Tags,DateModified"
+            fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,People,Tags,DateModified,OfficialRating"
         ) or []
         
         emby_items_map = {
@@ -1822,10 +1822,14 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                 date_created_str = full_details_emby.get('DateCreated')
                 date_added = date_created_str.split('T')[0] if date_created_str else None
 
+                official_rating = full_details_emby.get('OfficialRating') # 获取原始分级
+                unified_rating = get_unified_rating(official_rating)    # <<< 计算统一分级
+
                 metadata_to_save = {
                     "tmdb_id": tmdb_id, "item_type": full_details_emby.get("Type"),
                     "title": full_details_emby.get('Name'), "original_title": full_details_emby.get('OriginalTitle'),
                     "release_year": full_details_emby.get('ProductionYear'), "rating": full_details_emby.get('CommunityRating'),
+                    "official_rating": full_details_emby.get('OfficialRating'),
                     "release_date": release_date,
                     "date_added": date_added,
                     "genres_json": json.dumps(full_details_emby.get('Genres', []), ensure_ascii=False),

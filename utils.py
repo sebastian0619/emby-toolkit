@@ -224,6 +224,62 @@ class LogDBManager:
         except Exception as e:
             logger.error(f"标记备份状态失败 for item {item_id}: {e}", exc_info=True)
 
+# --- ★★★ 新增：统一分级映射功能 ★★★ ---
+# 1. 定义我们自己的、统一的、友好的分级体系
+# 列表的顺序将决定前端下拉框的显示顺序
+UNIFIED_RATING_CATEGORIES = [
+    '全年龄',      # G, U, 0, 6 等
+    '家长辅导',    # PG, 7, 10 等
+    '青少年',      # PG-13, 12, 13, 14, 15, 16 等
+    '成人',        # R, 17, 18, M, MA 等
+    '限制级',      # NC-17, X, XXX, UR 等
+    '未知'
+]
+
+# 2. 创建从 Emby 原始分级到我们统一体系的映射字典
+# 键: Emby 的原始分级值 (小写)
+# 值: 我们定义好的统一分类
+RATING_MAP = {
+    # --- 全年龄 ---
+    'g': '全年龄', 'tv-g': '全年龄', 'approved': '全年龄',
+    'u': '全年龄', 'uc': '全年龄',
+    '0': '全年龄', '6': '全年龄', '6+': '全年龄',
+    'all': '全年龄', 'unrated': '全年龄', 'nr': '全年龄',
+    'y': '全年龄', 'tv-y': '全年龄', 'ec': '全年龄',
+
+    # --- 家长辅导 ---
+    'pg': '家长辅导', 'tv-pg': '家长辅导',
+    '7': '家长辅导', 'tv-y7': '家长辅导', 'tv-y7-fv': '家长辅导',
+    '10': '家长辅导',
+
+    # --- 青少年 ---
+    'pg-13': '青少年', 't': '青少年',
+    '12': '青少年', '13': '青少年', '14': '青少年', 'tv-14': '青少年',
+    '15': '青少年', '16': '青少年',
+
+    # --- 成人 ---
+    'r': '成人', 'm': '成人', 'tv-ma': '成人',
+    '17': '成人', '18': '成人', '19': '成人',
+
+    # --- 限制级 ---
+    'nc-17': '限制级', 'x': '限制级', 'xxx': '限制级',
+    'ao': '限制级', 'rp': '限制级', 'ur': '限制级',
+}
+
+def get_unified_rating(official_rating_str: str) -> str:
+    """
+    根据 Emby 的 OfficialRating 字符串，返回统一后的分级。
+    """
+    if not official_rating_str or '-' not in official_rating_str:
+        return '未知'
+
+    # 提取 '-' 后面的部分并转为小写，例如从 'us-PG-13' 得到 'pg-13'
+    rating_value = official_rating_str.split('-', 1)[1].lower()
+
+    # 从字典中查找映射，如果找不到，则返回 '未知'
+    return RATING_MAP.get(rating_value, '未知')
+# --- ★★★ 新增结束 ★★★ ---
+
 # --- 国家/地区名称映射功能 ---
 _country_map_cache = None
 def get_country_translation_map() -> dict:

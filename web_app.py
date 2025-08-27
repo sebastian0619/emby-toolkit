@@ -286,6 +286,37 @@ def init_db():
                     )
                 """)
 
+                # --- ▼▼▼ 核心平滑升级逻辑 (PostgreSQL 兼容版) ▼▼▼ ---
+                try:
+                    # 查询 media_metadata 表中已存在的列
+                    cursor.execute("""
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = current_schema() AND table_name = 'media_metadata';
+                    """)
+                    existing_columns = {row['column_name'] for row in cursor.fetchall()}
+                    
+                    # 定义需要检查和添加的新列及其 PostgreSQL 类型
+                    # 注意：JSONB 和 TIMESTAMP WITH TIME ZONE 是 PostgreSQL 的推荐类型
+                    new_columns_to_add = {
+                        "official_rating": "TEXT", # <<< 新增的分级字段
+                        "unified_rating": "TEXT",
+                        "release_date": "DATE", # 修正为 DATE 类型
+                        "date_added": "TIMESTAMP WITH TIME ZONE", # 修正为 TIMESTAMP WITH TIME ZONE 类型
+                        "tags_json": "JSONB", # 修正为 JSONB 类型
+                        "last_synced_at": "TIMESTAMP WITH TIME ZONE" # 修正为 TIMESTAMP WITH TIME ZONE 类型
+                    }
+
+                    for col_name, col_type in new_columns_to_add.items():
+                        if col_name not in existing_columns:
+                            logger.info(f"    -> [数据库升级] 检测到 'media_metadata' 表缺少 '{col_name}' 字段，正在添加...")
+                            cursor.execute(f"ALTER TABLE media_metadata ADD COLUMN {col_name} {col_type};")
+                            logger.info(f"    -> [数据库升级] 字段 '{col_name}' 添加成功。")
+                        else:
+                            logger.trace(f"    -> 字段 '{col_name}' 已存在，跳过。")
+                except Exception as e_alter_mm:
+                    logger.error(f"  -> [数据库升级] 为 'media_metadata' 表添加新字段时出错: {e_alter_mm}", exc_info=True)
+
                 logger.trace("  -> 正在创建 'watchlist' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS watchlist (

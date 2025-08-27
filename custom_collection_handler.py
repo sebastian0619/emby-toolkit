@@ -349,6 +349,20 @@ class FilterEngine:
                     except (ValueError, TypeError):
                         pass
 
+            # 4. 处理分级字段
+            elif field == 'unified_rating':
+                item_unified_rating = item_metadata.get('unified_rating')
+                if item_unified_rating:
+                    if op == 'is_one_of':
+                        if isinstance(value, list) and item_unified_rating in value:
+                            match = True
+                    elif op == 'is_none_of':
+                        if isinstance(value, list) and item_unified_rating not in value:
+                            match = True
+                    elif op == 'eq':
+                        if str(value) == item_unified_rating:
+                            match = True
+
             elif field == 'title':
                 item_title = item_metadata.get('title')
                 if item_title and isinstance(value, str):

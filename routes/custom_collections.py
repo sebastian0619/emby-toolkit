@@ -12,7 +12,7 @@ import moviepilot_handler
 import emby_handler
 from extensions import login_required
 from custom_collection_handler import FilterEngine
-from utils import get_country_translation_map
+from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES
 # 1. 创建自定义合集蓝图
 custom_collections_bp = Blueprint('custom_collections', __name__, url_prefix='/api/custom_collections')
 
@@ -396,3 +396,10 @@ def api_get_tags_for_filter():
     except Exception as e:
         logger.error(f"获取标签列表时出错: {e}", exc_info=True)
         return jsonify([]), 500
+
+@custom_collections_bp.route('/config/unified_ratings', methods=['GET'])
+@login_required
+def api_get_unified_ratings_for_filter():
+    """为筛选器提供一个固定的、统一的分级列表。"""
+    # 直接返回我们预定义好的分类列表
+    return jsonify(UNIFIED_RATING_CATEGORIES)
