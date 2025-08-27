@@ -2145,7 +2145,7 @@ class MediaProcessor:
         - 接收一个可选的 ISO 格式时间戳，用于更新数据库。
         - 不再依赖 Emby 的 DateModified 字段。
         """
-        log_prefix = f"定点资源同步 (ID: {item_id}):"
+        log_prefix = f"实时覆盖缓存备份 (ID: {item_id}):"
         logger.info(f"--- {log_prefix} 开始执行 ---")
 
         if not self.local_data_path:
@@ -2193,7 +2193,7 @@ class MediaProcessor:
         【新增】为单个媒体项同步元数据到 media_metadata 数据库表。
         这是 task_populate_metadata_cache 的单点执行版本。
         """
-        log_prefix = f"定点元数据缓存 (ID: {item_id}):"
+        log_prefix = f"实时同步媒体数据 (ID: {item_id}):"
         logger.info(f"--- {log_prefix} 开始执行 ---")
         
         try:
