@@ -1366,17 +1366,17 @@ class MediaProcessor:
             deleted_items_to_clean = processed_ids_in_db - emby_ids_in_library
             
             if deleted_items_to_clean:
-                logger.info(f"发现 {len(deleted_items_to_clean)} 个已从 Emby 媒体库删除的项目，正在从 processed_log 中移除...")
+                logger.info(f"发现 {len(deleted_items_to_clean)} 个已从 Emby 媒体库删除的项目，正在从 '已处理' 中移除...")
                 for deleted_item_id in deleted_items_to_clean:
                     self.log_db_manager.remove_from_processed_log(cursor, deleted_item_id)
                     # 同时从内存缓存中移除
                     if deleted_item_id in self.processed_items_cache:
                         del self.processed_items_cache[deleted_item_id]
-                    logger.debug(f"  -> 已从 processed_log 中移除 ItemID: {deleted_item_id}")
+                    logger.debug(f"  -> 已从 '已处理' 中移除 ItemID: {deleted_item_id}")
                 conn.commit()
                 logger.info("已删除媒体项的清理工作完成。")
             else:
-                logger.info("未发现需要从 processed_log 中清理的已删除媒体项。")
+                logger.info("未发现需要从 '已处理' 中清理的已删除媒体项。")
         
         if update_status_callback: update_status_callback(30, "已删除媒体项清理完成，开始处理现有媒体...")
 
