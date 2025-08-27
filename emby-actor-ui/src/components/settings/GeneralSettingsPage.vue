@@ -314,7 +314,12 @@
           <n-button size="tiny" text type="primary" @click="deselectAllForImport">全不选</n-button>
         </n-space>
       </div>
-      <n-checkbox-group v-model:value="tablesToImport" vertical style="margin-top: 8px;">
+      <n-checkbox-group 
+        v-model:value="tablesToImport" 
+        @update:value="handleImportSelectionChange" 
+        vertical 
+        style="margin-top: 8px;"
+      >
         <n-grid :y-gap="8" :cols="2">
           <n-gi v-for="table in tablesInBackupFile" :key="table">
             <n-checkbox :value="table">
@@ -403,6 +408,14 @@ const tableDependencies = {
   'actor_subscriptions': ['tracked_actor_media']
 };
 
+// ★ 新增: 创建一个反向依赖映射，用于快速查找父表 (e.g., { 'media_metadata': 'person_identity_map' })
+const reverseTableDependencies = {};
+for (const parent in tableDependencies) {
+  for (const child of tableDependencies[parent]) {
+    reverseTableDependencies[child] = parent;
+  }
+}
+
 /**
  * 当清空表的复选框组选项变化时触发此函数。
  * @param {string[]} currentSelection - 组件传递过来的、当前所有已勾选项的数组。
@@ -434,7 +447,54 @@ const handleClearSelectionChange = (currentSelection) => {
   }
 };
 
-// ★★★ END: 新增的、正确的依赖关系处理逻辑 ★★★
+/**
+ * ★ 新增: 当【导入表】的复选框组选项变化时触发。
+ * 逻辑：双向依赖。
+ * 1. 勾选父表 -> 自动勾选子表。
+ * 2. 勾选子表 -> 自动勾选父表。
+ * @param {string[]} currentSelection - 当前所有已勾选项的数组。
+ */
+const handleImportSelectionChange = (currentSelection) => {
+  const selectionSet = new Set(currentSelection);
+  let changed = true;
+
+  // 使用循环来处理嵌套依赖，直到一次循环中不再有任何变化
+  while (changed) {
+    changed = false;
+    const originalSize = selectionSet.size;
+
+    // 1. 正向依赖检查 (父 -> 子)
+    for (const parentTable in tableDependencies) {
+      if (selectionSet.has(parentTable)) {
+        for (const childTable of tableDependencies[parentTable]) {
+          selectionSet.add(childTable);
+        }
+      }
+    }
+
+    // 2. 反向依赖检查 (子 -> 父)
+    for (const childTable in reverseTableDependencies) {
+      if (selectionSet.has(childTable)) {
+        const parentTable = reverseTableDependencies[childTable];
+        selectionSet.add(parentTable);
+      }
+    }
+    
+    // 如果集合大小发生变化，说明本轮循环添加了新项目，需要再循环一次
+    if (selectionSet.size > originalSize) {
+      changed = true;
+    }
+  }
+  
+  // 如果最终的集合与 v-model 的值不一致，则更新 v-model
+  if (selectionSet.size !== tablesToImport.value.length) {
+    tablesToImport.value = Array.from(selectionSet);
+  }
+};
+
+// =================================================================
+// ★★★ END: 依赖关系联动勾选逻辑 ★★★
+// =================================================================
 
 
 const formRef = ref(null);
