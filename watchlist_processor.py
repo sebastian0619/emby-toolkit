@@ -142,6 +142,68 @@ class WatchlistProcessor:
                 f"WHERE status = '{STATUS_WATCHING}' OR (status = '{STATUS_PAUSED}' AND paused_until <= '{today_str}')",
                 item_id
             )
+            # --- 新增：检测 Emby 中已删除的剧集并从追剧列表移除 ---
+            if not item_id: # 只在全量处理时执行此检查
+                self.progress_callback(0, "正在检测 Emby 中已删除的剧集...")
+                
+                # 1. 获取 Emby 媒体库中所有剧集的 ID
+                emby_series_ids = set()
+                try:
+                    all_libraries = emby_handler.get_emby_libraries(self.emby_url, self.emby_api_key, self.emby_user_id)
+                    if all_libraries:
+                        library_ids_to_scan = [lib['Id'] for lib in all_libraries if lib.get('CollectionType') in ['tvshows', 'mixed']]
+                        
+                        # 使用并发获取所有剧集
+                        all_emby_series_items = []
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                            future_to_library = {
+                                executor.submit(emby_handler.get_emby_library_items, 
+                                                self.emby_url, self.emby_api_key, "Series", self.emby_user_id, [lib_id]): lib_id
+                                for lib_id in library_ids_to_scan
+                            }
+                            for future in concurrent.futures.as_completed(future_to_library):
+                                try:
+                                    result = future.result()
+                                    if result:
+                                        all_emby_series_items.extend(result)
+                                except Exception as exc:
+                                    logger.error(f"从媒体库 {future_to_library[future]} 获取剧集时发生异常: {exc}")
+                        
+                        emby_series_ids = {item['Id'] for item in all_emby_series_items if item.get('Id')}
+                        logger.info(f"已从 Emby 获取到 {len(emby_series_ids)} 个剧集ID。")
+                    else:
+                        logger.warning("未能从 Emby 获取到任何媒体库，跳过已删除剧集检测。")
+                except Exception as e:
+                    logger.error(f"获取 Emby 剧集列表时发生错误: {e}", exc_info=True)
+                    # 即使出错也继续，避免阻塞主任务
+                
+                # 2. 获取当前追剧列表中的所有剧集 ID
+                watchlist_series_ids = set()
+                try:
+                    with get_central_db_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT item_id FROM watchlist WHERE item_type = 'Series'")
+                        watchlist_series_ids = {row['item_id'] for row in cursor.fetchall()}
+                    logger.info(f"追剧列表中有 {len(watchlist_series_ids)} 个剧集ID。")
+                except Exception as e:
+                    logger.error(f"获取追剧列表剧集ID时发生数据库错误: {e}", exc_info=True)
+                    # 即使出错也继续
+                
+                # 3. 比较并找出已删除的剧集
+                deleted_series_ids = watchlist_series_ids - emby_series_ids
+                if deleted_series_ids:
+                    logger.warning(f"检测到 {len(deleted_series_ids)} 部剧集已从 Emby 删除，将从追剧列表移除。")
+                    for deleted_id in deleted_series_ids:
+                        db_handler.remove_item_from_watchlist(item_id=deleted_id)
+                else:
+                    logger.info("未检测到 Emby 中有剧集被删除。")
+            # --- 新增逻辑结束 ---
+
+            today_str = datetime.now(timezone.utc).date().isoformat()
+            active_series = self._get_series_to_process(
+                f"WHERE status = '{STATUS_WATCHING}' OR (status = '{STATUS_PAUSED}' AND paused_until <= '{today_str}')",
+                item_id
+            )
             total = len(active_series)
             if total == 0:
                 self.progress_callback(100, "没有需要立即处理的剧集。")
@@ -464,7 +526,7 @@ class WatchlistProcessor:
         else:
             logger.info(f"  -> 剧集状态为 '{translate_internal_status(final_status)}' 或本地文件完整，无需执行分集更新。")
 
-    # ★★★ 统一的、公开的追剧处理入口 ★★★
+    # --- 统一的、公开的追剧处理入口 ★★★
     def process_watching_list(self, item_id: Optional[str] = None):
         if item_id:
             logger.info(f"--- 开始执行单项追剧更新任务 (ItemID: {item_id}) ---")
