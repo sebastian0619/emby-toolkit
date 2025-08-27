@@ -240,7 +240,7 @@
                     v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
                     v-model:value="rule.value"
                     multiple
-                    placeholder="选择一个或多个统一分级"
+                    placeholder="选择一个或多个家长分级"
                     :options="unifiedRatingOptions" 
                     :disabled="!rule.operator"
                     style="flex-grow: 1; min-width: 220px;"
@@ -248,7 +248,7 @@
                   <n-select
                     v-else
                     v-model:value="rule.value"
-                    placeholder="选择一个统一分级"
+                    placeholder="选择一个家长分级"
                     :options="unifiedRatingOptions" 
                     :disabled="!rule.operator"
                     clearable
@@ -695,7 +695,7 @@ const ruleConfig = {
   countries: { label: '国家/地区', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
   studios: { label: '工作室', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
   tags: { label: '标签', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
-  unified_rating: { label: '统一分级', type: 'select', operators: ['is_one_of', 'is_none_of', 'eq'] },
+  unified_rating: { label: '家长分级', type: 'select', operators: ['is_one_of', 'is_none_of', 'eq'] },
   release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
   date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
 };
@@ -718,7 +718,7 @@ const fetchUnifiedRatingOptions = async () => {
       value: name
     }));
   } catch (error) {
-    message.error('获取统一分级列表失败。');
+    message.error('获取家长分级列表失败。');
   }
 };
 
