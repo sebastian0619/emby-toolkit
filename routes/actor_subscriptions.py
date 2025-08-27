@@ -63,17 +63,25 @@ def handle_actor_subscriptions():
 
     if request.method == 'POST':
         data = request.json
+        # --- ▼▼▼ 核心修复：在这里添加输入验证 ▼▼▼ ---
+        tmdb_person_id = data.get('tmdb_person_id')
+        actor_name = data.get('actor_name')
+
+        if not tmdb_person_id or not actor_name:
+            return jsonify({"error": "请求无效: 缺少 tmdb_person_id 或 actor_name"}), 400
+        # --- ▲▲▲ 修复结束 ▲▲▲ ---
         try:
-            # ★★★ 核心修改：调用新的 db_handler 函数，不再需要 db_path 参数
+            # ★★★ 核心修改：使用我们已经验证过的变量 ★★★
             new_sub_id = db_handler.add_actor_subscription(
-                tmdb_person_id=data.get('tmdb_person_id'),
-                actor_name=data.get('actor_name'),
+                tmdb_person_id=tmdb_person_id,
+                actor_name=actor_name,
                 profile_path=data.get('profile_path'),
                 config=data.get('config', {})
             )
-            return jsonify({"message": f"演员 {data.get('actor_name')} 已成功订阅！", "id": new_sub_id}), 201
-        # ★★★ 核心修改：捕获 psycopg2 的 IntegrityError 异常
+            return jsonify({"message": f"演员 {actor_name} 已成功订阅！", "id": new_sub_id}), 201
+        
         except psycopg2.IntegrityError:
+            # 现在，如果还触发这个错误，那它就真的是因为重复订阅了
             return jsonify({"error": "该演员已经被订阅过了"}), 409
         except Exception as e:
             logger.error(f"添加演员订阅失败: {e}", exc_info=True)
