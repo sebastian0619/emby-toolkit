@@ -723,7 +723,7 @@ def emby_webhook():
             return jsonify({"status": "event_ignored_no_tmdb_id"}), 200
         
         # 提交到任务队列，任务管理器会自动处理去重
-        success = extensions.task_manager.dispatch_task(
+        success = task_manager.dispatch_task(
             task_function=webhook_process_media_task,
             task_name=f"Webhook刮削: {final_item_name}",
             processor_type='media',
