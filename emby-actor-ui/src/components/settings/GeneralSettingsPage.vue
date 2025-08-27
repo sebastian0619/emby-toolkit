@@ -248,7 +248,7 @@
                             这是一个安全的操作，用于修复导入数据后无法新增条目的问题。
                           </n-popconfirm>
                         </n-space>
-                        <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON 文件。<br><b>导入：</b>从 JSON 备份文件中恢复数据。<br><b>清空：</b>删除指定表中的所有数据，此操作不可逆。</p>
+                        <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON 文件。<br><b>导入：</b>从 JSON 备份文件中恢复数据。<br><b>清空：</b>删除指定表中的所有数据，此操作不可逆。<br><b>矫正：</b>修复导入数据可能引起的自增序号错乱的问题。</p>
                       </n-space>
                     </n-card>
                   </n-space>
