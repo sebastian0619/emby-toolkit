@@ -137,6 +137,19 @@
                         <n-input-number v-model:value="configModel.proxy_port" :min="1025" :max="65535" :disabled="!configModel.proxy_enabled"/>
                         <template #feedback><n-text depth="3" style="font-size:0.8em;">非host模式需要映射。</n-text></template>
                       </n-form-item-grid-item>
+                      <!-- ★★★ 302重定向服务地址 ★★★ -->
+                      <n-form-item-grid-item label="302重定向服务地址" path="proxy_302_redirect_url">
+                        <n-input 
+                          v-model:value="configModel.proxy_302_redirect_url" 
+                          placeholder="例如: http://192.168.31.177:9096" 
+                          :disabled="!configModel.proxy_enabled"
+                        />
+                        <template #feedback>
+                          <n-text depth="3" style="font-size:0.8em;">
+                            填写独立的302重定向服务URL。网盘播放请求直接转发到此地址。
+                          </n-text>
+                        </template>
+                      </n-form-item-grid-item>
 
                       <n-divider title-placement="left" style="margin-top: 10px;">选择合并显示的原生媒体库</n-divider>
 

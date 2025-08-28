@@ -519,10 +519,12 @@ def ensure_nginx_config():
         # 2. 从 APP_CONFIG 获取值 (逻辑不变)
         emby_url = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_SERVER_URL, "")
         nginx_listen_port = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_PORT, 8097)
+        redirect_url = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_302_REDIRECT_URL, "")
 
         # 3. 准备替换值 (逻辑不变)
         emby_upstream = emby_url.replace("http://", "").replace("https://", "").rstrip('/')
         proxy_upstream = "emby-toolkit:8098"
+        redirect_upstream = redirect_url.replace("http://", "").replace("https://", "").rstrip('/')
 
         if not emby_upstream:
             logger.error("config.ini 中未配置 Emby 服务器地址，无法生成 Nginx 配置！")
@@ -532,7 +534,8 @@ def ensure_nginx_config():
         context = {
             'EMBY_UPSTREAM': emby_upstream,
             'PROXY_UPSTREAM': proxy_upstream,
-            'NGINX_LISTEN_PORT': nginx_listen_port
+            'NGINX_LISTEN_PORT': nginx_listen_port,
+            'REDIRECT_UPSTREAM': redirect_upstream
         }
         final_config_content = template.render(context)
 
