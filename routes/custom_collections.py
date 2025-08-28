@@ -50,57 +50,39 @@ def api_get_all_custom_collections():
                 del collection['definition_json']
 
             # ==========================================================
-            # ★★★ 核心调试区域 ★★★
+            # ★★★ 修正后的时区转换逻辑 ★★★
             # ==========================================================
-            key_for_timestamp = 'last_synced_at'
-            logger.debug(f"步骤 1: 检查是否存在键 '{key_for_timestamp}'...")
+            
+            # 使用从数据库截图中确认的正确字段名 'last_synced_at'
+            key_for_timestamp = 'last_synced_at' 
 
             if key_for_timestamp in collection and collection[key_for_timestamp]:
-                logger.debug(f"步骤 2: 成功找到键 '{key_for_timestamp}'。")
-                
                 timestamp_val = collection[key_for_timestamp]
-                logger.debug(f"步骤 3: 获取到的原始值为: {repr(timestamp_val)}")
-                logger.debug(f"步骤 4: 原始值的类型是: {type(timestamp_val)}")
-                
                 utc_dt = None
 
+                # 数据库字段是 "timestamp with time zone"，psycopg2 会将其转为带时区的 datetime 对象
                 if isinstance(timestamp_val, datetime):
-                    logger.debug("步骤 5: 类型判断为 datetime 对象，进入 datetime 处理分支。")
-                    utc_dt = timestamp_val # psycopg2 应该已经处理好了时区
+                    utc_dt = timestamp_val
                 
+                # 为防止意外，也兼容一下字符串格式
                 elif isinstance(timestamp_val, str):
-                    logger.debug("步骤 5: 类型判断为字符串，进入 str 处理分支。")
                     try:
-                        ts_str_clean = timestamp_val.split('.')[0].split('+')[0]
+                        ts_str_clean = timestamp_val.split('.')[0]
                         naive_dt = datetime.strptime(ts_str_clean, '%Y-%m-%d %H:%M:%S')
                         utc_dt = pytz.utc.localize(naive_dt)
-                        logger.debug(f"字符串成功解析为 datetime 对象: {utc_dt}")
-                    except Exception as e:
-                        logger.error(f"解析字符串为 datetime 时失败: {e}")
+                    except ValueError:
+                        logger.warning(f"无法将字符串 '{timestamp_val}' 解析为时间，跳过转换。")
 
+                # 如果成功获取到 UTC 时间对象，则进行转换
                 if utc_dt:
-                    logger.debug(f"步骤 6: 准备进行时区转换的 UTC 时间为: {utc_dt}")
                     beijing_dt = utc_dt.astimezone(beijing_tz)
-                    logger.debug(f"步骤 7: 成功转换为北京时间: {beijing_dt}")
-                    
-                    formatted_time = beijing_dt.strftime('%Y-%m-%d %H:%M:%S')
-                    collection[key_for_timestamp] = formatted_time
-                    logger.info(f"✅ 成功！最终更新的时间值为: '{formatted_time}'")
-                else:
-                    logger.warning("❌ 失败！在步骤 5 之后未能生成有效的 datetime 对象，无法进行转换。")
+                    collection[key_for_timestamp] = beijing_dt.strftime('%Y-%m-%d %H:%M:%S')
 
-            else:
-                logger.debug(f"步骤 2: 未找到键 '{key_for_timestamp}' 或其值为空，跳过此合集的时间处理。")
-            
             processed_collections.append(collection)
-            logger.info("-----------------------------------\n")
 
-        logger.info(">>> 调试结束 <<<")
-        logger.info("==========================================================")
         return jsonify(processed_collections)
-        
     except Exception as e:
-        logger.error(f"获取所有自定义合集时发生严重错误: {e}", exc_info=True)
+        logger.error(f"获取所有自定义合集时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
 
 # --- 创建一个新的自定义合集定义 ---
