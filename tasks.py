@@ -5,6 +5,7 @@ import re
 import os
 import json
 import psycopg2
+import pytz
 from psycopg2 import sql
 from psycopg2.extras import execute_values, Json
 import logging
@@ -1396,7 +1397,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                 update_data = {
                     "emby_collection_id": emby_collection_id,
                     "item_type": json.dumps(definition.get('item_type', ['Movie'])),
-                    "last_synced_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    "last_synced_at": datetime.now(pytz.utc)
                 }
 
                 if collection_type == 'list':
@@ -1555,7 +1556,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         update_data = {
             "emby_collection_id": emby_collection_id,
             "item_type": json.dumps(definition.get('item_type', ['Movie'])), # 写入时需要转为字符串
-            "last_synced_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            "last_synced_at": datetime.now(pytz.utc)
         }
 
         if collection_type == 'list':

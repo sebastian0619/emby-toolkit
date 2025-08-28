@@ -4,6 +4,8 @@ from flask import Blueprint, request, jsonify
 import logging
 import json
 import psycopg2
+import pytz
+from datetime import datetime
 import constants
 import db_handler
 import config_manager
@@ -24,42 +26,81 @@ logger = logging.getLogger(__name__)
 @custom_collections_bp.route('', methods=['GET']) # 原为 '/'
 @login_required
 def api_get_all_custom_collections():
-    """获取所有自定义合集定义 (V2 - 修复版)"""
+    """获取所有自定义合集定义 (V3.1 - 最终修正版)"""
     try:
+        beijing_tz = pytz.timezone('Asia/Shanghai')
         collections_from_db = db_handler.get_all_custom_collections()
         processed_collections = []
-        for collection in collections_from_db:
-            # ★★★ 核心修复：确保每个合集的 definition 都是一个对象 ★★★
-            definition_data = collection.get('definition_json')
-            parsed_definition = {}  # 默认值
 
+        for collection in collections_from_db:
+            # --- 处理 definition (这部分逻辑不变) ---
+            definition_data = collection.get('definition_json')
+            parsed_definition = {}
             if isinstance(definition_data, str):
                 try:
                     obj = json.loads(definition_data)
-                    # 处理罕见的双重序列化情况
-                    if isinstance(obj, str):
-                        obj = json.loads(obj)
-                    # 确保最终结果是字典
-                    if isinstance(obj, dict):
-                        parsed_definition = obj
+                    if isinstance(obj, str): obj = json.loads(obj)
+                    if isinstance(obj, dict): parsed_definition = obj
                 except (json.JSONDecodeError, TypeError):
-                    logger.warning(f"列表加载时，合集 ID {collection.get('id')} 的 definition_json 无法解析，将使用空对象。内容: {definition_data}")
+                    logger.warning(f"合集 ID {collection.get('id')} 的 definition_json 无法解析。")
             elif isinstance(definition_data, dict):
-                # 如果数据库驱动已经自动解析了 (例如 JSONB 字段)
                 parsed_definition = definition_data
-
-            # 将解析后的对象赋值给新字段 'definition'
             collection['definition'] = parsed_definition
-            
-            # (可选但推荐) 删除旧的、未处理的字段，保持API清洁
             if 'definition_json' in collection:
                 del collection['definition_json']
-                
-            processed_collections.append(collection)
 
+            # ==========================================================
+            # ★★★ 核心调试区域 ★★★
+            # ==========================================================
+            key_for_timestamp = 'last_synced_at'
+            logger.debug(f"步骤 1: 检查是否存在键 '{key_for_timestamp}'...")
+
+            if key_for_timestamp in collection and collection[key_for_timestamp]:
+                logger.debug(f"步骤 2: 成功找到键 '{key_for_timestamp}'。")
+                
+                timestamp_val = collection[key_for_timestamp]
+                logger.debug(f"步骤 3: 获取到的原始值为: {repr(timestamp_val)}")
+                logger.debug(f"步骤 4: 原始值的类型是: {type(timestamp_val)}")
+                
+                utc_dt = None
+
+                if isinstance(timestamp_val, datetime):
+                    logger.debug("步骤 5: 类型判断为 datetime 对象，进入 datetime 处理分支。")
+                    utc_dt = timestamp_val # psycopg2 应该已经处理好了时区
+                
+                elif isinstance(timestamp_val, str):
+                    logger.debug("步骤 5: 类型判断为字符串，进入 str 处理分支。")
+                    try:
+                        ts_str_clean = timestamp_val.split('.')[0].split('+')[0]
+                        naive_dt = datetime.strptime(ts_str_clean, '%Y-%m-%d %H:%M:%S')
+                        utc_dt = pytz.utc.localize(naive_dt)
+                        logger.debug(f"字符串成功解析为 datetime 对象: {utc_dt}")
+                    except Exception as e:
+                        logger.error(f"解析字符串为 datetime 时失败: {e}")
+
+                if utc_dt:
+                    logger.debug(f"步骤 6: 准备进行时区转换的 UTC 时间为: {utc_dt}")
+                    beijing_dt = utc_dt.astimezone(beijing_tz)
+                    logger.debug(f"步骤 7: 成功转换为北京时间: {beijing_dt}")
+                    
+                    formatted_time = beijing_dt.strftime('%Y-%m-%d %H:%M:%S')
+                    collection[key_for_timestamp] = formatted_time
+                    logger.info(f"✅ 成功！最终更新的时间值为: '{formatted_time}'")
+                else:
+                    logger.warning("❌ 失败！在步骤 5 之后未能生成有效的 datetime 对象，无法进行转换。")
+
+            else:
+                logger.debug(f"步骤 2: 未找到键 '{key_for_timestamp}' 或其值为空，跳过此合集的时间处理。")
+            
+            processed_collections.append(collection)
+            logger.info("-----------------------------------\n")
+
+        logger.info(">>> 调试结束 <<<")
+        logger.info("==========================================================")
         return jsonify(processed_collections)
+        
     except Exception as e:
-        logger.error(f"获取所有自定义合集时出错: {e}", exc_info=True)
+        logger.error(f"获取所有自定义合集时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
 
 # --- 创建一个新的自定义合集定义 ---
