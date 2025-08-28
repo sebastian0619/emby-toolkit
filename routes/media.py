@@ -103,7 +103,7 @@ def api_update_edited_cast_sa(item_id):
         f"手动更新: {item_name}",
         processor_type='media',
         item_id=item_id,
-        edited_cast=edited_cast,
+        manual_cast_list=edited_cast,
         item_name=item_name
         
     )
