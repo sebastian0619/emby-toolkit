@@ -256,66 +256,122 @@ class DoubanApi:
     def _search_by_name_for_match_info(self, name: str, mtype: Optional[str],
                                        year: Optional[str] = None, season: Optional[int] = None) -> Dict[str, Any]:
         logger.info(f"开始使用名称 '{name}'{(', 年份: '+year) if year else ''}{(', 类型: '+mtype) if mtype else ''} 匹配豆瓣信息 ...")
-        search_query = f"{name} {year or ''}".strip()
+        
+        # 规范化 mtype，将 'Series' 视为 'tv'
+        normalized_mtype = mtype
+        if mtype and mtype.lower() == 'series':
+            normalized_mtype = 'tv'
+            logger.debug(f"将传入的媒体类型 'Series' 规范化为 'tv'。")
+
+        # 改进 search_query 的构建，避免重复年份
+        effective_year_in_query = year
+        if year:
+            # 检查 name 中是否已经包含年份
+            year_pattern = re.compile(r'\((\d{4})\)')
+            match = year_pattern.search(name)
+            if match and match.group(1) == year:
+                effective_year_in_query = '' # 如果 name 中已包含年份，则不在 query 中重复
+                logger.debug(f"名称 '{name}' 中已包含年份 '{year}'，搜索查询中将不重复年份。")
+
+        search_query = f"{name} {effective_year_in_query or ''}".strip()
+        
         if not search_query: return self._make_error_dict("invalid_param", "搜索关键词为空")
 
+        logger.debug(f"最终豆瓣搜索查询: '{search_query}'")
         search_result = self.search(search_query)
         logger.trace(f"名称搜索 '{search_query}' 原始结果: {search_result}")
 
         if search_result.get("error"):
+            logger.warning(f"豆瓣名称搜索 '{search_query}' 返回错误: {search_result.get('message')}")
             return search_result # 直接返回搜索的错误
 
         items = search_result.get("items")
         if not items or not isinstance(items, list):
+            logger.warning(f"豆瓣名称搜索 '{search_query}' 未找到条目或格式错误。")
             return self._make_error_dict("no_items_found", f"豆瓣名称搜索 '{search_query}' 未找到条目或格式错误。")
 
         candidates = []
         exact_match = None
         for item_obj in items:
-            if not isinstance(item_obj, dict): continue
+            if not isinstance(item_obj, dict):
+                logger.debug(f"跳过无效的搜索结果条目 (非字典): {item_obj}")
+                continue
             target = item_obj.get("target", {})
-            if not isinstance(target, dict): continue
+            if not isinstance(target, dict):
+                logger.debug(f"跳过无效的搜索结果条目 (target 非字典): {item_obj}")
+                continue
 
-            api_item_type = item_obj.get("target_type")
-            if api_item_type not in ["movie", "tv"]: continue
-            if mtype and mtype != api_item_type: continue # 类型不匹配
+            api_item_type = item_obj.get("target_type") # 从 item_obj 中获取 target_type
+            if api_item_type not in ["movie", "tv"]:
+                logger.debug(f"跳过不相关的类型 '{api_item_type}' for item: {target.get('title')}")
+                continue
+            
+            # 使用规范化后的类型进行比较
+            if normalized_mtype and normalized_mtype != api_item_type:
+                logger.debug(f"跳过类型不匹配的条目。请求类型: '{normalized_mtype}', API类型: '{api_item_type}' for item: {target.get('title')}")
+                continue
 
-            title_from_api = target.get("title") # 先获取原始值
+            title_from_api = target.get("title")
             douban_id = str(target.get("id", "")).strip()
 
-            # 检查 title_from_api 是否是有效字符串
             if not isinstance(title_from_api, str) or not title_from_api.strip() or not douban_id.isdigit():
                 logger.debug(f"_search_by_name_for_match_info: 跳过无效条目，title='{title_from_api}' (类型: {type(title_from_api).__name__}), douban_id='{douban_id}'")
                 continue
 
-            # 到这里，title_from_api 肯定是字符串且非空
-            title_str = title_from_api # 现在可以安全地称之为 title_str
-
+            title_str = title_from_api
             api_item_year = str(target.get("year", "")).strip()
-            year_match = (not year) or (year and api_item_year and abs(int(api_item_year) - int(year)) <= 1)
+            
+            # 详细记录年份匹配过程
+            year_match_status = "N/A"
+            if not year:
+                year_match = True
+                year_match_status = "请求未提供年份，默认匹配"
+            elif api_item_year and api_item_year.isdigit():
+                try:
+                    year_diff = abs(int(api_item_year) - int(year))
+                    year_match = year_diff <= 1
+                    year_match_status = f"请求年份: {year}, API年份: {api_item_year}, 差异: {year_diff}, 匹配: {year_match}"
+                except ValueError:
+                    year_match = False
+                    year_match_status = f"API年份 '{api_item_year}' 或请求年份 '{year}' 无效，无法比较。"
+            else:
+                year_match = False
+                year_match_status = f"API未提供年份或年份无效 ('{api_item_year}')。"
+            
+            logger.debug(f"处理条目 '{title_str}' ({api_item_year}, ID: {douban_id}, 类型: {api_item_type}). 年份匹配状态: {year_match_status}")
 
             if year_match:
                 candidate_info = {"id": douban_id, "title": title_str, "original_title": target.get("original_title"),
                                   "year": api_item_year, "type": api_item_type, "source": "name_search_candidate"}
                 
-                # 在调用 .lower() 前确保 name 也是字符串 (虽然类型提示是 str，但多一层保险)
-                name_to_compare = str(name).strip() # name 是函数传入的参数
+                name_to_compare = str(name).strip()
 
                 if title_str.lower().strip() == name_to_compare.lower() and (not year or api_item_year == year):
                     exact_match = candidate_info
                     exact_match["source"] = "name_search_exact"
+                    logger.debug(f"找到精确匹配: {exact_match}")
                     break
                 candidates.append(candidate_info)
+                logger.debug(f"添加候选匹配项: {candidate_info}")
 
         if exact_match: return exact_match
         if candidates:
-            if len(candidates) == 1: return candidates[0]
-            # 多个候选，可以考虑返回一个包含所有候选的列表，让调用者处理
-            # 或者根据某种规则选择最佳的一个（例如，最接近年份的）
-            # 为简单起见，这里返回第一个，但实际应用可能需要更复杂的逻辑
+            if len(candidates) == 1:
+                logger.info(f"找到唯一候选匹配项: {candidates[0]}")
+                return candidates[0]
+            
+            # 多个候选，尝试根据年份精确度排序
+            if year:
+                # 优先选择年份完全匹配的
+                year_exact_candidates = [c for c in candidates if c.get("year") == year]
+                if year_exact_candidates:
+                    logger.info(f"找到多个年份精确匹配的候选，返回第一个。Candidates: {year_exact_candidates}")
+                    return year_exact_candidates[0]
+            
             logger.info(f"找到多个候选匹配项 for '{name}', 返回第一个。 Candidates: {candidates}")
-            return candidates[0] # 或者: return {"search_candidates": candidates, "message": "找到多个可能的匹配项"}
+            return candidates[0]
 
+        logger.warning(f"豆瓣名称搜索未能为 '{name}' 找到合适的匹配项。")
         return self._make_error_dict("no_suitable_match", f"豆瓣名称搜索未能为 '{name}' 找到合适的匹配项。")
 
     def get_acting(self, name: str, imdbid: Optional[str] = None, mtype: Optional[str] = None,
