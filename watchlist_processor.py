@@ -123,7 +123,7 @@ class WatchlistProcessor:
                         """, (item_id, tmdb_id, item_name, "Series"))
                         
                         if cursor.rowcount > 0:
-                            logger.info(f"剧集 '{item_name}' (TMDb状态: {translate_status(tmdb_status)}) 已自动加入追剧列表。")
+                            logger.info(f"  -> 剧集 '{item_name}' (TMDb状态: {translate_status(tmdb_status)}) 已自动加入追剧列表。")
                     conn.commit()
             except Exception as e:
                 logger.error(f"自动添加剧集 '{item_name}' 到追剧列表时发生数据库错误: {e}", exc_info=True)

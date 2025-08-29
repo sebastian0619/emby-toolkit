@@ -351,13 +351,13 @@ class MediaProcessor:
             # 如果不是剧集，直接返回，不打印非必要的日志
             return
 
-        logger.info(f"Webhook触发：开始为新入库剧集 '{item_name_for_log}' 进行追剧状态判断...")
+        logger.info(f"  -> 开始为新入库剧集 '{item_name_for_log}' 进行追剧状态判断...")
         try:
             # 实例化 WatchlistProcessor 并执行添加操作
             watchlist_proc = WatchlistProcessor(self.config)
             watchlist_proc.add_series_to_watchlist(item_details)
         except Exception as e_watchlist:
-            logger.error(f"在自动添加 '{item_name_for_log}' 到追剧列表时发生错误: {e_watchlist}", exc_info=True)
+            logger.error(f"  -> 在自动添加 '{item_name_for_log}' 到追剧列表时发生错误: {e_watchlist}", exc_info=True)
 
     def signal_stop(self):
         self._stop_event.set()

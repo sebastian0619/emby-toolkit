@@ -84,7 +84,7 @@ class DoubanApi:
             with cls._session_lock: # 加锁确保只有一个线程创建 session
                 if cls._session is None: # 双重检查锁定模式
                     cls._session = requests.Session()
-                    logger.info("DoubanApi: requests.Session 已重新初始化 (ensure_session)。")
+                    logger.trace("DoubanApi: requests.Session 已重新初始化 (ensure_session)。")
 
     @classmethod
     def _sign(cls, url: str, ts: str, method='GET') -> str:
@@ -209,7 +209,7 @@ class DoubanApi:
         if url_key not in DoubanApi._urls:
             return self._make_error_dict("invalid_param", f"未知的 subject_type for detail: {subject_type}")
         detail_url = DoubanApi._urls[url_key] + subject_id
-        logger.info(f"通过豆瓣ID获取详情: {detail_url}")
+        logger.info(f"  -> 通过豆瓣ID获取详情: {detail_url}")
         details = self.__invoke(detail_url)
         if details.get("error"): # __invoke 返回了错误
             logger.warning(f"获取豆瓣ID {subject_id} ({subject_type}) 详情失败: {details.get('message')}")
