@@ -224,6 +224,17 @@ class LogDBManager:
         except Exception as e:
             logger.error(f"标记备份状态失败 for item {item_id}: {e}", exc_info=True)
 
+    def is_item_processed(self, cursor: psycopg2.extensions.cursor, item_id: str) -> bool:
+        """
+        检查一个项目是否已经在 processed_log 中。
+        """
+        try:
+            cursor.execute("SELECT 1 FROM processed_log WHERE item_id = %s", (item_id,))
+            return cursor.fetchone() is not None
+        except Exception as e:
+            logger.error(f"检查项目 {item_id} 是否已处理时发生错误: {e}", exc_info=True)
+            return False
+
 # --- ★★★ 新增：统一分级映射功能 (V2 - 健壮版) ★★★ ---
 # (此代码块替换掉原来的整个分级映射部分)
 
@@ -434,6 +445,3 @@ def translate_country_list(country_names_or_codes: list) -> list:
 #     print(f"张三 vs zhang san: {are_names_match('zhang san', None, '张三', None)}") # 应该为 True
 #     # 测试5: 不匹配
 #     print(f"Zhang San vs Li Si: {are_names_match('Zhang San', None, 'Li Si', None)}") # 应该为 False
-
-
-

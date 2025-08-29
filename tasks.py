@@ -37,6 +37,7 @@ from extensions import TASK_REGISTRY
 from custom_collection_handler import ListImporter, FilterEngine
 from core_processor import _read_local_json
 from services.cover_generator import CoverGeneratorService
+import utils
 from utils import get_country_translation_map, translate_country_list, get_unified_rating
 
 logger = logging.getLogger(__name__)
@@ -203,6 +204,15 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
     if not item_details:
         logger.error(f"Webhook 任务：无法获取项目 {item_id} 的详情，任务中止。")
         return
+
+    # 新增优化：如果是剧集，先查询已处理日志，处理过的就没必要再处理了直接跳过
+    item_type = item_details.get("Type")
+    if item_type == "Episode":
+        with db_handler.get_db_connection() as conn:
+            log_manager = utils.LogDBManager()
+            if log_manager.is_item_processed(conn.cursor(), item_id):
+                logger.debug(f"Webhook 任务：剧集 '{item_details.get('Name', item_id)}' (ID: {item_id}) 已在处理日志中，跳过。")
+                return
 
     # 步骤 B: 调用追剧判断
     processor.check_and_add_to_watchlist(item_details)
