@@ -225,8 +225,8 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V2 - PG JSON 兼容版】
-    - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
+    【V3 - 排序功能增强版】
+    - 新增了对 'original' 排序的支持。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -269,7 +269,14 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             if tmdb_id not in processed_real_tmdb_ids: final_items.append(real_item)
         
         sort_by_field = definition.get('default_sort_by')
-        if sort_by_field and sort_by_field != 'none':
+        
+        # --- ▼▼▼ 核心修改：增加对 'original' 排序的处理 ▼▼▼ ---
+        if sort_by_field and sort_by_field == 'original':
+            logger.trace("执行虚拟库排序劫持: 'original' (榜单原始顺序)，将保持数据库中的顺序。")
+            # 不执行任何操作，final_items 此时的顺序就是我们想要的原始顺序
+            pass
+        elif sort_by_field and sort_by_field != 'none':
+        # --- ▲▲▲ 修改结束 ▲▲▲ ---
             sort_order = definition.get('default_sort_order', 'Ascending')
             is_descending = (sort_order == 'Descending')
             logger.trace(f"执行虚拟库排序劫持: '{sort_by_field}' ({sort_order})")

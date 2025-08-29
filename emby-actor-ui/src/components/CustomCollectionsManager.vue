@@ -532,14 +532,21 @@ watch(selectedBuiltInList, (newValue) => {
   }
 });
 
-const sortFieldOptions = ref([
-  { label: '不设置 (使用Emby原生排序)', value: 'none' },
-  { label: '名称', value: 'SortName' },
-  { label: '添加日期', value: 'DateCreated' },
-  { label: '上映日期', value: 'PremiereDate' },
-  { label: '社区评分', value: 'CommunityRating' },
-  { label: '制作年份', value: 'ProductionYear' },
-]);
+const sortFieldOptions = computed(() => {
+  const options = [
+    { label: '不设置 (使用Emby原生排序)', value: 'none' },
+    { label: '名称', value: 'SortName' },
+    { label: '添加日期', value: 'DateCreated' },
+    { label: '上映日期', value: 'PremiereDate' },
+    { label: '社区评分', value: 'CommunityRating' },
+    { label: '制作年份', value: 'ProductionYear' },
+  ];
+  // 仅当合集类型为 'list' 时，才插入“榜单原始顺序”选项
+  if (currentCollection.value.type === 'list') {
+    options.splice(1, 0, { label: '榜单原始顺序', value: 'original' });
+  }
+  return options;
+});
 
 const sortOrderOptions = ref([
   { label: '升序', value: 'Ascending' },
@@ -555,8 +562,10 @@ const getInitialFormModel = () => ({
     item_type: ['Movie'],
     url: '',
     limit: null,
-    default_sort_by: 'none',
+    // --- ▼▼▼ 核心修改 2/3：为新创建的合集设置更合理的默认排序 ▼▼▼ ---
+    default_sort_by: 'original', // 对于榜单类型，默认使用原始顺序
     default_sort_order: 'Ascending' 
+    // --- ▲▲▲ 修改结束 ▲▲▲ ---
   }
 });
 const currentCollection = ref(getInitialFormModel());
@@ -568,15 +577,17 @@ watch(() => currentCollection.value.type, (newType) => {
       item_type: ['Movie'],
       logic: 'AND',
       rules: [{ field: null, operator: null, value: '' }],
-      default_sort_by: 'none',
-      default_sort_order: 'Ascending'
+      // --- ▼▼▼ 核心修改 3/3：为筛选类型设置不同的默认排序 ▼▼▼ ---
+      default_sort_by: 'PremiereDate', // 筛选类型默认按上映日期降序
+      default_sort_order: 'Descending'
+      // --- ▲▲▲ 修改结束 ▲▲▲ ---
     };
   } else if (newType === 'list') {
     currentCollection.value.definition = { 
       item_type: ['Movie'],
       url: '',
       limit: null,
-      default_sort_by: 'none',
+      default_sort_by: 'original', // 榜单类型默认使用原始顺序
       default_sort_order: 'Ascending'
     };
     selectedBuiltInList.value = 'custom';
