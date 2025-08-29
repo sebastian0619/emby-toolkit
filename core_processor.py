@@ -2240,11 +2240,32 @@ class MediaProcessor:
             if not full_details_emby:
                 raise ValueError("在Emby中找不到该项目。")
 
+            item_type = full_details_emby.get("Type")
+            
+            if item_type == "Episode":
+                series_id = emby_handler.get_series_id_from_child_id(
+                    item_id,
+                    self.emby_url,
+                    self.emby_api_key,
+                    self.emby_user_id
+                )
+                if series_id:
+                    logger.debug(f"{log_prefix} 检测到剧集，获取到所属剧集ID: {series_id}。将使用剧集信息进行缓存。")
+                    # Fetch details for the series instead of the episode
+                    full_details_emby = emby_handler.get_emby_item_details(
+                        series_id, self.emby_url, self.emby_api_key, self.emby_user_id,
+                        fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,People,Tags,DateModified,OfficialRating"
+                    )
+                    if not full_details_emby:
+                        logger.warning(f"{log_prefix} 无法获取所属剧集 (ID: {series_id}) 的详情，跳过缓存。")
+                        return
+                else:
+                    logger.warning(f"{log_prefix} 无法获取剧集 '{full_details_emby.get('Name', item_id)}' 的所属剧集ID，将使用剧集ID进行缓存。")
+            
             tmdb_id = full_details_emby.get("ProviderIds", {}).get("Tmdb")
             if not tmdb_id:
                 logger.warning(f"{log_prefix} 项目 '{full_details_emby.get('Name')}' 缺少TMDb ID，无法缓存。")
                 return
-
             # 2. 丰富演员信息
             enriched_people_list = self._enrich_cast_from_db_and_api(full_details_emby.get("People", []))
             enriched_people_map = {str(p.get("Id")): p for p in enriched_people_list}
