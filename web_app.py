@@ -704,7 +704,7 @@ def emby_webhook():
 
             except Exception as e:
                 logger.error(f"  -> 批量处理 '{item_name}' (ID: {item_id}) 时发生错误: {e}", exc_info=True)
-        logger.info("  -> ✅ 批量处理 Emby Webhook 新增/入库事件完成。")
+        logger.info("  -> 批量处理 Webhook任务 已添加到后台任务队列。")
 
 
     # --- Webhook 事件分发逻辑 ---
