@@ -207,12 +207,27 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
 
     # 新增优化：如果是剧集，先查询已处理日志，处理过的就没必要再处理了直接跳过
     item_type = item_details.get("Type")
+    item_id_to_check_log = item_id # 默认使用当前项目ID
+
     if item_type == "Episode":
-        with db_handler.get_db_connection() as conn:
-            log_manager = utils.LogDBManager()
-            if log_manager.is_item_processed(conn.cursor(), item_id):
-                logger.debug(f"Webhook 任务：剧集 '{item_details.get('Name', item_id)}' (ID: {item_id}) 已在处理日志中，跳过。")
-                return
+        # 如果是剧集，获取其所属剧集的ID
+        series_id = emby_handler.get_series_id_from_child_id(
+            item_id,
+            processor.emby_url,
+            processor.emby_api_key,
+            processor.emby_user_id
+        )
+        if series_id:
+            item_id_to_check_log = series_id
+            logger.debug(f"Webhook 任务：剧集 '{item_details.get('Name', item_id)}' (ID: {item_id}) 对应的剧集ID为: {series_id}。")
+        else:
+            logger.warning(f"Webhook 任务：无法获取剧集 '{item_details.get('Name', item_id)}' (ID: {item_id}) 的所属剧集ID，将使用剧集ID进行日志检查。")
+
+    with db_handler.get_db_connection() as conn:
+        log_manager = utils.LogDBManager()
+        if log_manager.is_item_processed(conn.cursor(), item_id_to_check_log):
+            logger.debug(f"Webhook 任务：项目 '{item_details.get('Name', item_id)}' (ID: {item_id_to_check_log}) 已在处理日志中，跳过。")
+            return
 
     # 步骤 B: 调用追剧判断
     processor.check_and_add_to_watchlist(item_details)
