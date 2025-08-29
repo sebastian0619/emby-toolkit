@@ -192,9 +192,6 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
     【V3 - 职责分离最终版】
     编排处理新入库项目的完整流程，所有数据库操作均委托给 db_handler。
     """
-    item_type = item_details.get("Type")
-    logger.info(f"  -> 任务启动，处理项目: {item_details.get('Name', item_id)}")
-
     # 步骤 A: 获取完整的项目详情
     item_details = emby_handler.get_emby_item_details(
         item_id, 
@@ -205,7 +202,8 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
     if not item_details:
         logger.error(f"  -> 无法获取项目 {item_id} 的详情，任务中止。")
         return
-
+    item_type = item_details.get("Type")
+    logger.info(f"  -> 任务启动，处理项目: {item_details.get('Name', item_id)}")
     # 如果是剧集，先查询已处理日志，处理过的直接跳过
     item_id_to_check_log = item_id # 默认使用当前项目ID
 
