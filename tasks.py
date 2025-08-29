@@ -192,7 +192,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
     【V3 - 职责分离最终版】
     编排处理新入库项目的完整流程，所有数据库操作均委托给 db_handler。
     """
-    logger.info(f"Webhook 任务启动，处理项目: {item_id}")
+    logger.info(f"  -> Webhook 任务启动，处理项目: {item_id}")
 
     # 步骤 A: 获取完整的项目详情
     item_details = emby_handler.get_emby_item_details(
@@ -202,10 +202,10 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
         processor.emby_user_id
     )
     if not item_details:
-        logger.error(f"Webhook 任务：无法获取项目 {item_id} 的详情，任务中止。")
+        logger.error(f"  -> Webhook 任务：无法获取项目 {item_id} 的详情，任务中止。")
         return
 
-    # 新增优化：如果是剧集，先查询已处理日志，处理过的就没必要再处理了直接跳过
+    # 如果是剧集，先查询已处理日志，处理过的直接跳过
     item_type = item_details.get("Type")
     item_id_to_check_log = item_id # 默认使用当前项目ID
 
@@ -219,14 +219,14 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
         )
         if series_id:
             item_id_to_check_log = series_id
-            logger.debug(f"Webhook 任务：剧集 '{item_details.get('Name', item_id)}' (ID: {item_id}) 对应的剧集ID为: {series_id}。")
+            logger.debug(f"  -> Webhook 任务：剧集 '{item_details.get('Name', item_id)}' (ID: {item_id}) 对应的剧集ID为: {series_id}。")
         else:
-            logger.warning(f"Webhook 任务：无法获取剧集 '{item_details.get('Name', item_id)}' (ID: {item_id}) 的所属剧集ID，将使用剧集ID进行日志检查。")
+            logger.warning(f"  -> Webhook 任务：无法获取剧集 '{item_details.get('Name', item_id)}' (ID: {item_id}) 的所属剧集ID，将使用剧集ID进行日志检查。")
 
     with db_handler.get_db_connection() as conn:
         log_manager = utils.LogDBManager()
         if log_manager.is_item_processed(conn.cursor(), item_id_to_check_log):
-            logger.debug(f"Webhook 任务：项目 '{item_details.get('Name', item_id)}' (ID: {item_id_to_check_log}) 已在处理日志中，跳过。")
+            logger.info(f"  -> Webhook 任务：项目 '{item_details.get('Name', item_id)}' (ID: {item_id_to_check_log}) 已处理过，跳过。")
             return
 
     # 步骤 B: 调用追剧判断
@@ -253,7 +253,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
         # 1. 从我们的缓存表中获取刚刚存入的元数据
         item_metadata = db_handler.get_media_metadata_by_tmdb_id(tmdb_id)
         if not item_metadata:
-            logger.warning(f"无法从本地缓存中找到TMDb ID为 {tmdb_id} 的元数据，无法匹配合集。")
+            logger.warning(f"  -> 无法从本地缓存中找到TMDb ID为 {tmdb_id} 的元数据，无法匹配合集。")
             return
 
         # --- 2. 匹配 Filter (筛选) 类型的合集 ---
@@ -295,7 +295,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
              logger.info(f"  -> 《{item_name}》没有匹配到任何需要更新状态的榜单类合集。")
 
     except Exception as e:
-        logger.error(f"为新入库项目 {item_id} 匹配自定义合集时发生意外错误: {e}", exc_info=True)
+        logger.error(f"  -> 为新入库项目 {item_id} 匹配自定义合集时发生意外错误: {e}", exc_info=True)
 
     # --- 步骤 E - 为所属的常规媒体库生成封面 ---
     try:
