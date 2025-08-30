@@ -95,7 +95,6 @@ class UnifiedSyncHandler:
                         map_id, status = self.actor_db_manager.upsert_person(
                             cursor, 
                             person_data_for_db,
-                            enrich_details=False,
                             emby_config=emby_config_for_upsert 
                         )
                         
