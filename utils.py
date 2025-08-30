@@ -205,24 +205,23 @@ class LogDBManager:
         except Exception as e:
             logger.error(f"写入 failed_log 失败 (Item ID: {item_id}): {e}")
     
-    def mark_assets_as_synced(self, cursor: psycopg2.extensions.cursor, item_id: str, emby_modified_at: str):
+    def mark_assets_as_synced(self, cursor, item_id: str, sync_timestamp_iso: str):
         """
-        【最终修正版】更新 processed_log 表，标记指定项目的资产已同步。
-        同时记录当前的同步时间和从Emby获取的最后修改时间。
+        在 processed_log 中标记一个项目的资源文件已同步，并记录确切的同步时间。
+        如果条目不存在，会创建一个新条目。
+        """
+        logger.debug(f"正在更新 Item ID {item_id} 的备份状态和时间戳...")
+        sql = """
+            INSERT INTO processed_log (item_id, assets_synced_at)
+            VALUES (%s, %s)
+            ON CONFLICT (item_id) DO UPDATE SET
+                assets_synced_at = EXCLUDED.assets_synced_at;
         """
         try:
-            current_sync_time = datetime.now().isoformat()
-            logger.debug(f"正在更新 Item ID {item_id} 的备份状态和时间戳...")
-            
-            # ★★★ 核心修复：使用 %s 占位符和元组传参 ★★★
-            cursor.execute(
-                "UPDATE processed_log SET assets_synced_at = %s, last_emby_modified_at = %s WHERE item_id = %s",
-                (current_sync_time, emby_modified_at, item_id)
-            )
-            logger.trace(f"  -> 成功执行对 Item ID {item_id} 的数据库更新。")
-
+            # 将 ISO 格式的时间戳字符串直接传递给数据库
+            cursor.execute(sql, (item_id, sync_timestamp_iso))
         except Exception as e:
-            logger.error(f"标记备份状态失败 for item {item_id}: {e}", exc_info=True)
+            logger.error(f"更新资源同步时间戳时失败 for item {item_id}: {e}", exc_info=True)
 
     def get_last_asset_sync_time(self, cursor, item_id: str) -> Optional[datetime]:
         """
