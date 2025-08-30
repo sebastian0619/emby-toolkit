@@ -6,9 +6,7 @@ import re
 import json
 from flask import Flask, request, Response
 from urllib.parse import urlparse, urlunparse
-from concurrent.futures import ThreadPoolExecutor
 import time
-import threading
 import uuid # <-- 确保导入
 from gevent import spawn
 from geventwebsocket.websocket import WebSocket
@@ -274,7 +272,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if sort_by_field and sort_by_field == 'original':
             logger.trace("执行虚拟库排序劫持: 'original' (榜单原始顺序)，将保持数据库中的顺序。")
             # 不执行任何操作，final_items 此时的顺序就是我们想要的原始顺序
-            pass
         elif sort_by_field and sort_by_field != 'none':
         # --- ▲▲▲ 修改结束 ▲▲▲ ---
             sort_order = definition.get('default_sort_order', 'Ascending')

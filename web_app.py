@@ -24,7 +24,6 @@ from werkzeug.utils import safe_join, secure_filename
 from utils import get_override_path_for_item
 from watchlist_processor import WatchlistProcessor
 from datetime import datetime
-from string import Template
 import requests
 import tmdb_handler
 import task_manager

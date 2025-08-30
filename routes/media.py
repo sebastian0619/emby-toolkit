@@ -2,7 +2,6 @@
 
 from flask import Blueprint, request, jsonify, Response, stream_with_context
 import logging
-import re
 
 import requests
 

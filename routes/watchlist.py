@@ -2,7 +2,6 @@
 
 from flask import Blueprint, request, jsonify
 import logging
-import json
 from datetime import datetime, date
 # 导入需要的模块
 import db_handler

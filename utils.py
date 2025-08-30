@@ -4,7 +4,7 @@ import re
 import os
 import psycopg2
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 from urllib.parse import quote_plus
 import unicodedata
 import logging

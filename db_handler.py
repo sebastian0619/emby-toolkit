@@ -3,7 +3,6 @@ import psycopg2
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor # 关键：让查询结果返回字典
 import json
-from datetime import date, timedelta, datetime
 import logging
 from typing import Optional, Dict, Any, List, Tuple
 from flask import jsonify

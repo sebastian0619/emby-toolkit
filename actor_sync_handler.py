@@ -1,8 +1,6 @@
 # actor_sync_handler.py (最终版)
 
-import time
-import json
-from typing import Optional, List, Dict, Any
+from typing import Optional
 import threading
 # 导入必要的模块
 import emby_handler

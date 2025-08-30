@@ -2,10 +2,9 @@
 import logging
 import requests
 import argparse
-import datetime
 import json
 import random
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Tuple
 import sys
 import os
 import time

@@ -1,17 +1,12 @@
 # services/cover_generator/__init__.py
 
 import logging
-import os
 import shutil
-import time
 import yaml
-import base64
 import random
-import re
 import requests # 使用标准的 requests 库
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
-from collections import defaultdict
 
 # 从您的项目中导入您确认存在的模块
 import config_manager

@@ -3,9 +3,8 @@
 import time
 import json
 import os
-import copy
 import concurrent.futures
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta, timezone
 import threading
 import db_handler

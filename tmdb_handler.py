@@ -2,10 +2,9 @@
 
 import requests
 import json
-import os
 import concurrent.futures
 from utils import contains_chinese, normalize_name_for_matching
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any
 import logging
 import config_manager
 logger = logging.getLogger(__name__)

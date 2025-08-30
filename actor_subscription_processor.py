@@ -1,6 +1,5 @@
 # actor_subscription_processor.py
 
-import json
 import time
 import re
 from datetime import datetime, timedelta

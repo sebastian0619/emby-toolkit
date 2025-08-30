@@ -4,7 +4,6 @@ from flask import Blueprint, request, jsonify, Response
 import logging
 import json
 import re
-import os
 import psycopg2
 import time
 from datetime import datetime, date

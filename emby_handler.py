@@ -4,7 +4,6 @@ import requests
 import concurrent.futures
 import os
 import shutil
-import json
 import time
 import utils
 import threading

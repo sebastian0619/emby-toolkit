@@ -1,6 +1,5 @@
 # douban.py
 
-import os
 import requests # type: ignore
 from typing import Optional, Dict, Any, List
 import logging

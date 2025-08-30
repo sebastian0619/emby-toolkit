@@ -1,18 +1,15 @@
 # core_processor_sa.py
 
 import os
-import re
 import json
 import concurrent.futures
 from typing import Dict, List, Optional, Any, Tuple, Set
 import shutil
 import threading
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, timezone
 import time as time_module
 import psycopg2
 import requests
-import copy
-import random
 # 确保所有依赖都已正确导入
 import emby_handler
 import tmdb_handler

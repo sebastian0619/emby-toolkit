@@ -300,7 +300,6 @@ class FilterEngine:
                     except TypeError:
                         # 增加保护，以防万一某行数据格式真的有问题
                         logger.warning(f"处理 {field}_json 时遇到意外的类型错误，内容: {item_object_list}")
-                        pass
 
             # 2. 检查字段是否为“字符串列表”（类型/国家/工作室/标签）
             elif field in ['genres', 'countries', 'studios', 'tags']:
@@ -320,7 +319,6 @@ class FilterEngine:
                                 match = True
                     except TypeError:
                         logger.warning(f"处理 {field}_json 时遇到意外的类型错误，内容: {item_value_list}")
-                        pass
 
             # 3. 处理其他所有非列表字段 (这部分逻辑是正确的，无需修改)
             elif field in ['release_date', 'date_added']:

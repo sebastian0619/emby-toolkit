@@ -1,7 +1,6 @@
 # tasks.py
 
 import time
-import re
 import os
 import json
 import psycopg2
@@ -9,7 +8,6 @@ import pytz
 from psycopg2 import sql
 from psycopg2.extras import execute_values, Json
 import logging
-import threading
 from typing import Dict, Any
 from datetime import datetime, date, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed 
@@ -718,7 +716,6 @@ def _process_single_collection_concurrently(collection_data: dict, tmdb_api_key:
                         previous_movies_map = {str(m['tmdb_id']): m for m in row['missing_movies_json']}
                     except (TypeError, KeyError): 
                         logger.warning(f"解析合集 '{collection_name}' 的历史数据时格式不兼容，将忽略。")
-                        pass
             
             for movie in details.get("parts", []):
                 # 确保 TMDB ID 也为字符串，与上面创建的集合类型一致

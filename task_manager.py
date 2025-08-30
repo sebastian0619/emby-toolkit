@@ -1,9 +1,8 @@
 # task_manager.py (V2 - 精确调度版)
 import threading
-import json
 import logging
 from queue import Queue
-from typing import Optional, Callable, Any, Union, Literal
+from typing import Optional, Callable, Union, Literal
 
 # 导入类型提示，注意使用字符串避免循环导入
 from core_processor import MediaProcessor
