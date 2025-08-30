@@ -818,7 +818,7 @@ def task_refresh_collections(processor: MediaProcessor):
             logger.warning("任务被用户中断，部分数据可能未被处理。")
         
         if all_results:
-            logger.info(f"并发处理完成，准备将 {len(all_results)} 条结果写入数据库...")
+            logger.info(f"  -> 并发处理完成，准备将 {len(all_results)} 条结果写入数据库...")
             with db_handler.get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("BEGIN TRANSACTION;")
@@ -843,7 +843,7 @@ def task_refresh_collections(processor: MediaProcessor):
                     # 4. 使用 executemany 执行
                     cursor.executemany(sql, all_results)
                     conn.commit()
-                    logger.info("数据库写入成功！")
+                    logger.info("  -> ✅ 数据库写入成功！")
                 except Exception as e_db:
                     logger.error(f"数据库批量写入时发生错误: {e_db}", exc_info=True)
                     conn.rollback()

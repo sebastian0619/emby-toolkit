@@ -148,7 +148,7 @@ def submit_task(task_function: Callable, task_name: str, processor_type: Process
             return False
 
         frontend_log_queue.clear()
-        logger.info(f"任务 '{task_name}' (处理器: {processor_type}) 已提交到队列，并已清空前端日志。")
+        logger.info(f"任务 '{task_name}' 已提交到队列，并已清空前端日志。")
         
         # ★★★ 核心修复：将 processor_type 加入任务信息元组 ★★★
         task_info = (task_function, task_name, processor_type, args, kwargs)
