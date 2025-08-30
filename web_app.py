@@ -566,12 +566,11 @@ def emby_webhook():
             logger.error(f"实时覆盖缓存备份 '{item_name}' 时发生严重错误: {e}", exc_info=True)
 
     # --- 后台处理函数：定点同步元数据缓存 (metadata.update) ---
-    def _sync_metadata_cache_in_background(item_id, item_name, sync_timestamp):
+    def _sync_metadata_cache_in_background(item_id, item_name):
         logger.info(f"实时媒体元数据同步线程启动: '{item_name}' (ID: {item_id})")
         try:
             processor = extensions.media_processor_instance
             processor.sync_single_item_to_metadata_cache(item_id, item_name=item_name)
-            processor.sync_single_item_assets(item_id, update_description, sync_timestamp)
             logger.info(f"实时媒体元数据同步成功完成: '{item_name}'")
         except Exception as e:
             logger.error(f"实时媒体元数据同步 '{item_name}' 时发生严重错误: {e}", exc_info=True)
@@ -700,15 +699,28 @@ def emby_webhook():
             logger.debug("Webhook 'metadata.update' 收到，但未配置本地数据源，将忽略。")
             return jsonify({"status": "event_ignored_no_local_data_path"}), 200
         
-        logger.info(f"Webhook 'metadata.update' 触发元数据缓存同步 for '{original_item_name}'")
+        update_description = data.get("UpdateInfo", {}).get("Description", "Metadata Update") # 默认描述
+        webhook_received_at_iso = datetime.now(timezone.utc).isoformat()
+
+        logger.info(f"Webhook 'metadata.update' 触发元数据缓存同步和资源文件同步 for '{original_item_name}'")
         
-        thread = threading.Thread(
+        # 启动元数据缓存同步线程
+        metadata_thread = threading.Thread(
             target=_sync_metadata_cache_in_background,
             args=(original_item_id, original_item_name)
         )
-        thread.daemon = True
-        thread.start()
-        return jsonify({"status": "metadata_cache_sync_started", "item_id": original_item_id}), 202
+        metadata_thread.daemon = True
+        metadata_thread.start()
+
+        # 启动资源文件同步线程
+        assets_thread = threading.Thread(
+            target=_sync_assets_in_background,
+            args=(original_item_id, original_item_name, update_description, webhook_received_at_iso)
+        )
+        assets_thread.daemon = True
+        assets_thread.start()
+
+        return jsonify({"status": "metadata_and_asset_sync_started", "item_id": original_item_id}), 202
 
     return jsonify({"status": "event_unhandled"}), 500
 
