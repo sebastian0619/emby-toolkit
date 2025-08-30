@@ -136,10 +136,10 @@ class ActorDBManager:
                 logger.error(f"查询 person_identity_map 时出错 ({column}={value}): {e}")
         return None
 
-    def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], **kwargs) -> int:
+    def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], **kwargs) -> Tuple[int, str]:
         """
-        以 emby_person_id 为主，补齐缺失的外部ID。
-        如果外部ID与其他记录冲突，则清除旧记录的冲突ID值，并将ID更新到当前记录。
+        以 emby_person_id 为主进行更新或插入，并返回操作状态。
+        状态: INSERTED, UPDATED, UNCHANGED, SKIPPED, ERROR
         """
         try:
             # 1. 标准化输入数据
@@ -151,70 +151,55 @@ class ActorDBManager:
                 "douban_celebrity_id": str(person_data.get("douban_id") or '').strip() or None,
             }
 
-            # 必须有 emby_person_id
             if not new_data["emby_person_id"]:
                 logger.warning("缺失 emby_person_id，无法执行 upsert")
-                return -1
+                return -1, "SKIPPED"
 
             id_fields = ["tmdb_person_id", "imdb_id", "douban_celebrity_id"]
             cursor.execute("SAVEPOINT actor_upsert")
 
-            # 2. 查找基于 emby_person_id 的已有记录
+            # 2. 查找已有记录
             cursor.execute("SELECT * FROM person_identity_map WHERE emby_person_id = %s", (new_data["emby_person_id"],))
             existing_record = cursor.fetchone()
 
-            # 3. 如果记录已存在，则更新
+            # 3. 记录已存在，尝试更新
             if existing_record:
                 existing_record = dict(existing_record)
                 update_fields = {}
                 
-                # 检查并补充缺失的外部ID
                 for f in id_fields:
                     new_val = new_data.get(f)
-                    # 当新数据提供了ID，且现有记录中缺少该ID时
                     if new_val is not None and not existing_record.get(f):
-                        # 检查这个新ID是否与其他记录冲突
                         cursor.execute(f"SELECT map_id FROM person_identity_map WHERE {f} = %s AND emby_person_id <> %s", (new_val, new_data["emby_person_id"]))
                         conflict_record = cursor.fetchone()
                         if conflict_record:
-                            # 如果冲突，清除旧记录中的冲突值
                             logger.warning(f"字段 {f}='{new_val}' 与另一条记录(map_id={conflict_record['map_id']})冲突。将清除旧记录的冲突值。")
                             cursor.execute(f"UPDATE person_identity_map SET {f} = NULL, last_updated_at = NOW() WHERE map_id = %s", (conflict_record['map_id'],))
-                        
-                        # 解决冲突后，将新值加入待更新列表
                         update_fields[f] = new_val
 
-                # 检查并更新名称
                 new_name = new_data["primary_name"]
                 old_name = existing_record.get("primary_name") or ""
                 if new_name and new_name != old_name:
                     update_fields["primary_name"] = new_name
 
-                # 如果有需要更新的字段，执行更新操作
                 if update_fields:
                     set_clauses = [f"{k} = %s" for k in update_fields.keys()]
                     set_clauses.append("last_updated_at = NOW()")
                     sql = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = %s"
                     cursor.execute(sql, tuple(update_fields.values()) + (existing_record["map_id"],))
-                    logger.info(f"更新了 emby_person_id='{new_data['emby_person_id']}' 的记录，字段: {list(update_fields.keys())}")
+                    cursor.execute("RELEASE SAVEPOINT actor_upsert")
+                    return existing_record["map_id"], "UPDATED"
+                else:
+                    cursor.execute("RELEASE SAVEPOINT actor_upsert")
+                    return existing_record["map_id"], "UNCHANGED"
 
-                cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                return existing_record["map_id"]
-
-            # 4. 如果记录不存在，则插入
+            # 4. 记录不存在，执行插入
             else:
-                # 在插入前，检查所有外部ID，如果存在于其他记录中，则清除它们
                 for f in id_fields:
                     v = new_data.get(f)
                     if v:
-                        cursor.execute(f"SELECT map_id FROM person_identity_map WHERE {f} = %s", (v,))
-                        conflict_record = cursor.fetchone()
-                        if conflict_record:
-                            # 如果冲突，清除旧记录中的冲突值
-                            logger.warning(f"新记录的字段 {f}='{v}' 与现有记录(map_id={conflict_record['map_id']})冲突。将清除旧记录的冲突值。")
-                            cursor.execute(f"UPDATE person_identity_map SET {f} = NULL, last_updated_at = NOW() WHERE map_id = %s", (conflict_record['map_id'],))
+                        cursor.execute(f"UPDATE person_identity_map SET {f} = NULL, last_updated_at = NOW() WHERE {f} = %s", (v,))
 
-                # 清除所有潜在冲突后，执行插入操作
                 insert_fields = [k for k, v in new_data.items() if v is not None]
                 insert_placeholders = ["%s"] * len(insert_fields)
                 insert_values = [new_data[k] for k in insert_fields]
@@ -226,21 +211,13 @@ class ActorDBManager:
                 """
                 cursor.execute(sql_insert, tuple(insert_values))
                 result = cursor.fetchone()
-                map_id = result["map_id"] if result else -1
-                if map_id != -1:
-                    logger.info(f"插入了新记录 emby_person_id='{new_data['emby_person_id']}' (map_id={map_id})")
-
                 cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                return map_id
+                return (result["map_id"], "INSERTED") if result else (-1, "ERROR")
 
         except psycopg2.Error as e:
             cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
-            logger.error(f"upsert_person 数据库异常，emby_person_id={person_data.get('emby_id')}: {e}", exc_info=True)
-            return -1
-        except Exception as e:
-            cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
-            logger.error(f"upsert_person 未知异常，emby_person_id={person_data.get('emby_id')}: {e}", exc_info=True)
-            return -1
+            logger.error(f"upsert_person 异常，emby_person_id={person_data.get('emby_id')}: {e}", exc_info=True)
+            return -1, "ERROR"
         
 # ======================================================================
 # 模块 3: 日志表数据访问 (Log Tables Data Access)
