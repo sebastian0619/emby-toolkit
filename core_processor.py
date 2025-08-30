@@ -2157,7 +2157,31 @@ class MediaProcessor:
 
         # 5. 新增：注入演员表到所有季/集文件 (不变)
         if item_type == "Series":
-            logger.info(f"  -> {log_prefix} 步骤 3/3: 开始将演员表注入所有季/集备份文件...")
+            logger.info(f"  -> {log_prefix} 步骤 3/3: 开始将演员表、剧集名和简介注入所有季/集备份文件...")
+            
+            # ★★★ 核心修改 1: 获取所有子项目的最新数据 ★★★
+            # 感谢 emby_handler.py 的修复，这里现在能获取到 Overview 了
+            children_from_emby = emby_handler.get_series_children(
+                series_id=item_details.get("Id"),
+                base_url=self.emby_url,
+                api_key=self.emby_api_key,
+                user_id=self.emby_user_id,
+                series_name_for_log=item_name_for_log
+            ) or []
+
+            # ★★★ 核心修改 2: 创建一个高效的查找映射表 ★★★
+            # key 的格式为 "season-1-episode-12"，与文件名完美对应
+            child_data_map = {}
+            for child in children_from_emby:
+                key = None
+                if child.get("Type") == "Season":
+                    key = f"season-{child.get('IndexNumber')}"
+                elif child.get("Type") == "Episode":
+                    key = f"season-{child.get('ParentIndexNumber')}-episode-{child.get('IndexNumber')}"
+                
+                if key:
+                    child_data_map[key] = child
+
             updated_children_count = 0
             try:
                 for filename in os.listdir(target_override_dir):
@@ -2166,15 +2190,28 @@ class MediaProcessor:
                         try:
                             with open(child_json_path, 'r+', encoding='utf-8') as f_child:
                                 child_data = json.load(f_child)
+                                
+                                # 注入演员表 (原有逻辑)
                                 if 'credits' in child_data and 'cast' in child_data['credits']:
                                     child_data['credits']['cast'] = new_perfect_cast
-                                    f_child.seek(0)
-                                    json.dump(child_data, f_child, ensure_ascii=False, indent=2)
-                                    f_child.truncate()
-                                    updated_children_count += 1
+                                
+                                # ★★★ 核心修改 3: 查找并更新 Name 和 Overview ★★★
+                                file_key = os.path.splitext(filename)[0]
+                                fresh_data = child_data_map.get(file_key)
+                                if fresh_data:
+                                    # 使用从 Emby 获取的最新数据覆盖 JSON 文件中的旧数据
+                                    child_data['name'] = fresh_data.get('Name', child_data.get('name'))
+                                    child_data['overview'] = fresh_data.get('Overview', child_data.get('overview'))
+                                    logger.trace(f"    -> 已为 '{filename}' 更新 Name 和 Overview。")
+                                
+                                # 写回文件
+                                f_child.seek(0)
+                                json.dump(child_data, f_child, ensure_ascii=False, indent=2)
+                                f_child.truncate()
+                                updated_children_count += 1
                         except Exception as e_child:
                             logger.warning(f"  -> 更新子文件 '{filename}' 时失败: {e_child}")
-                logger.info(f"  -> {log_prefix} 成功将演员表注入了 {updated_children_count} 个季/集文件。")
+                logger.info(f"  -> {log_prefix} 成功将元数据注入了 {updated_children_count} 个季/集文件。")
             except Exception as e_list:
                 logger.error(f"  -> {log_prefix} 遍历并更新季/集文件时发生错误: {e_list}", exc_info=True)
 

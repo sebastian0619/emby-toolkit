@@ -614,7 +614,7 @@ def get_series_children(
     user_id: str,
     series_name_for_log: Optional[str] = None,
     include_item_types: str = "Season,Episode",
-    fields: str = "Id,Name,ParentIndexNumber,IndexNumber"
+    fields: str = "Id,Name,ParentIndexNumber,IndexNumber,Overview"
 ) -> Optional[List[Dict[str, Any]]]:
     """
     【V2 - 灵活版】获取指定剧集下的子项目，可以指定类型。
