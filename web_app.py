@@ -702,12 +702,45 @@ def emby_webhook():
         update_description = data.get("UpdateInfo", {}).get("Description", "Metadata Update") # 默认描述
         webhook_received_at_iso = datetime.now(timezone.utc).isoformat()
 
-        logger.info(f"Webhook 'metadata.update' 触发元数据缓存同步和资源文件同步 for '{original_item_name}'")
+        id_to_process = original_item_id
+        name_for_sync = original_item_name
+        
+        # 如果是剧集，需要获取其所属剧集的ID
+        if original_item_type == "Episode":
+            series_id = emby_handler.get_series_id_from_child_id(
+                original_item_id, extensions.media_processor_instance.emby_url,
+                extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, item_name=original_item_name
+            )
+            if not series_id:
+                logger.warning(f"Webhook 'metadata.update': 剧集 '{original_item_name}' (ID: {original_item_id}) 未找到所属剧集，跳过同步。")
+                return jsonify({"status": "event_ignored_episode_no_series_id"}), 200
+            id_to_process = series_id
+            
+            # 获取剧集详情以更新名称
+            full_series_details = emby_handler.get_emby_item_details(
+                item_id=id_to_process, emby_server_url=extensions.media_processor_instance.emby_url,
+                emby_api_key=extensions.media_processor_instance.emby_api_key, user_id=extensions.media_processor_instance.emby_user_id
+            )
+            if full_series_details:
+                name_for_sync = full_series_details.get("Name", f"未知剧集(ID:{id_to_process})")
+            else:
+                logger.warning(f"Webhook 'metadata.update': 无法获取剧集 '{id_to_process}' 的详情，使用原始名称。")
+
+        # 最终检查 Tmdb ID
+        full_item_details = emby_handler.get_emby_item_details(
+            item_id=id_to_process, emby_server_url=extensions.media_processor_instance.emby_url,
+            emby_api_key=extensions.media_processor_instance.emby_api_key, user_id=extensions.media_processor_instance.emby_user_id
+        )
+        if not full_item_details or not full_item_details.get("ProviderIds", {}).get("Tmdb"):
+            logger.warning(f"Webhook 'metadata.update': '{name_for_sync}' (ID: {id_to_process}) 缺少 Tmdb ID，跳过同步。")
+            return jsonify({"status": "event_ignored_no_tmdb_id"}), 200
+
+        logger.info(f"Webhook 'metadata.update' 触发元数据缓存同步和资源文件同步 for '{name_for_sync}' (ID: {id_to_process})")
         
         # 启动元数据缓存同步线程
         metadata_thread = threading.Thread(
             target=_sync_metadata_cache_in_background,
-            args=(original_item_id, original_item_name)
+            args=(id_to_process, name_for_sync)
         )
         metadata_thread.daemon = True
         metadata_thread.start()
@@ -715,12 +748,12 @@ def emby_webhook():
         # 启动资源文件同步线程
         assets_thread = threading.Thread(
             target=_sync_assets_in_background,
-            args=(original_item_id, original_item_name, update_description, webhook_received_at_iso)
+            args=(id_to_process, name_for_sync, update_description, webhook_received_at_iso)
         )
         assets_thread.daemon = True
         assets_thread.start()
 
-        return jsonify({"status": "metadata_and_asset_sync_started", "item_id": original_item_id}), 202
+        return jsonify({"status": "metadata_and_asset_sync_started", "item_id": id_to_process}), 202
 
     return jsonify({"status": "event_unhandled"}), 500
 
