@@ -131,9 +131,9 @@
       <n-text>您希望如何执行此任务？</n-text>
       <template #action>
         <n-button @click="showSyncModeModal = false">取消</n-button>
-        <n-button @click="runTaskFromModal(false)">快速模式</n-button>
+        <n-button @click="runTaskFromModal(false)">快速模式（增量）</n-button>
         <n-button type="warning" @click="runTaskFromModal(true)">
-          深度模式 (慢)
+          深度模式 (全量)
         </n-button>
       </template>
     </n-modal>
