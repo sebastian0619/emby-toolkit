@@ -566,11 +566,12 @@ def emby_webhook():
             logger.error(f"实时覆盖缓存备份 '{item_name}' 时发生严重错误: {e}", exc_info=True)
 
     # --- 后台处理函数：定点同步元数据缓存 (metadata.update) ---
-    def _sync_metadata_cache_in_background(item_id, item_name):
+    def _sync_metadata_cache_in_background(item_id, item_name, sync_timestamp):
         logger.info(f"实时媒体元数据同步线程启动: '{item_name}' (ID: {item_id})")
         try:
             processor = extensions.media_processor_instance
             processor.sync_single_item_to_metadata_cache(item_id, item_name=item_name)
+            processor.sync_single_item_assets(item_id, update_description, sync_timestamp)
             logger.info(f"实时媒体元数据同步成功完成: '{item_name}'")
         except Exception as e:
             logger.error(f"实时媒体元数据同步 '{item_name}' 时发生严重错误: {e}", exc_info=True)
