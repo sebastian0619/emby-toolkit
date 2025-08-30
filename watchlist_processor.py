@@ -14,7 +14,6 @@ import tmdb_handler
 import emby_handler
 import logging
 import extensions
-from core_processor import MediaProcessor
 
 logger = logging.getLogger(__name__)
 # ✨✨✨ Tmdb状态翻译字典 ✨✨✨
