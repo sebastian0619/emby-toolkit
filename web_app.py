@@ -448,7 +448,7 @@ def ensure_nginx_config():
 
         # 3. 准备替换值 (逻辑不变)
         emby_upstream = emby_url.replace("http://", "").replace("https://", "").rstrip('/')
-        proxy_upstream = "emby-toolkit:8098"
+        proxy_upstream = "emby-toolkit:7758"
         redirect_upstream = redirect_url.replace("http://", "").replace("https://", "").rstrip('/')
 
         if not emby_upstream:
@@ -770,7 +770,7 @@ if __name__ == '__main__':
         if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
             try:
                 # 定义一个固定的内部端口
-                internal_proxy_port = 8098
+                internal_proxy_port = 7758
                 logger.trace(f"🚀 [GEVENT] 反向代理服务即将启动，监听内部端口: {internal_proxy_port}")
                 
                 proxy_server = WSGIServer(
