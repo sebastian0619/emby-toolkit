@@ -292,6 +292,12 @@ class MediaProcessor:
         if ids_to_fetch_from_api:
             logger.trace(f"  -> 开始为 {len(ids_to_fetch_from_api)} 位新演员从Emby获取信息并【实时反哺】...")
             
+            emby_config_for_upsert = {
+                "url": self.emby_url,
+                "api_key": self.emby_api_key,
+                "user_id": self.emby_user_id
+            }
+            
             with get_central_db_connection() as conn_upsert:
                 cursor_upsert = conn_upsert.cursor()
 
@@ -321,7 +327,8 @@ class MediaProcessor:
                         
                         self.actor_db_manager.upsert_person(
                             cursor=cursor_upsert,
-                            person_data=person_data_for_db
+                            person_data=person_data_for_db,
+                            emby_config=emby_config_for_upsert
                         )
                         
                         logger.trace(f"    -> [实时反哺] 已将演员 '{full_detail.get('Name')}' (ID: {actor_id}) 的新映射关系存入数据库。")

@@ -51,6 +51,12 @@ class UnifiedSyncHandler:
         logger.info(f"  -> Emby中共有约 {total_from_emby} 个演员条目，开始同步...")
         if update_status_callback: update_status_callback(0, f"开始同步 {total_from_emby} 位演员...")
 
+        emby_config_for_upsert = {
+            "url": self.emby_url,
+            "api_key": self.emby_api_key,
+            "user_id": self.emby_user_id
+        }
+        
         with get_central_db_connection() as conn:
             cursor = conn.cursor()
             
@@ -89,7 +95,8 @@ class UnifiedSyncHandler:
                         map_id, status = self.actor_db_manager.upsert_person(
                             cursor, 
                             person_data_for_db,
-                            enrich_details=False 
+                            enrich_details=False,
+                            emby_config=emby_config_for_upsert 
                         )
                         
                         # 根据返回的状态进行分类计数

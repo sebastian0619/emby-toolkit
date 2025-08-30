@@ -127,6 +127,47 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
         logger.error(
             f"获取Emby项目详情时发生未知错误 (ItemID: {item_id}, UserID: {user_id}): {e}\n{traceback.format_exc()}")
         return None
+# ✨✨✨ 精确清除 Person 的某个 Provider ID ✨✨✨
+def clear_emby_person_provider_id(person_id: str, provider_key_to_clear: str, emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
+    """
+    【V1 - 精确手术刀】
+    精确地从一个 Emby Person 条目中移除一个指定的 Provider ID。
+    例如: provider_key_to_clear = "Tmdb" 或 "Douban"。
+    """
+    if not all([person_id, provider_key_to_clear, emby_server_url, emby_api_key, user_id]):
+        logger.error("clear_emby_person_provider_id: 参数不足。")
+        return False
+
+    try:
+        # 步骤 1: 获取 Person 的当前完整信息
+        person_details = get_emby_item_details(person_id, emby_server_url, emby_api_key, user_id, fields="ProviderIds,Name")
+        if not person_details:
+            logger.warning(f"无法获取 Person {person_id} 的详情，跳过清除 Provider ID 操作。")
+            return False # 视为非失败，因为对象可能已不存在
+
+        person_name = person_details.get("Name", f"ID:{person_id}")
+        current_provider_ids = person_details.get("ProviderIds", {})
+
+        # 步骤 2: 检查是否需要清除
+        if provider_key_to_clear not in current_provider_ids:
+            logger.trace(f"Person '{person_name}' ({person_id}) 已不包含 '{provider_key_to_clear}' ID，无需操作。")
+            return True # 已经清除了，视为成功
+
+        # 步骤 3: 构造只包含修改后 ProviderIds 的更新载荷
+        logger.debug(f"  -> 正在从 Person '{person_name}' ({person_id}) 的 ProviderIds 中移除 '{provider_key_to_clear}'...")
+        
+        updated_provider_ids = current_provider_ids.copy()
+        del updated_provider_ids[provider_key_to_clear]
+        
+        # 使用一个只包含我们要修改的字段的字典
+        update_payload = {"ProviderIds": updated_provider_ids}
+
+        # 步骤 4: 调用通用的更新函数来执行更新
+        return update_person_details(person_id, update_payload, emby_server_url, emby_api_key, user_id)
+
+    except Exception as e:
+        logger.error(f"清除 Person {person_id} 的 Provider ID '{provider_key_to_clear}' 时发生未知错误: {e}", exc_info=True)
+        return False
 # ✨✨✨ 更新一个 Person 条目本身的信息 ✨✨✨
 def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
     """

@@ -10,6 +10,7 @@ from flask import jsonify
 
 # 核心模块导入
 import config_manager
+import emby_handler
 import constants # 确保常量模块被导入
 from utils import contains_chinese
 
@@ -136,13 +137,27 @@ class ActorDBManager:
                 logger.error(f"查询 person_identity_map 时出错 ({column}={value}): {e}")
         return None
 
-    def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], **kwargs) -> Tuple[int, str]:
+    def upsert_person(
+    self, 
+    cursor: psycopg2.extensions.cursor, 
+    person_data: Dict[str, Any],
+    # ✨ 新增参数，用于实时清理Emby
+    emby_config: Dict[str, str] 
+) -> Tuple[int, str]:
         """
-        以 emby_person_id 为主进行更新或插入，并返回操作状态。
-        状态: INSERTED, UPDATED, UNCHANGED, SKIPPED, ERROR
+        【V3 - 冲突根除版】
+        以 emby_person_id 为主进行更新或插入。
+        一旦检测到外部ID冲突，会立即清除所有相关方（数据库和Emby）的该冲突ID。
         """
+        # 定义数据库字段名与Emby ProviderIds键的映射关系
+        id_field_map = {
+            "tmdb_person_id": "Tmdb",
+            "imdb_id": "Imdb",
+            "douban_celebrity_id": "Douban"
+        }
+
         try:
-            # 1. 标准化输入数据
+            # 1. 标准化输入数据 (逻辑不变)
             new_data = {
                 "primary_name": str(person_data.get("name") or '').strip(),
                 "emby_person_id": str(person_data.get("emby_id") or '').strip() or None,
@@ -155,26 +170,78 @@ class ActorDBManager:
                 logger.warning("缺失 emby_person_id，无法执行 upsert")
                 return -1, "SKIPPED"
 
-            id_fields = ["tmdb_person_id", "imdb_id", "douban_celebrity_id"]
             cursor.execute("SAVEPOINT actor_upsert")
 
-            # 2. 查找已有记录
+            # ======================================================================
+            # ✨ 核心修改：在处理前，主动检查并解决所有传入ID的冲突 ✨
+            # ======================================================================
+            for db_column, emby_provider_key in id_field_map.items():
+                id_value = new_data.get(db_column)
+                if id_value is None:
+                    continue
+
+                # 查找所有使用此ID的记录
+                cursor.execute(
+                    f"SELECT emby_person_id FROM person_identity_map WHERE {db_column} = %s",
+                    (id_value,)
+                )
+                conflicting_records = cursor.fetchall()
+                
+                # 如果发现超过一个记录（或一个不是当前记录的记录）使用此ID，则判定为冲突
+                # 为了简化逻辑，只要发现任何已存在的记录，就触发清理，确保ID的绝对唯一性
+                if conflicting_records:
+                    conflicting_emby_pids = [rec['emby_person_id'] for rec in conflicting_records]
+                    
+                    # 检查当前处理的 emby_person_id 是否在冲突列表中，如果不在，也把它加进去
+                    # 这样可以确保新旧数据都被纳入清理范围
+                    if new_data["emby_person_id"] not in conflicting_emby_pids:
+                        conflicting_emby_pids.append(new_data["emby_person_id"])
+                    
+                    # 只有当冲突涉及多个PID时，才执行清理
+                    if len(conflicting_emby_pids) > 1:
+                        logger.warning(
+                            f"检测到ID冲突: {db_column} = '{id_value}' 被多个Emby PID共享: {conflicting_emby_pids}。"
+                            "将执行彻底清理..."
+                        )
+
+                        # 1. 清理数据库
+                        logger.info(f"  -> 正在从数据库中清除所有 '{id_value}'...")
+                        cursor.execute(
+                            f"UPDATE person_identity_map SET {db_column} = NULL, last_updated_at = NOW() WHERE {db_column} = %s",
+                            (id_value,)
+                        )
+
+                        # 2. 清理 Emby
+                        logger.info(f"  -> 正在从Emby中清除所有关联演员的 '{emby_provider_key}' ID...")
+                        for pid in conflicting_emby_pids:
+                            emby_handler.clear_emby_person_provider_id(
+                                person_id=pid,
+                                provider_key_to_clear=emby_provider_key,
+                                emby_server_url=emby_config['url'],
+                                emby_api_key=emby_config['api_key'],
+                                user_id=emby_config['user_id']
+                            )
+                        
+                        # 清理后，将当前新数据中的这个ID也置空，因为它是“有争议”的
+                        new_data[db_column] = None
+                        logger.info(f"ID '{id_value}' 已被彻底清理，本次同步将不会使用它。")
+
+
+            # --- 后续的 upsert 逻辑基本保持不变，但现在处理的是已经“干净”的数据 ---
+
             cursor.execute("SELECT * FROM person_identity_map WHERE emby_person_id = %s", (new_data["emby_person_id"],))
             existing_record = cursor.fetchone()
 
-            # 3. 记录已存在，尝试更新
             if existing_record:
+                # 更新逻辑...
                 existing_record = dict(existing_record)
                 update_fields = {}
                 
+                # 只更新那些在新数据中仍然有效（未被清理）且在旧记录中缺失的字段
+                id_fields = id_field_map.keys()
                 for f in id_fields:
                     new_val = new_data.get(f)
                     if new_val is not None and not existing_record.get(f):
-                        cursor.execute(f"SELECT map_id FROM person_identity_map WHERE {f} = %s AND emby_person_id <> %s", (new_val, new_data["emby_person_id"]))
-                        conflict_record = cursor.fetchone()
-                        if conflict_record:
-                            logger.warning(f"字段 {f}='{new_val}' 与另一条记录(map_id={conflict_record['map_id']})冲突。将清除旧记录的冲突值。")
-                            cursor.execute(f"UPDATE person_identity_map SET {f} = NULL, last_updated_at = NOW() WHERE map_id = %s", (conflict_record['map_id'],))
                         update_fields[f] = new_val
 
                 new_name = new_data["primary_name"]
@@ -192,15 +259,13 @@ class ActorDBManager:
                 else:
                     cursor.execute("RELEASE SAVEPOINT actor_upsert")
                     return existing_record["map_id"], "UNCHANGED"
-
-            # 4. 记录不存在，执行插入
             else:
-                for f in id_fields:
-                    v = new_data.get(f)
-                    if v:
-                        cursor.execute(f"UPDATE person_identity_map SET {f} = NULL, last_updated_at = NOW() WHERE {f} = %s", (v,))
-
+                # 插入逻辑...
                 insert_fields = [k for k, v in new_data.items() if v is not None]
+                if not insert_fields: # 如果所有字段都无效了
+                    cursor.execute("RELEASE SAVEPOINT actor_upsert")
+                    return -1, "SKIPPED"
+
                 insert_placeholders = ["%s"] * len(insert_fields)
                 insert_values = [new_data[k] for k in insert_fields]
 
@@ -216,7 +281,11 @@ class ActorDBManager:
 
         except psycopg2.Error as e:
             cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
-            logger.error(f"upsert_person 异常，emby_person_id={person_data.get('emby_id')}: {e}", exc_info=True)
+            logger.error(f"upsert_person 数据库异常，emby_person_id={person_data.get('emby_id')}: {e}", exc_info=True)
+            return -1, "ERROR"
+        except Exception as e:
+            cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
+            logger.error(f"upsert_person 未知异常，emby_person_id={person_data.get('emby_id')}: {e}", exc_info=True)
             return -1, "ERROR"
         
 # ======================================================================
