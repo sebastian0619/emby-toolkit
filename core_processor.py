@@ -2217,9 +2217,8 @@ class MediaProcessor:
 
     def sync_single_item_assets(self, item_id: str, update_description: Optional[str] = None, sync_timestamp_iso: Optional[str] = None):
         """
-        【新增】【V1.2 - 时间戳注入版】为单个媒体项同步图片和元数据文件。
-        - 接收一个可选的 ISO 格式时间戳，用于更新数据库。
-        - 不再依赖 Emby 的 DateModified 字段。
+        【V1.3 - 冷却机制版】为单个媒体项同步图片和元数据文件。
+        - 新增冷却判断：在执行备份前，检查距离上次备份是否超过1小时，避免短时间内重复执行。
         """
         log_prefix = f"实时覆盖缓存备份 (ID: {item_id}):"
         logger.info(f"--- {log_prefix} 开始执行 ---")
@@ -2229,7 +2228,22 @@ class MediaProcessor:
             return
 
         try:
-            # ▼▼▼ 核心修改 1/2: 不再请求 DateModified 字段 ▼▼▼
+            # ★★★ 核心逻辑 1: 在所有操作之前，先进行时间检查 ★★★
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                # 调用我们修正过的函数来读取正确的时间戳
+                last_sync_time = self.log_db_manager.get_last_asset_sync_time(cursor, item_id)
+                
+                if last_sync_time:
+                    # 定义冷却时间为1小时 (3600秒)
+                    cooldown_period_seconds = 3600 
+                    time_since_last_sync = datetime.now(timezone.utc) - last_sync_time
+                    
+                    if time_since_last_sync.total_seconds() < cooldown_period_seconds:
+                        logger.info(f"  -> {log_prefix} 距离上次备份不足1小时 ({int(time_since_last_sync.total_seconds() / 60)}分钟前)，跳过本次同步。")
+                        return # 直接退出函数，不执行任何操作
+
+            # 如果检查通过，继续执行后续的备份逻辑
             item_details = emby_handler.get_emby_item_details(
                 item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
                 fields="ProviderIds,Type,Name,People,ImageTags,IndexNumber,ParentIndexNumber"
@@ -2248,7 +2262,7 @@ class MediaProcessor:
             # 2. 同步元数据文件
             self.sync_item_metadata(item_details, tmdb_id)
 
-            # ▼▼▼ 核心修改 2/2: 使用传入的时间戳，如果不存在则生成当前时间 ▼▼▼
+            # ★★★ 核心逻辑 2: 调用我们修正过的函数来记录当前时间 ★★★
             timestamp_to_log = sync_timestamp_iso or datetime.now(timezone.utc).isoformat()
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
