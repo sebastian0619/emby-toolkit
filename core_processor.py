@@ -2223,12 +2223,12 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"{log_prefix} 执行时发生错误: {e}", exc_info=True)
 
-    def sync_single_item_to_metadata_cache(self, item_id: str):
+    def sync_single_item_to_metadata_cache(self, item_id: str, item_name: Optional[str] = None):
         """
         【新增】为单个媒体项同步元数据到 media_metadata 数据库表。
         这是 task_populate_metadata_cache 的单点执行版本。
         """
-        log_prefix = f"实时同步媒体数据 (ID: {item_id}):"
+        log_prefix = f"实时同步媒体数据 '{item_name}'"
         logger.info(f"--- {log_prefix} 开始执行 ---")
         
         try:
@@ -2247,20 +2247,35 @@ class MediaProcessor:
                     item_id,
                     self.emby_url,
                     self.emby_api_key,
-                    self.emby_user_id
+                    self.emby_user_id,
+                    item_name=item_name,
                 )
                 if series_id:
-                    logger.debug(f"{log_prefix} 检测到剧集，获取到所属剧集ID: {series_id}。将使用剧集信息进行缓存。")
+                    # 额外单独请求获取剧集名字，用于友好日志
+                    series_name = None
+                    try:
+                        series_basic = emby_handler.get_emby_item_details(
+                            series_id, self.emby_url, self.emby_api_key, self.emby_user_id,
+                            fields="Name"
+                        )
+                        if series_basic:
+                            series_name = series_basic.get("Name")
+                    except Exception as e:
+                        logger.warning(f"{log_prefix} 获取所属剧集名称失败: {e}")
+
+                    # 友好日志
+                    log_series_name = series_name or f"未知剧集(ID:{series_id})"
+                    logger.debug(f"  -> {log_prefix} 检测到剧集，获取到所属剧集: '{log_series_name}' ，将使用剧集信息进行缓存。")
                     # Fetch details for the series instead of the episode
                     full_details_emby = emby_handler.get_emby_item_details(
                         series_id, self.emby_url, self.emby_api_key, self.emby_user_id,
                         fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,People,Tags,DateModified,OfficialRating"
                     )
                     if not full_details_emby:
-                        logger.warning(f"{log_prefix} 无法获取所属剧集 (ID: {series_id}) 的详情，跳过缓存。")
+                        logger.warning(f"  -> {log_prefix} 无法获取所属剧集 (ID: {series_id}) 的详情，跳过缓存。")
                         return
                 else:
-                    logger.warning(f"{log_prefix} 无法获取剧集 '{full_details_emby.get('Name', item_id)}' 的所属剧集ID，将使用剧集ID进行缓存。")
+                    logger.warning(f"  -> {log_prefix} 无法获取剧集 '{full_details_emby.get('Name', item_id)}' 的所属剧集ID，将使用剧集ID进行缓存。")
             
             tmdb_id = full_details_emby.get("ProviderIds", {}).get("Tmdb")
             if not tmdb_id:

@@ -607,54 +607,63 @@ def get_series_children(
         logger.error(f"获取剧集 {log_identifier} 的子项目列表时发生错误: {e}", exc_info=True)
         return None
 # ✨✨✨ 根据子项目ID（如分集或季）获取其所属的剧集（Series）的ID ✨✨✨    
-def get_series_id_from_child_id(item_id: str, base_url: str, api_key: str, user_id: Optional[str]) -> Optional[str]:
+def get_series_id_from_child_id(
+    item_id: str,
+    base_url: str,
+    api_key: str,
+    user_id: Optional[str],
+    item_name: Optional[str] = None
+) -> Optional[str]:
     """
     【修复版】根据子项目ID（如分集或季）获取其所属的剧集（Series）的ID。
-
     Args:
         item_id: 子项目的Emby ID。
         base_url: Emby服务器地址。
         api_key: Emby API Key。
         user_id: Emby用户ID。
-
+        item_name: 子项目名称（可选），用于日志友好显示。
     Returns:
         如果找到，返回剧集的ID字符串；否则返回None。
     """
+    name_for_log = item_name or item_id
     if not all([item_id, base_url, api_key, user_id]):
-        logger.error("get_series_id_from_child_id: 缺少必要的参数。")
+        logger.error(f"get_series_id_from_child_id({name_for_log}): 缺少必要的参数。")
         return None
-
     # 1. 先获取子项目本身的详情
-    # 注意：这里我们不需要请求 People 等重量级字段，可以简化
     item_details = get_emby_item_details(
         item_id=item_id,
         emby_server_url=base_url,
         emby_api_key=api_key,
         user_id=user_id,
-        fields="Type,SeriesId"  # 只请求我们需要的字段，提高效率
+        fields="Type,SeriesId"
     )
     
     if not item_details:
-        logger.warning(f"无法获取项目 {item_id} 的详情，无法向上查找剧集ID。")
+        logger.warning(f"无法获取项目 '{name_for_log}' ({item_id}) 的详情，无法向上查找剧集ID。")
         return None
-
-    # 2. 检查项目类型
+    
     item_type = item_details.get("Type")
     
     if item_type == "Series":
-        # 如果本身就是剧集，直接返回其ID
-        logger.info(f"项目 {item_id} 本身就是剧集，直接返回其ID。")
+        logger.info(f"  -> 媒体项 '{name_for_log}' 本身就是剧集，直接返回其ID。")
         return item_id
     
-    # 3. 核心逻辑：从详情中直接获取 SeriesId
-    # 无论是分集(Episode)还是季(Season)，Emby API 返回的详情中通常都直接包含了 SeriesId
     series_id = item_details.get("SeriesId")
     if series_id:
-        logger.info(f"项目 {item_id} (类型: {item_type}) 的所属剧集ID为: {series_id}。")
-        return str(series_id) # 确保返回的是字符串
+        # 获取所属剧集详情名字
+        series_details = get_emby_item_details(
+            item_id=series_id,
+            emby_server_url=base_url,
+            emby_api_key=api_key,
+            user_id=user_id,
+            fields="Name"
+        )
+        series_name = series_details.get("Name") if series_details else None
+        series_name_for_log = f"'{series_name}'" if series_name else "未知片名"
+        logger.info(f"  -> 媒体项 '{name_for_log}' 所属剧集为：{series_name_for_log}。")
+        return str(series_id)
     
-    # 4. 如果是其他类型，或者详情中没有 SeriesId，记录日志并返回None
-    logger.warning(f"项目 {item_id} (类型: {item_type}) 的详情中未找到 'SeriesId' 字段，无法确定所属剧集。")
+    logger.warning(f"  -> 媒体项 '{name_for_log}' (类型: {item_type}) 的详情中未找到 'SeriesId' 字段，无法确定所属剧集。")
     return None
 # ✨✨✨ 从 Emby 下载指定类型的图片并保存到本地 ✨✨✨
 def download_emby_image(

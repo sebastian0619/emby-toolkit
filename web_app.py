@@ -571,7 +571,7 @@ def emby_webhook():
         logger.info(f"实时媒体元数据同步线程启动: '{item_name}' (ID: {item_id})")
         try:
             processor = extensions.media_processor_instance
-            processor.sync_single_item_to_metadata_cache(item_id)
+            processor.sync_single_item_to_metadata_cache(item_id, item_name=item_name)
             logger.info(f"实时媒体元数据同步成功完成: '{item_name}'")
         except Exception as e:
             logger.error(f"实时媒体元数据同步 '{item_name}' 时发生严重错误: {e}", exc_info=True)
@@ -590,17 +590,17 @@ def emby_webhook():
 
         logger.info(f"  -> 开始批量处理 {len(items_to_process)} 个 Emby Webhook 新增/入库事件。")
         for item_id, item_name, item_type in items_to_process:
-            logger.info(f"  -> 批量处理中: '{item_name}' (ID: {item_id}, 类型: {item_type})")
+            logger.info(f"  -> 批量处理中: '{item_name}'")
             try:
                 # 这里的逻辑与之前的单个处理逻辑相同
                 id_to_process = item_id
                 if item_type == "Episode":
                     series_id = emby_handler.get_series_id_from_child_id(
                         item_id, extensions.media_processor_instance.emby_url,
-                        extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id
+                        extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, item_name=item_name
                     )
                     if not series_id:
-                        logger.warning(f"  -> 批量处理中，剧集 '{item_name}' (ID: {item_id}) 未找到所属剧集，跳过。")
+                        logger.warning(f"  -> 批量处理中，剧集 '{item_name}' 未找到所属剧集，跳过。")
                         continue
                     id_to_process = series_id
                 
@@ -609,12 +609,12 @@ def emby_webhook():
                     emby_api_key=extensions.media_processor_instance.emby_api_key, user_id=extensions.media_processor_instance.emby_user_id
                 )
                 if not full_item_details:
-                    logger.warning(f"  -> 批量处理中，无法获取 '{item_name}' (ID: {id_to_process}) 的详情，跳过。")
+                    logger.warning(f"  -> 批量处理中，无法获取 '{item_name}' 的详情，跳过。")
                     continue
                 
                 final_item_name = full_item_details.get("Name", f"未知(ID:{id_to_process})")
                 if not full_item_details.get("ProviderIds", {}).get("Tmdb"):
-                    logger.warning(f"  -> 批量处理中，'{final_item_name}' (ID: {id_to_process}) 缺少 Tmdb ID，跳过。")
+                    logger.warning(f"  -> 批量处理中，'{final_item_name}' 缺少 Tmdb ID，跳过。")
                     continue
                 
                 # 提交到任务队列，而不是直接在当前线程处理
@@ -625,10 +625,10 @@ def emby_webhook():
                     item_id=id_to_process,
                     force_reprocess=True
                 )
-                logger.info(f"  -> 已将 '{final_item_name}' (ID: {id_to_process}) 添加到任务队列进行处理。")
+                logger.info(f"  -> 已将 '{final_item_name}' 添加到任务队列进行处理。")
 
             except Exception as e:
-                logger.error(f"  -> 批量处理 '{item_name}' (ID: {item_id}) 时发生错误: {e}", exc_info=True)
+                logger.error(f"  -> 批量处理 '{item_name}' 时发生错误: {e}", exc_info=True)
         logger.info("  -> 批量处理 Webhook任务 已添加到后台任务队列。")
 
 
