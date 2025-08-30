@@ -13,6 +13,8 @@ from db_handler import get_db_connection as get_central_db_connection
 import tmdb_handler
 import emby_handler
 import logging
+import extensions
+from core_processor import MediaProcessor
 
 logger = logging.getLogger(__name__)
 # ✨✨✨ Tmdb状态翻译字典 ✨✨✨
@@ -127,7 +129,7 @@ class WatchlistProcessor:
             except Exception as e:
                 logger.error(f"自动添加剧集 '{item_name}' 到追剧列表时发生数据库错误: {e}", exc_info=True)
 
-    # --- 核心任务启动器 ---
+    # --- 追剧核心任务启动器 ---
     def run_regular_processing_task_concurrent(self, progress_callback: callable, item_id: Optional[str] = None):
         """【高铁版 - 并发追剧更新】处理所有活跃的剧集。"""
         self.progress_callback = progress_callback
@@ -478,6 +480,24 @@ class WatchlistProcessor:
             "missing_info_json": json.dumps(missing_info)
         }
         self._update_watchlist_entry(item_id, item_name, updates_to_db)
+
+        # ★★★ 新增：如果元数据有更新，调用 sync_item_metadata 进行备份 ★★★
+        # 只有当 media_processor_instance 存在且剧集未完结时才进行备份
+        if final_status != STATUS_COMPLETED and extensions.media_processor_instance:
+            logger.info(f"  -> 检测到 '{item_name}' 追剧元数据更新，调用 sync_item_metadata 进行备份。")
+            # 重新获取完整的 Emby 项目详情，因为 sync_item_metadata 需要 People 字段
+            full_emby_item_details = emby_handler.get_emby_item_details(
+                item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
+                fields="ProviderIds,Type,Name,People,ImageTags,IndexNumber,ParentIndexNumber"
+            )
+            if full_emby_item_details:
+                extensions.media_processor_instance.sync_item_metadata(full_emby_item_details, tmdb_id)
+            else:
+                logger.warning(f"  -> 无法获取 '{item_name}' 的完整 Emby 详情，跳过 sync_item_metadata 备份。")
+        elif final_status == STATUS_COMPLETED:
+            logger.info(f"  -> 剧集 '{item_name}' 已完结，跳过 sync_item_metadata 备份。")
+        else:
+            logger.debug(f"  -> 未检测到 '{item_name}' 追剧元数据更新或 media_processor_instance 不可用，跳过 sync_item_metadata 备份。")
 
         # 步骤6: 【最终动作】如果需要，命令Emby刷新自己
         # (此部分逻辑不变)
