@@ -107,10 +107,10 @@ def evaluate_cast_processing_quality(
     if not final_cast:
         # ✨ 如果是动画片且演员列表为空，可以给一个基础通过分，避免进手动列表
         if is_animation:
-            logger.info("  质量评估：动画片演员列表为空，属于正常情况，给予基础通过分 7.0。")
+            logger.info("  -> 质量评估：动画片/纪录片演员列表为空，属于正常情况，给予基础通过分 7.0。")
             return 7.0
         else:
-            logger.warning("  - 处理后演员列表为空！评为 0.0 分。")
+            logger.warning("  -> 处理后演员列表为空！评为 0.0 分。")
             return 0.0
         
     total_actors = len(final_cast)
@@ -149,37 +149,37 @@ def evaluate_cast_processing_quality(
         final_actor_score = min(10.0, score)
         accumulated_score += final_actor_score
         
-        logger.debug(f"  [{i+1}/{total_actors}] 演员: '{actor_name}' (角色: '{actor_role}') | 单项评分: {final_actor_score:.1f}")
+        logger.debug(f"  -> [{i+1}/{total_actors}] 演员: '{actor_name}' (角色: '{actor_role}') | 单项评分: {final_actor_score:.1f}")
 
     avg_score = accumulated_score / total_actors if total_actors > 0 else 0.0
     
     # --- ✨✨✨ 核心修改：条件化的数量惩罚逻辑 ✨✨✨ ---
     logger.debug(f"------------------------------------")
-    logger.debug(f"  - 基础平均分 (惩罚前): {avg_score:.2f}")
+    logger.debug(f"  -> 基础平均分 (惩罚前): {avg_score:.2f}")
 
     if is_animation:
-        logger.debug("  - 惩罚: 检测到为动画片或纪录片，跳过所有数量相关的惩罚。")
+        logger.debug("  -> 惩罚: 检测到为动画片/纪录片，跳过所有数量相关的惩罚。")
     else:
         # 只有在不是动画片时，才执行原来的数量惩罚逻辑
         if total_actors < 10:
             penalty_factor = total_actors / 10.0
-            logger.warning(f"  - 惩罚: 最终演员数({total_actors})少于10个，乘以惩罚因子 {penalty_factor:.2f}")
+            logger.warning(f"  -> 惩罚: 最终演员数({total_actors})少于10个，乘以惩罚因子 {penalty_factor:.2f}")
             avg_score *= penalty_factor
             
         elif expected_final_count is not None:
             if total_actors < expected_final_count * 0.8:
                 penalty_factor = total_actors / expected_final_count
-                logger.warning(f"  - 惩罚: 数量({total_actors})远少于预期({expected_final_count})，乘以惩罚因子 {penalty_factor:.2f}")
+                logger.warning(f"  -> 惩罚: 数量({total_actors})远少于预期({expected_final_count})，乘以惩罚因子 {penalty_factor:.2f}")
                 avg_score *= penalty_factor
         elif total_actors < original_cast_count * 0.8:
             penalty_factor = total_actors / original_cast_count
-            logger.warning(f"  - 惩罚: 数量从{original_cast_count}大幅减少到{total_actors}，乘以惩罚因子 {penalty_factor:.2f}")
+            logger.warning(f"  -> 惩罚: 数量从{original_cast_count}大幅减少到{total_actors}，乘以惩罚因子 {penalty_factor:.2f}")
             avg_score *= penalty_factor
         else:
-            logger.debug(f"  - 惩罚: 数量正常，不进行惩罚。")
+            logger.debug(f"  -> 惩罚: 数量正常，不进行惩罚。")
     
     final_score_rounded = round(avg_score, 1)
-    logger.info(f" --- 最终评分: {final_score_rounded:.1f} ---")
+    logger.info(f"  -> 最终评分: {final_score_rounded:.1f} ---")
     return final_score_rounded
 
 
