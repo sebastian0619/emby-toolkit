@@ -1839,7 +1839,7 @@ class MediaProcessor:
         - 两种模式均采用并发处理，大幅提升执行效率。
         """
         sync_mode = "深度模式 (全量)" if force_full_update else "快速模式 (增量)"
-        task_name = f"同步媒体资源 ({sync_mode})"
+        task_name = f"覆盖缓存备份 ({sync_mode})"
         logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
 
         if not self.local_data_path:
@@ -1869,7 +1869,7 @@ class MediaProcessor:
             
             if force_full_update:
                 # 深度模式：处理所有 Emby 项目
-                logger.info(f"深度模式已激活，将处理所有 {len(all_emby_ids)} 个 Emby 项目。")
+                logger.info(f"  -> 深度模式已激活，将处理所有 {len(all_emby_ids)} 个 Emby 项目。")
                 items_to_process_ids = all_emby_ids
             else:
                 # 快速模式：计算差集，只处理新项目
@@ -1880,11 +1880,11 @@ class MediaProcessor:
                     processed_ids = {row['item_id'] for row in cursor.fetchall()}
                 
                 items_to_process_ids = all_emby_ids - processed_ids
-                logger.info(f"快速模式：从 {len(all_emby_ids)} 个 Emby 项目中发现 {len(items_to_process_ids)} 个新项目。")
+                logger.info(f"  -> 快速模式：从 {len(all_emby_ids)} 个 Emby 项目中发现 {len(items_to_process_ids)} 个新项目。")
 
             total_to_process = len(items_to_process_ids)
             if total_to_process == 0:
-                message = "深度模式检查完成，媒体库为空。" if force_full_update else "快速模式检查完成，没有发现新项目。"
+                message = "  -> 深度模式检查完成，媒体库为空。" if force_full_update else "  -> 快速模式检查完成，没有发现新项目。"
                 logger.info(message)
                 if update_status_callback: update_status_callback(100, message)
                 return
@@ -1993,7 +1993,7 @@ class MediaProcessor:
             
             # 模式一：精准同步 (当描述存在时)
             if update_description:
-                log_prefix = "[精准图片同步]"
+                log_prefix = "[精准图片备份]"
                 logger.debug(f"{log_prefix} 正在解析描述: '{update_description}'")
                 
                 # 定义关键词到Emby图片类型的映射 (使用小写以方便匹配)
@@ -2020,7 +2020,7 @@ class MediaProcessor:
             
             # 模式二：完全同步 (默认或回退)
             else:
-                log_prefix = "图片备份:"
+                log_prefix = "[全量图片备份]"
                 logger.debug(f"  -> {log_prefix} 未提供更新描述，将同步所有类型的图片。")
                 images_to_sync = full_image_map
 
@@ -2065,7 +2065,7 @@ class MediaProcessor:
         """
         item_type = item_details.get("Type")
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_details.get('Id')})")
-        log_prefix = "元数据备份:"
+        log_prefix = "[元数据备份]"
         logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 执行元数据备份...")
 
         # 1. 路径定义和基础文件复制 (不变)
