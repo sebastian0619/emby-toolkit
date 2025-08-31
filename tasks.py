@@ -436,7 +436,31 @@ def _overwrite_table_data(cursor, table_name: str, columns: List[str], data: Lis
     execute_values(cursor, insert_query, data, page_size=500)
     logger.info(f"成功向表 '{db_table_name}' 插入 {len(data)} 条记录。")
 
+def task_sync_metadata_cache(processor: MediaProcessor, item_id: str, item_name: str):
+    """
+    任务：为单个媒体项同步元数据到 media_metadata 数据库表。
+    """
+    logger.info(f"任务开始：同步媒体元数据缓存 for '{item_name}' (ID: {item_id})")
+    try:
+        processor.sync_single_item_to_metadata_cache(item_id, item_name=item_name)
+        logger.info(f"任务成功：同步媒体元数据缓存 for '{item_name}'")
+    except Exception as e:
+        logger.error(f"任务失败：同步媒体元数据缓存 for '{item_name}' 时发生错误: {e}", exc_info=True)
+        # 根据需要，可以决定是否要重新抛出异常以标记任务失败
+        raise
 
+def task_sync_assets(processor: MediaProcessor, item_id: str, update_description: str, sync_timestamp_iso: str):
+    """
+    任务：为单个媒体项同步图片和元数据文件到本地 override 目录。
+    """
+    logger.info(f"任务开始：同步资源文件 for ID: {item_id} (原因: {update_description})")
+    try:
+        # 注意：这里我们不再需要冷却检查，因为任务队列本身就防止了并发
+        processor.sync_single_item_assets(item_id, update_description, sync_timestamp_iso)
+        logger.info(f"任务成功：同步资源文件 for ID: {item_id}")
+    except Exception as e:
+        logger.error(f"任务失败：同步资源文件 for ID: {item_id} 时发生错误: {e}", exc_info=True)
+        raise
 # --- 主任务函数 (V4 - 纯PG重构版) ---
 def task_import_database(processor, file_content: str, tables_to_import: List[str]):
     """

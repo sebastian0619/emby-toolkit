@@ -223,24 +223,6 @@ class LogDBManager:
         except Exception as e:
             logger.error(f"更新资源同步时间戳时失败 for item {item_id}: {e}", exc_info=True)
 
-    def get_last_asset_sync_time(self, cursor, item_id: str) -> Optional[datetime]:
-        """
-        从 processed_log 表中获取指定项目上一次资源备份的时间。
-        """
-        try:
-            cursor.execute(
-                "SELECT assets_synced_at FROM processed_log WHERE item_id = %s",
-                (item_id,)
-            )
-            result = cursor.fetchone()
-            if result and result['assets_synced_at']:
-                # 数据库返回的是带时区的 datetime 对象，可以直接使用
-                return result['assets_synced_at']
-            return None
-        except Exception as e:
-            logger.error(f"查询上次资源同步时间时失败 for item {item_id}: {e}", exc_info=True)
-            return None
-
 # --- ★★★ 新增：统一分级映射功能 (V2 - 健壮版) ★★★ ---
 # (此代码块替换掉原来的整个分级映射部分)
 

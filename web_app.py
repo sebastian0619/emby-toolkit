@@ -96,6 +96,11 @@ WEBHOOK_BATCH_LOCK = threading.Lock()
 WEBHOOK_BATCH_DEBOUNCE_TIME = 5 # 秒，在此时间内收集事件
 WEBHOOK_BATCH_DEBOUNCER = None
 
+# ★★★ 为 metadata/image update 事件增加防抖机制 ★★★
+UPDATE_DEBOUNCE_TIMERS = {}
+UPDATE_DEBOUNCE_LOCK = threading.Lock()
+UPDATE_DEBOUNCE_TIME = 15 # 秒，等待事件风暴结束
+
 # --- 数据库辅助函数 ---
 def task_process_single_item(processor: MediaProcessor, item_id: str, force_reprocess: bool):
     """任务：处理单个媒体项"""
@@ -542,41 +547,9 @@ def emby_webhook():
     event_type = data.get("Event") if data else "未知事件"
     logger.info(f"收到Emby Webhook: {event_type}")
 
-    # --- 后台处理函数：处理媒体刮削 (item.add) ---
-    def _process_in_background(item_id_to_process, item_name_for_log):
-        logger.info(f"后台线程启动，开始处理: '{item_name_for_log}' (ID: {item_id_to_process})")
-        try:
-            webhook_processing_task(
-                processor=extensions.media_processor_instance,
-                item_id=item_id_to_process,
-                force_reprocess=True
-            )
-            logger.info(f"后台现线程成功完成: '{item_name_for_log}'")
-        except Exception as e:
-            logger.error(f"后台线程处理 '{item_name_for_log}' 时发生严重错误: {e}", exc_info=True)
-
-    # --- 后台处理函数：定点同步资源文件 (image.update) ---
-    def _sync_assets_in_background(item_id, item_name, update_description, sync_timestamp):
-        logger.info(f"实时覆盖缓存备份线程启动: '{item_name}' (ID: {item_id})")
-        try:
-            processor = extensions.media_processor_instance
-            processor.sync_single_item_assets(item_id, update_description, sync_timestamp)
-            logger.info(f"实时覆盖缓存备份成功完成: '{item_name}'")
-        except Exception as e:
-            logger.error(f"实时覆盖缓存备份 '{item_name}' 时发生严重错误: {e}", exc_info=True)
-
-    # --- 后台处理函数：定点同步元数据缓存 (metadata.update) ---
-    def _sync_metadata_cache_in_background(item_id, item_name):
-        logger.info(f"实时媒体元数据同步线程启动: '{item_name}' (ID: {item_id})")
-        try:
-            processor = extensions.media_processor_instance
-            processor.sync_single_item_to_metadata_cache(item_id, item_name=item_name)
-            logger.info(f"实时媒体元数据同步成功完成: '{item_name}'")
-        except Exception as e:
-            logger.error(f"实时媒体元数据同步 '{item_name}' 时发生严重错误: {e}", exc_info=True)
-
-    # --- 批量处理函数：处理队列中的所有新增/入库事件 ---
+    # --- 批量处理函数：处理队列中的所有新增/入库事件 (此函数不变) ---
     def _process_batch_webhook_events():
+        # ... (这个函数的内部逻辑保持原样)
         global WEBHOOK_BATCH_DEBOUNCER
         with WEBHOOK_BATCH_LOCK:
             items_to_process = list(set(WEBHOOK_BATCH_QUEUE)) # 去重
@@ -591,7 +564,6 @@ def emby_webhook():
         for item_id, item_name, item_type in items_to_process:
             logger.info(f"  -> 批量处理中: '{item_name}'")
             try:
-                # 这里的逻辑与之前的单个处理逻辑相同
                 id_to_process = item_id
                 if item_type == "Episode":
                     series_id = emby_handler.get_series_id_from_child_id(
@@ -616,11 +588,10 @@ def emby_webhook():
                     logger.warning(f"  -> 批量处理中，'{final_item_name}' 缺少 Tmdb ID，跳过。")
                     continue
                 
-                # 提交到任务队列，而不是直接在当前线程处理
                 task_manager.submit_task(
                     webhook_processing_task,
                     task_name=f"Webhook任务: {final_item_name}",
-                    processor_type='media', # 指定处理器类型
+                    processor_type='media',
                     item_id=id_to_process,
                     force_reprocess=True
                 )
@@ -630,6 +601,31 @@ def emby_webhook():
                 logger.error(f"  -> 批量处理 '{item_name}' 时发生错误: {e}", exc_info=True)
         logger.info("  -> 批量处理 Webhook任务 已添加到后台任务队列。")
 
+    # ★★★ 核心新增：这是防抖计时器到期后，真正执行任务的函数 ★★★
+    def _trigger_update_tasks(item_id, item_name, update_description, sync_timestamp_iso):
+        """
+        在防抖延迟结束后，将元数据和资源同步任务提交到队列。
+        """
+        logger.info(f"防抖计时器到期，为 '{item_name}' (ID: {item_id}) 创建最终的同步任务。")
+        
+        # 任务1: 同步元数据到数据库缓存
+        task_manager.submit_task(
+            task_sync_metadata_cache,
+            task_name=f"元数据缓存同步: {item_name}",
+            processor_type='media',
+            item_id=item_id,
+            item_name=item_name
+        )
+
+        # 任务2: 同步资源文件到本地
+        task_manager.submit_task(
+            task_sync_assets,
+            task_name=f"资源文件备份: {item_name}",
+            processor_type='media',
+            item_id=item_id,
+            update_description=update_description,
+            sync_timestamp_iso=sync_timestamp_iso
+        )
 
     # --- Webhook 事件分发逻辑 ---
     trigger_events = ["item.add", "library.new", "library.deleted", "metadata.update", "image.update"]
@@ -658,15 +654,13 @@ def emby_webhook():
         except Exception as e:
             return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
     
-    # --- 处理新增/入库事件 (使用批量处理) ---
+    # --- 处理新增/入库事件 (使用批量处理, 逻辑不变) ---
     if event_type in ["item.add", "library.new"]:
         global WEBHOOK_BATCH_DEBOUNCER
         with WEBHOOK_BATCH_LOCK:
-            # 将事件添加到队列
             WEBHOOK_BATCH_QUEUE.append((original_item_id, original_item_name, original_item_type))
             logger.debug(f"Webhook事件 '{event_type}' (项目: {original_item_name}) 已添加到批量队列。当前队列大小: {len(WEBHOOK_BATCH_QUEUE)}")
             
-            # 如果没有正在运行的 debouncer，则启动一个
             if WEBHOOK_BATCH_DEBOUNCER is None or WEBHOOK_BATCH_DEBOUNCER.ready():
                 logger.info(f"启动 Webhook 批量处理 debouncer，将在 {WEBHOOK_BATCH_DEBOUNCE_TIME} 秒后执行。")
                 WEBHOOK_BATCH_DEBOUNCER = spawn_later(WEBHOOK_BATCH_DEBOUNCE_TIME, _process_batch_webhook_events)
@@ -675,85 +669,60 @@ def emby_webhook():
         
         return jsonify({"status": "added_to_batch_queue", "item_id": original_item_id}), 202
 
-    # --- 处理 image.update 事件 ---
-    if event_type == "image.update":
+    # ★★★ 核心修改：将 metadata.update 和 image.update 纳入防抖机制 ★★★
+    if event_type in ["metadata.update", "image.update"]:
         if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_LOCAL_DATA_PATH):
-            logger.debug("Webhook 'image.update' 收到，但未配置本地数据源，将忽略。")
+            logger.debug(f"Webhook '{event_type}' 收到，但未配置本地数据源，将忽略。")
             return jsonify({"status": "event_ignored_no_local_data_path"}), 200
 
-        update_description = data.get("UpdateInfo", {}).get("Description", "")
-        webhook_received_at_iso = datetime.now(timezone.utc).isoformat()
-        logger.info(f"Webhook 'image.update' 触发资源文件同步 for '{original_item_name}' (原因: {update_description})")
-        
-        thread = threading.Thread(
-            target=_sync_assets_in_background,
-            args=(original_item_id, original_item_name, update_description, webhook_received_at_iso)
-        )
-        thread.daemon = True
-        thread.start()
-        return jsonify({"status": "asset_sync_started", "item_id": original_item_id}), 202
-
-    # --- 处理 metadata.update 事件 ---
-    if event_type == "metadata.update":
-        if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_LOCAL_DATA_PATH):
-            logger.debug("Webhook 'metadata.update' 收到，但未配置本地数据源，将忽略。")
-            return jsonify({"status": "event_ignored_no_local_data_path"}), 200
-        
-        update_description = data.get("UpdateInfo", {}).get("Description", "Metadata Update") # 默认描述
+        # 准备通用参数
+        update_description = data.get("UpdateInfo", {}).get("Description", "Webhook Update")
         webhook_received_at_iso = datetime.now(timezone.utc).isoformat()
 
+        # 向上追溯到剧集/电影的ID
         id_to_process = original_item_id
-        name_for_sync = original_item_name
+        name_for_task = original_item_name
         
-        # 如果是剧集，需要获取其所属剧集的ID
         if original_item_type == "Episode":
             series_id = emby_handler.get_series_id_from_child_id(
                 original_item_id, extensions.media_processor_instance.emby_url,
                 extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, item_name=original_item_name
             )
             if not series_id:
-                logger.warning(f"Webhook 'metadata.update': 剧集 '{original_item_name}' (ID: {original_item_id}) 未找到所属剧集，跳过同步。")
+                logger.warning(f"Webhook '{event_type}': 剧集 '{original_item_name}' 未找到所属剧集，跳过。")
                 return jsonify({"status": "event_ignored_episode_no_series_id"}), 200
             id_to_process = series_id
             
-            # 获取剧集详情以更新名称
             full_series_details = emby_handler.get_emby_item_details(
                 item_id=id_to_process, emby_server_url=extensions.media_processor_instance.emby_url,
                 emby_api_key=extensions.media_processor_instance.emby_api_key, user_id=extensions.media_processor_instance.emby_user_id
             )
             if full_series_details:
-                name_for_sync = full_series_details.get("Name", f"未知剧集(ID:{id_to_process})")
-            else:
-                logger.warning(f"Webhook 'metadata.update': 无法获取剧集 '{id_to_process}' 的详情，使用原始名称。")
+                name_for_task = full_series_details.get("Name", f"未知剧集(ID:{id_to_process})")
 
-        # 最终检查 Tmdb ID
-        full_item_details = emby_handler.get_emby_item_details(
-            item_id=id_to_process, emby_server_url=extensions.media_processor_instance.emby_url,
-            emby_api_key=extensions.media_processor_instance.emby_api_key, user_id=extensions.media_processor_instance.emby_user_id
-        )
-        if not full_item_details or not full_item_details.get("ProviderIds", {}).get("Tmdb"):
-            logger.warning(f"Webhook 'metadata.update': '{name_for_sync}' (ID: {id_to_process}) 缺少 Tmdb ID，跳过同步。")
-            return jsonify({"status": "event_ignored_no_tmdb_id"}), 200
+        # --- 防抖逻辑核心 ---
+        with UPDATE_DEBOUNCE_LOCK:
+            # 检查是否已有正在等待的计时器
+            if id_to_process in UPDATE_DEBOUNCE_TIMERS:
+                # 如果有，取消它
+                old_timer = UPDATE_DEBOUNCE_TIMERS[id_to_process]
+                old_timer.kill() # gevent 使用 kill() 来取消
+                logger.debug(f"已为 '{name_for_task}' 取消了旧的同步计时器，将以最新事件为准。")
 
-        logger.info(f"Webhook 'metadata.update' 触发元数据缓存同步和资源文件同步 for '{name_for_sync}' (ID: {id_to_process})")
-        
-        # 启动元数据缓存同步线程
-        metadata_thread = threading.Thread(
-            target=_sync_metadata_cache_in_background,
-            args=(id_to_process, name_for_sync)
-        )
-        metadata_thread.daemon = True
-        metadata_thread.start()
+            # 创建一个新的计时器，延迟执行真正的任务提交函数
+            logger.info(f"为 '{name_for_task}' 设置了 {UPDATE_DEBOUNCE_TIME} 秒的同步延迟，以合并连续的更新事件。")
+            new_timer = spawn_later(
+                UPDATE_DEBOUNCE_TIME,
+                _trigger_update_tasks,
+                item_id=id_to_process,
+                item_name=name_for_task,
+                update_description=update_description,
+                sync_timestamp_iso=webhook_received_at_iso
+            )
+            # 存储新的计时器
+            UPDATE_DEBOUNCE_TIMERS[id_to_process] = new_timer
 
-        # 启动资源文件同步线程
-        assets_thread = threading.Thread(
-            target=_sync_assets_in_background,
-            args=(id_to_process, name_for_sync, update_description, webhook_received_at_iso)
-        )
-        assets_thread.daemon = True
-        assets_thread.start()
-
-        return jsonify({"status": "metadata_and_asset_sync_started", "item_id": id_to_process}), 202
+        return jsonify({"status": "update_task_debounced", "item_id": id_to_process}), 202
 
     return jsonify({"status": "event_unhandled"}), 500
 
