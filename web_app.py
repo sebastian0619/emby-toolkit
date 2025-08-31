@@ -617,10 +617,10 @@ def emby_webhook():
             item_name=item_name
         )
 
-        # 任务2: 同步资源文件到本地
+        # 任务2: 同步媒体项到覆盖缓存
         task_manager.submit_task(
             task_sync_assets,
-            task_name=f"资源文件备份: {item_name}",
+            task_name=f"覆盖缓存备份: {item_name}",
             processor_type='media',
             item_id=item_id,
             update_description=update_description,
