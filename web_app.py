@@ -2,6 +2,7 @@
 from gevent import monkey
 monkey.patch_all()
 import os
+import sys
 import shutil
 import threading
 from datetime import datetime, timezone # Added timezone for image.update
@@ -426,38 +427,34 @@ def initialize_processors():
 # --- 生成Nginx配置 ---
 def ensure_nginx_config():
     """
-    【Jinja2 最终版】使用 Jinja2 模板引擎，强制生成 Nginx 配置文件。
+    【Jinja2 容器集成版】使用 Jinja2 模板引擎，生成供容器内 Nginx 使用的配置文件。
     """
-    logger.trace("正在强制同步 Nginx 配置文件 (使用 Jinja2)...")
+    logger.info("正在生成 Nginx 配置文件...")
     
-    # 定义路径
-    nginx_config_dir = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'nginx', 'conf.d')
-    final_config_path = os.path.join(nginx_config_dir, 'default.conf')
-    # Jinja2 需要模板所在的目录
+    # ★★★ 核心修改 1: 配置文件路径改为容器内 Nginx 的标准路径 ★★★
+    final_config_path = '/etc/nginx/conf.d/default.conf'
     template_dir = os.path.join(os.getcwd(), 'templates', 'nginx')
     template_filename = 'emby_proxy.conf.template'
 
     try:
-        # 确保 Nginx 配置目录存在
-        os.makedirs(nginx_config_dir, exist_ok=True)
-
         # 1. 设置 Jinja2 环境
         env = Environment(loader=FileSystemLoader(template_dir))
         template = env.get_template(template_filename)
 
-        # 2. 从 APP_CONFIG 获取值 (逻辑不变)
+        # 2. 从 APP_CONFIG 获取值
         emby_url = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_SERVER_URL, "")
         nginx_listen_port = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_PORT, 8097)
         redirect_url = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_302_REDIRECT_URL, "")
 
-        # 3. 准备替换值 (逻辑不变)
+        # 3. 准备替换值
         emby_upstream = emby_url.replace("http://", "").replace("https://", "").rstrip('/')
-        proxy_upstream = "emby-toolkit:7758"
+        # ★★★ 核心修改 2: Nginx 和 Python 代理在同一容器内，使用 localhost 通信 ★★★
+        proxy_upstream = "127.0.0.1:7758" 
         redirect_upstream = redirect_url.replace("http://", "").replace("https://", "").rstrip('/')
 
         if not emby_upstream:
             logger.error("config.ini 中未配置 Emby 服务器地址，无法生成 Nginx 配置！")
-            return
+            sys.exit(1) # 严重错误，直接退出
 
         # 4. 填充模板
         context = {
@@ -468,14 +465,15 @@ def ensure_nginx_config():
         }
         final_config_content = template.render(context)
 
-        # 5. 写入最终的配置文件 (会直接覆盖旧文件)
+        # 5. 写入最终的配置文件
         with open(final_config_path, 'w', encoding='utf-8') as f:
             f.write(final_config_content)
         
-        logger.info("✅ Nginx 配置文件已成功同步！")
+        logger.info(f"✅ Nginx 配置文件已成功生成于: {final_config_path}")
 
     except Exception as e:
-        logger.error(f"处理 Nginx 配置文件时发生严重错误: {e}", exc_info=True)
+        logger.error(f"生成 Nginx 配置文件时发生严重错误: {e}", exc_info=True)
+        sys.exit(1) # 严重错误，直接退出
 
 # --- 检查字体文件 ---
 def ensure_cover_generator_fonts():
@@ -752,10 +750,11 @@ app.register_blueprint(actions_bp)
 app.register_blueprint(cover_generator_config_bp)
 app.register_blueprint(tasks_bp)
 
-if __name__ == '__main__':
+def main_app_start():
+    """将主应用启动逻辑封装成一个函数"""
     from gevent.pywsgi import WSGIServer
     from geventwebsocket.handler import WebSocketHandler
-    import gevent # <--- 1. 导入 gevent
+    import gevent
 
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}")
     
@@ -771,9 +770,7 @@ if __name__ == '__main__':
     add_file_handler(log_directory=config_manager.LOG_DIRECTORY, log_size_mb=log_size, log_backups=log_backups)
     
     init_db()
-    # --- 拷贝反代配置 ---
-    ensure_nginx_config()
-    # 新增字体文件检测和拷贝
+    # ensure_nginx_config() # <-- ★★★ 核心修改 1: 这行不再需要在这里调用 ★★★
     ensure_cover_generator_fonts()
     init_auth_from_blueprint()
     initialize_processors()
@@ -783,17 +780,10 @@ if __name__ == '__main__':
     def run_proxy_server():
         if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
             try:
-                # 定义一个固定的内部端口
                 internal_proxy_port = 7758
                 logger.trace(f"🚀 [GEVENT] 反向代理服务即将启动，监听内部端口: {internal_proxy_port}")
-                
-                proxy_server = WSGIServer(
-                    ('0.0.0.0', internal_proxy_port), 
-                    proxy_app, 
-                    handler_class=WebSocketHandler
-                )
+                proxy_server = WSGIServer(('0.0.0.0', internal_proxy_port), proxy_app, handler_class=WebSocketHandler)
                 proxy_server.serve_forever()
-
             except Exception as e:
                 logger.error(f"启动反向代理服务失败: {e}", exc_info=True)
         else:
@@ -805,15 +795,29 @@ if __name__ == '__main__':
     logger.info(f"🚀 [GEVENT] 主应用服务器即将启动，监听端口: {main_app_port}")
     
     class NullLogger:
-        def write(self, data):
-            pass
-        def flush(self):
-            pass
+        def write(self, data): pass
+        def flush(self): pass
 
-    main_server = WSGIServer(
-        ('0.0.0.0', main_app_port), 
-        app, log=NullLogger()
-    )
+    main_server = WSGIServer(('0.0.0.0', main_app_port), app, log=NullLogger())
     main_server.serve_forever()
+
+# ★★★ 核心修改 2: 新增的启动逻辑，用于处理命令行参数 ★★★
+if __name__ == '__main__':
+    # 检查是否从 entrypoint.sh 传入了 'generate-nginx-config' 参数
+    if len(sys.argv) > 1 and sys.argv[1] == 'generate-nginx-config':
+        print("Initializing to generate Nginx config...")
+        # 只需要加载配置和日志，然后生成即可
+        config_manager.load_config()
+        # 确保日志目录存在，避免报错
+        log_dir = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        add_file_handler(log_directory=log_dir)
+        
+        ensure_nginx_config()
+        print("Nginx config generated successfully.")
+        sys.exit(0) # 执行完毕后正常退出
+    else:
+        # 如果没有特殊参数，则正常启动整个应用
+        main_app_start()
 
 # # --- 主程序入口结束 ---

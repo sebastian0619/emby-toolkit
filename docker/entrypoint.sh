@@ -23,30 +23,30 @@ function WARN() {
 # 校正设置目录
 CONFIG_DIR="${CONFIG_DIR:-/config}"
 
-# 更改 embytoolkit 用户ID和组ID
+# 1. 设置用户和权限 (这部分不变)
 INFO "→ 设置用户权限..."
-# ★★★ 修改点 1: 将 groupmod 的目标从 embyactor 改为 embytoolkit ★★★
 groupmod -o -g "${PGID}" embytoolkit
-# ★★★ 修改点 2: 将 usermod 的目标从 embyactor 改为 embytoolkit ★★★
 usermod -o -u "${PUID}" embytoolkit
-
-# 采用“精准 chown”策略，避免对大量小文件进行递归操作
 INFO "→ 快速设置持久化目录权限..."
-
-# 确保 HOME 和 CONFIG_DIR 目录本身是可写的
-# ★★★ 修改点 3: 将 chown 的目标从 embyactor 改为 embytoolkit ★★★
 chown embytoolkit:embytoolkit "${HOME}" "${CONFIG_DIR}"
-
-# 使用 find 命令来智能地、非递归地修改权限
 if [ -d "${CONFIG_DIR}" ]; then
-    # ★★★ 修改点 4: 将 find -exec chown 的目标也改为 embytoolkit ★★★
     find "${CONFIG_DIR}" -maxdepth 1 -mindepth 1 -exec chown embytoolkit:embytoolkit {} +
 fi
-
-# 设置权限掩码
 umask "${UMASK}"
 
-# 启动应用
-INFO "→ 启动应用服务..."
-# ★★★ 修改点 5: 使用 gosu 切换到新用户 embytoolkit ★★★
+# 2. 生成 Nginx 配置文件
+INFO "→ 生成 Nginx 配置文件..."
+# ★★★ 核心修正 ★★★
+# 移除 gosu，让此命令以 root 身份运行，这样它才有权限写入 /etc/nginx 目录
+python3 /app/web_app.py generate-nginx-config
+INFO "→ Nginx 配置文件生成完毕。"
+
+# 3. 启动 Nginx 服务
+# Nginx 也需要以 root 身份启动
+INFO "→ 在后台启动 Nginx 服务..."
+nginx -g "daemon off;" &
+
+# 4. 启动主应用
+# 在这里，我们才使用 gosu 将权限降级为普通用户，以保证应用运行时的安全
+INFO "→ 启动 Emby Toolkit 主应用服务..."
 exec dumb-init gosu embytoolkit:embytoolkit python3 /app/web_app.py

@@ -56,17 +56,6 @@ services:
       timeout: 5s
       retries: 5
 
-  nginx:
-    image: nginx:1.25-alpine
-    container_name: emby-proxy-nginx
-    restart: unless-stopped
-    network_mode: "service:emby-toolkit"
-    volumes:
-      - ./local_data/nginx/conf.d:/etc/nginx/conf.d
-    depends_on:
-      emby-toolkit:
-        condition: service_healthy
-
 networks:
   emby-net:
     driver: bridge
