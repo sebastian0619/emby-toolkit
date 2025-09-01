@@ -102,18 +102,6 @@
           interval: 10s
           timeout: 5s
           retries: 5
-      # ---3.虚拟库反代配置，不需要可以删掉
-      nginx:
-        image: nginx:1.25-alpine
-        container_name: emby-proxy-nginx              
-        restart: unless-stopped
-        network_mode: "service:emby-toolkit"          # 并入主程序的网络，绑定容器生命周期，主程序重启会自动跟着重启
-        volumes:
-          - /path/emby-toolkit/nginx/conf.d:/etc/nginx/conf.d #Ngixn配置文件目录，必须映射到主程序持久化目录，否则无法读取配置文件
-        depends_on:
-          emby-toolkit:                               # 监控主程序启动
-            condition: service_healthy                # 保证Nginx只在主程序成功启动后再启动，以免读取不到配置文件反代失败
-
     networks:
       emby-net:
         driver: bridge                                # 创建一个容器内部网络
