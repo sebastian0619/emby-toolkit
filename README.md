@@ -50,7 +50,7 @@
         image: hbq0405/emby-toolkit:latest 
         container_name: emby-toolkit
         networks:
-          - emby-net                                  # 容器内部网络，虚拟库必须严格按此设置
+          - emby-net                                  # 容器内部网络，外接数据库的可以任意配置网络模式
         ports:
           - "5257:5257"                               # 管理端口
           - "8097:8097"                               # 反代端口，虚拟库用，冒号前面是实际访问端口，冒号后面是管理后台设置的反代监听端口
@@ -65,8 +65,8 @@
           - PUID=1000                                 # 设置为你的用户ID，建议与宿主机用户ID保持一致
           - PGID=1000                                 # 设置为DOCKER组ID (一键更新用，‘grep docker /etc/group’可以查询)
           - UMASK=022                                 # 设置文件权限掩码，建议022
-          - DB_HOST=db                                # 数据库服务的主机名 (请勿修改)
-          - DB_PORT=5432                              # 数据库服务的端口 (请勿修改)
+          - DB_HOST=db                                # 数据库服务的主机名 
+          - DB_PORT=5432                              # 数据库服务的端口 
           - DB_USER=embytoolkit                       # !!! (可选) 修改为你自己的数据库用户名
           - DB_PASSWORD=embytoolkit                   # !!! (必填) 请修改为一个强密码 !!!
           - DB_NAME=embytoolkit                       # !!! (可选) 修改为你自己的数据库名
