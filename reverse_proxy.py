@@ -250,7 +250,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         real_emby_collection_id = collection_info.get('emby_collection_id')
 
         # --- 阶段一：从真实的Emby合集获取基础内容 ---
-        logger.info(f"  -> 阶段1：正在从真实合集 '{collection_info['name']}' (ID: {real_emby_collection_id}) 获取基础内容...")
+        logger.trace(f"  -> 阶段1：正在从真实合集 '{collection_info['name']}' (ID: {real_emby_collection_id}) 获取基础内容...")
         base_url, api_key = _get_real_emby_url_and_key()
         
         base_items = emby_handler.get_emby_library_items(
@@ -261,13 +261,13 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if not base_items:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
         
-        logger.info(f"  -> 阶段1完成：获取到 {len(base_items)} 个基础媒体项。")
+        logger.trace(f"  -> 阶段1完成：获取到 {len(base_items)} 个基础媒体项。")
 
         # --- 阶段二：如果启用了动态筛选，就执行二次过滤 ---
         final_items = base_items
         
         if definition.get('dynamic_filter_enabled'):
-            logger.info("  -> 阶段2：检测到已启用实时用户筛选，开始二次过滤...")
+            logger.trace("  -> 阶段2：检测到已启用实时用户筛选，开始二次过滤...")
             
             dynamic_definition = {
                 'rules': definition.get('dynamic_rules', []),
@@ -276,9 +276,9 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             
             engine = FilterEngine()
             final_items = engine.execute_dynamic_filter(base_items, dynamic_definition)
-            logger.info(f"  -> 阶段2完成：二次过滤后，剩下 {len(final_items)} 个媒体项。")
+            logger.trace(f"  -> 阶段2完成：二次过滤后，剩下 {len(final_items)} 个媒体项。")
         else:
-            logger.info("  -> 阶段2跳过：未启用实时用户筛选。")
+            logger.trace("  -> 阶段2跳过：未启用实时用户筛选。")
 
         # --- 排序和返回 ---
         sort_by_field = definition.get('default_sort_by')
@@ -308,7 +308,7 @@ def handle_get_latest_items(user_id, params):
         virtual_library_id = params.get('ParentId') or params.get('customViewId')
 
         if virtual_library_id and is_mimicked_id(virtual_library_id): # <-- 【核心修改】
-            logger.info(f"处理针对虚拟库 '{virtual_library_id}' 的最新媒体请求...")
+            logger.trace(f"处理针对虚拟库 '{virtual_library_id}' 的最新媒体请求...")
             try:
                 virtual_library_db_id = from_mimicked_id(virtual_library_id) # <-- 【核心修改】
             except (ValueError, TypeError):
