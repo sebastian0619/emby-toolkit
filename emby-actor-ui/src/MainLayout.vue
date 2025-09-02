@@ -160,7 +160,8 @@ import {
   CreateOutline as CustomCollectionsIcon,
   ColorPaletteOutline as PaletteIcon,
   Stop as StopIcon,
-  ShuffleOutline as ShuffleIcon
+  ShuffleOutline as ShuffleIcon,
+  SyncOutline as RestartIcon,
 } from '@vicons/ionicons5';
 import { Password24Regular as PasswordIcon } from '@vicons/fluent';
 import axios from 'axios';
@@ -208,12 +209,30 @@ const renderIcon = (iconComponent) => () => h(NIcon, null, { default: () => h(ic
 
 const userOptions = computed(() => [
   { label: '修改密码', key: 'change-password', icon: renderIcon(PasswordIcon) },
+  { label: '重启容器', key: 'restart-container', icon: renderIcon(RestartIcon) },
+  { type: 'divider', key: 'd1' },
   { label: '退出登录', key: 'logout', icon: renderIcon(LogoutIcon) }
 ]);
 
 const handleUserSelect = async (key) => {
   if (key === 'change-password') {
     showPasswordModal.value = true;
+  } else if (key === 'restart-container') {
+    dialog.warning({
+      title: '确认重启容器',
+      content: '确定要重启容器吗？应用将在短时间内无法访问，重启后需要手动刷新页面。',
+      positiveText: '确定重启',
+      negativeText: '取消',
+      onPositiveClick: async () => {
+        try {
+          message.info('正在发送重启指令...');
+          const response = await axios.post('/api/system/restart');
+          message.success(response.data.message || '重启指令已发送，请稍后刷新页面。');
+        } catch (error) {
+          message.error(error.response?.data?.error || '发送重启请求失败，请查看日志。');
+        }
+      },
+    });
   } else if (key === 'logout') {
     await authStore.logout();
   }

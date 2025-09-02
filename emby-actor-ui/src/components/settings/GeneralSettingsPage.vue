@@ -133,12 +133,35 @@
                           <n-radio value="after">显示在虚拟库后面</n-radio>
                         </n-radio-group>
                       </n-form-item-grid-item>
-                      <n-form-item-grid-item label="虚拟库访问端口" path="proxy_port">
+                      <!-- ▼▼▼ 修改点1: 增加重启提示 ▼▼▼ -->
+                      <n-form-item-grid-item>
+                        <template #label>
+                          <n-space align="center">
+                            <span>虚拟库访问端口</span>
+                            <n-tooltip trigger="hover">
+                              <template #trigger>
+                                <n-icon :component="AlertIcon" class="info-icon" />
+                              </template>
+                              此项修改需要重启容器才能生效。
+                            </n-tooltip>
+                          </n-space>
+                        </template>
                         <n-input-number v-model:value="configModel.proxy_port" :min="1025" :max="65535" :disabled="!configModel.proxy_enabled"/>
                         <template #feedback><n-text depth="3" style="font-size:0.8em;">非host模式需要映射。</n-text></template>
                       </n-form-item-grid-item>
-                      <!-- ★★★ 302重定向服务地址 ★★★ -->
-                      <n-form-item-grid-item label="302重定向服务地址" path="proxy_302_redirect_url">
+                      <!-- ▼▼▼ 修改点2: 增加重启提示 ▼▼▼ -->
+                      <n-form-item-grid-item>
+                        <template #label>
+                          <n-space align="center">
+                            <span>302重定向服务地址</span>
+                             <n-tooltip trigger="hover">
+                              <template #trigger>
+                                <n-icon :component="AlertIcon" class="info-icon" />
+                              </template>
+                              此项修改需要重启容器才能生效。
+                            </n-tooltip>
+                          </n-space>
+                        </template>
                         <n-input 
                           v-model:value="configModel.proxy_302_redirect_url" 
                           placeholder="例如: http://192.168.31.177:9096" 
@@ -269,11 +292,35 @@
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
                     <template #header><span class="card-title">日志配置</span></template>
-                    <n-form-item-grid-item label="单个日志文件大小 (MB)" path="log_rotation_size_mb">
+                    <!-- ▼▼▼ 修改点3: 增加重启提示 ▼▼▼ -->
+                    <n-form-item-grid-item>
+                      <template #label>
+                        <n-space align="center">
+                          <span>单个日志文件大小 (MB)</span>
+                          <n-tooltip trigger="hover">
+                            <template #trigger>
+                              <n-icon :component="AlertIcon" class="info-icon" />
+                            </template>
+                            此项修改需要重启容器才能生效。
+                          </n-tooltip>
+                        </n-space>
+                      </template>
                       <n-input-number v-model:value="configModel.log_rotation_size_mb" :min="1" :step="1" placeholder="例如: 5"/>
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">设置 app.log 文件的最大体积，超限后会轮转。</n-text></template>
                     </n-form-item-grid-item>
-                    <n-form-item-grid-item label="日志备份数量" path="log_rotation_backup_count">
+                    <!-- ▼▼▼ 修改点4: 增加重启提示 ▼▼▼ -->
+                    <n-form-item-grid-item>
+                      <template #label>
+                        <n-space align="center">
+                          <span>日志备份数量</span>
+                          <n-tooltip trigger="hover">
+                            <template #trigger>
+                              <n-icon :component="AlertIcon" class="info-icon" />
+                            </template>
+                            此项修改需要重启容器才能生效。
+                          </n-tooltip>
+                        </n-space>
+                      </template>
                       <n-input-number v-model:value="configModel.log_rotation_backup_count" :min="1" :step="1" placeholder="例如: 10"/>
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">保留最近的日志文件数量 (app.log.1, app.log.2 ...)。</n-text></template>
                     </n-form-item-grid-item>
@@ -401,14 +448,15 @@ import {
   NCard, NForm, NFormItem, NInputNumber, NSwitch, NButton, NGrid, NGi, 
   NSpin, NAlert, NInput, NSelect, NSpace, useMessage, useDialog,
   NFormItemGridItem, NCheckboxGroup, NCheckbox, NText, NRadioGroup, NRadio,
-  NTag, NIcon, NUpload, NModal, NDivider, NInputGroup, NTabs, NTabPane
+  NTag, NIcon, NUpload, NModal, NDivider, NInputGroup, NTabs, NTabPane, NTooltip
 } from 'naive-ui';
 import { 
   MoveOutline as DragHandleIcon,
   DownloadOutline as ExportIcon, 
   CloudUploadOutline as ImportIcon,
   TrashOutline as ClearIcon,
-  BuildOutline as BuildIcon
+  BuildOutline as BuildIcon,
+  AlertCircleOutline as AlertIcon, // +++ 新增图标
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import axios from 'axios';
@@ -738,14 +786,69 @@ const handleClearTables = async () => {
 const selectAllForClear = () => tablesToClear.value = [...allDbTables.value];
 const deselectAllForClear = () => tablesToClear.value = [];
 
+// ▼▼▼ 修改点5: 新增重启相关逻辑 ▼▼▼
+const initialRestartableConfig = ref(null);
+
+const triggerRestart = async () => {
+  try {
+    message.info('正在发送重启指令...', { duration: 5000 });
+    const response = await axios.post('/api/system/restart');
+    message.success(response.data.message || '重启指令已发送，请稍后刷新页面。', { duration: 8000 });
+  } catch (error) {
+    message.error(error.response?.data?.error || '发送重启请求失败，请查看日志。');
+  }
+};
+
 const save = async () => {
   try {
     await formRef.value?.validate();
-    const success = await handleSaveConfig();
-    if (success) {
-      message.success('所有设置已成功保存！');
+
+    // 检查需要重启的设置是否已更改
+    const restartNeeded =
+      initialRestartableConfig.value && (
+        configModel.value.proxy_port !== initialRestartableConfig.value.proxy_port ||
+        configModel.value.proxy_302_redirect_url !== initialRestartableConfig.value.proxy_302_redirect_url ||
+        configModel.value.log_rotation_size_mb !== initialRestartableConfig.value.log_rotation_size_mb ||
+        configModel.value.log_rotation_backup_count !== initialRestartableConfig.value.log_rotation_backup_count
+      );
+
+    // 封装保存操作，以便复用
+    const performSaveAndUpdateState = async () => {
+      const success = await handleSaveConfig();
+      if (success) {
+        message.success('所有设置已成功保存！');
+        // 保存成功后，更新初始状态以防止重复弹窗
+        initialRestartableConfig.value = {
+          proxy_port: configModel.value.proxy_port,
+          proxy_302_redirect_url: configModel.value.proxy_302_redirect_url,
+          log_rotation_size_mb: configModel.value.log_rotation_size_mb,
+          log_rotation_backup_count: configModel.value.log_rotation_backup_count,
+        };
+      } else {
+        message.error(configError.value || '配置保存失败，请检查后端日志。');
+      }
+      return success;
+    };
+
+    if (restartNeeded) {
+      dialog.warning({
+        title: '需要重启容器',
+        content: '您修改了需要重启容器才能生效的设置（如虚拟库端口、302重定向、日志配置等）。请选择如何操作：',
+        positiveText: '保存并重启',
+        negativeText: '仅保存',
+        onPositiveClick: async () => {
+          const saved = await performSaveAndUpdateState();
+          if (saved) {
+            await triggerRestart();
+          }
+        },
+        onNegativeClick: async () => {
+          await performSaveAndUpdateState();
+        }
+      });
     } else {
-      message.error(configError.value || '配置保存失败，请检查后端日志。');
+      // 如果无需重启，则直接保存
+      await performSaveAndUpdateState();
     }
   } catch (errors) {
     console.log('表单验证失败:', errors);
@@ -905,10 +1008,18 @@ onMounted(() => {
   componentIsMounted.value = true;
 
   unwatchGlobal = watch(loadingConfig, (isLoading) => {
-    if (!isLoading && componentIsMounted.value) {
-      if (configModel.value && configModel.value.emby_server_url && configModel.value.emby_api_key) {
+    if (!isLoading && componentIsMounted.value && configModel.value) { // ▼▼▼ 修改点6: 增加 configModel.value 判断
+      if (configModel.value.emby_server_url && configModel.value.emby_api_key) {
         fetchEmbyLibrariesInternal();
       }
+      // ▼▼▼ 修改点7: 存储需要重启的配置项的初始值
+      initialRestartableConfig.value = {
+        proxy_port: configModel.value.proxy_port,
+        proxy_302_redirect_url: configModel.value.proxy_302_redirect_url,
+        log_rotation_size_mb: configModel.value.log_rotation_size_mb,
+        log_rotation_backup_count: configModel.value.log_rotation_backup_count,
+      };
+
       if (unwatchGlobal) {
         unwatchGlobal();
       }
@@ -982,5 +1093,12 @@ onUnmounted(() => {
   backdrop-filter: blur(10px);
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.2);
+}
+/* ▼▼▼ 修改点8: 新增提示图标样式 ▼▼▼ */
+.info-icon {
+  color: var(--n-info-color);
+  cursor: help;
+  font-size: 16px;
+  vertical-align: middle;
 }
 </style>

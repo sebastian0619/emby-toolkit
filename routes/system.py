@@ -398,6 +398,37 @@ def stream_update_progress():
 
     return Response(stream_with_context(generate_progress()), mimetype='text/event-stream')
 
+# +++ 重启容器 +++
+@system_bp.route('/system/restart', methods=['POST'])
+@login_required
+def restart_container():
+    """
+    重启运行此应用的 Docker 容器。
+    """
+    try:
+        client = docker.from_env()
+        # 从配置中获取容器名，如果未配置则使用默认值
+        container_name = config_manager.APP_CONFIG.get('container_name', 'emby-toolkit')
+        
+        if not container_name:
+            logger.error("API: 尝试重启容器，但配置中未找到 'container_name'。")
+            return jsonify({"error": "未在配置中指定容器名称。"}), 500
+
+        logger.info(f"API: 收到重启容器 '{container_name}' 的请求。")
+        container = client.containers.get(container_name)
+        container.restart()
+        
+        return jsonify({"message": f"已向容器 '{container_name}' 发送重启指令。应用将在片刻后恢复。"}), 200
+
+    except docker.errors.NotFound:
+        error_msg = f"API: 尝试重启容器，但名为 '{container_name}' 的容器未找到。"
+        logger.error(error_msg)
+        return jsonify({"error": error_msg}), 404
+    except Exception as e:
+        error_msg = f"API: 重启容器时发生未知错误: {e}"
+        logger.error(error_msg, exc_info=True)
+        return jsonify({"error": f"发生意外错误: {str(e)}"}), 500
+
 # ★★★ 提供电影类型映射的API ★★★
 @system_bp.route('/config/genres', methods=['GET'])
 @login_required
