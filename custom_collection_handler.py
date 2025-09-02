@@ -466,35 +466,14 @@ class FilterEngine:
             if not op: op = 'is'
 
             if field == 'playback_status':
+                is_played = user_data.get('Played', False)
+                in_progress = user_data.get('PlaybackPositionTicks', 0) > 0
+                
                 current_status = 'unplayed'
-                item_type = emby_item.get('Type')
-
-                if item_type == 'Series':
-                    # 对于剧集，使用 PlayedPercentage 判断，这更可靠
-                    played_percentage = user_data.get('PlayedPercentage')
-                    if played_percentage is not None:
-                        if played_percentage >= 100:
-                            current_status = 'played'
-                        elif played_percentage > 0:
-                            current_status = 'in_progress'
-                        else:
-                            current_status = 'unplayed'
-                    else:
-                        # 如果没有百分比，回退到旧逻辑作为保险
-                        is_played = user_data.get('Played', False)
-                        in_progress = user_data.get('PlaybackPositionTicks', 0) > 0
-                        if is_played:
-                            current_status = 'played'
-                        elif in_progress:
-                            current_status = 'in_progress'
-                else:
-                    # 对于电影等其他类型，保留原有逻辑
-                    is_played = user_data.get('Played', False)
-                    in_progress = user_data.get('PlaybackPositionTicks', 0) > 0
-                    if is_played:
-                        current_status = 'played'
-                    elif in_progress:
-                        current_status = 'in_progress'
+                if is_played:
+                    current_status = 'played'
+                elif in_progress:
+                    current_status = 'in_progress'
                 
                 # 先判断是否“是”
                 is_match = (current_status == value)
