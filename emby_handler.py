@@ -1319,3 +1319,49 @@ def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server
     except Exception as e:
         logger.error(f"更新项目详情时发生未知错误 (ID: {item_id}): {e}", exc_info=True)
         return False
+    
+# ▼▼▼ 我们新增的“威力加强版”函数 ▼▼▼
+def get_items_with_userdata_for_view(
+    base_url: str,
+    api_key: str,
+    user_id: str,
+    parent_id: str,
+    fields: str,
+    **kwargs
+) -> List[Dict[str, Any]]:
+    """
+    专门为虚拟库视图设计的高性能数据获取函数。
+    - 强制使用 /Users/{user_id}/Items 接口，以确保能获取到 PlayedPercentage 等完整的用户数据。
+    - 接收 **kwargs 以支持筛选下推。
+    """
+    if not all([base_url, api_key, user_id, parent_id]):
+        logger.error("get_items_with_userdata_for_view: 缺少必要的参数。")
+        return []
+
+    try:
+        # 强制使用这个最可靠的、包含完整用户数据的 API 地址
+        api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+
+        params = {
+            "api_key": api_key,
+            "Recursive": "true",
+            "ParentId": parent_id,
+            "Fields": fields,
+            "IncludeItemTypes": "Movie,Series,Video", # 默认获取所有可视类型
+        }
+
+        # 将所有额外的筛选参数 (如 IsPlayed=true) 合并到请求中
+        params.update(kwargs)
+        
+        logger.trace(f"Requesting items for user view from ParentId '{parent_id}' with extra params: {kwargs}.")
+        
+        response = requests.get(api_url, params=params, timeout=30)
+        response.raise_for_status()
+        items = response.json().get("Items", [])
+        
+        logger.debug(f"  -> 成功从 ParentId '{parent_id}' 获取到 {len(items)} 个媒体项 (包含用户数据)。")
+        return items
+
+    except Exception as e:
+        logger.error(f"请求 ParentId '{parent_id}' 的用户视图项目失败: {e}", exc_info=True)
+        return []
