@@ -270,7 +270,8 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                     if field == 'playback_status':
                         if value == 'played': emby_api_params['IsPlayed'] = 'true'
                         elif value == 'unplayed': emby_api_params['IsUnplayed'] = 'true'
-                        else: unsupported_rules.append(rule) # 'in_progress' 无法直接筛选
+                        elif value == 'in_progress': emby_api_params['IsResumable'] = 'true' 
+                        else: unsupported_rules.append(rule)
                     elif field == 'is_favorite':
                         if value is True: emby_api_params['IsFavorite'] = 'true'
                         else: unsupported_rules.append(rule) # 'is_favorite: false' 无法直接筛选
