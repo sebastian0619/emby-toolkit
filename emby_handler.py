@@ -355,9 +355,9 @@ def get_emby_library_items(
     **kwargs
 ) -> Optional[List[Dict[str, Any]]]:
     """
-    【V5 - 终极修正版】
-    - 智能判断：当提供了 user_id 时，自动切换到 /Users/{UserId}/Items 端点，
-      以确保 IsPlayed, IsResumable 等用户数据筛选参数能被 Emby API 正确处理。
+    【V6 - 终极交叉查询版】
+    - 解决了 ParentId 和用户数据筛选 (IsResumable等) 无法同时生效的 Emby API 限制。
+    - 采用两步查询法：先获取合集内所有 Item ID，再用这些 ID 结合用户筛选条件进行精确查询。
     """
     if not base_url or not api_key:
         logger.error("get_emby_library_items: base_url 或 api_key 未提供。")
@@ -365,16 +365,13 @@ def get_emby_library_items(
 
     # --- 搜索模式 (保持不变) ---
     if search_term and search_term.strip():
-        # ... (这部分逻辑不变, 因为它已经使用了正确的 /Users/{user_id}/Items 端点)
+        # ... (这部分逻辑不变) ...
         logger.info(f"进入搜索模式，关键词: '{search_term}'")
         api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
         params = {
-            "api_key": api_key,
-            "SearchTerm": search_term.strip(),
+            "api_key": api_key, "SearchTerm": search_term.strip(),
             "IncludeItemTypes": media_type_filter or "Movie,Series",
-            "Recursive": "true",
-            "Fields": "Id,Name,Type,ProductionYear,ProviderIds,Path",
-            "Limit": 100
+            "Recursive": "true", "Fields": "Id,Name,Type,ProductionYear,ProviderIds,Path", "Limit": 100
         }
         try:
             response = requests.get(api_url, params=params, timeout=20)
@@ -391,6 +388,10 @@ def get_emby_library_items(
         return []
 
     all_items_from_selected_libraries: List[Dict[str, Any]] = []
+    
+    # 检查是否存在需要特殊处理的用户数据筛选参数
+    user_data_filters = {k: v for k, v in kwargs.items() if k in ['IsPlayed', 'IsUnplayed', 'IsResumable', 'IsFavorite']}
+
     for lib_id in library_ids:
         if not lib_id or not lib_id.strip():
             continue
@@ -398,32 +399,55 @@ def get_emby_library_items(
         library_name = library_name_map.get(lib_id, lib_id) if library_name_map else lib_id
         
         try:
-            # <-- 核心修改 #1: 智能选择 API 端点 -->
-            if user_id:
-                # 如果有 user_id，必须使用这个端点才能让用户数据筛选生效
+            # ★★★ 终极核心逻辑：两步查询法 ★★★
+            if user_id and user_data_filters:
+                logger.debug(f"检测到用户数据筛选，对库 '{library_name}' 启用两步交叉查询法。")
+                
+                # --- 第一步: 获取合集内所有项目的 ID ---
+                id_fetch_url = f"{base_url.rstrip('/')}/Items"
+                id_fetch_params = {
+                    "api_key": api_key, "ParentId": lib_id,
+                    "Recursive": "true", "Fields": "Id",
+                    "IncludeItemTypes": media_type_filter or "Movie,Series,Video"
+                }
+                id_response = requests.get(id_fetch_url, params=id_fetch_params, timeout=30)
+                id_response.raise_for_status()
+                all_item_ids = [str(item['Id']) for item in id_response.json().get("Items", [])]
+
+                if not all_item_ids:
+                    logger.debug(f"库 '{library_name}' 为空，跳过第二步。")
+                    continue
+
+                # --- 第二步: 使用这些 ID 和用户筛选条件进行精确查询 ---
                 api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+                fields_to_request = fields if fields else "ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate"
+                params = {
+                    "api_key": api_key,
+                    "Ids": ",".join(all_item_ids),  # 使用 ID 列表进行查询
+                    "Fields": fields_to_request,
+                }
+                params.update(kwargs) # 将 IsResumable=true 等参数加进来
+                # 注意：这里不再需要 ParentId，因为我们已经用 Ids 参数限定了范围
+
             else:
-                # 否则，使用通用的 Items 端点
-                api_url = f"{base_url.rstrip('/')}/Items"
+                # --- 老的、常规的查询逻辑 (适用于没有用户数据筛选的情况) ---
+                if user_id:
+                    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+                else:
+                    api_url = f"{base_url.rstrip('/')}/Items"
 
-            fields_to_request = fields if fields else "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,People,ProductionLocations"
+                fields_to_request = fields if fields else "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,People,ProductionLocations"
+                params = {
+                    "api_key": api_key, "Recursive": "true", "ParentId": lib_id,
+                    "Fields": fields_to_request,
+                }
+                if media_type_filter:
+                    params["IncludeItemTypes"] = media_type_filter
+                else:
+                    params["IncludeItemTypes"] = "Movie,Series,Video"
+                params.update(kwargs)
 
-            params = {
-                "api_key": api_key, "Recursive": "true", "ParentId": lib_id,
-                "Fields": fields_to_request,
-            }
-            if media_type_filter:
-                params["IncludeItemTypes"] = media_type_filter
-            else:
-                params["IncludeItemTypes"] = "Movie,Series,Video"
-
-            # <-- 核心修改 #2: 不再需要手动添加 UserId，因为它已经在 URL 里了 -->
-            # if user_id:
-            #     params["UserId"] = user_id
-
-            params.update(kwargs)
-            
-            logger.trace(f"Requesting items from library '{library_name}' (ID: {lib_id}) via URL '{api_url}' with extra params: {kwargs}.")
+            logger.trace(f"Requesting items from library '{library_name}' (ID: {lib_id}) via URL '{api_url}' with params: {params}.")
             
             response = requests.get(api_url, params=params, timeout=30)
             response.raise_for_status()
@@ -441,14 +465,12 @@ def get_emby_library_items(
     # ... (日志部分保持不变) ...
     type_to_chinese = {"Movie": "电影", "Series": "电视剧", "Video": "视频", "MusicAlbum": "音乐专辑"}
     media_type_in_chinese = ""
-
     if media_type_filter:
         types = media_type_filter.split(',')
         translated_types = [type_to_chinese.get(t, t) for t in types]
         media_type_in_chinese = "、".join(translated_types)
     else:
         media_type_in_chinese = '所有'
-
     logger.debug(f"  -> 总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
     
     return all_items_from_selected_libraries
