@@ -221,14 +221,14 @@ const triggerRestart = async () => {
   try {
     await axios.post('/api/system/restart');
     // 请求已发出，即使下面因网络中断而报错，也视为成功启动了重启流程
-    message.success('重启指令已发送，应用正在后台重启。请在约一分钟后手动刷新页面。', { duration: 10000 });
+    message.success('重启指令已发送，应用正在后台重启。请稍后手动刷新页面。', { duration: 10000 });
   } catch (error) {
     // 如果有响应体，说明是后端明确返回的错误
     if (error.response) {
       message.error(error.response.data.error || '发送重启请求失败，请查看日志。');
     } else {
       // 否则，大概率是预期的网络中断，这是重启成功的标志
-      message.success('重启指令已发送，应用正在后台重启。请在约一分钟后手动刷新页面。', { duration: 10000 });
+      message.success('重启指令已发送，应用正在后台重启。请稍后手动刷新页面。', { duration: 10000 });
     }
   }
 };
