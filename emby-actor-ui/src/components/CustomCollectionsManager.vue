@@ -796,8 +796,8 @@ const ruleConfig = {
   release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
   date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
   // --- 动态规则 ---
-  playback_status: { label: '播放状态', type: 'user_data', operators: ['is'] },
-  is_favorite: { label: '是否收藏', type: 'user_data', operators: ['is'] },
+  playback_status: { label: '播放状态', type: 'user_data', operators: ['is', 'is_not'] },
+  is_favorite: { label: '是否收藏', type: 'user_data', operators: ['is', 'is_not'] },
 };
 
 const operatorLabels = {
@@ -805,7 +805,8 @@ const operatorLabels = {
   gte: '大于等于', lte: '小于等于', eq: '等于',
   in_last_days: '最近N天内', not_in_last_days: 'N天以前',
   is_one_of: '是其中之一', is_none_of: '不是任何一个',
-  is: '是'
+  is: '是',
+  is_not: '不是'
 };
 
 // 新的 ref 和获取分级选项的函数
@@ -837,11 +838,7 @@ const dynamicFieldOptions = computed(() =>
 
 const getOperatorOptionsForRow = (rule) => {
   if (!rule.field) return [];
-  if (ruleConfig[rule.field]?.type === 'user_data') {
-      if (rule.field === 'playback_status' || rule.field === 'is_favorite') {
-          return [{ label: '是', value: 'is' }];
-      }
-  }
+  // 直接返回通过 ruleConfig 生成的选项
   return (ruleConfig[rule.field]?.operators || []).map(op => ({ label: operatorLabels[op] || op, value: op }));
 };
 

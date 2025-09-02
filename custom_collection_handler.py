@@ -451,7 +451,7 @@ class FilterEngine:
                 continue
         return matched_collections
     
-    # ▼▼▼ 在类的末尾，新增下面这两个方法 ▼▼▼
+    # ▼▼▼ 动态筛选 ▼▼▼
     def _item_matches_dynamic_rules(self, emby_item: Dict[str, Any], rules: List[Dict[str, Any]], logic: str) -> bool:
         if not rules: return True
         
@@ -461,28 +461,45 @@ class FilterEngine:
         for rule in rules:
             field, op, value = rule.get("field"), rule.get("operator"), rule.get("value")
             match = False
+            
+            # 默认操作符为 'is'，以兼容旧数据
+            if not op: op = 'is'
 
             if field == 'playback_status':
                 is_played = user_data.get('Played', False)
                 in_progress = user_data.get('PlaybackPositionTicks', 0) > 0
                 
-                if value == 'played' and is_played:
-                    match = True
-                elif value == 'unplayed' and not is_played and not in_progress:
-                    match = True
-                elif value == 'in_progress' and not is_played and in_progress:
-                    match = True
+                current_status = 'unplayed'
+                if is_played:
+                    current_status = 'played'
+                elif in_progress:
+                    current_status = 'in_progress'
+                
+                # 先判断是否“是”
+                is_match = (current_status == value)
+                
+                # 再根据操作符决定最终结果
+                if op == 'is':
+                    match = is_match
+                elif op == 'is_not':
+                    match = not is_match
 
             elif field == 'is_favorite':
                 is_favorite = user_data.get('IsFavorite', False)
-                if value is True and is_favorite:
-                    match = True
-                elif value is False and not is_favorite:
-                    match = True
+                
+                # 先判断是否“是”
+                is_match = (value is True and is_favorite) or \
+                           (value is False and not is_favorite)
+                
+                # 再根据操作符决定最终结果
+                if op == 'is':
+                    match = is_match
+                elif op == 'is_not':
+                    match = not is_match
             
             results.append(match)
 
-        # 动态筛选目前只支持 AND，因为 OR 逻辑复杂且不常用
+        # 动态筛选目前只支持 AND
         return all(results)
 
     def execute_dynamic_filter(self, all_emby_items: List[Dict[str, Any]], definition: Dict[str, Any]) -> List[Dict[str, Any]]:
