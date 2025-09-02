@@ -248,69 +248,37 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         definition = collection_info.get('definition_json') or {}
         real_emby_collection_id = collection_info.get('emby_collection_id')
+
+        # --- 阶段一：从真实的Emby合集获取基础内容 ---
+        logger.info(f"  -> 阶段1：正在从真实合集 '{collection_info['name']}' (ID: {real_emby_collection_id}) 获取基础内容...")
         base_url, api_key = _get_real_emby_url_and_key()
-
-        # ▼▼▼ 全新的、高性能的筛选逻辑 ▼▼▼
-
-        # --- 阶段一：智能参数翻译 ---
-        emby_api_params = {}
-        unsupported_rules = [] # 用于存放 Emby API 不直接支持的规则 (例如 'is_not')
-
-        if definition.get('dynamic_filter_enabled'):
-            logger.info("  -> 检测到实时筛选，尝试将规则下推至 Emby API 进行优化...")
-            dynamic_rules = definition.get('dynamic_rules', [])
-            
-            for rule in dynamic_rules:
-                field = rule.get('field')
-                op = rule.get('operator', 'is')
-                value = rule.get('value')
-
-                # 只优化 'is' 操作，因为 Emby API 不支持 'is_not'
-                if op == 'is':
-                    if field == 'playback_status':
-                        if value == 'played': emby_api_params['IsPlayed'] = 'true'
-                        elif value == 'unplayed': emby_api_params['IsUnplayed'] = 'true'
-                        elif value == 'in_progress': emby_api_params['IsResumable'] = 'true' 
-                        else: unsupported_rules.append(rule)
-                    elif field == 'is_favorite':
-                        if value is True: emby_api_params['IsFavorite'] = 'true'
-                        else: unsupported_rules.append(rule) # 'is_favorite: false' 无法直接筛选
-                    else:
-                        unsupported_rules.append(rule)
-                else:
-                    # 所有 'is_not' 规则都无法在 API 层面优化，需要后续处理
-                    unsupported_rules.append(rule)
-            
-            if emby_api_params:
-                logger.info(f"  -> 优化成功：将筛选条件 {emby_api_params} 直接传递给 Emby API。")
-
-        # --- 阶段二：从 Emby 获取数据 (可能已经是过滤后的) ---
-        logger.info(f"  -> 正在从真实合集 '{collection_info['name']}' (ID: {real_emby_collection_id}) 获取内容...")
         
         base_items = emby_handler.get_emby_library_items(
             base_url=base_url, api_key=api_key, user_id=user_id,
             library_ids=[real_emby_collection_id],
-            fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate",
-            **emby_api_params  # <-- 将我们翻译好的参数动态传入
+            fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate"
         )
         if not base_items:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
         
-        logger.info(f"  -> Emby API 返回了 {len(base_items)} 个媒体项。")
+        logger.info(f"  -> 阶段1完成：获取到 {len(base_items)} 个基础媒体项。")
 
-        # --- 阶段三：对无法优化的规则进行二次过滤 (如果需要) ---
+        # --- 阶段二：如果启用了动态筛选，就执行二次过滤 ---
         final_items = base_items
-        if unsupported_rules:
-            logger.info(f"  -> 对 {len(unsupported_rules)} 条 Emby API 不支持的规则进行二次内存过滤...")
+        
+        if definition.get('dynamic_filter_enabled'):
+            logger.info("  -> 阶段2：检测到已启用实时用户筛选，开始二次过滤...")
             
             dynamic_definition = {
-                'rules': unsupported_rules,
-                'logic': 'AND' # 动态筛选目前只支持 AND
+                'rules': definition.get('dynamic_rules', []),
+                'logic': definition.get('dynamic_logic', 'AND')
             }
             
             engine = FilterEngine()
             final_items = engine.execute_dynamic_filter(base_items, dynamic_definition)
-            logger.info(f"  -> 二次过滤后，剩下 {len(final_items)} 个媒体项。")
+            logger.info(f"  -> 阶段2完成：二次过滤后，剩下 {len(final_items)} 个媒体项。")
+        else:
+            logger.info("  -> 阶段2跳过：未启用实时用户筛选。")
 
         # --- 排序和返回 ---
         sort_by_field = definition.get('default_sort_by')
