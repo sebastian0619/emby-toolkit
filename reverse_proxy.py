@@ -81,13 +81,12 @@ def handle_get_views():
             merged_libraries = definition.get('merged_libraries', [])
             name_suffix = f" (合并库: {len(merged_libraries)}个)" if merged_libraries else ""
             
-            # item_type_from_db = definition.get('item_type', 'Movie')
-            # if isinstance(item_type_from_db, list) and len(item_type_from_db) > 1:
-            #     collection_type = "mixed"
-            # else:
-            #     authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
-            #     collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
-            collection_type = "tvshows"
+            item_type_from_db = definition.get('item_type', 'Movie')
+            if isinstance(item_type_from_db, list) and len(item_type_from_db) > 1:
+                collection_type = "mixed"
+            else:
+                authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
+                collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
             fake_view = {
                 "Name": coll['name'] + name_suffix, 
@@ -173,13 +172,12 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
         
         # ★★★ 核心修复：直接使用已经是字典的 definition_json 字段 ★★★
         definition = coll.get('definition_json') or {}
-        # item_type_from_db = definition.get('item_type', 'Movie')
-        # collection_type = "mixed"
-        # if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
-        #     authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
-        #     collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
+        item_type_from_db = definition.get('item_type', 'Movie')
+        collection_type = "mixed"
+        if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
+             authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
+             collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
-        collection_type = "tvshows"
         fake_library_details = {
             "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id,
             "Type": "CollectionFolder",
@@ -262,7 +260,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         base_items = emby_handler.get_emby_library_items(
             base_url=base_url, api_key=api_key, user_id=user_id,
             library_ids=[real_emby_collection_id],
-            fields="ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate"
+            fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate"
         )
         if not base_items:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
