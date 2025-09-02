@@ -289,7 +289,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         base_items = emby_handler.get_emby_library_items(
             base_url=base_url, api_key=api_key, user_id=user_id,
             library_ids=[real_emby_collection_id],
-            fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate",
+            fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,BasicSyncInfo,PlayedPercentage",
             **emby_api_params  # <-- 将我们翻译好的参数动态传入
         )
         if not base_items:
