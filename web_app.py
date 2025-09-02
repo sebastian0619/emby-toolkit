@@ -224,33 +224,6 @@ def init_db():
                     )
                 """)
 
-                # --- ▼▼▼ 核心平滑升级逻辑 (PostgreSQL 兼容版) ▼▼▼ ---
-                try:
-                    # 查询 media_metadata 表中已存在的列
-                    cursor.execute("""
-                        SELECT column_name
-                        FROM information_schema.columns
-                        WHERE table_schema = current_schema() AND table_name = 'media_metadata';
-                    """)
-                    existing_columns = {row['column_name'] for row in cursor.fetchall()}
-                    
-                    # 定义需要检查和添加的新列及其 PostgreSQL 类型
-                    # 注意：JSONB 和 TIMESTAMP WITH TIME ZONE 是 PostgreSQL 的推荐类型
-                    new_columns_to_add = {
-                        "official_rating": "TEXT", # <<< 新增的分级字段
-                        "unified_rating": "TEXT"
-                    }
-
-                    for col_name, col_type in new_columns_to_add.items():
-                        if col_name not in existing_columns:
-                            logger.info(f"    -> [数据库升级] 检测到 'media_metadata' 表缺少 '{col_name}' 字段，正在添加...")
-                            cursor.execute(f"ALTER TABLE media_metadata ADD COLUMN {col_name} {col_type};")
-                            logger.info(f"    -> [数据库升级] 字段 '{col_name}' 添加成功。")
-                        else:
-                            logger.trace(f"    -> 字段 '{col_name}' 已存在，跳过。")
-                except Exception as e_alter_mm:
-                    logger.error(f"  -> [数据库升级] 为 'media_metadata' 表添加新字段时出错: {e_alter_mm}", exc_info=True)
-
                 logger.trace("  -> 正在创建 'watchlist' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS watchlist (
@@ -336,6 +309,61 @@ def init_db():
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_subscription_id ON tracked_actor_media (subscription_id)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_status ON tracked_actor_media (status)")
+
+                # --- 2. 执行平滑升级检查 ---
+                logger.info("  -> 开始执行数据库表结构平滑升级检查...")
+                try:
+                    # --- 2.1 检查所有表的列 ---
+                    # 查询 information_schema 获取所有表的列信息
+                    cursor.execute("""
+                        SELECT table_name, column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = current_schema();
+                    """)
+                    
+                    # 将结果组织成一个字典，方便查询: {'table_name': {'col1', 'col2'}, ...}
+                    all_existing_columns = {}
+                    for row in cursor.fetchall():
+                        table = row['table_name']
+                        if table not in all_existing_columns:
+                            all_existing_columns[table] = set()
+                        all_existing_columns[table].add(row['column_name'])
+
+                    # --- 2.2 定义所有需要检查和添加的新列 ---
+                    # 格式: {'table_name': {'column_name': 'COLUMN_TYPE'}}
+                    schema_upgrades = {
+                        'media_metadata': {
+                            "official_rating": "TEXT",
+                            "unified_rating": "TEXT"
+                        },
+                        # 'custom_collections': {
+                        #     "emby_playlist_id": "TEXT"
+                        # }
+                    }
+
+                    # --- 2.3 遍历并执行升级 ---
+                    for table, columns_to_add in schema_upgrades.items():
+                        # 检查表是否存在于我们查询到的信息中
+                        if table in all_existing_columns:
+                            existing_cols_for_table = all_existing_columns[table]
+                            for col_name, col_type in columns_to_add.items():
+                                # 如果新列不存在，则添加它
+                                if col_name not in existing_cols_for_table:
+                                    logger.info(f"    -> [数据库升级] 检测到 '{table}' 表缺少 '{col_name}' 字段，正在添加...")
+                                    # 使用 ALTER TABLE ... ADD COLUMN ... IF NOT EXISTS 语法，双重保险
+                                    cursor.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type};")
+                                    logger.info(f"    -> [数据库升级] 字段 '{col_name}' 添加成功。")
+                                else:
+                                    logger.trace(f"    -> 字段 '{table}.{col_name}' 已存在，跳过。")
+                        else:
+                            # 这种情况理论上不会发生，因为前面的 CREATE TABLE IF NOT EXISTS 已经保证了表的存在
+                            logger.warning(f"    -> [数据库升级] 检查表 '{table}' 时发现该表不存在，跳过升级。")
+
+                except Exception as e_alter:
+                    logger.error(f"  -> [数据库升级] 检查或添加新字段时出错: {e_alter}", exc_info=True)
+                    # 即使升级失败，也继续执行，不中断主程序启动
+                
+                logger.info("  -> 数据库平滑升级检查完成。")
 
             conn.commit()
             logger.info("✅ PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")

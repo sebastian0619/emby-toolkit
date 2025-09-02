@@ -12,6 +12,7 @@ from gevent import spawn
 from geventwebsocket.websocket import WebSocket
 from websocket import create_connection
 
+from custom_collection_handler import FilterEngine
 import config_manager
 import db_handler
 import extensions
@@ -239,62 +240,56 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
         return Response(json.dumps([]), mimetype='application/json')
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
-    """
-    【V3 - 排序功能增强版】
-    - 新增了对 'original' 排序的支持。
-    """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
         collection_info = db_handler.get_custom_collection_by_id(real_db_id)
-        if not collection_info:
+        if not collection_info or not collection_info.get('emby_collection_id'):
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
-        # ★★★ 核心修复 1/2：直接使用已经是字典的 definition_json 字段 ★★★
         definition = collection_info.get('definition_json') or {}
-        real_items_map = {}
         real_emby_collection_id = collection_info.get('emby_collection_id')
-        if real_emby_collection_id:
-            base_url, api_key = _get_real_emby_url_and_key()
-            target_url = f"{base_url}/emby/Users/{user_id}/Items"
-            new_params = params.copy()
-            item_type_from_db = definition.get('item_type', [])
-            if isinstance(item_type_from_db, list) and len(item_type_from_db) > 1:
-                new_params.pop('IncludeItemTypes', None)
-            new_params["ParentId"] = real_emby_collection_id
-            new_params['Fields'] = new_params.get('Fields', '') + ',ProviderIds,UserData,DateCreated,PremiereDate,CommunityRating,ProductionYear'
-            new_params['api_key'] = api_key
-            new_params['Limit'] = 5000
-            resp = requests.get(target_url, params=new_params, timeout=30.0)
-            resp.raise_for_status()
-            for item in resp.json().get("Items", []):
-                tmdb_id = str(item.get('ProviderIds', {}).get('Tmdb'))
-                if tmdb_id: real_items_map[tmdb_id] = item
+
+        # ==========================================================
+        # ▼▼▼ 全新的、由你构思的两段式筛选逻辑 ▼▼▼
+        # ==========================================================
+
+        # --- 阶段一：获取“肉身” (从真实的Emby合集获取基础内容) ---
+        logger.info(f"  -> 阶段1：正在从真实合集 '{collection_info['name']}' (ID: {real_emby_collection_id}) 获取基础内容...")
+        base_url, api_key = _get_real_emby_url_and_key()
         
-        # ★★★ 核心修复 2/2：直接使用已经是列表的 generated_media_info_json 字段 ★★★
-        all_db_items = collection_info.get('generated_media_info_json') or []
-        final_items = []
-        processed_real_tmdb_ids = set()
-        for db_item in all_db_items:
-            tmdb_id = str(db_item.get('tmdb_id', ''))
-            if not tmdb_id: continue
-            if tmdb_id in real_items_map:
-                final_items.append(real_items_map[tmdb_id])
-                processed_real_tmdb_ids.add(tmdb_id)
-        for tmdb_id, real_item in real_items_map.items():
-            if tmdb_id not in processed_real_tmdb_ids: final_items.append(real_item)
+        base_items = emby_handler.get_emby_library_items(
+            base_url=base_url, api_key=api_key, user_id=user_id,
+            library_ids=[real_emby_collection_id],
+            fields="ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate"
+        )
+        if not base_items:
+            return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
         
+        logger.info(f"  -> 阶段1完成：获取到 {len(base_items)} 个基础媒体项。")
+
+        # --- 阶段二：“灵魂”注入 (如果启用了动态筛选，就执行二次过滤) ---
+        final_items = base_items
+        
+        if definition.get('dynamic_filter_enabled'):
+            logger.info("  -> 阶段2：检测到已启用实时用户筛选，开始二次过滤...")
+            
+            dynamic_definition = {
+                'rules': definition.get('dynamic_rules', []),
+                'logic': definition.get('dynamic_logic', 'AND')
+            }
+            
+            engine = FilterEngine()
+            final_items = engine.execute_dynamic_filter(base_items, dynamic_definition)
+            logger.info(f"  -> 阶段2完成：二次过滤后，剩下 {len(final_items)} 个媒体项。")
+        else:
+            logger.info("  -> 阶段2跳过：未启用实时用户筛选。")
+
+        # --- 排序和返回 (复用你原来的逻辑) ---
         sort_by_field = definition.get('default_sort_by')
-        
-        # --- ▼▼▼ 核心修改：增加对 'original' 排序的处理 ▼▼▼ ---
-        if sort_by_field and sort_by_field == 'original':
-            logger.trace("执行虚拟库排序劫持: 'original' (榜单原始顺序)，将保持数据库中的顺序。")
-            # 不执行任何操作，final_items 此时的顺序就是我们想要的原始顺序
-        elif sort_by_field and sort_by_field != 'none':
-        # --- ▲▲▲ 修改结束 ▲▲▲ ---
+        if sort_by_field and sort_by_field != 'none' and sort_by_field != 'original':
             sort_order = definition.get('default_sort_order', 'Ascending')
             is_descending = (sort_order == 'Descending')
             logger.trace(f"执行虚拟库排序劫持: '{sort_by_field}' ({sort_order})")
-            
             default_sort_value = 0 if sort_by_field in ['CommunityRating', 'ProductionYear'] else "0"
             try:
                 final_items.sort(
@@ -302,16 +297,13 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                     reverse=is_descending
                 )
             except TypeError:
-                logger.warning(f"排序时遇到类型不匹配问题，已回退到按名称排序。")
                 final_items.sort(key=lambda item: item.get('SortName', ''))
-        else:
-            logger.debug("未设置虚拟库排序，将使用Emby原生排序。")
 
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')
 
     except Exception as e:
-        logger.error(f"处理伪造库内容时发生严重错误: {e}", exc_info=True)
+        logger.error(f"处理混合虚拟库时发生严重错误: {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):

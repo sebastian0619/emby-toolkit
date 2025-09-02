@@ -59,7 +59,7 @@
     <n-modal
       v-model:show="showModal"
       preset="card"
-      style="width: 90%; max-width: 700px;"
+      style="width: 90%; max-width: 850px;"
       :title="isEditing ? '编辑合集' : '创建新合集'"
       :bordered="false"
       size="huge"
@@ -144,7 +144,7 @@
           <n-form-item label="筛选规则" path="definition.rules">
             <div style="width: 100%;">
               <n-space v-for="(rule, index) in currentCollection.definition.rules" :key="index" style="margin-bottom: 12px;" align="center">
-                <n-select v-model:value="rule.field" :options="fieldOptions" placeholder="字段" style="width: 150px;" clearable />
+                <n-select v-model:value="rule.field" :options="staticFieldOptions" placeholder="字段" style="width: 150px;" clearable />
                 <n-select v-model:value="rule.operator" :options="getOperatorOptionsForRow(rule)" placeholder="操作" style="width: 120px;" :disabled="!rule.field" clearable />
                 <template v-if="rule.field === 'genres'">
                   <n-select
@@ -337,6 +337,72 @@
               />
             </n-input-group>
           </n-form-item>
+          <n-divider title-placement="left" style="margin-top: 15px;">
+            附加实时筛选 (可选)
+          </n-divider>
+
+          <n-form-item>
+            <template #label>
+              <n-space align="center">
+                <span>启用实时用户数据筛选</span>
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-icon :component="HelpIcon" />
+                  </template>
+                  开启后，此合集将根据每个用户的观看状态、收藏等实时变化。
+                </n-tooltip>
+              </n-space>
+            </template>
+            <n-switch v-model:value="currentCollection.definition.dynamic_filter_enabled" />
+          </n-form-item>
+
+          <div v-if="currentCollection.definition.dynamic_filter_enabled">
+            <n-form-item label="动态筛选规则" path="definition.dynamic_rules">
+              <div style="width: 100%;">
+                <n-space v-for="(rule, index) in currentCollection.definition.dynamic_rules" :key="index" style="margin-bottom: 12px;" align="center">
+                  
+                  <!-- 修复：使用 dynamicFieldOptions -->
+                  <n-select v-model:value="rule.field" :options="dynamicFieldOptions" placeholder="字段" style="width: 150px;" clearable />
+                  
+                  <n-select v-model:value="rule.operator" :options="getOperatorOptionsForRow(rule)" placeholder="操作" style="width: 120px;" :disabled="!rule.field" clearable />
+                  
+                  <template v-if="rule.field === 'playback_status'">
+                    <n-select
+                      v-model:value="rule.value"
+                      placeholder="选择播放状态"
+                      :options="[
+                        { label: '未播放', value: 'unplayed' },
+                        { label: '播放中', value: 'in_progress' },
+                        { label: '已播放', value: 'played' }
+                      ]"
+                      :disabled="!rule.operator"
+                      style="flex-grow: 1; min-width: 180px;"
+                    />
+                  </template>
+                  <template v-else-if="rule.field === 'is_favorite'">
+                    <n-select
+                      v-model:value="rule.value"
+                      placeholder="选择收藏状态"
+                      :options="[
+                        { label: '已收藏', value: true },
+                        { label: '未收藏', value: false }
+                      ]"
+                      :disabled="!rule.operator"
+                      style="flex-grow: 1; min-width: 180px;"
+                    />
+                  </template>
+
+                  <n-button text type="error" @click="removeDynamicRule(index)">
+                    <template #icon><n-icon :component="DeleteIcon" /></template>
+                  </n-button>
+                </n-space>
+                <n-button @click="addDynamicRule" dashed block>
+                  <template #icon><n-icon :component="AddIcon" /></template>
+                  添加动态条件
+                </n-button>
+              </div>
+            </n-form-item>
+          </div>
         <n-form-item label="状态" path="status" v-if="isEditing">
             <n-radio-group v-model:value="currentCollection.status">
                 <n-space>
@@ -449,7 +515,8 @@ import {
   CloudDownloadOutline as CloudDownloadIcon,
   CheckmarkCircleOutline as CheckmarkCircle,
   CloseCircleOutline as CloseCircleIcon,
-  ReorderFourOutline as DragHandleIcon
+  ReorderFourOutline as DragHandleIcon,
+  HelpCircleOutline as HelpIcon
 } from '@vicons/ionicons5';
 import { format } from 'date-fns';
 
@@ -564,8 +631,10 @@ const getInitialFormModel = () => ({
     limit: null,
     // --- ▼▼▼ 核心修改 2/3：为新创建的合集设置更合理的默认排序 ▼▼▼ ---
     default_sort_by: 'original', // 对于榜单类型，默认使用原始顺序
-    default_sort_order: 'Ascending' 
-    // --- ▲▲▲ 修改结束 ▲▲▲ ---
+    default_sort_order: 'Ascending',
+    dynamic_filter_enabled: false, // 动态筛选开关，默认关闭
+    dynamic_logic: 'AND',          // 动态筛选的逻辑
+    dynamic_rules: []              // 存放动态规则的数组 
   }
 });
 const currentCollection = ref(getInitialFormModel());
@@ -696,7 +765,24 @@ watch(() => currentCollection.value.definition.rules, (newRules) => {
   }
 }, { deep: true });
 
+// 侦听动态规则的变化，以便在字段切换时重置值
+watch(() => currentCollection.value.definition.dynamic_rules, (newRules) => {
+  if (Array.isArray(newRules)) {
+    newRules.forEach(rule => {
+      // 当字段切换为“是否收藏”且当前值不是布尔值时，重置
+      if (rule.field === 'is_favorite' && typeof rule.value !== 'boolean') {
+        rule.value = true; // 默认设置为 true (已收藏)
+      } 
+      // 当字段切换为“播放状态”且当前值无效时，重置
+      else if (rule.field === 'playback_status' && !['unplayed', 'in_progress', 'played'].includes(rule.value)) {
+        rule.value = 'unplayed'; // 默认设置为 'unplayed' (未播放)
+      }
+    });
+  }
+}, { deep: true });
+
 const ruleConfig = {
+  // --- 静态规则 ---
   title: { label: '标题', type: 'text', operators: ['contains', 'does_not_contain', 'starts_with', 'ends_with'] },
   actors: { label: '演员', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
   directors: { label: '导演', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
@@ -709,13 +795,17 @@ const ruleConfig = {
   unified_rating: { label: '家长分级', type: 'select', operators: ['is_one_of', 'is_none_of', 'eq'] },
   release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
   date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
+  // --- 动态规则 ---
+  playback_status: { label: '播放状态', type: 'user_data', operators: ['is'] },
+  is_favorite: { label: '是否收藏', type: 'user_data', operators: ['is'] },
 };
 
 const operatorLabels = {
   contains: '包含', does_not_contain: '不包含', starts_with: '开头是', ends_with: '结尾是',    
   gte: '大于等于', lte: '小于等于', eq: '等于',
   in_last_days: '最近N天内', not_in_last_days: 'N天以前',
-  is_one_of: '是其中之一', is_none_of: '不是任何一个'
+  is_one_of: '是其中之一', is_none_of: '不是任何一个',
+  is: '是'
 };
 
 // 新的 ref 和获取分级选项的函数
@@ -733,12 +823,25 @@ const fetchUnifiedRatingOptions = async () => {
   }
 };
 
-const fieldOptions = computed(() => 
-  Object.keys(ruleConfig).map(key => ({ label: ruleConfig[key].label, value: key }))
+const staticFieldOptions = computed(() => 
+  Object.keys(ruleConfig)
+    .filter(key => ruleConfig[key].type !== 'user_data') // 只保留非用户数据的字段
+    .map(key => ({ label: ruleConfig[key].label, value: key }))
+);
+
+const dynamicFieldOptions = computed(() => 
+  Object.keys(ruleConfig)
+    .filter(key => ruleConfig[key].type === 'user_data') // 只保留用户数据的字段
+    .map(key => ({ label: ruleConfig[key].label, value: key }))
 );
 
 const getOperatorOptionsForRow = (rule) => {
   if (!rule.field) return [];
+  if (ruleConfig[rule.field]?.type === 'user_data') {
+      if (rule.field === 'playback_status' || rule.field === 'is_favorite') {
+          return [{ label: '是', value: 'is' }];
+      }
+  }
   return (ruleConfig[rule.field]?.operators || []).map(op => ({ label: operatorLabels[op] || op, value: op }));
 };
 
@@ -1135,6 +1238,18 @@ const columns = [
 
 const getTmdbImageUrl = (posterPath) => posterPath ? `https://image.tmdb.org/t/p/w300${posterPath}` : '/img/poster-placeholder.png';
 const extractYear = (dateStr) => dateStr ? dateStr.substring(0, 4) : null;
+
+const addDynamicRule = () => {
+  if (!currentCollection.value.definition.dynamic_rules) {
+    currentCollection.value.definition.dynamic_rules = [];
+  }
+  // 修复：为新规则设置一个默认字段，避免UI显示为空
+  currentCollection.value.definition.dynamic_rules.push({ field: 'playback_status', operator: 'is', value: 'unplayed' });
+};
+
+const removeDynamicRule = (index) => {
+  currentCollection.value.definition.dynamic_rules.splice(index, 1);
+};
 
 onMounted(() => {
   fetchCollections();

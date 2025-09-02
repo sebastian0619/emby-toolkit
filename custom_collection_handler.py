@@ -450,3 +450,50 @@ class FilterEngine:
                 logger.warning(f"解析合集《{collection_def['name']}》的定义时出错: {e}，跳过。")
                 continue
         return matched_collections
+    
+    # ▼▼▼ 在类的末尾，新增下面这两个方法 ▼▼▼
+    def _item_matches_dynamic_rules(self, emby_item: Dict[str, Any], rules: List[Dict[str, Any]], logic: str) -> bool:
+        if not rules: return True
+        
+        results = []
+        user_data = emby_item.get('UserData', {})
+
+        for rule in rules:
+            field, op, value = rule.get("field"), rule.get("operator"), rule.get("value")
+            match = False
+
+            if field == 'playback_status':
+                is_played = user_data.get('Played', False)
+                in_progress = user_data.get('PlaybackPositionTicks', 0) > 0
+                
+                if value == 'played' and is_played:
+                    match = True
+                elif value == 'unplayed' and not is_played and not in_progress:
+                    match = True
+                elif value == 'in_progress' and not is_played and in_progress:
+                    match = True
+
+            elif field == 'is_favorite':
+                is_favorite = user_data.get('IsFavorite', False)
+                if value is True and is_favorite:
+                    match = True
+                elif value is False and not is_favorite:
+                    match = True
+            
+            results.append(match)
+
+        # 动态筛选目前只支持 AND，因为 OR 逻辑复杂且不常用
+        return all(results)
+
+    def execute_dynamic_filter(self, all_emby_items: List[Dict[str, Any]], definition: Dict[str, Any]) -> List[Dict[str, Any]]:
+        logger.info("  -> 动态筛选引擎：开始在实时数据上执行规则...")
+        rules = definition.get('rules', [])
+        logic = definition.get('logic', 'AND')
+        
+        if not rules:
+            return all_emby_items
+
+        matched_items = [item for item in all_emby_items if self._item_matches_dynamic_rules(item, rules, logic)]
+        
+        logger.info(f"  -> 动态筛选完成！共找到 {len(matched_items)} 部匹配的媒体项目。")
+        return matched_items
