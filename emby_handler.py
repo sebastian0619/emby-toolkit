@@ -351,11 +351,12 @@ def get_emby_library_items(
     library_ids: Optional[List[str]] = None,
     search_term: Optional[str] = None,
     library_name_map: Optional[Dict[str, str]] = None,
-    fields: Optional[str] = None
+    fields: Optional[str] = None,
+    **kwargs  # <-- 核心改动 1: 接收所有其他关键字参数
 ) -> Optional[List[Dict[str, Any]]]:
     """
-    【V3 - 安静且信息补充版】
-    获取项目，并为每个项目添加来源库ID，不再打印每个库的日志。
+    【V4 - 高性能筛选版】
+    - 支持通过 **kwargs 接收任意 Emby API 参数 (如 IsPlayed)，实现筛选下推。
     """
     if not base_url or not api_key:
         logger.error("get_emby_library_items: base_url 或 api_key 未提供。")
@@ -363,6 +364,7 @@ def get_emby_library_items(
 
     # --- 搜索模式 (保持不变) ---
     if search_term and search_term.strip():
+        # ... (这部分逻辑不变) ...
         logger.info(f"进入搜索模式，关键词: '{search_term}'")
         api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
         params = {
@@ -397,13 +399,11 @@ def get_emby_library_items(
         try:
             api_url = f"{base_url.rstrip('/')}/Items"
             
-            # ★★★ 核心修复：在这里决定 Fields 参数的值 ★★★
-            # 如果调用者提供了 fields，就用它；否则，使用我们原来的默认值。
             fields_to_request = fields if fields else "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,People,ProductionLocations"
 
             params = {
                 "api_key": api_key, "Recursive": "true", "ParentId": lib_id,
-                "Fields": fields_to_request, # ★★★ 使用我们新决定的值 ★★★
+                "Fields": fields_to_request,
             }
             if media_type_filter:
                 params["IncludeItemTypes"] = media_type_filter
@@ -413,7 +413,10 @@ def get_emby_library_items(
             if user_id:
                 params["UserId"] = user_id
 
-            logger.trace(f"Requesting items from library '{library_name}' (ID: {lib_id}).")
+            # <-- 核心改动 2: 将所有额外参数合并到请求中
+            params.update(kwargs)
+            
+            logger.trace(f"Requesting items from library '{library_name}' (ID: {lib_id}) with extra params: {kwargs}.")
             
             response = requests.get(api_url, params=params, timeout=30)
             response.raise_for_status()
@@ -428,18 +431,15 @@ def get_emby_library_items(
             logger.error(f"请求库 '{library_name}' 中的项目失败: {e}", exc_info=True)
             continue
 
+    # ... (日志部分保持不变) ...
     type_to_chinese = {"Movie": "电影", "Series": "电视剧", "Video": "视频", "MusicAlbum": "音乐专辑"}
     media_type_in_chinese = ""
 
     if media_type_filter:
-        # 分割字符串，例如 "Movie,Series" -> ["Movie", "Series"]
         types = media_type_filter.split(',')
-        # 为每个类型查找翻译，如果找不到就用原名
         translated_types = [type_to_chinese.get(t, t) for t in types]
-        # 将翻译后的列表组合成一个字符串，例如 ["电影", "电视剧"] -> "电影、电视剧"
         media_type_in_chinese = "、".join(translated_types)
     else:
-        # 如果 media_type_filter 未提供，则为“所有”
         media_type_in_chinese = '所有'
 
     logger.debug(f"  -> 总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
