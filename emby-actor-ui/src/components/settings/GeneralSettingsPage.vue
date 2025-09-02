@@ -81,7 +81,19 @@
                   <n-card :bordered="false" class="dashboard-card">
                     <template #header><span class="card-title">Emby 连接设置</span></template>
                     <n-space vertical :size="18">
-                      <n-form-item-grid-item label="Emby 服务器 URL" path="emby_server_url">
+                      <!-- ▼▼▼ 修改点1: Emby URL 增加重启提示 ▼▼▼ -->
+                      <n-form-item-grid-item>
+                        <template #label>
+                          <n-space align="center">
+                            <span>Emby 服务器 URL</span>
+                            <n-tooltip trigger="hover">
+                              <template #trigger>
+                                <n-icon :component="AlertIcon" class="info-icon" />
+                              </template>
+                              此项修改需要重启容器才能生效。
+                            </n-tooltip>
+                          </n-space>
+                        </template>
                         <n-input v-model:value="configModel.emby_server_url" placeholder="例如: http://localhost:8096" />
                       </n-form-item-grid-item>
                       <n-form-item-grid-item label="Emby API Key" path="emby_api_key">
@@ -133,7 +145,6 @@
                           <n-radio value="after">显示在虚拟库后面</n-radio>
                         </n-radio-group>
                       </n-form-item-grid-item>
-                      <!-- ▼▼▼ 修改点1: 增加重启提示 ▼▼▼ -->
                       <n-form-item-grid-item>
                         <template #label>
                           <n-space align="center">
@@ -149,7 +160,6 @@
                         <n-input-number v-model:value="configModel.proxy_port" :min="1025" :max="65535" :disabled="!configModel.proxy_enabled"/>
                         <template #feedback><n-text depth="3" style="font-size:0.8em;">非host模式需要映射。</n-text></template>
                       </n-form-item-grid-item>
-                      <!-- ▼▼▼ 修改点2: 增加重启提示 ▼▼▼ -->
                       <n-form-item-grid-item>
                         <template #label>
                           <n-space align="center">
@@ -292,7 +302,6 @@
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
                     <template #header><span class="card-title">日志配置</span></template>
-                    <!-- ▼▼▼ 修改点3: 增加重启提示 ▼▼▼ -->
                     <n-form-item-grid-item>
                       <template #label>
                         <n-space align="center">
@@ -308,7 +317,6 @@
                       <n-input-number v-model:value="configModel.log_rotation_size_mb" :min="1" :step="1" placeholder="例如: 5"/>
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">设置 app.log 文件的最大体积，超限后会轮转。</n-text></template>
                     </n-form-item-grid-item>
-                    <!-- ▼▼▼ 修改点4: 增加重启提示 ▼▼▼ -->
                     <n-form-item-grid-item>
                       <template #label>
                         <n-space align="center">
@@ -456,7 +464,7 @@ import {
   CloudUploadOutline as ImportIcon,
   TrashOutline as ClearIcon,
   BuildOutline as BuildIcon,
-  AlertCircleOutline as AlertIcon, // +++ 新增图标
+  AlertCircleOutline as AlertIcon,
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import axios from 'axios';
@@ -786,16 +794,24 @@ const handleClearTables = async () => {
 const selectAllForClear = () => tablesToClear.value = [...allDbTables.value];
 const deselectAllForClear = () => tablesToClear.value = [];
 
-// ▼▼▼ 修改点5: 新增重启相关逻辑 ▼▼▼
+// ▼▼▼ 修改点2: 优化重启逻辑 ▼▼▼
 const initialRestartableConfig = ref(null);
 
 const triggerRestart = async () => {
+  message.info('正在发送重启指令...');
   try {
-    message.info('正在发送重启指令...', { duration: 5000 });
-    const response = await axios.post('/api/system/restart');
-    message.success(response.data.message || '重启指令已发送，请稍后刷新页面。', { duration: 8000 });
+    await axios.post('/api/system/restart');
+    // 由于服务器会立即重启，这个请求很可能会因网络错误而失败。
+    // 我们不依赖于它的成功响应，而是直接显示成功消息。
+    message.success('重启指令已发送，应用正在后台重启。请在约一分钟后手动刷新页面。', { duration: 10000 });
   } catch (error) {
-    message.error(error.response?.data?.error || '发送重启请求失败，请查看日志。');
+    // 如果错误有响应体，说明是后端在重启前就返回了明确的错误（如权限问题）
+    if (error.response) {
+      message.error(error.response.data.error || '发送重启请求失败，请查看日志。');
+    } else {
+      // 如果没有响应体，这很可能是预期的网络中断错误，是重启成功的标志。
+      message.success('重启指令已发送，应用正在后台重启。请在约一分钟后手动刷新页面。', { duration: 10000 });
+    }
   }
 };
 
@@ -803,13 +819,14 @@ const save = async () => {
   try {
     await formRef.value?.validate();
 
-    // 检查需要重启的设置是否已更改
+    // ▼▼▼ 修改点3: 增加 emby_server_url 到重启检查列表 ▼▼▼
     const restartNeeded =
       initialRestartableConfig.value && (
         configModel.value.proxy_port !== initialRestartableConfig.value.proxy_port ||
         configModel.value.proxy_302_redirect_url !== initialRestartableConfig.value.proxy_302_redirect_url ||
         configModel.value.log_rotation_size_mb !== initialRestartableConfig.value.log_rotation_size_mb ||
-        configModel.value.log_rotation_backup_count !== initialRestartableConfig.value.log_rotation_backup_count
+        configModel.value.log_rotation_backup_count !== initialRestartableConfig.value.log_rotation_backup_count ||
+        configModel.value.emby_server_url !== initialRestartableConfig.value.emby_server_url
       );
 
     // 封装保存操作，以便复用
@@ -817,12 +834,13 @@ const save = async () => {
       const success = await handleSaveConfig();
       if (success) {
         message.success('所有设置已成功保存！');
-        // 保存成功后，更新初始状态以防止重复弹窗
+        // ▼▼▼ 修改点4: 更新初始状态时也包含 emby_server_url ▼▼▼
         initialRestartableConfig.value = {
           proxy_port: configModel.value.proxy_port,
           proxy_302_redirect_url: configModel.value.proxy_302_redirect_url,
           log_rotation_size_mb: configModel.value.log_rotation_size_mb,
           log_rotation_backup_count: configModel.value.log_rotation_backup_count,
+          emby_server_url: configModel.value.emby_server_url,
         };
       } else {
         message.error(configError.value || '配置保存失败，请检查后端日志。');
@@ -833,7 +851,7 @@ const save = async () => {
     if (restartNeeded) {
       dialog.warning({
         title: '需要重启容器',
-        content: '您修改了需要重启容器才能生效的设置（如虚拟库端口、302重定向、日志配置等）。请选择如何操作：',
+        content: '您修改了需要重启容器才能生效的设置（如Emby URL、虚拟库端口、日志配置等）。请选择如何操作：',
         positiveText: '保存并重启',
         negativeText: '仅保存',
         onPositiveClick: async () => {
@@ -1008,16 +1026,17 @@ onMounted(() => {
   componentIsMounted.value = true;
 
   unwatchGlobal = watch(loadingConfig, (isLoading) => {
-    if (!isLoading && componentIsMounted.value && configModel.value) { // ▼▼▼ 修改点6: 增加 configModel.value 判断
+    if (!isLoading && componentIsMounted.value && configModel.value) {
       if (configModel.value.emby_server_url && configModel.value.emby_api_key) {
         fetchEmbyLibrariesInternal();
       }
-      // ▼▼▼ 修改点7: 存储需要重启的配置项的初始值
+      // ▼▼▼ 修改点5: 存储需要重启的配置项的初始值，包含 emby_server_url ▼▼▼
       initialRestartableConfig.value = {
         proxy_port: configModel.value.proxy_port,
         proxy_302_redirect_url: configModel.value.proxy_302_redirect_url,
         log_rotation_size_mb: configModel.value.log_rotation_size_mb,
         log_rotation_backup_count: configModel.value.log_rotation_backup_count,
+        emby_server_url: configModel.value.emby_server_url,
       };
 
       if (unwatchGlobal) {
@@ -1094,7 +1113,6 @@ onUnmounted(() => {
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.2);
 }
-/* ▼▼▼ 修改点8: 新增提示图标样式 ▼▼▼ */
 .info-icon {
   color: var(--n-info-color);
   cursor: help;
