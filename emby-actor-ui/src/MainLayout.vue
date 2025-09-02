@@ -165,9 +165,10 @@ import {
 } from '@vicons/ionicons5';
 import { Password24Regular as PasswordIcon } from '@vicons/fluent';
 import axios from 'axios';
-import { useMessage } from 'naive-ui';
+import { useMessage, useDialog } from 'naive-ui';
 
 const message = useMessage();
+const dialog = useDialog();
 
 const triggerStopTask = async () => {
   try {
@@ -214,6 +215,25 @@ const userOptions = computed(() => [
   { label: '退出登录', key: 'logout', icon: renderIcon(LogoutIcon) }
 ]);
 
+// ▼▼▼ 修改点1: 创建一个健壮的、可复用的重启函数 ▼▼▼
+const triggerRestart = async () => {
+  message.info('正在发送重启指令...');
+  try {
+    await axios.post('/api/system/restart');
+    // 请求已发出，即使下面因网络中断而报错，也视为成功启动了重启流程
+    message.success('重启指令已发送，应用正在后台重启。请在约一分钟后手动刷新页面。', { duration: 10000 });
+  } catch (error) {
+    // 如果有响应体，说明是后端明确返回的错误
+    if (error.response) {
+      message.error(error.response.data.error || '发送重启请求失败，请查看日志。');
+    } else {
+      // 否则，大概率是预期的网络中断，这是重启成功的标志
+      message.success('重启指令已发送，应用正在后台重启。请在约一分钟后手动刷新页面。', { duration: 10000 });
+    }
+  }
+};
+
+// ▼▼▼ 修改点2: 更新 handleUserSelect 以调用新函数 ▼▼▼
 const handleUserSelect = async (key) => {
   if (key === 'change-password') {
     showPasswordModal.value = true;
@@ -223,15 +243,7 @@ const handleUserSelect = async (key) => {
       content: '确定要重启容器吗？应用将在短时间内无法访问，重启后需要手动刷新页面。',
       positiveText: '确定重启',
       negativeText: '取消',
-      onPositiveClick: async () => {
-        try {
-          message.info('正在发送重启指令...');
-          const response = await axios.post('/api/system/restart');
-          message.success(response.data.message || '重启指令已发送，请稍后刷新页面。');
-        } catch (error) {
-          message.error(error.response?.data?.error || '发送重启请求失败，请查看日志。');
-        }
-      },
+      onPositiveClick: triggerRestart, // 直接调用优化后的函数
     });
   } else if (key === 'logout') {
     await authStore.logout();
