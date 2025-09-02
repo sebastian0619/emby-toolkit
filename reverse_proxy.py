@@ -87,7 +87,7 @@ def handle_get_views():
             # else:
             #     authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
             #     collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
-            collection_type = "movies"
+            collection_type = "tvshows"
 
             fake_view = {
                 "Name": coll['name'] + name_suffix, 
@@ -179,7 +179,7 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
         #     authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
         #     collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
-        collection_type = "movies"
+        collection_type = "tvshows"
         fake_library_details = {
             "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id,
             "Type": "CollectionFolder",
