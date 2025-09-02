@@ -352,11 +352,12 @@ def get_emby_library_items(
     search_term: Optional[str] = None,
     library_name_map: Optional[Dict[str, str]] = None,
     fields: Optional[str] = None,
-    **kwargs  # <-- 核心改动 1: 接收所有其他关键字参数
+    **kwargs
 ) -> Optional[List[Dict[str, Any]]]:
     """
-    【V4 - 高性能筛选版】
-    - 支持通过 **kwargs 接收任意 Emby API 参数 (如 IsPlayed)，实现筛选下推。
+    【V5 - 终极修正版】
+    - 智能判断：当提供了 user_id 时，自动切换到 /Users/{UserId}/Items 端点，
+      以确保 IsPlayed, IsResumable 等用户数据筛选参数能被 Emby API 正确处理。
     """
     if not base_url or not api_key:
         logger.error("get_emby_library_items: base_url 或 api_key 未提供。")
@@ -364,7 +365,7 @@ def get_emby_library_items(
 
     # --- 搜索模式 (保持不变) ---
     if search_term and search_term.strip():
-        # ... (这部分逻辑不变) ...
+        # ... (这部分逻辑不变, 因为它已经使用了正确的 /Users/{user_id}/Items 端点)
         logger.info(f"进入搜索模式，关键词: '{search_term}'")
         api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
         params = {
@@ -397,8 +398,14 @@ def get_emby_library_items(
         library_name = library_name_map.get(lib_id, lib_id) if library_name_map else lib_id
         
         try:
-            api_url = f"{base_url.rstrip('/')}/Items"
-            
+            # <-- 核心修改 #1: 智能选择 API 端点 -->
+            if user_id:
+                # 如果有 user_id，必须使用这个端点才能让用户数据筛选生效
+                api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+            else:
+                # 否则，使用通用的 Items 端点
+                api_url = f"{base_url.rstrip('/')}/Items"
+
             fields_to_request = fields if fields else "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,People,ProductionLocations"
 
             params = {
@@ -410,13 +417,13 @@ def get_emby_library_items(
             else:
                 params["IncludeItemTypes"] = "Movie,Series,Video"
 
-            if user_id:
-                params["UserId"] = user_id
+            # <-- 核心修改 #2: 不再需要手动添加 UserId，因为它已经在 URL 里了 -->
+            # if user_id:
+            #     params["UserId"] = user_id
 
-            # <-- 核心改动 2: 将所有额外参数合并到请求中
             params.update(kwargs)
             
-            logger.trace(f"Requesting items from library '{library_name}' (ID: {lib_id}) with extra params: {kwargs}.")
+            logger.trace(f"Requesting items from library '{library_name}' (ID: {lib_id}) via URL '{api_url}' with extra params: {kwargs}.")
             
             response = requests.get(api_url, params=params, timeout=30)
             response.raise_for_status()
