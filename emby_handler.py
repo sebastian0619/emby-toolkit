@@ -1320,48 +1320,70 @@ def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server
         logger.error(f"更新项目详情时发生未知错误 (ID: {item_id}): {e}", exc_info=True)
         return False
     
-# ▼▼▼ 我们新增的“威力加强版”函数 ▼▼▼
-def get_items_with_userdata_for_view(
+def get_collection_items_with_full_userdata(
     base_url: str,
     api_key: str,
     user_id: str,
-    parent_id: str,
+    collection_id: str,
     fields: str,
     **kwargs
 ) -> List[Dict[str, Any]]:
     """
-    专门为虚拟库视图设计的高性能数据获取函数。
-    - 强制使用 /Users/{user_id}/Items 接口，以确保能获取到 PlayedPercentage 等完整的用户数据。
-    - 接收 **kwargs 以支持筛选下推。
+    【双重保险版】专门为虚拟库设计的、能获取完整用户数据的函数。
+    
+    采用两步走策略：
+    1. 先通过公共的 /Items 接口获取指定合集(collection_id)内的所有媒体基础ID。
+    2. 再用这些ID去用户专属的 /Users/{user_id}/Items 接口查询这些媒体的完整信息，
+       从而确保能获得 PlayedPercentage 等所有详细用户数据。
     """
-    if not all([base_url, api_key, user_id, parent_id]):
-        logger.error("get_items_with_userdata_for_view: 缺少必要的参数。")
+    if not all([base_url, api_key, user_id, collection_id]):
+        logger.error("get_collection_items_with_full_userdata: 缺少必要的参数。")
         return []
 
     try:
-        # 强制使用这个最可靠的、包含完整用户数据的 API 地址
-        api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
-
-        params = {
+        # --- 第一步：从公共接口获取合集内的所有媒体ID ---
+        # 这一步是为了拿到最准确的“合集内容列表”
+        step1_url = f"{base_url.rstrip('/')}/Items"
+        step1_params = {
             "api_key": api_key,
+            "ParentId": collection_id,
             "Recursive": "true",
-            "ParentId": parent_id,
-            "Fields": fields,
-            "IncludeItemTypes": "Movie,Series,Video", # 默认获取所有可视类型
+            "Fields": "Id",  # 我们只需要ID
+            "IncludeItemTypes": "Movie,Series,Video",
         }
+        
+        logger.debug(f"  -> [步骤1] 正在从合集 '{collection_id}' 获取媒体ID列表...")
+        response1 = requests.get(step1_url, params=step1_params, timeout=30)
+        response1.raise_for_status()
+        
+        items_from_collection = response1.json().get("Items", [])
+        if not items_from_collection:
+            logger.info(f"  -> 合集 '{collection_id}' 为空，无需进一步查询。")
+            return []
+            
+        item_ids = [item['Id'] for item in items_from_collection]
+        logger.debug(f"  -> [步骤1] 成功获取 {len(item_ids)} 个媒体ID。")
 
+        # --- 第二步：用这些ID去用户专属接口查询完整的媒体信息和用户数据 ---
+        # 这一步是为了拿到最准确的“用户播放状态”
+        step2_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+        step2_params = {
+            "api_key": api_key,
+            "Ids": ",".join(item_ids),  # 使用ID列表进行精确查询
+            "Fields": fields,
+        }
         # 将所有额外的筛选参数 (如 IsPlayed=true) 合并到请求中
-        params.update(kwargs)
+        step2_params.update(kwargs)
+
+        logger.debug(f"  -> [步骤2] 正在为用户 '{user_id}' 查询这 {len(item_ids)} 个ID的详细信息...")
+        response2 = requests.get(step2_url, params=step2_params, timeout=30)
+        response2.raise_for_status()
         
-        logger.trace(f"Requesting items for user view from ParentId '{parent_id}' with extra params: {kwargs}.")
+        full_items_data = response2.json().get("Items", [])
+        logger.info(f"  -> [步骤2] 成功获取到 {len(full_items_data)} 个媒体的完整信息。")
         
-        response = requests.get(api_url, params=params, timeout=30)
-        response.raise_for_status()
-        items = response.json().get("Items", [])
-        
-        logger.debug(f"  -> 成功从 ParentId '{parent_id}' 获取到 {len(items)} 个媒体项 (包含用户数据)。")
-        return items
+        return full_items_data
 
     except Exception as e:
-        logger.error(f"请求 ParentId '{parent_id}' 的用户视图项目失败: {e}", exc_info=True)
+        logger.error(f"为合集 '{collection_id}' 获取完整用户数据时失败: {e}", exc_info=True)
         return []

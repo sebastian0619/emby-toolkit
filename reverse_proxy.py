@@ -286,7 +286,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         # --- 阶段二：从 Emby 获取数据 (可能已经是过滤后的) ---
         logger.info(f"  -> 正在从真实合集 '{collection_info['name']}' (ID: {real_emby_collection_id}) 获取内容...")
         
-        base_items = emby_handler.get_items_with_userdata_for_view(
+        base_items = emby_handler.get_collection_items_with_full_userdata(
             base_url=base_url, api_key=api_key, user_id=user_id,
             library_ids=[real_emby_collection_id],
             fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,BasicSyncInfo,PlayedPercentage",
