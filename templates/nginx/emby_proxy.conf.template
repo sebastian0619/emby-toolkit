@@ -94,6 +94,20 @@ server {
         proxy_pass http://emby_server;
     }
 
+    # 这个规则专门捕获播放器试图让服务器代理播放外部URL的行为
+    location /emby/Videos/ActiveEncodings {
+        # 检查请求的URL参数中是否存在名为 'Url' 的参数
+        if ($arg_Url) {
+            # 如果存在，直接将客户端302重定向到这个Url参数的值
+            # 这就强制让播放器自己去访问那个公网直链
+            return 302 $arg_Url;
+        }
+
+        # 如果请求中没有 'Url' 参数，说明是正常的内部播放请求，
+        # 那么就正常地将它代理给真实的 Emby 服务器。
+        proxy_pass http://emby_server;
+    }
+
     # 兜底规则：转发所有其他请求到真实 Emby
     location / {
         proxy_pass http://emby_server;
