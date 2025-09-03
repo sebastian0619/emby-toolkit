@@ -32,28 +32,14 @@ server {
     #  核心路由规则 (V4)
     # ====================================================================
 
-    # ★★★ 规则 1：拦截并转发 .strm 请求的302重定向 ★★★
+    # ★★★ 规则 1：【条件化】转发所有视频流请求 ★★★
+    # 如果设置了 REDIRECT_UPSTREAM，此规则块将生效。
+    # 它会捕获所有主流视频格式、转码流和 .strm 文件，并因为位置靠前而被优先匹配。
     {% if REDIRECT_UPSTREAM %}
-    location ~ \.strm$ {
+    location ~* (\.strm$|\.(mkv|mp4|ts|avi|iso|mov|webm|flv)$|/videos/.*stream) {
         proxy_pass http://redirect_service;
-        proxy_intercept_errors on;
-        
-        # ▼▼▼ 核心修改 1/2：强制Nginx传递上游的 'Location' 头 ▼▼▼
-        # 默认情况下，Nginx可能会在错误处理跳转时丢弃某些头信息。
-        # 这条指令明确告诉Nginx：“把上游返回的 Location 头给我留着！”
-        proxy_pass_header Location;
-
-        error_page 302 = @handle_redirect;
     }
     {% endif %}
-
-    location @handle_redirect {
-        # ▼▼▼ 核心修改 2/2：使用更可靠的变量 $sent_http_location ▼▼▼
-        # $upstream_http_location 依赖于Nginx内部模块的状态，可能为空。
-        # 而 $sent_http_location 变量代表“即将发送给客户端的响应头中的Location值”。
-        # 结合上面的 proxy_pass_header 指令，这个变量现在一定会有正确的值。
-        return 302 $sent_http_location;
-    }
 
     # --- 以下是虚拟库路由规则 ---
 
@@ -91,20 +77,6 @@ server {
 
     # 规则 5: WebSocket (保持不变)
     location /embywebsocket {
-        proxy_pass http://emby_server;
-    }
-
-    # 这个规则专门捕获播放器试图让服务器代理播放外部URL的行为
-    location /emby/Videos/ActiveEncodings {
-        # 检查请求的URL参数中是否存在名为 'Url' 的参数
-        if ($arg_Url) {
-            # 如果存在，直接将客户端302重定向到这个Url参数的值
-            # 这就强制让播放器自己去访问那个公网直链
-            return 302 $arg_Url;
-        }
-
-        # 如果请求中没有 'Url' 参数，说明是正常的内部播放请求，
-        # 那么就正常地将它代理给真实的 Emby 服务器。
         proxy_pass http://emby_server;
     }
 
