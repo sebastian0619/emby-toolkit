@@ -512,5 +512,5 @@ class FilterEngine:
 
         matched_items = [item for item in all_emby_items if self._item_matches_dynamic_rules(item, rules, logic)]
         
-        logger.info(f"  -> 动态筛选完成！共找到 {len(matched_items)} 部匹配的媒体项目。")
+        logger.trace(f"  -> 动态筛选完成！共找到 {len(matched_items)} 部匹配的媒体项目。")
         return matched_items
