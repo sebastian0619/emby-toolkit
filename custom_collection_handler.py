@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from gevent import subprocess, Timeout
 
 import tmdb_handler
+import emby_handler
 import config_manager
 import db_handler 
 from tmdb_handler import search_media, get_tv_details_tmdb
@@ -390,7 +391,7 @@ class FilterEngine:
         else: return any(results)
 
     def execute_filter(self, definition: Dict[str, Any]) -> List[Dict[str, str]]:
-        logger.info("  -> 筛选引擎：开始执行全库扫描以生成合集...")
+        logger.info("  -> 筛选引擎：开始执行合集生成...")
         rules = definition.get('rules', [])
         logic = definition.get('logic', 'AND')
         item_types_to_process = definition.get('item_type', ['Movie'])
@@ -399,19 +400,75 @@ class FilterEngine:
         if not rules:
             logger.warning("合集定义中没有任何规则，将返回空列表。")
             return []
+
+        # ★★★ 核心修改：根据定义判断数据源 ★★★
+        library_ids = definition.get('library_ids')
+        all_media_metadata = []
+
+        if library_ids and isinstance(library_ids, list) and len(library_ids) > 0:
+            # --- 分支1：从指定的媒体库加载数据 ---
+            logger.info(f"  -> 已指定 {len(library_ids)} 个媒体库作为筛选范围。")
+            
+            # 从配置中获取Emby连接信息
+            cfg = config_manager.APP_CONFIG
+            emby_url = cfg.get('emby_server_url')
+            emby_key = cfg.get('emby_api_key')
+            emby_user_id = cfg.get('emby_user_id')
+
+            if not all([emby_url, emby_key, emby_user_id]):
+                logger.error("Emby服务器配置不完整，无法从指定媒体库筛选。")
+                return []
+
+            # 1. 从指定的Emby库中获取所有媒体项
+            emby_items = emby_handler.get_emby_library_items(
+                base_url=emby_url,
+                api_key=emby_key,
+                user_id=emby_user_id,
+                library_ids=library_ids,
+                media_type_filter=",".join(item_types_to_process)
+            )
+
+            if not emby_items:
+                logger.warning("从指定的媒体库中未能获取到任何媒体项。")
+                return []
+
+            # 2. 提取这些媒体项的TMDb ID
+            tmdb_ids_from_libs = [
+                item['ProviderIds']['Tmdb']
+                for item in emby_items
+                if item.get('ProviderIds', {}).get('Tmdb')
+            ]
+
+            if not tmdb_ids_from_libs:
+                logger.warning("指定媒体库中的项目均缺少TMDb ID，无法进行筛选。")
+                return []
+            
+            # 3. 根据TMDb ID列表，从我们的数据库缓存中批量获取元数据
+            logger.info(f"  -> 正在从本地缓存中查询这 {len(tmdb_ids_from_libs)} 个项目的元数据...")
+            for item_type in item_types_to_process:
+                metadata_for_type = db_handler.get_media_metadata_by_tmdb_ids(tmdb_ids_from_libs, item_type)
+                all_media_metadata.extend(metadata_for_type)
+
+        else:
+            # --- 分支2：保持原有逻辑，扫描全库 ---
+            logger.info("  -> 未指定媒体库，将扫描所有媒体库的元数据缓存...")
+            for item_type in item_types_to_process:
+                all_media_metadata.extend(db_handler.get_all_media_metadata(item_type=item_type))
+
+        # --- 后续的筛选逻辑保持不变 ---
         matched_items = []
-        for item_type in item_types_to_process:
-            all_media_metadata = db_handler.get_all_media_metadata(item_type=item_type)
-            log_item_type_cn = "电影" if item_type == "Movie" else "电视剧"
-            if not all_media_metadata:
-                logger.warning(f"本地媒体元数据缓存中没有找到任何 {log_item_type_cn} 类型的项目。")
-                continue
-            logger.info(f"  -> 已加载 {len(all_media_metadata)} 条{log_item_type_cn}元数据，开始应用筛选规则...")
-            for media_metadata in all_media_metadata:
-                if self._item_matches_rules(media_metadata, rules, logic):
-                    tmdb_id = media_metadata.get('tmdb_id')
-                    if tmdb_id:
-                        matched_items.append({'id': str(tmdb_id), 'type': item_type})
+        if not all_media_metadata:
+            logger.warning("未能加载任何媒体元数据进行筛选。")
+            return []
+        
+        logger.info(f"  -> 已加载 {len(all_media_metadata)} 条元数据，开始应用筛选规则...")
+        for media_metadata in all_media_metadata:
+            if self._item_matches_rules(media_metadata, rules, logic):
+                tmdb_id = media_metadata.get('tmdb_id')
+                item_type = media_metadata.get('item_type')
+                if tmdb_id and item_type:
+                    matched_items.append({'id': str(tmdb_id), 'type': item_type})
+                    
         unique_items = list({f"{item['type']}-{item['id']}": item for item in matched_items}.values())
         logger.info(f"  -> 筛选完成！共找到 {len(unique_items)} 部匹配的媒体项目。")
         return unique_items

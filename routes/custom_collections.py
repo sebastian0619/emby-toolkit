@@ -426,3 +426,36 @@ def api_get_unified_ratings_for_filter():
     """为筛选器提供一个固定的、统一的分级列表。"""
     # 直接返回我们预定义好的分类列表
     return jsonify(UNIFIED_RATING_CATEGORIES)
+# --- 获取 Emby 媒体库列表 ---
+@custom_collections_bp.route('/config/emby_libraries', methods=['GET'])
+@login_required
+def api_get_emby_libraries_for_filter():
+    """为筛选器提供一个可选的 Emby 媒体库列表。"""
+    try:
+        # 从配置中获取必要的 Emby 连接信息
+        emby_url = config_manager.APP_CONFIG.get('emby_server_url')
+        emby_key = config_manager.APP_CONFIG.get('emby_api_key')
+        emby_user_id = config_manager.APP_CONFIG.get('emby_user_id')
+
+        if not all([emby_url, emby_key, emby_user_id]):
+            return jsonify({"error": "Emby 服务器配置不完整"}), 500
+
+        # 调用 emby_handler 获取原始的媒体库/视图列表
+        all_views = emby_handler.get_emby_libraries(emby_url, emby_key, emby_user_id)
+        if all_views is None:
+            return jsonify({"error": "无法从 Emby 获取媒体库列表"}), 500
+
+        # 筛选出真正的媒体库（电影、电视剧类型）并格式化为前端需要的格式
+        library_options = []
+        for view in all_views:
+            collection_type = view.get('CollectionType')
+            if collection_type in ['movies', 'tvshows']:
+                library_options.append({
+                    "label": view.get('Name'),
+                    "value": view.get('Id')
+                })
+        
+        return jsonify(library_options)
+    except Exception as e:
+        logger.error(f"获取 Emby 媒体库列表时出错: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500

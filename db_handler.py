@@ -1728,3 +1728,21 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
     except psycopg2.Error as e_db:
         logger.error(f"匹配和更新榜单合集时发生数据库错误: {e_db}", exc_info=True)
         raise
+def get_media_metadata_by_tmdb_ids(tmdb_ids: List[str], item_type: str) -> List[Dict[str, Any]]:
+    """
+    根据一个 TMDb ID 列表，从媒体元数据缓存表中批量获取记录。
+    """
+    if not tmdb_ids:
+        return []
+    
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 使用 ANY(%s) 语法可以高效地查询数组中的成员
+            sql = "SELECT * FROM media_metadata WHERE item_type = %s AND tmdb_id = ANY(%s)"
+            cursor.execute(sql, (item_type, tmdb_ids))
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    except psycopg2.Error as e:
+        logger.error(f"根据TMDb ID列表批量获取媒体元数据时出错: {e}", exc_info=True)
+        return []
