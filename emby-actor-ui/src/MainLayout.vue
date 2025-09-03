@@ -2,7 +2,14 @@
   <n-layout style="height: 100vh;">
     <n-layout-header :bordered="false" class="app-header">
       <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-        <span class="text-effect">Emby Toolkit</span>
+        <span class="text-effect">
+          <img
+            :src="logo"
+            alt="Logo"
+            style="height: 1.5em; vertical-align: middle; margin-right: 0.3em;"
+          />
+          Emby Toolkit
+        </span>
           <div style="display: flex; align-items: center; gap: 16px;">
             <!-- 用户名下拉菜单 -->
             <n-dropdown 
@@ -166,6 +173,7 @@ import {
 import { Password24Regular as PasswordIcon } from '@vicons/fluent';
 import axios from 'axios';
 import { useMessage, useDialog } from 'naive-ui';
+import logo from './assets/logo.png'
 
 const message = useMessage();
 const dialog = useDialog();
