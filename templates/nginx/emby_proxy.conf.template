@@ -8,11 +8,6 @@ upstream virtual_library_proxy {
     server {{ PROXY_UPSTREAM }};
 }
 
-{% if REDIRECT_UPSTREAM %}
-upstream redirect_service {
-    server {{ REDIRECT_UPSTREAM }};
-}
-{% endif %}
 
 server {
     listen {{ NGINX_LISTEN_PORT }};
@@ -33,9 +28,12 @@ server {
     # ====================================================================
 
     # ★★★ 规则 1：转发 .strm 请求 ★★★
-    {% if REDIRECT_UPSTREAM %}
+    {% if REDIRECT_URL %}
     location ~ \.strm$ {
-        proxy_pass http://redirect_service;
+        # 返回 302 临时重定向
+        # $request_uri 是客户端请求的原始路径，例如 /emby/videos/12345/stream.strm
+        # Nginx 会将它拼接到 REDIRECT_URL 后面
+        return 302 {{ REDIRECT_URL }}$request_uri;
     }
     {% endif %}
 
