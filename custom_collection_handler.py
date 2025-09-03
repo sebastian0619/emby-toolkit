@@ -503,7 +503,7 @@ class FilterEngine:
         return all(results)
 
     def execute_dynamic_filter(self, all_emby_items: List[Dict[str, Any]], definition: Dict[str, Any]) -> List[Dict[str, Any]]:
-        logger.info("  -> 动态筛选引擎：开始在实时数据上执行规则...")
+        logger.trace("  -> 动态筛选引擎：开始在实时数据上执行规则...")
         rules = definition.get('rules', [])
         logic = definition.get('logic', 'AND')
         
