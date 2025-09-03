@@ -35,25 +35,24 @@ server {
     # ★★★ 规则 1：拦截并转发 .strm 请求的302重定向 ★★★
     {% if REDIRECT_UPSTREAM %}
     location ~ \.strm$ {
-        # 1. 将请求代理到您的 pick_code 服务
         proxy_pass http://redirect_service;
-
-        # 2. 【魔法开关】开启对上游服务器响应的错误/重定向码的拦截
         proxy_intercept_errors on;
+        
+        # ▼▼▼ 核心修改 1/2：强制Nginx传递上游的 'Location' 头 ▼▼▼
+        # 默认情况下，Nginx可能会在错误处理跳转时丢弃某些头信息。
+        # 这条指令明确告诉Nginx：“把上游返回的 Location 头给我留着！”
+        proxy_pass_header Location;
 
-        # 3. 【定义规则】告诉 Nginx：当你拦截到 302 响应时，不要自己处理，
-        #    而是内部跳转到一个名为 @handle_redirect 的位置进行特殊处理。
         error_page 302 = @handle_redirect;
     }
     {% endif %}
 
-    # ▼▼▼ 核心修改 3/3：定义我们的重定向处理程序 ▼▼▼
-    # 这是一个“命名 location”，专门用于被 error_page 调用
     location @handle_redirect {
-        # 提取上游服务器（pick_code 服务）返回的 Location 响应头
-        # 这个变量 $upstream_http_location 里就装着真正的视频直链！
-        # 然后，将这个直链作为 302 重定向返回给最初的客户端（播放器）。
-        return 302 $upstream_http_location;
+        # ▼▼▼ 核心修改 2/2：使用更可靠的变量 $sent_http_location ▼▼▼
+        # $upstream_http_location 依赖于Nginx内部模块的状态，可能为空。
+        # 而 $sent_http_location 变量代表“即将发送给客户端的响应头中的Location值”。
+        # 结合上面的 proxy_pass_header 指令，这个变量现在一定会有正确的值。
+        return 302 $sent_http_location;
     }
 
     # --- 以下是虚拟库路由规则 ---
