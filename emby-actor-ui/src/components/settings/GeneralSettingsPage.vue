@@ -179,7 +179,7 @@
                         />
                         <template #feedback>
                           <n-text depth="3" style="font-size:0.8em;">
-                            填写独立的302重定向服务URL。网盘播放请求直接转发到此地址。
+                            填写独立的302重定向服务URL。所有视频播放请求直接转发到此地址。
                           </n-text>
                         </template>
                       </n-form-item-grid-item>
