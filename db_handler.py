@@ -203,14 +203,22 @@ class ActorDBManager:
                             "将执行彻底清理..."
                         )
 
-                        # 1. 清理数据库
+                        # 1. 在更新父表之前，先安全地删除子表中的依赖记录
+                        if db_column == "tmdb_person_id":
+                            logger.info(f"  -> 正在从 'actor_metadata' 表中删除对 TMDB ID '{id_value}' 的依赖...")
+                            cursor.execute(
+                                "DELETE FROM actor_metadata WHERE tmdb_id = %s",
+                                (id_value,)
+                            )
+
+                        # 2. 清理数据库
                         logger.info(f"  -> 正在从数据库中清除所有 '{id_value}'...")
                         cursor.execute(
                             f"UPDATE person_identity_map SET {db_column} = NULL, last_updated_at = NOW() WHERE {db_column} = %s",
                             (id_value,)
                         )
 
-                        # 2. 清理 Emby
+                        # 3. 清理 Emby
                         logger.info(f"  -> 正在从Emby中清除所有关联演员的 '{emby_provider_key}' ID...")
                         for pid in conflicting_emby_pids:
                             emby_handler.clear_emby_person_provider_id(
