@@ -8,6 +8,11 @@ upstream virtual_library_proxy {
     server {{ PROXY_UPSTREAM }};
 }
 
+{% if REDIRECT_UPSTREAM %}
+upstream redirect_service {
+    server {{ REDIRECT_UPSTREAM }};
+}
+{% endif %}
 
 server {
     listen {{ NGINX_LISTEN_PORT }};
@@ -27,15 +32,29 @@ server {
     #  核心路由规则 (V4)
     # ====================================================================
 
-    # ★★★ 规则 1：转发 .strm 请求 ★★★
-    {% if REDIRECT_URL %}
+    # ★★★ 规则 1：拦截并转发 .strm 请求的302重定向 ★★★
+    {% if REDIRECT_UPSTREAM %}
     location ~ \.strm$ {
-        # 返回 302 临时重定向
-        # $request_uri 是客户端请求的原始路径，例如 /emby/videos/12345/stream.strm
-        # Nginx 会将它拼接到 REDIRECT_URL 后面
-        return 302 {{ REDIRECT_URL }}$request_uri;
+        # 1. 将请求代理到您的 pick_code 服务
+        proxy_pass http://redirect_service;
+
+        # 2. 【魔法开关】开启对上游服务器响应的错误/重定向码的拦截
+        proxy_intercept_errors on;
+
+        # 3. 【定义规则】告诉 Nginx：当你拦截到 302 响应时，不要自己处理，
+        #    而是内部跳转到一个名为 @handle_redirect 的位置进行特殊处理。
+        error_page 302 = @handle_redirect;
     }
     {% endif %}
+
+    # ▼▼▼ 核心修改 3/3：定义我们的重定向处理程序 ▼▼▼
+    # 这是一个“命名 location”，专门用于被 error_page 调用
+    location @handle_redirect {
+        # 提取上游服务器（pick_code 服务）返回的 Location 响应头
+        # 这个变量 $upstream_http_location 里就装着真正的视频直链！
+        # 然后，将这个直链作为 302 重定向返回给最初的客户端（播放器）。
+        return 302 $upstream_http_location;
+    }
 
     # --- 以下是虚拟库路由规则 ---
 
