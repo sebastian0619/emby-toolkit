@@ -256,7 +256,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         base_items = emby_handler.get_emby_library_items(
             base_url=base_url, api_key=api_key, user_id=user_id,
             library_ids=[real_emby_collection_id],
-            fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate"
+            fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount"
         )
         if not base_items:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')

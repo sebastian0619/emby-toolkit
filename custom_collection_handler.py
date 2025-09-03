@@ -466,19 +466,43 @@ class FilterEngine:
             if not op: op = 'is'
 
             if field == 'playback_status':
-                is_played = user_data.get('Played', False)
-                in_progress = user_data.get('PlaybackPositionTicks', 0) > 0
-                
-                current_status = 'unplayed'
-                if is_played:
-                    current_status = 'played'
-                elif in_progress:
-                    current_status = 'in_progress'
-                
-                # 先判断是否“是”
+                current_status = 'unplayed'  # 默认状态
+                item_type = emby_item.get('Type')
+
+                # ★★★ 核心修改：针对剧集的优化逻辑 ★★★
+                if item_type == 'Series':
+                    unplayed_count = user_data.get('UnplayedItemCount')
+                    total_count = emby_item.get('RecursiveItemCount')
+
+                    # 只有在能获取到有效数据时才使用新逻辑
+                    if unplayed_count is not None and total_count is not None and total_count > 0:
+                        if unplayed_count == 0:
+                            current_status = 'played'
+                        elif unplayed_count < total_count:
+                            current_status = 'in_progress'
+                        else:  # unplayed_count >= total_count
+                            current_status = 'unplayed'
+                    else:
+                        # 如果数据不完整，回退到旧的、基于整体Played状态的判断
+                        is_played = user_data.get('Played', False)
+                        if is_played:
+                            current_status = 'played'
+                        # 注意：剧集的 PlaybackPositionTicks 不可靠，这里不判断 in_progress
+
+                # ★★★ 电影和其他类型的回退逻辑 (保持旧逻辑不变) ★★★
+                else:
+                    is_played = user_data.get('Played', False)
+                    in_progress = user_data.get('PlaybackPositionTicks', 0) > 0
+                    
+                    if is_played:
+                        current_status = 'played'
+                    elif in_progress:
+                        current_status = 'in_progress'
+                    # else 默认是 unplayed
+
+                # 后续的 is_match 和 op 判断逻辑保持不变
                 is_match = (current_status == value)
                 
-                # 再根据操作符决定最终结果
                 if op == 'is':
                     match = is_match
                 elif op == 'is_not':
