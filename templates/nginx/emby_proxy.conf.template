@@ -18,47 +18,28 @@ server {
     listen {{ NGINX_LISTEN_PORT }};
     server_name your.domain.com;
 
-    # ▼▼▼ 核心修改：基础代理参数 ▼▼▼
-    # 我们将确保所有客户端的头信息都被传递
-
-    # 1. 传递客户端的真实IP和协议
+    # --- 基础代理参数 ---
+    proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
-
-    # 2. 传递原始的 Host 头
-    proxy_set_header Host $http_host;
-
-    # 3. 【关键】传递所有其他客户端请求头
-    # 使用一个循环来将所有以 'HTTP_' 开头的变量（即所有请求头）都设置一遍
-    # 并且移除 'HTTP_' 前缀
-    proxy_set_header X-Emby-Authorization $http_x_emby_authorization;
-
-    # 4. WebSocket 支持 (保持不变)
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "Upgrade";
-
-    # 5. 禁用代理缓冲 (保持不变)
     proxy_buffering off;
 
     # ====================================================================
-    #  核心路由规则 (回归初心)
+    #  核心路由规则 (V4)
     # ====================================================================
 
-    # ★★★ 规则 1：【回归初心】只拦截 .strm 请求 ★★★
+    # ★★★ 规则 1：【条件化】转发所有视频流请求 ★★★
+    # 如果设置了 REDIRECT_UPSTREAM，此规则块将生效。
+    # 它会捕获所有主流视频格式、转码流和 .strm 文件，并因为位置靠前而被优先匹配。
     {% if REDIRECT_UPSTREAM %}
-    location ~ \.strm$ {
+    location ~* (\.strm$|\.(mkv|mp4|ts|avi|iso|mov|webm|flv)$|/videos/.*stream) {
         proxy_pass http://redirect_service;
-        proxy_intercept_errors on;
-        proxy_pass_header Location;
-        error_page 302 = @handle_redirect;
     }
     {% endif %}
-
-    location @handle_redirect {
-        return 302 $sent_http_location;
-    }
 
     # --- 以下是虚拟库路由规则 ---
 
