@@ -132,7 +132,8 @@ def task_enrich_aliases(processor: MediaProcessor, force_full_update: bool = Fal
             run_duration_minutes=duration_minutes,
             sync_interval_days=cooldown_days, # <--- 核心修改点
             stop_event=processor.get_stop_event(),
-            update_status_callback=task_manager.update_status_from_thread
+            update_status_callback=task_manager.update_status_from_thread,
+            force_full_update=force_full_update
         )
         
         logger.info(f"--- '{task_name}' 任务执行完毕。 ---")
