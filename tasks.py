@@ -93,13 +93,21 @@ def task_sync_person_map(processor):
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"错误：同步失败 ({str(e)[:50]}...)")
 # ✨✨✨ 演员数据补充函数 ✨✨✨
-def task_enrich_aliases(processor: MediaProcessor):
+def task_enrich_aliases(processor: MediaProcessor, force_full_update: bool = False):
     """
-    【V3 - 后台任务】演员数据补充任务的入口点。
-    - 核心逻辑：内置了30天的固定冷却时间，无需任何外部配置。
+    【V4 - 支持深度模式】演员数据补充任务的入口点。
+    - 标准模式 (force_full_update=False): 使用30天冷却期，只处理过期或不完整的演员。
+    - 深度模式 (force_full_update=True): 无视冷却期 (设置为0)，全量处理所有需要补充数据的演员。
     """
-    task_name = "演员数据补充"
-    logger.info(f"后台任务 '{task_name}' 开始执行...")
+    # 根据模式确定任务名和冷却时间
+    if force_full_update:
+        task_name = "演员数据补充 (全量)"
+        cooldown_days = 0  # 深度模式：冷却时间为0，即无视冷却期
+        logger.info(f"后台任务 '{task_name}' 开始执行，将全量处理所有演员...")
+    else:
+        task_name = "演员数据补充 (增量)"
+        cooldown_days = 30 # 标准模式：使用固定的30天冷却期
+        logger.info(f"后台任务 '{task_name}' 开始执行...")
 
     try:
         # 从传入的 processor 对象中获取配置字典
@@ -113,33 +121,22 @@ def task_enrich_aliases(processor: MediaProcessor):
             task_manager.update_status_from_thread(-1, "错误：缺少TMDb API Key")
             return
 
-        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # --- 【【【 这 是 核 心 修 改 点 】】】 ---
-        
-        # 1. 运行时长 (run_duration_minutes)
-        # 假设核心函数 enrich_all_actor_aliases_task 仍然需要这个参数。
-        # 如果不需要，可以安全地从下面的函数调用中移除它。
-        # 我们将其硬编码为 0，代表“不限制时长”，这是最常见的用法。
+        # 运行时长硬编码为0，代表“不限制时长”
         duration_minutes = 0
-
-        # 2. 冷却时间 (sync_interval_days)
-        # 直接将冷却时间硬编码为 30 天。
-        cooldown_days = 30
         
-        logger.trace(f"演员数据补充任务将使用固定的 {cooldown_days} 天冷却期。")
+        logger.trace(f"演员数据补充任务将使用 {cooldown_days} 天作为同步冷却期。")
 
-        # 调用核心函数，并传递写死的值
+        # 调用核心函数，并传递计算好的冷却时间
         enrich_all_actor_aliases_task(
             tmdb_api_key=tmdb_api_key,
             run_duration_minutes=duration_minutes,
-            sync_interval_days=cooldown_days, # <--- 使用我们硬编码的冷却时间
+            sync_interval_days=cooldown_days, # <--- 核心修改点
             stop_event=processor.get_stop_event(),
             update_status_callback=task_manager.update_status_from_thread
         )
-        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
         logger.info(f"--- '{task_name}' 任务执行完毕。 ---")
-        task_manager.update_status_from_thread(100, "演员数据补充任务完成。")
+        task_manager.update_status_from_thread(100, f"{task_name}完成。")
 
     except Exception as e:
         logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)

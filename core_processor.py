@@ -1838,7 +1838,7 @@ class MediaProcessor:
         - 深度模式 (force_full_update=True): 强制并发处理 Emby 中的所有媒体项。
         - 两种模式均采用并发处理，大幅提升执行效率。
         """
-        sync_mode = "深度模式 (全量)" if force_full_update else "快速模式 (增量)"
+        sync_mode = "(全量)" if force_full_update else "(增量)"
         task_name = f"覆盖缓存备份 ({sync_mode})"
         logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
 
