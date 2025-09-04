@@ -160,7 +160,15 @@ class ListImporter:
                 title_elem = item.find('title')
                 guid_elem = item.find('guid')
                 link_elem = item.find('link')
+                description_elem = item.find('description')
                 title = title_elem.text if title_elem is not None else None
+                description = description_elem.text if description_elem is not None else ''
+                year = None
+                year_match = re.search(r'\b(20\d{2})\b', description)
+                if year_match:
+                    year = year_match.group(1)
+                    logger.debug(f"从描述中为标题 '{title}' 提取到年份: {year}")
+
                 imdb_id = None
                 if guid_elem is not None and guid_elem.text:
                     match = re.search(r'tt\d{7,8}', guid_elem.text)
@@ -171,7 +179,8 @@ class ListImporter:
                     if match:
                         imdb_id = match.group(0)
                 if title:
-                    items.append({'title': title.strip(), 'imdb_id': imdb_id})
+                    # 修改：在返回的字典中增加 'year' 字段
+                    items.append({'title': title.strip(), 'imdb_id': imdb_id, 'year': year})
             return items
         except Exception as e:
             logger.error(f"从URL '{url}' 获取榜单时出错: {e}")
@@ -189,21 +198,24 @@ class ListImporter:
         logger.debug(f"标题解析: '{title}' -> 名称='{show_name}', 季号='{season_number}'")
         return show_name, season_number
 
-    def _match_title_to_tmdb(self, title: str, item_type: str) -> Optional[str]:
+    def _match_title_to_tmdb(self, title: str, item_type: str, year: Optional[str] = None) -> Optional[str]:
         if item_type == 'Movie':
-            results = search_media(title, self.tmdb_api_key, 'Movie')
+            results = search_media(title, self.tmdb_api_key, 'Movie', year=year)
             if results:
                 tmdb_id = str(results[0].get('id'))
-                logger.debug(f"电影标题 '{title}' 成功匹配到: {results[0].get('title')} (ID: {tmdb_id})")
+                year_info = f" (年份: {year})" if year else ""
+                logger.debug(f"电影标题 '{title}'{year_info} 成功匹配到: {results[0].get('title')} (ID: {tmdb_id})")
                 return tmdb_id
             else:
-                logger.warning(f"电影标题 '{title}' 未能在TMDb上找到匹配项。")
+                year_info = f" (年份: {year})" if year else ""
+                logger.warning(f"电影标题 '{title}'{year_info} 未能在TMDb上找到匹配项。")
                 return None
         elif item_type == 'Series':
             show_name, season_number_to_validate = self._parse_series_title(title)
-            results = search_media(show_name, self.tmdb_api_key, 'Series')
+            results = search_media(show_name, self.tmdb_api_key, 'Series', year=year)
             if not results:
-                logger.warning(f"剧集标题 '{title}' (搜索词: '{show_name}') 未能在TMDb上找到匹配项。")
+                year_info = f" (年份: {year})" if year else ""
+                logger.warning(f"剧集标题 '{title}' (搜索词: '{show_name}'){year_info} 未能在TMDb上找到匹配项。")
                 return None
             series_result = results[0]
             series_id = str(series_result.get('id'))
@@ -241,18 +253,33 @@ class ListImporter:
             def find_first_match(item: Dict[str,str], types_to_check):
                 imdb_id = item.get('imdb_id')
                 title = item.get('title')
+                year = item.get('year') # 新增：获取年份
+
                 for item_type in types_to_check:
                     tmdb_id = None
                     if imdb_id:
                         tmdb_id = self._match_by_ids(imdb_id, None, item_type)
                     if tmdb_id:
                         return {'id': tmdb_id, 'type': item_type}
+                
                 cleaned_title = re.sub(r'^\s*\d+\.\s*', '', title)
                 cleaned_title = re.sub(r'\s*\(\d{4}\)$', '', cleaned_title).strip()
+                
                 for item_type in types_to_check:
-                    tmdb_id = self._match_title_to_tmdb(cleaned_title, item_type)
+                    # 修改：将年份传递给 _match_title_to_tmdb
+                    tmdb_id = self._match_title_to_tmdb(cleaned_title, item_type, year=year)
                     if tmdb_id:
                         return {'id': tmdb_id, 'type': item_type}
+                
+                # 新增：如果带年份搜索失败，尝试不带年份进行回退搜索
+                if year:
+                    logger.debug(f"带年份 '{year}' 搜索 '{title}' 失败，尝试不带年份进行回退搜索...")
+                    for item_type in types_to_check:
+                        tmdb_id = self._match_title_to_tmdb(cleaned_title, item_type, year=None)
+                        if tmdb_id:
+                            logger.warning(f"  -> 注意：'{title}' 在回退搜索中匹配成功，但年份可能不准。")
+                            return {'id': tmdb_id, 'type': item_type}
+
                 return None
             future_to_item = {executor.submit(find_first_match, item, item_types): item for item in items}
             for future in as_completed(future_to_item):
