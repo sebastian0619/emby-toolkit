@@ -1314,9 +1314,9 @@ def get_task_registry(context: str = 'all'):
 # ★★★ 一键生成所有合集的后台任务，核心优化在于只获取一次Emby媒体库 ★★★
 def task_process_all_custom_collections(processor: MediaProcessor):
     """
-    【V4 - 流程优化版】
-    - 将封面生成逻辑移入主循环，在每个合集同步成功后立即生成封面。
-    - 利用封面生成的时间作为处理不同榜单合集之间的自然延迟，避免速率限制。
+    【V5 - 季号精确订阅最终修复版】
+    - 修复了在丰富榜单媒体详情时，丢失原始季号信息的问题。
+    - 现在能正确地将季号存入数据库，并为UI生成带季号的标题。
     """
     task_name = "生成所有自建合集"
     logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
@@ -1349,7 +1349,6 @@ def task_process_all_custom_collections(processor: MediaProcessor):
         prefetched_collection_map = {coll.get('Name', '').lower(): coll for coll in all_emby_collections}
         logger.info(f"  -> 已预加载 {len(prefetched_collection_map)} 个现有合集的信息。")
 
-        # --- ▼▼▼ 核心修改 1: 将封面生成器初始化移到循环外部 ▼▼▼ ---
         cover_service = None
         cover_config = {}
         try:
@@ -1363,7 +1362,6 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                 logger.info("  -> 封面生成器已启用，将在每个合集处理后尝试生成封面。")
         except Exception as e_cover_init:
             logger.error(f"初始化封面生成器时失败: {e_cover_init}", exc_info=True)
-        # --- ▲▲▲ 修改结束 ▲▲▲ ---
 
         for i, collection in enumerate(active_collections):
             if processor.is_stop_requested():
@@ -1379,7 +1377,6 @@ def task_process_all_custom_collections(processor: MediaProcessor):
             task_manager.update_status_from_thread(progress, f"({i+1}/{total}) 正在处理: {collection_name}")
 
             try:
-                # ... (此处的合集处理逻辑完全保持不变) ...
                 item_types_for_collection = definition.get('item_type', ['Movie'])
                 tmdb_items = []
                 if collection_type == 'list' and definition.get('url', '').startswith('maoyan://'):
@@ -1439,6 +1436,14 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                                 if detail: all_media_details.append(detail)
                             except Exception as exc:
                                 logger.error(f"获取TMDb详情时线程内出错: {exc}")
+                    
+                    # ★★★ 修复 1/3：创建一个从 TMDb ID 到季号的映射 ★★★
+                    tmdb_id_to_season_map = {
+                        str(item['id']): item.get('season') 
+                        for item in tmdb_items 
+                        if item.get('type') == 'Series' and item.get('season') is not None
+                    }
+
                     all_media_with_status, has_missing, missing_count = [], False, 0
                     today_str = datetime.now().strftime('%Y-%m-%d')
                     for media in all_media_details:
@@ -1449,10 +1454,25 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                         elif previous_media_map.get(media_tmdb_id, {}).get('status') == 'subscribed': status = "subscribed"
                         elif release_date and release_date > today_str: status = "unreleased"
                         else: status, has_missing, missing_count = "missing", True, missing_count + 1
-                        all_media_with_status.append({
-                            "tmdb_id": media_tmdb_id, "title": media.get("title") or media.get("name"),
-                            "release_date": release_date, "poster_path": media.get("poster_path"), "status": status
-                        })
+                        
+                        # ★★★ 修复 2/3：构建基础信息字典 ★★★
+                        final_media_item = {
+                            "tmdb_id": media_tmdb_id,
+                            "title": media.get("title") or media.get("name"),
+                            "release_date": release_date,
+                            "poster_path": media.get("poster_path"),
+                            "status": status
+                        }
+
+                        # ★★★ 修复 3/3：如果映射中存在季号，则附加它并修改标题 ★★★
+                        season_number = tmdb_id_to_season_map.get(media_tmdb_id)
+                        if season_number is not None:
+                            final_media_item['season'] = season_number
+                            # 为了UI显示更友好，动态修改标题
+                            final_media_item['title'] = f"{final_media_item['title']} 第 {season_number} 季"
+                        
+                        all_media_with_status.append(final_media_item)
+
                     update_data.update({
                         "health_status": "has_missing" if has_missing else "ok",
                         "in_library_count": len(existing_tmdb_ids), "missing_count": missing_count,
@@ -1468,7 +1488,6 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                 db_handler.update_custom_collection_after_sync(collection_id, update_data)
                 logger.info(f"  -> ✅ 合集 '{collection_name}' 处理完成，并已更新数据库状态。")
 
-                # --- ▼▼▼ 核心修改 2: 在合集处理成功后，立即调用封面生成 ▼▼▼ ---
                 if cover_service:
                     emby_coll_id_for_cover = update_data.get('emby_collection_id')
                     if emby_coll_id_for_cover:
@@ -1490,15 +1509,10 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                             logger.warning(f"无法获取 Emby 合集 {emby_coll_id_for_cover} 的详情，跳过封面生成。")
                     else:
                         logger.debug(f"合集 '{collection_name}' 没有关联的 Emby ID，跳过封面生成。")
-                # --- ▲▲▲ 修改结束 ▲▲▲ ---
 
             except Exception as e_coll:
                 logger.error(f"处理合集 '{collection_name}' (ID: {collection_id}) 时发生错误: {e_coll}", exc_info=True)
                 continue
-
-        # --- ▼▼▼ 核心修改 3: 删除函数末尾的旧的、集中的封面生成逻辑 ▼▼▼ ---
-        # (此处的整个 try...except 块被删除)
-        # --- ▲▲▲ 修改结束 ▲▲▲ ---
         
         final_message = "所有启用的自定义合集均已处理完毕！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
@@ -1513,9 +1527,9 @@ def task_process_all_custom_collections(processor: MediaProcessor):
 # --- 处理单个自定义合集的核心任务 ---
 def task_process_custom_collection(processor: MediaProcessor, custom_collection_id: int):
     """
-    【V8.1 - PG JSON 兼容版】
-    - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
-    - 不再对从数据库中获取的 _json 字段执行 json.loads()。
+    【V9 - 季号精确订阅最终修复版】
+    - 修复了在丰富榜单媒体详情时，丢失原始季号信息的问题。
+    - 现在能正确地将季号存入数据库，并为UI生成带季号的标题。
     """
     task_name = f"处理自定义合集 (ID: {custom_collection_id})"
     logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
@@ -1527,7 +1541,6 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         
         collection_name = collection['name']
         collection_type = collection['type']
-        # ★★★ 核心修复：直接使用已经是字典的 definition_json 字段 ★★★
         definition = collection['definition_json']
         
         item_types_for_collection = definition.get('item_type', ['Movie'])
@@ -1582,7 +1595,6 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
             
             previous_media_map = {}
             try:
-                # ★★★ 核心修复：直接使用已经是列表的 generated_media_info_json 字段 ★★★
                 previous_media_list = collection.get('generated_media_info_json') or []
                 previous_media_map = {str(m.get('tmdb_id')): m for m in previous_media_list}
             except TypeError:
@@ -1605,6 +1617,13 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                     except Exception as exc:
                         logger.error(f"获取TMDb详情时线程内出错: {exc}")
             
+            # ★★★ 修复 1/3：创建一个从 TMDb ID 到季号的映射 ★★★
+            tmdb_id_to_season_map = {
+                str(item['id']): item.get('season') 
+                for item in tmdb_items 
+                if item.get('type') == 'Series' and item.get('season') is not None
+            }
+
             all_media_with_status, has_missing, missing_count = [], False, 0
             today_str = datetime.now().strftime('%Y-%m-%d')
             for media in all_media_details:
@@ -1617,10 +1636,23 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 elif release_date and release_date > today_str: media_status = "unreleased"
                 else: media_status, has_missing, missing_count = "missing", True, missing_count + 1
                 
-                all_media_with_status.append({
-                    "tmdb_id": media_tmdb_id, "title": media.get("title") or media.get("name"),
-                    "release_date": release_date, "poster_path": media.get("poster_path"), "status": media_status
-                })
+                # ★★★ 修复 2/3：构建基础信息字典 ★★★
+                final_media_item = {
+                    "tmdb_id": media_tmdb_id,
+                    "title": media.get("title") or media.get("name"),
+                    "release_date": release_date,
+                    "poster_path": media.get("poster_path"),
+                    "status": media_status
+                }
+
+                # ★★★ 修复 3/3：如果映射中存在季号，则附加它并修改标题 ★★★
+                season_number = tmdb_id_to_season_map.get(media_tmdb_id)
+                if season_number is not None:
+                    final_media_item['season'] = season_number
+                    # 为了UI显示更友好，动态修改标题
+                    final_media_item['title'] = f"{final_media_item['title']} 第 {season_number} 季"
+                
+                all_media_with_status.append(final_media_item)
 
             update_data.update({
                 "health_status": "has_missing" if has_missing else "ok",

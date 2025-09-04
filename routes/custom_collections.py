@@ -297,7 +297,7 @@ def api_update_custom_collection_media_status(collection_id):
 @login_required
 def api_subscribe_media_from_custom_collection():
     """
-    【PG JSON 兼容版】从RSS榜单合集页面手动订阅。
+    【PG JSON 兼容 & 季号精确订阅修复版】从RSS榜单合集页面手动订阅。
     """
     data = request.json
     tmdb_id = data.get('tmdb_id')
@@ -315,7 +315,6 @@ def api_subscribe_media_from_custom_collection():
             if not collection_record:
                 return jsonify({"error": "数据库错误: 找不到指定的合集。"}), 404
 
-            # ★★★ 核心修复 1/2：直接使用已经是字典的 definition_json 字段 ★★★
             definition = collection_record['definition_json']
             item_type_from_db = definition.get('item_type', 'Movie')
 
@@ -330,7 +329,6 @@ def api_subscribe_media_from_custom_collection():
                 logger.warning(f"合集 {collection_id} 的 item_type 格式无法识别 ('{item_type_from_db}')，将默认使用 'Movie' 进行订阅。")
                 authoritative_type = 'Movie'
 
-            # ★★★ 核心修复 2/2：直接使用已经是列表的 generated_media_info_json 字段 ★★★
             media_list = collection_record.get('generated_media_info_json') or []
             target_media_item = next((item for item in media_list if str(item.get('tmdb_id')) == str(tmdb_id)), None)
 
@@ -341,8 +339,16 @@ def api_subscribe_media_from_custom_collection():
             if not authoritative_title:
                 return jsonify({"error": "订阅失败: 数据库中的媒体信息不完整（缺少标题）。"}), 500
 
+            # ★★★ 核心修复 1/2：从媒体信息中提取季号，以便进行精确订阅 ★★★
+            season_to_subscribe = target_media_item.get('season')
+
         type_map = {'Movie': '电影', 'Series': '电视剧'}
-        logger.info(f"  -> 依据合集定义，使用类型 '{type_map.get(authoritative_type, authoritative_type)}' 为《{authoritative_title}》(TMDb ID: {tmdb_id}) 发起订阅...")
+        
+        # 更新日志记录，如果订阅的是带特定季号的剧集，则明确指出
+        log_message_detail = ""
+        if authoritative_type == 'Series' and season_to_subscribe is not None:
+            log_message_detail = f" 第 {season_to_subscribe} 季"
+        logger.info(f"  -> 依据合集定义，使用类型 '{type_map.get(authoritative_type, authoritative_type)}' 为《{authoritative_title}》{log_message_detail}(TMDb ID: {tmdb_id}) 发起订阅...")
         
         success = False
         if authoritative_type == 'Movie':
@@ -350,7 +356,8 @@ def api_subscribe_media_from_custom_collection():
             success = moviepilot_handler.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
         elif authoritative_type == 'Series':
             series_info = {"tmdb_id": tmdb_id, "title": authoritative_title}
-            success = moviepilot_handler.subscribe_series_to_moviepilot(series_info, season_number=None, config=config_manager.APP_CONFIG)
+            # ★★★ 核心修复 2/2：将解析出的季号传递给订阅函数 ★★★
+            success = moviepilot_handler.subscribe_series_to_moviepilot(series_info, season_number=season_to_subscribe, config=config_manager.APP_CONFIG)
         
         if not success:
             return jsonify({"error": "提交到 MoviePilot 失败，请检查日志。"}), 500

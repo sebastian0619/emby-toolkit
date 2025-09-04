@@ -297,13 +297,28 @@ class ListImporter:
                 rss_imdb_id = item.get('imdb_id')
                 douban_link = item.get('douban_link')
 
+                # ★★★ 修复 1/3：预先解析标题以获取季号 ★★★
+                # 使用与标题匹配相同的清理逻辑，确保解析源一致
+                cleaned_title_for_parsing = re.sub(r'^\s*\d+\.\s*', '', title)
+                cleaned_title_for_parsing = re.sub(r'\s*\(\d{4}\)$', '', cleaned_title_for_parsing).strip()
+                _, season_number = self._parse_series_title(cleaned_title_for_parsing)
+
+                # ★★★ 修复 2/3：创建一个辅助函数，用于在返回结果中附加季号 ★★★
+                def create_result(tmdb_id, item_type):
+                    result = {'id': tmdb_id, 'type': item_type}
+                    # 仅当类型为剧集且成功解析出季号时，才添加 season 字段
+                    if item_type == 'Series' and season_number is not None:
+                        logger.debug(f"  -> 为剧集 '{title}' 附加季号: {season_number}")
+                        result['season'] = season_number
+                    return result
+
                 # 优先级1：如果RSS条目自带IMDb ID，直接使用
                 if rss_imdb_id:
                     for item_type in types_to_check:
                         tmdb_id = self._match_by_ids(rss_imdb_id, None, item_type)
                         if tmdb_id:
                             logger.info(f"  -> 成功通过RSS自带的IMDb ID '{rss_imdb_id}' 匹配到 '{title}'。")
-                            return {'id': tmdb_id, 'type': item_type}
+                            return create_result(tmdb_id, item_type)
 
                 # 优先级2：使用 标题+年份 尝试在TMDb上匹配
                 cleaned_title = re.sub(r'^\s*\d+\.\s*', '', title)
@@ -311,12 +326,11 @@ class ListImporter:
                 for item_type in types_to_check:
                     tmdb_id = self._match_title_to_tmdb(cleaned_title, item_type, year=year)
                     if tmdb_id:
-                        return {'id': tmdb_id, 'type': item_type}
+                        return create_result(tmdb_id, item_type)
                 
                 # 优先级3 (增强方案)：如果标题匹配失败，且有豆瓣链接，则启动豆瓣备用方案
                 if douban_link:
                     logger.info(f"  -> 片名+年份匹配 '{title}' 失败，启动备用方案：通过豆瓣链接获取更多信息...")
-                    # ✨ 调用新的函数 get_details_from_douban_link，获取完整的详情
                     douban_details = douban_api.get_details_from_douban_link(douban_link, mtype=types_to_check[0] if types_to_check else None)
                     
                     if douban_details:
@@ -332,18 +346,17 @@ class ListImporter:
                             for item_type in types_to_check:
                                 tmdb_id = self._match_by_ids(imdb_id_from_douban, None, item_type)
                                 if tmdb_id:
-                                    return {'id': tmdb_id, 'type': item_type}
+                                    return create_result(tmdb_id, item_type)
                         
                         # 方案 3b: 如果没有IMDb ID，尝试使用 original_title
                         logger.info(f"  -> 豆瓣备用方案(3a)失败，尝试方案(3b): 使用 original_title...")
                         original_title = douban_details.get("original_title")
                         if original_title:
                             for item_type in types_to_check:
-                                # 使用我们增强过的 _match_title_to_tmdb
                                 tmdb_id = self._match_title_to_tmdb(original_title, item_type, year=year)
                                 if tmdb_id:
                                     logger.info(f"  -> 豆瓣备用方案(3b)成功！通过 original_title '{original_title}' 匹配成功。")
-                                    return {'id': tmdb_id, 'type': item_type}
+                                    return create_result(tmdb_id, item_type)
 
                 # 优先级4 (最后方案)：不带年份的回退搜索
                 logger.debug(f"  -> 所有优先方案均失败，尝试不带年份进行最后的回退搜索: '{title}'")
@@ -351,7 +364,7 @@ class ListImporter:
                     tmdb_id = self._match_title_to_tmdb(cleaned_title, item_type, year=None)
                     if tmdb_id:
                         logger.warning(f"  -> 注意：'{title}' 在最后的回退搜索中匹配成功，但年份可能不准。")
-                        return {'id': tmdb_id, 'type': item_type}
+                        return create_result(tmdb_id, item_type)
 
                 logger.error(f"  -> 彻底失败：所有方案都无法为 '{title}' 找到匹配项。")
                 return None
@@ -365,7 +378,9 @@ class ListImporter:
         
         douban_api.close() # 记得关闭 session
         logger.info(f"  -> RSS匹配完成，成功获得 {len(tmdb_items)} 个TMDb项目。")
-        unique_items = list({f"{item['type']}-{item['id']}": item for item in tmdb_items}.values())
+        # ★★★ 修复 3/3：在去重时，将季号也作为唯一标识的一部分 ★★★
+        # 这样可以防止 "一部剧的第一季" 和 "一部剧的第二季" 被当成同一个项目
+        unique_items = list({f"{item['type']}-{item['id']}-{item.get('season')}": item for item in tmdb_items}.values())
         return unique_items
 
 class FilterEngine:
