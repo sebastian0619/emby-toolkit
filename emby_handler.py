@@ -351,11 +351,14 @@ def get_emby_library_items(
     library_ids: Optional[List[str]] = None,
     search_term: Optional[str] = None,
     library_name_map: Optional[Dict[str, str]] = None,
-    fields: Optional[str] = None
+    fields: Optional[str] = None,
+    force_user_endpoint: bool = False  # ★★★ 再次确认：这个参数是修复问题的关键 ★★★
 ) -> Optional[List[Dict[str, Any]]]:
     """
-    【V3 - 安静且信息补充版】
-    获取项目，并为每个项目添加来源库ID，不再打印每个库的日志。
+    【V5 - 筛选引擎兼容最终修复版】
+    - 新增 force_user_endpoint 参数，允许调用者强制使用 /Users/{UserId}/Items 端点。
+    - 默认使用 /Items 端点，修复了筛选引擎无法获取真实媒体库内容的问题。
+    - 封面生成器在调用时将 force_user_endpoint 设为 True，以确保能获取合集内容。
     """
     if not base_url or not api_key:
         logger.error("get_emby_library_items: base_url 或 api_key 未提供。")
@@ -395,25 +398,29 @@ def get_emby_library_items(
         library_name = library_name_map.get(lib_id, lib_id) if library_name_map else lib_id
         
         try:
-            api_url = f"{base_url.rstrip('/')}/Items"
-            
-            # ★★★ 核心修复：在这里决定 Fields 参数的值 ★★★
-            # 如果调用者提供了 fields，就用它；否则，使用我们原来的默认值。
             fields_to_request = fields if fields else "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,People,ProductionLocations"
 
             params = {
                 "api_key": api_key, "Recursive": "true", "ParentId": lib_id,
-                "Fields": fields_to_request, # ★★★ 使用我们新决定的值 ★★★
+                "Fields": fields_to_request,
             }
             if media_type_filter:
                 params["IncludeItemTypes"] = media_type_filter
             else:
                 params["IncludeItemTypes"] = "Movie,Series,Video"
 
-            if user_id:
-                params["UserId"] = user_id
+            # ★★★ 核心逻辑：根据新“开关”和 user_id 动态选择API端点 ★★★
+            if force_user_endpoint and user_id:
+                # 强制使用用户端点 (用于封面生成器查合集)
+                api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+            else:
+                # 默认使用系统端点 (用于筛选引擎查真实库)
+                api_url = f"{base_url.rstrip('/')}/Items"
+                # 即便使用系统端点，如果提供了UserId，也应加入参数以应用权限
+                if user_id:
+                    params["UserId"] = user_id
 
-            logger.trace(f"Requesting items from library '{library_name}' (ID: {lib_id}).")
+            logger.trace(f"Requesting items from library '{library_name}' (ID: {lib_id}) using URL: {api_url}.")
             
             response = requests.get(api_url, params=params, timeout=30)
             response.raise_for_status()
@@ -432,14 +439,10 @@ def get_emby_library_items(
     media_type_in_chinese = ""
 
     if media_type_filter:
-        # 分割字符串，例如 "Movie,Series" -> ["Movie", "Series"]
         types = media_type_filter.split(',')
-        # 为每个类型查找翻译，如果找不到就用原名
         translated_types = [type_to_chinese.get(t, t) for t in types]
-        # 将翻译后的列表组合成一个字符串，例如 ["电影", "电视剧"] -> "电影、电视剧"
         media_type_in_chinese = "、".join(translated_types)
     else:
-        # 如果 media_type_filter 未提供，则为“所有”
         media_type_in_chinese = '所有'
 
     logger.debug(f"  -> 总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
