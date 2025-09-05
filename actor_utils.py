@@ -231,19 +231,6 @@ def translate_actor_field(text: Optional[str], db_manager: ActorDBManager, db_cu
             logger.error(f"AI翻译器在翻译 '{text_stripped}' 时发生异常: {e_ai}")
             # 不做任何事，让流程继续往下走，尝试传统引擎
 
-    # 步骤 2: 如果AI翻译未启用，或AI翻译失败/未返回结果，则使用传统引擎
-    if not final_translation:
-        if ai_translation_attempted:
-            logger.warning(f"AI翻译未能获取有效结果，将降级使用传统翻译引擎...")
-        
-        translation_result = utils.translate_text_with_translators(
-            text_stripped,
-            engine_order=translator_engines
-        )
-        if translation_result and translation_result.get("text"):
-            final_translation = translation_result["text"]
-            final_engine = translation_result["engine"]
-
     # 5. 处理在线翻译的结果，并更新缓存
     if final_translation and final_translation.strip() and final_translation.strip().lower() != text_stripped.lower():
         # 翻译成功，存入缓存并返回结果
