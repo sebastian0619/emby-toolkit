@@ -1788,3 +1788,56 @@ def get_media_metadata_by_tmdb_ids(tmdb_ids: List[str], item_type: str) -> List[
     except psycopg2.Error as e:
         logger.error(f"根据TMDb ID列表批量获取媒体元数据时出错: {e}", exc_info=True)
         return []
+# ★★★ 新增函数：为规则筛选类合集在数据库中追加一个媒体项 ★★★
+def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: str, new_item_emby_id: str) -> bool:
+    """
+    当一个新媒体项匹配规则筛选合集时，更新数据库中的状态。
+    这包括向 generated_media_info_json 追加精简信息，并更新 in_library_count。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 开启事务并锁定行，防止并发写入冲突
+            cursor.execute("BEGIN TRANSACTION;")
+            cursor.execute("SELECT generated_media_info_json, in_library_count FROM custom_collections WHERE id = %s FOR UPDATE", (collection_id,))
+            row = cursor.fetchone()
+            if not row:
+                conn.rollback()
+                logger.warning(f"尝试向规则合集 (DB ID: {collection_id}) 追加媒体项，但未找到该合集。")
+                return False
+
+            # 获取当前JSON，如果为NULL或无效，则初始化为空列表
+            media_list = row.get('generated_media_info_json') or []
+            if not isinstance(media_list, list):
+                media_list = []
+            
+            # 检查是否已存在，避免重复添加
+            if any(item.get('emby_id') == new_item_emby_id for item in media_list):
+                conn.rollback()
+                logger.debug(f"媒体项 {new_item_emby_id} 已存在于合集 {collection_id} 的JSON缓存中，跳过追加。")
+                return True
+
+            # 追加新的精简媒体信息
+            media_list.append({
+                'tmdb_id': new_item_tmdb_id,
+                'emby_id': new_item_emby_id
+            })
+            
+            # 更新库内数量
+            new_in_library_count = (row.get('in_library_count') or 0) + 1
+            
+            # 将更新后的数据写回数据库
+            new_json_data = json.dumps(media_list, ensure_ascii=False)
+            cursor.execute(
+                "UPDATE custom_collections SET generated_media_info_json = %s, in_library_count = %s WHERE id = %s",
+                (new_json_data, new_in_library_count, collection_id)
+            )
+            conn.commit()
+            logger.info(f"  -> 数据库状态同步：已将新媒体项 {new_item_emby_id} 追加到规则合集 (DB ID: {collection_id}) 的JSON缓存中。")
+            return True
+
+    except Exception as e:
+        if 'conn' in locals() and conn:
+            conn.rollback()
+        logger.error(f"向规则合集 {collection_id} 的JSON缓存追加媒体项时发生数据库错误: {e}", exc_info=True)
+        return False

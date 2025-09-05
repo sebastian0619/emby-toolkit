@@ -185,30 +185,18 @@ def task_process_actor_subscriptions(processor: ActorSubscriptionProcessor):
 # ★★★ 处理webhook、用于编排任务的函数 ★★★
 def webhook_processing_task(processor: MediaProcessor, item_id: str, force_reprocess: bool):
     """
-    【V3 - 职责分离最终版】
-    编排处理新入库项目的完整流程，所有数据库操作均委托给 db_handler。
+    【V4 - 规则库实时同步修复版】
+    - 在将新媒体添加到规则类合集后，同步更新数据库中的JSON缓存，确保虚拟库实时刷新。
     """
-    # 步骤 A: 获取完整的项目详情
-    item_details = emby_handler.get_emby_item_details(
-        item_id, 
-        processor.emby_url, 
-        processor.emby_api_key, 
-        processor.emby_user_id
-    )
+    item_details = emby_handler.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
     if not item_details:
         logger.error(f"  -> 无法获取项目 {item_id} 的详情，任务中止。")
         return
 
-    # 步骤 B: 调用追剧判断
     processor.check_and_add_to_watchlist(item_details)
 
-    # 步骤 C: 执行通用的元数据处理流程
-    processed_successfully = processor.process_single_item(
-        item_id, 
-        force_reprocess_this_item=force_reprocess 
-    )
+    processed_successfully = processor.process_single_item(item_id, force_reprocess_this_item=force_reprocess)
     
-    # --- 步骤 D: 实时合集匹配逻辑 ---
     if not processed_successfully:
         logger.warning(f"  -> 项目 {item_id} 的元数据处理未成功完成，跳过自定义合集匹配。")
         return
@@ -220,19 +208,19 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
             logger.debug("  -> 媒体项缺少TMDb ID，无法进行自定义合集匹配。")
             return
 
-        # 1. 从我们的缓存表中获取刚刚存入的元数据
         item_metadata = db_handler.get_media_metadata_by_tmdb_id(tmdb_id)
         if not item_metadata:
             logger.warning(f"  -> 无法从本地缓存中找到TMDb ID为 {tmdb_id} 的元数据，无法匹配合集。")
             return
 
-        # --- 2. 匹配 Filter (筛选) 类型的合集 ---
+        # --- 匹配 Filter (筛选) 类型的合集 ---
         engine = FilterEngine()
         matching_filter_collections = engine.find_matching_collections(item_metadata)
 
         if matching_filter_collections:
             logger.info(f"  -> 《{item_name}》匹配到 {len(matching_filter_collections)} 个筛选类合集，正在追加...")
             for collection in matching_filter_collections:
+                # 步骤 1: 更新 Emby 实体合集
                 emby_handler.append_item_to_collection(
                     collection_id=collection['emby_collection_id'],
                     item_emby_id=item_id,
@@ -240,11 +228,17 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
                     api_key=processor.emby_api_key,
                     user_id=processor.emby_user_id
                 )
+                
+                # ★★★ 核心修复：同步更新我们自己的数据库缓存 ★★★
+                db_handler.append_item_to_filter_collection_db(
+                    collection_id=collection['id'],
+                    new_item_tmdb_id=tmdb_id,
+                    new_item_emby_id=item_id
+                )
         else:
             logger.info(f"  -> 《{item_name}》没有匹配到任何筛选类合集。")
 
-        # --- 3. 匹配 List (榜单) 类型的合集 ---
-        # 调用 db_handler 中的新函数来处理所有数据库逻辑
+        # --- 匹配 List (榜单) 类型的合集 ---
         updated_list_collections = db_handler.match_and_update_list_collections_on_item_add(
             new_item_tmdb_id=tmdb_id,
             new_item_emby_id=item_id,
@@ -253,7 +247,6 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
         
         if updated_list_collections:
             logger.info(f"  -> 《{item_name}》匹配到 {len(updated_list_collections)} 个榜单类合集，正在追加...")
-            # 遍历返回的结果，执行 Emby API 调用
             for collection_info in updated_list_collections:
                 emby_handler.append_item_to_collection(
                     collection_id=collection_info['emby_collection_id'],
@@ -268,9 +261,8 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
     except Exception as e:
         logger.error(f"  -> 为新入库项目 {item_id} 匹配自定义合集时发生意外错误: {e}", exc_info=True)
 
-    # --- 步骤 E - 为所属的常规媒体库生成封面 ---
+    # --- 封面生成逻辑 (保持不变) ---
     try:
-        # (这部分代码无需修改，保持原样即可)
         cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, "cover_generator.json")
         cover_config = {}
         if os.path.exists(cover_config_path):
@@ -280,9 +272,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
         if cover_config.get("enabled") and cover_config.get("transfer_monitor"):
             logger.info(f"  -> 检测到 '{item_details.get('Name')}' 入库，将为其所属媒体库生成新封面...")
             
-            library_info = emby_handler.get_library_root_for_item(
-                item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
-            )
+            library_info = emby_handler.get_library_root_for_item(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
             
             if not library_info:
                 logger.warning(f"  -> 无法为项目 {item_id} 定位到其所属的媒体库根，跳过封面生成。")
@@ -301,30 +291,17 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
                 logger.info(f"  -> 媒体库 '{library_name}' 在忽略列表中，跳过。")
                 return
             
-            TYPE_MAP = {
-                'movies': 'Movie', 'tvshows': 'Series', 'music': 'MusicAlbum',
-                'boxsets': 'BoxSet', 'mixed': 'Movie,Series'
-            }
+            TYPE_MAP = {'movies': 'Movie', 'tvshows': 'Series', 'music': 'MusicAlbum', 'boxsets': 'BoxSet', 'mixed': 'Movie,Series'}
             collection_type = library_info.get('CollectionType')
             item_type_to_query = TYPE_MAP.get(collection_type)
             
             item_count = 0
             if library_id and item_type_to_query:
-                item_count = emby_handler.get_item_count(
-                    base_url=processor.emby_url,
-                    api_key=processor.emby_api_key,
-                    user_id=processor.emby_user_id,
-                    parent_id=library_id,
-                    item_type=item_type_to_query
-                ) or 0
+                item_count = emby_handler.get_item_count(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, parent_id=library_id, item_type=item_type_to_query) or 0
             
             logger.info(f"  -> 正在为媒体库 '{library_name}' 生成封面 (当前实时数量: {item_count}) ---")
             cover_service = CoverGeneratorService(config=cover_config)
-            cover_service.generate_for_library(
-                emby_server_id=server_id,
-                library=library_info,
-                item_count=item_count 
-            )
+            cover_service.generate_for_library(emby_server_id=server_id, library=library_info, item_count=item_count)
         else:
             logger.debug("  -> 封面生成器或入库监控未启用，跳过封面生成。")
 
@@ -1482,30 +1459,40 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                         "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag and emby_collection_id else None
                     })
                 else: 
+                    # ★★★ 核心修复 1: 为规则筛选类合集生成精简版JSON ★★★
+                    logger.debug(f"  -> 为规则筛选合集 '{collection_name}' 生成精简版媒体信息JSON...")
+                    all_media_with_status = [
+                        {
+                            'tmdb_id': item['id'],
+                            'emby_id': tmdb_to_emby_item_map.get(item['id'], {}).get('Id')
+                        }
+                        for item in tmdb_items
+                    ]
                     update_data.update({
-                        "health_status": "ok", "in_library_count": len(ordered_emby_ids_in_library),
-                        "missing_count": 0, "generated_media_info_json": '[]', "poster_path": None
+                        "health_status": "ok", 
+                        "in_library_count": len(ordered_emby_ids_in_library),
+                        "missing_count": 0, 
+                        "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False), 
+                        "poster_path": None
                     })
                 
                 db_handler.update_custom_collection_after_sync(collection_id, update_data)
                 logger.info(f"  -> ✅ 合集 '{collection_name}' 处理完成，并已更新数据库状态。")
 
-                if cover_service:
-                    emby_coll_id_for_cover = update_data.get('emby_collection_id')
-                    if emby_coll_id_for_cover:
-                        logger.info(f"  -> 正在为合集 '{collection_name}' 生成封面...")
-                        library_info = emby_handler.get_emby_item_details(emby_coll_id_for_cover, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-                        if library_info:
-                            item_count_to_pass = update_data.get('in_library_count', 0)
-                            if collection_type == 'list':
-                                item_count_to_pass = '榜单'
-                            
-                            cover_service.generate_for_library(emby_server_id='main_emby', library=library_info, item_count=item_count_to_pass)
-                        else:
-                            logger.warning(f"无法获取 Emby 合集 {emby_coll_id_for_cover} 的详情，跳过封面生成。")
-                    else:
-                        logger.debug(f"合集 '{collection_name}' 没有关联的 Emby ID，跳过封面生成。")
-
+                if cover_service and emby_collection_id:
+                    logger.info(f"  -> 正在为合集 '{collection_name}' 生成封面...")
+                    library_info = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                    if library_info:
+                        item_count_to_pass = update_data.get('in_library_count', 0)
+                        if collection_type == 'list': item_count_to_pass = '榜单'
+                        
+                        # ★★★ 核心修复 2: 调用封面生成器时，传入内容类型 ★★★
+                        cover_service.generate_for_library(
+                            emby_server_id='main_emby',
+                            library=library_info,
+                            item_count=item_count_to_pass,
+                            content_types=item_types_for_collection
+                        )
             except Exception as e_coll:
                 logger.error(f"处理合集 '{collection_name}' (ID: {collection_id}) 时发生错误: {e_coll}", exc_info=True)
                 continue
@@ -1523,9 +1510,8 @@ def task_process_all_custom_collections(processor: MediaProcessor):
 # --- 处理单个自定义合集的核心任务 ---
 def task_process_custom_collection(processor: MediaProcessor, custom_collection_id: int):
     """
-    【V10 - Emby ID 内嵌 & 排序保持最终版】
-    - 将媒体项的 Emby ID 直接存入 generated_media_info_json 中。
-    - 严格确保从榜单获取、到存入数据库、再到同步至 Emby 合集的全过程，都保持原始榜单排序。
+    【V11.1 - 变量未定义修复版】
+    - 修复了因缺少封面配置加载逻辑导致的 "cover_config" 未定义错误。
     """
     task_name = f"处理自定义合集 (ID: {custom_collection_id})"
     logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
@@ -1541,7 +1527,6 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         
         item_types_for_collection = definition.get('item_type', ['Movie'])
         
-        # 1. 获取有序的媒体项列表 (tmdb_items)
         tmdb_items = []
         if collection_type == 'list' and definition.get('url', '').startswith('maoyan://'):
             logger.info(f"检测到猫眼榜单 '{collection_name}'，将启动异步后台任务...")
@@ -1559,23 +1544,17 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         
         if not tmdb_items:
             logger.warning(f"合集 '{collection_name}' 未能生成任何媒体ID，任务结束。")
-            db_handler.update_custom_collection_after_sync(custom_collection_id, {"emby_collection_id": None, "generated_media_info_json": "[]", "generated_emby_ids_json": "[]"})
+            db_handler.update_custom_collection_after_sync(custom_collection_id, {"emby_collection_id": None, "generated_media_info_json": "[]"})
             return
 
-        task_manager.update_status_from_thread(70, f"已生成 {len(tmdb_items)} 个媒体项，正在匹配Emby媒体库...")
+        task_manager.update_status_from_thread(70, f"已生成 {len(tmdb_items)} 个ID，正在Emby中创建/更新合集...")
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
 
-        # ★★★ 核心重构 1: 准备ID映射并生成有序的Emby ID列表 ★★★
         all_emby_items = emby_handler.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter=",".join(item_types_for_collection), library_ids=libs_to_process_ids) or []
         tmdb_to_emby_item_map = {item['ProviderIds']['Tmdb']: item for item in all_emby_items if item.get('ProviderIds', {}).get('Tmdb')}
         
-        # 按照 tmdb_items 的原始顺序，生成 Emby ID 列表
-        ordered_emby_ids_in_library = [
-            tmdb_to_emby_item_map[item['id']]['Id'] 
-            for item in tmdb_items if item['id'] in tmdb_to_emby_item_map
-        ]
+        ordered_emby_ids_in_library = [tmdb_to_emby_item_map[item['id']]['Id'] for item in tmdb_items if item['id'] in tmdb_to_emby_item_map]
 
-        # 2. 使用有序的 Emby ID 列表更新 Emby 合集
         emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
             collection_name=collection_name, 
             emby_ids_in_library=ordered_emby_ids_in_library, 
@@ -1589,7 +1568,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         
         update_data = {
             "emby_collection_id": emby_collection_id,
-            "item_type": json.dumps(definition.get('item_type', ['Movie'])),
+            "item_type": json.dumps(item_types_for_collection),
             "last_synced_at": datetime.now(pytz.utc)
         }
 
@@ -1608,7 +1587,6 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                 image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
             
-            # ★★★ 核心重构 2: 获取详情后，必须重新排序以匹配原始榜单顺序 ★★★
             all_media_details_unordered = []
             with ThreadPoolExecutor(max_workers=5) as executor:
                 future_to_item = {executor.submit(tmdb_handler.get_movie_details if item['type'] != 'Series' else tmdb_handler.get_tv_details_tmdb, item['id'], processor.tmdb_api_key): item for item in tmdb_items}
@@ -1618,11 +1596,10 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                         if detail: all_media_details_unordered.append(detail)
                     except Exception as exc:
                         logger.error(f"获取TMDb详情时线程内出错: {exc}")
-            
+
             details_map = {str(d.get("id")): d for d in all_media_details_unordered}
             all_media_details_ordered = [details_map[item['id']] for item in tmdb_items if item['id'] in details_map]
-
-            # ★★★ 核心重构 3: 构建最终JSON时，注入emby_id并保持顺序 ★★★
+            
             tmdb_id_to_season_map = {str(item['id']): item.get('season') for item in tmdb_items if item.get('type') == 'Series' and item.get('season') is not None}
             all_media_with_status, has_missing, missing_count = [], False, 0
             today_str = datetime.now().strftime('%Y-%m-%d')
@@ -1661,16 +1638,21 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False),
                 "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag and emby_collection_id else None
             })
+            logger.info(f"  -> 已为RSS合集 '{collection_name}' 分析健康状态。")
         else: 
             task_manager.update_status_from_thread(95, "筛选合集已生成，跳过缺失分析。")
+            all_media_with_status = [{'tmdb_id': item['id'], 'emby_id': tmdb_to_emby_item_map.get(item['id'], {}).get('Id')} for item in tmdb_items]
             update_data.update({
                 "health_status": "ok", "in_library_count": len(ordered_emby_ids_in_library),
-                "missing_count": 0, "generated_media_info_json": '[]', "poster_path": None
+                "missing_count": 0, 
+                "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False), 
+                "poster_path": None
             })
 
         db_handler.update_custom_collection_after_sync(custom_collection_id, update_data)
         logger.info(f"  -> 已更新自定义合集 '{collection_name}' (ID: {custom_collection_id}) 的同步状态和健康信息。")
 
+        # ★★★ 核心修复：在这里添加缺失的封面配置加载逻辑 ★★★
         try:
             cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, "cover_generator.json")
             cover_config = {}
@@ -1678,20 +1660,23 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 with open(cover_config_path, 'r', encoding='utf-8') as f:
                     cover_config = json.load(f)
 
-            if cover_config.get("enabled"):
+            if cover_config.get("enabled") and emby_collection_id:
                 logger.info(f"  -> 检测到封面生成器已启用，将为合集 '{collection_name}' 生成封面...")
                 cover_service = CoverGeneratorService(config=cover_config)
-                if emby_collection_id:
-                    server_id = 'main_emby' 
-                    library_info = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-                    if library_info:
-                        in_library_count = update_data.get('in_library_count', 0)
-                        item_count_to_pass = in_library_count
-                        if collection_type == 'list':
-                            item_count_to_pass = '榜单'
-                        cover_service.generate_for_library(emby_server_id=server_id, library=library_info, item_count=item_count_to_pass)
-                    else:
-                        logger.warning(f"无法获取 Emby 合集 {emby_collection_id} 的详情，跳过封面生成。")
+                library_info = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                if library_info:
+                    in_library_count = update_data.get('in_library_count', 0)
+                    item_count_to_pass = in_library_count
+                    if collection_type == 'list':
+                        item_count_to_pass = '榜单'
+                    cover_service.generate_for_library(
+                        emby_server_id='main_emby',
+                        library=library_info,
+                        item_count=item_count_to_pass,
+                        content_types=item_types_for_collection
+                    )
+                else:
+                    logger.warning(f"无法获取 Emby 合集 {emby_collection_id} 的详情，跳过封面生成。")
         except Exception as e:
             logger.error(f"为合集 '{collection_name}' 生成封面时发生错误: {e}", exc_info=True)
 
