@@ -241,88 +241,69 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V4 - 排序修复与功能增强版】
-    - 恢复了'original' (榜单原始顺序) 排序功能。
-    - 整合了动态筛选功能，使其能在保持原始顺序的基础上工作。
+    【V5 - Emby ID 权威数据源 & 排序保持重构版】
+    - 直接从数据库 `generated_media_info_json` 读取权威的、有序的 Emby ID 列表。
+    - 使用批量接口精确获取媒体项，然后根据数据库中的顺序重新排序。
+    - 完美支持 'original' (榜单原始顺序) 排序。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
         collection_info = db_handler.get_custom_collection_by_id(real_db_id)
-        if not collection_info or not collection_info.get('emby_collection_id'):
+        if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
         definition = collection_info.get('definition_json') or {}
-        real_emby_collection_id = collection_info.get('emby_collection_id')
-
-        # --- 阶段一：从真实的Emby合集获取所有项目，并建立一个ID->项目的映射，以便快速查找 ---
-        logger.trace(f"  -> 阶段1：正在从真实合集 '{collection_info['name']}' (ID: {real_emby_collection_id}) 获取基础内容...")
-        base_url, api_key = _get_real_emby_url_and_key()
         
-        # 获取所有项目，以便后续排序和筛选
-        all_live_items = emby_handler.get_emby_library_items(
-            base_url=base_url, api_key=api_key, user_id=user_id,
-            library_ids=[real_emby_collection_id],
-            fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
-        )
-        if not all_live_items:
+        # --- 阶段一：从数据库获取权威的、有序的 Emby ID 列表 ---
+        logger.trace(f"  -> 阶段1：为虚拟库 '{collection_info['name']}' 从DB读取有序Emby ID列表...")
+        db_media_list = collection_info.get('generated_media_info_json') or []
+        
+        # 提取所有有效的 Emby ID，这个列表的顺序就是我们的“原始榜单顺序”
+        ordered_emby_ids = [
+            item.get('emby_id') 
+            for item in db_media_list 
+            if item.get('emby_id')
+        ]
+        
+        if not ordered_emby_ids:
+            logger.trace("  -> 数据库中无 Emby ID 记录，返回空列表。")
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
         
-        # 创建一个从 TmdbId 到完整 Emby 项目的映射
-        live_items_map = {
-            item.get('ProviderIds', {}).get('Tmdb'): item 
-            for item in all_live_items 
-            if item.get('ProviderIds', {}).get('Tmdb')
-        }
-        logger.trace(f"  -> 阶段1完成：获取到 {len(all_live_items)} 个实时媒体项，并创建了映射。")
+        logger.trace(f"  -> 阶段1完成：获取到 {len(ordered_emby_ids)} 个有序的 Emby ID。")
 
-        # --- 阶段二：根据数据库中存储的原始顺序，重建项目列表 ---
-        # 这是恢复“原始榜单排序”的关键步骤
-        ordered_items = []
-        # 从数据库获取预先生成、有顺序的媒体信息
-        db_ordered_media_list = collection_info.get('generated_media_info_json') or []
+        # --- 阶段二：使用权威 ID 列表，从 Emby 精确获取实时数据 ---
+        logger.trace(f"  -> 阶段2：正在从 Emby 批量获取这 {len(ordered_emby_ids)} 个媒体项的实时信息...")
+        base_url, api_key = _get_real_emby_url_and_key()
         
-        if db_ordered_media_list:
-            logger.trace(f"  -> 阶段2：检测到数据库中有 {len(db_ordered_media_list)} 个项目的原始顺序，开始重建列表...")
-            processed_tmdb_ids = set()
-            for db_item in db_ordered_media_list:
-                tmdb_id = str(db_item.get('tmdb_id', ''))
-                if tmdb_id in live_items_map:
-                    # 从实时数据映射中取出项目，并按数据库的顺序添加到列表中
-                    ordered_items.append(live_items_map[tmdb_id])
-                    processed_tmdb_ids.add(tmdb_id)
-            
-            # 追加那些在Emby合集中存在，但不在数据库顺序列表中的项目（例如手动添加的）
-            for tmdb_id, live_item in live_items_map.items():
-                if tmdb_id not in processed_tmdb_ids:
-                    ordered_items.append(live_item)
+        live_items_unordered = emby_handler.get_emby_items_by_id(
+            base_url=base_url, api_key=api_key, user_id=user_id,
+            item_ids=ordered_emby_ids,
+            fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
+        )
+        
+        # ★★★ 关键点: Emby返回的可能是乱序的，我们必须根据DB中的顺序重新排序 ★★★
+        live_items_map = {item['Id']: item for item in live_items_unordered}
+        ordered_items = [live_items_map[emby_id] for emby_id in ordered_emby_ids if emby_id in live_items_map]
+        
+        logger.trace(f"  -> 阶段2完成：成功获取并按原始顺序排序了 {len(ordered_items)} 个实时媒体项。")
 
-            logger.trace(f"  -> 阶段2完成：成功按原始顺序排列了 {len(ordered_items)} 个项目。")
-        else:
-            # 如果数据库中没有顺序信息（例如，对于纯筛选合集），则退回到使用Emby返回的列表
-            logger.trace("  -> 阶段2跳过：数据库中无预生成顺序，将使用Emby原生顺序。")
-            ordered_items = all_live_items
-
-        # --- 阶段三：如果启用了动态筛选，就在已排序的列表上执行二次过滤 ---
+        # --- 阶段三：动态筛选 ---
         final_items = ordered_items
         if definition.get('dynamic_filter_enabled'):
-            logger.trace("  -> 阶段3：检测到已启用实时用户筛选，开始二次过滤...")
-            
+            logger.trace("  -> 阶段3：执行实时用户筛选...")
             dynamic_definition = {
                 'rules': definition.get('dynamic_rules', []),
                 'logic': definition.get('dynamic_logic', 'AND')
             }
-            
             engine = FilterEngine()
-            # 在已经排好序的列表上进行过滤
             final_items = engine.execute_dynamic_filter(ordered_items, dynamic_definition)
-            logger.trace(f"  -> 阶段3完成：二次过滤后，剩下 {len(final_items)} 个媒体项。")
+            logger.trace(f"  -> 阶段3完成：筛选后剩下 {len(final_items)} 个媒体项。")
         else:
             logger.trace("  -> 阶段3跳过：未启用实时用户筛选。")
 
         # --- 阶段四：处理最终排序 ---
         sort_by_field = definition.get('default_sort_by')
         
-        # 仅当排序方式不是 'original' 且不是 'none' 时，才执行覆盖排序
         if sort_by_field and sort_by_field not in ['original', 'none']:
             sort_order = definition.get('default_sort_order', 'Ascending')
             is_descending = (sort_order == 'Descending')
@@ -339,8 +320,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         elif sort_by_field == 'original':
              logger.trace("已应用 'original' (榜单原始顺序) 排序。")
         else:
-            logger.trace("未设置或禁用虚拟库排序，将保持当前顺序（Emby原生或榜单原始顺序）。")
-
+            logger.trace("未设置或禁用虚拟库排序，将保持榜单原始顺序。")
 
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')

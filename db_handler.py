@@ -1673,7 +1673,7 @@ def update_single_media_status_in_custom_collection(collection_id: int, media_tm
         raise
 
 # --- 更新榜单合集 ---
-def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_item_name: str) -> List[Dict[str, Any]]:
+def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_item_emby_id: str, new_item_name: str) -> List[Dict[str, Any]]:
     """
     【V3 - PG JSONB 查询修复版】
     当新媒体入库时，查找所有匹配的'list'类型合集，更新其内部状态，并返回需要被操作的Emby合集信息。
@@ -1730,6 +1730,7 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                                 logger.info(f"  -> 数据库状态更新：项目《{new_item_name}》在合集《{collection_name}》中的状态将从【{old_status_cn}】更新为【{new_status_cn}】。")
                                 
                                 media_item['status'] = new_status_key
+                                media_item['emby_id'] = new_item_emby_id 
                                 item_found_and_updated = True
                                 break
                         

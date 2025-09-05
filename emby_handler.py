@@ -1051,60 +1051,31 @@ def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, us
         
     return success
 
-def create_or_update_collection_with_tmdb_ids(
+def create_or_update_collection_with_emby_ids(
     collection_name: str, 
-    tmdb_ids: list, 
+    emby_ids_in_library: List[str], # 直接接收 Emby ID 列表
     base_url: str, 
     api_key: str, 
-    user_id: str, 
-    library_ids: list = None,
-    # ★★★ 核心修复 1: 在函数定义中添加 item_types 参数 ★★★
-    # 默认为只处理电影，以兼容旧的调用方式
-    item_types: list = ['Movie'],
-    prefetched_emby_items: Optional[list] = None,
+    user_id: str,
     prefetched_collection_map: Optional[dict] = None
-) -> Optional[Tuple[str, List[str]]]: 
+) -> Optional[str]: # 返回 Emby Collection ID
     """
-    【V2 - 多类型兼容版】
-    通过精确计算差异，实现完美的合集同步。
-    现在可以处理包含多种媒体类型（如 Movie, Series）的合集。
+    【V3 - Emby ID 精准同步版】
+    通过一个权威的 Emby ID 列表，来创建或更新合集。
     """
-    # ★★★ 核心修复 2: 根据 item_types 列表生成日志信息 ★★★
-    type_map = {'Movie': '电影', 'Series': '电视剧'}
-    log_item_types = "、".join([type_map.get(t, t) for t in item_types])
-    logger.info(f"  -> 开始在Emby中处理名为 '{collection_name}' 的{log_item_types}合集...")
+    logger.info(f"  -> 开始在Emby中处理名为 '{collection_name}' 的合集 (基于 Emby ID)...")
     
     try:
-        # 1. & 2. 获取媒体项并计算出“应该有”的成员列表 (desired_emby_ids)
-        if prefetched_emby_items is not None:
-            all_media_items = prefetched_emby_items
-        else:
-            if not library_ids: raise ValueError("非预加载模式下必须提供 library_ids。")
-            # ★★★ 核心修复 3: media_type_filter 现在使用 item_types 列表 ★★★
-            media_type_filter_str = ",".join(item_types)
-            all_media_items = get_emby_library_items(
-                base_url=base_url, api_key=api_key, user_id=user_id, 
-                media_type_filter=media_type_filter_str, 
-                library_ids=library_ids
-            )
-        if all_media_items is None: return None
-            
-        tmdb_to_emby_id_map = {
-            item['ProviderIds']['Tmdb']: item['Id']
-            for item in all_media_items
-            # ★★★ 核心修复 4: 确保只匹配指定类型的媒体 ★★★
-            if item.get('Type') in item_types and 'ProviderIds' in item and 'Tmdb' in item['ProviderIds']
-        }
-        tmdb_ids_in_library = [str(tid) for tid in tmdb_ids if str(tid) in tmdb_to_emby_id_map]
-        desired_emby_ids = [tmdb_to_emby_id_map[tid] for tid in tmdb_ids_in_library]
+        # desired_emby_ids 现在就是传入的列表
+        desired_emby_ids = emby_ids_in_library
         
-        # 3. 检查合集是否存在
+        # 检查合集是否存在 (逻辑不变)
         collection = prefetched_collection_map.get(collection_name.lower()) if prefetched_collection_map is not None else get_collection_by_name(collection_name, base_url, api_key, user_id)
         
         emby_collection_id = None
 
         if collection:
-            # --- 更新逻辑 (保持不变) ---
+            # --- 更新逻辑 ---
             emby_collection_id = collection['Id']
             logger.info(f"  -> 发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，开始同步...")
             
@@ -1129,13 +1100,13 @@ def create_or_update_collection_with_tmdb_ids(
             if not ids_to_remove and not ids_to_add:
                 logger.info("  -> 合集内容已是最新，无需改动。")
 
-            return (emby_collection_id, tmdb_ids_in_library)
+            return emby_collection_id
         else:
             # --- 创建逻辑 (保持不变) ---
             logger.info(f"  -> 未找到合集 '{collection_name}'，将开始创建...")
             if not desired_emby_ids:
                 logger.warning(f"合集 '{collection_name}' 在媒体库中没有任何匹配项，跳过创建。")
-                return (None, [])
+                return None
 
             api_url = f"{base_url.rstrip('/')}/Collections"
             params = {'api_key': api_key}
@@ -1146,13 +1117,51 @@ def create_or_update_collection_with_tmdb_ids(
             new_collection_info = response.json()
             emby_collection_id = new_collection_info.get('Id')
             
-            if emby_collection_id:
-                return (emby_collection_id, tmdb_ids_in_library)
-            return None
+            return emby_collection_id
 
     except Exception as e:
         logger.error(f"处理Emby合集 '{collection_name}' 时发生未知错误: {e}", exc_info=True)
         return None
+    
+# ▼▼▼ 核心重构 2: 新增函数，供虚拟库使用 ▼▼▼
+def get_emby_items_by_id(
+    base_url: str,
+    api_key: str,
+    user_id: str,
+    item_ids: List[str],
+    fields: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    根据一个Emby ID列表，批量获取媒体项的详细信息。
+    """
+    if not all([base_url, api_key, user_id]) or not item_ids:
+        return []
+
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    
+    # Emby API 推荐在查询大量ID时使用POST请求
+    headers = {
+        'Content-Type': 'application/json',
+        'X-Emby-Token': api_key
+    }
+    
+    params = {
+        "Fields": fields or "ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
+    }
+
+    # 将ID列表放入请求体
+    payload = {
+        "Ids": item_ids
+    }
+
+    try:
+        response = requests.post(api_url, params=params, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("Items", [])
+    except requests.exceptions.RequestException as e:
+        logger.error(f"根据ID列表批量获取Emby项目时失败: {e}")
+        return []
     
 # ★★★ 新增：向合集追加单个项目的函数 ★★★
 def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: str, api_key: str, user_id: str) -> bool:
