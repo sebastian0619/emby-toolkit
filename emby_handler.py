@@ -1132,32 +1132,29 @@ def get_emby_items_by_id(
     fields: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """
+    【V2 - Stable 版兼容修复】
     根据一个Emby ID列表，批量获取媒体项的详细信息。
+    - 改为使用 GET 请求和逗号分隔的 Ids 参数，以兼容 Emby Stable (Latest) 版本。
     """
     if not all([base_url, api_key, user_id]) or not item_ids:
         return []
 
+    # ★★★ 核心修复 1/2: 改为使用 GET 请求的标准端点 ★★★
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
     
-    # Emby API 推荐在查询大量ID时使用POST请求
-    headers = {
-        'Content-Type': 'application/json',
-        'X-Emby-Token': api_key
-    }
-    
+    # ★★★ 核心修复 2/2: 将 ID 列表转换为逗号分隔的字符串，并放入 params ★★★
     params = {
+        "api_key": api_key,
+        "Ids": ",".join(item_ids), # 这是关键改动
         "Fields": fields or "ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
     }
 
-    # 将ID列表放入请求体
-    payload = {
-        "Ids": item_ids
-    }
-
     try:
-        response = requests.post(api_url, params=params, headers=headers, json=payload, timeout=30)
+        # 使用 GET 请求
+        response = requests.get(api_url, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
+        # Emby 在 GET 请求中返回的是一个完整的 ItemsResult 对象，我们需要从中提取 Items
         return data.get("Items", [])
     except requests.exceptions.RequestException as e:
         logger.error(f"根据ID列表批量获取Emby项目时失败: {e}")
