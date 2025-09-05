@@ -1422,13 +1422,28 @@ class MediaProcessor:
                                     year: Optional[int] = None,
                                     tmdb_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        【V13 - 返璞归真双核版】为手动编辑页面提供的一键翻译功能。
-        根据用户配置，智能选择带全局缓存的翻译模式，或无缓存的顾问模式。
+        【V14 - 纯AI翻译版】为手动编辑页面提供的一键翻译功能。
+        - 彻底移除传统翻译引擎的降级逻辑。
+        - 如果AI翻译未启用或失败，则直接放弃翻译。
         """
         if not cast_list:
             return []
-            
-        # 从配置中读取模式，这是决定后续所有行为的总开关
+
+        # ★★★ 核心修改 1: 检查AI翻译是否启用，如果未启用则直接返回 ★★★
+        if not self.ai_translator or not self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False):
+            logger.info("手动编辑-一键翻译：AI翻译未启用，任务跳过。")
+            # 可以在这里返回一个提示给前端，或者直接返回原始列表
+            # 为了前端体验，我们可以在第一个需要翻译的演员上加一个状态
+            translated_cast_for_status = [dict(actor) for actor in cast_list]
+            for actor in translated_cast_for_status:
+                name_needs_translation = actor.get('name') and not utils.contains_chinese(actor.get('name'))
+                role_needs_translation = actor.get('role') and not utils.contains_chinese(actor.get('role'))
+                if name_needs_translation or role_needs_translation:
+                    actor['matchStatus'] = 'AI未启用'
+                    break # 只标记第一个即可
+            return translated_cast_for_status
+
+        # 从配置中读取模式
         translation_mode = self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_MODE, "fast")
         
         context_log = f" (上下文: {title} {year})" if title and translation_mode == 'quality' else ""
@@ -1436,10 +1451,8 @@ class MediaProcessor:
         
         translated_cast = [dict(actor) for actor in cast_list]
         
-        # --- 批量翻译逻辑 ---
-        ai_translation_succeeded = False
-        
-        if self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False):
+        # --- 纯AI批量翻译逻辑 ---
+        try:
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 
@@ -1452,17 +1465,14 @@ class MediaProcessor:
                     for field_key in ['name', 'role']:
                         text = actor.get(field_key, '').strip()
                         if field_key == 'role':
-                            # 无论是演员名还是角色名，都先清洗一遍，确保拿到的是核心文本
-                            # 对于演员名，这个清洗通常无影响，但对于角色名至关重要
                             text = utils.clean_character_name_static(text)
                         if text and not utils.contains_chinese(text):
                             texts_to_collect.add(text)
 
                 # 2. 根据模式决定是否使用缓存
                 if translation_mode == 'fast':
-                    logger.debug("[翻译模式] 正在检查全局翻译缓存...")
+                    logger.debug("[快速模式] 正在检查全局翻译缓存...")
                     for text in texts_to_collect:
-                        # 翻译模式只读写全局缓存
                         cached_entry = self.actor_db_manager.get_translation_from_db(cursor=cursor, text=text)
                         if cached_entry:
                             translation_cache[text] = cached_entry.get("translated_text")
@@ -1475,34 +1485,27 @@ class MediaProcessor:
                 # 3. 如果有需要翻译的词条，调用AI
                 if texts_to_translate:
                     logger.info(f"手动编辑-翻译：将 {len(texts_to_translate)} 个词条提交给AI (模式: {translation_mode})。")
-                    try:
-                        translation_map_from_api = self.ai_translator.batch_translate(
-                            texts=list(texts_to_translate),
-                            mode=translation_mode,
-                            title=title,
-                            year=year
-                        )
-                        if translation_map_from_api:
-                            translation_cache.update(translation_map_from_api)
-                            
-                            # 只有在翻译模式下，才将结果写入全局缓存
-                            if translation_mode == 'fast':
-                                for original, translated in translation_map_from_api.items():
-                                    self.actor_db_manager.save_translation_to_db(
-                                        cursor=cursor,
-                                        original_text=original, 
-                                        translated_text=translated, 
-                                        engine_used=self.ai_translator.provider
-                                    )
-                            
-                            ai_translation_succeeded = True
-                        else:
-                            logger.warning("手动编辑-翻译：AI批量翻译未返回结果。")
-                    except Exception as e:
-                        logger.error(f"手动编辑-翻译：调用AI批量翻译时出错: {e}", exc_info=True)
+                    translation_map_from_api = self.ai_translator.batch_translate(
+                        texts=list(texts_to_translate),
+                        mode=translation_mode,
+                        title=title,
+                        year=year
+                    )
+                    if translation_map_from_api:
+                        translation_cache.update(translation_map_from_api)
+                        
+                        if translation_mode == 'fast':
+                            for original, translated in translation_map_from_api.items():
+                                self.actor_db_manager.save_translation_to_db(
+                                    cursor=cursor,
+                                    original_text=original, 
+                                    translated_text=translated, 
+                                    engine_used=self.ai_translator.provider
+                                )
+                    else:
+                        logger.warning("手动编辑-翻译：AI批量翻译未返回任何结果。")
                 else:
                     logger.info("手动编辑-翻译：所有词条均在缓存中找到，无需调用API。")
-                    ai_translation_succeeded = True
 
                 # 4. 回填所有翻译结果
                 if translation_cache:
@@ -1512,67 +1515,24 @@ class MediaProcessor:
                             translated_cast[i]['name'] = translation_cache[original_name]
                         
                         original_role_raw = actor.get('role', '').strip()
-                        # 使用与收集时完全相同的清理逻辑
                         cleaned_original_role = utils.clean_character_name_static(original_role_raw)
                         
-                        # 用清理后的名字作为key去查找
                         if cleaned_original_role in translation_cache:
                             translated_cast[i]['role'] = translation_cache[cleaned_original_role]
                         
-                        # 如果发生了翻译，更新状态以便前端高亮
                         if translated_cast[i].get('name') != actor.get('name') or translated_cast[i].get('role') != actor.get('role'):
                             translated_cast[i]['matchStatus'] = '已翻译'
         
-        # 如果AI翻译未启用或失败，则降级到传统引擎
-        if not ai_translation_succeeded:
-            if self.config.get("ai_translation_enabled", False):
-                logger.info("手动编辑-翻译：AI翻译失败，降级到传统引擎逐个翻译。")
-            else:
-                logger.info("手动编辑-翻译：AI未启用，使用传统引擎逐个翻译。")
-                
-            try:
-                with get_central_db_connection() as conn:
-                    cursor = conn.cursor()
+        except Exception as e:
+            logger.error(f"一键翻译时发生错误: {e}", exc_info=True)
+            # 可以在这里给出一个错误提示
+            for actor in translated_cast:
+                actor['matchStatus'] = '翻译出错'
+                break
+            return translated_cast
 
-                    for i, actor in enumerate(translated_cast):
-                        if self.is_stop_requested():
-                            logger.warning(f"一键翻译（降级模式）被用户中止。")
-                            break # 这里使用 break 更安全，可以直接跳出循环
-                        # 【【【 修复点 3：使用正确的参数调用 translate_actor_field 】】】
-                        
-                        # 翻译演员名
-                        name_to_translate = actor.get('name', '').strip()
-                        if name_to_translate and not utils.contains_chinese(name_to_translate):
-                            translated_name = actor_utils.translate_actor_field(
-                                text=name_to_translate,
-                                db_manager=self.actor_db_manager,
-                                db_cursor=cursor,
-                                ai_translator=self.ai_translator,
-                                translator_engines=self.translator_engines,
-                                ai_enabled=self.ai_enabled
-                            )
-                            if translated_name and translated_name != name_to_translate:
-                                translated_cast[i]['name'] = translated_name
-
-                        # 翻译角色名
-                        role_to_translate = actor.get('role', '').strip()
-                        if role_to_translate and not utils.contains_chinese(role_to_translate):
-                            translated_role = actor_utils.translate_actor_field(
-                                text=role_to_translate,
-                                db_manager=self.actor_db_manager,
-                                db_cursor=cursor,
-                                ai_translator=self.ai_translator,
-                                translator_engines=self.translator_engines,
-                                ai_enabled=self.ai_enabled
-                            )
-                            if translated_role and translated_role != role_to_translate:
-                                translated_cast[i]['role'] = translated_role
-
-                        if translated_cast[i].get('name') != actor.get('name') or translated_cast[i].get('role') != actor.get('role'):
-                            translated_cast[i]['matchStatus'] = '已翻译'
-            
-            except Exception as e:
-                logger.error(f"一键翻译（降级模式）时发生错误: {e}", exc_info=True)
+        # ★★★ 核心修改 2: 彻底删除降级逻辑 ★★★
+        # 原有的 if not ai_translation_succeeded: ... else ... 代码块已全部移除。
 
         logger.info("手动编辑-翻译完成。")
         return translated_cast
