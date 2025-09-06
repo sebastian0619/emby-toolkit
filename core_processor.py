@@ -1829,7 +1829,7 @@ class MediaProcessor:
             
             if force_full_update:
                 # 深度模式：处理所有 Emby 项目
-                logger.info(f"  -> 深度模式已激活，将处理所有 {len(all_emby_ids)} 个 Emby 项目。")
+                logger.info(f"  -> 全量模式已激活，将处理所有 {len(all_emby_ids)} 个 Emby 项目。")
                 items_to_process_ids = all_emby_ids
             else:
                 # 快速模式：计算差集，只处理新项目
@@ -1840,11 +1840,11 @@ class MediaProcessor:
                     processed_ids = {row['item_id'] for row in cursor.fetchall()}
                 
                 items_to_process_ids = all_emby_ids - processed_ids
-                logger.info(f"  -> 快速模式：从 {len(all_emby_ids)} 个 Emby 项目中发现 {len(items_to_process_ids)} 个新项目。")
+                logger.info(f"  -> 增量模式：从 {len(all_emby_ids)} 个 Emby 项目中发现 {len(items_to_process_ids)} 个新项目。")
 
             total_to_process = len(items_to_process_ids)
             if total_to_process == 0:
-                message = "  -> 深度模式检查完成，媒体库为空。" if force_full_update else "  -> 快速模式检查完成，没有发现新项目。"
+                message = "  -> 全量模式检查完成，媒体库为空。" if force_full_update else "  -> 增量模式检查完成，没有发现新项目。"
                 logger.info(message)
                 if update_status_callback: update_status_callback(100, message)
                 return
