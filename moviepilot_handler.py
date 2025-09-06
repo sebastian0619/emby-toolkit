@@ -93,7 +93,7 @@ def subscribe_series_to_moviepilot(series_info: dict, season_number: Optional[in
         # ★★★ 新增逻辑：如果提供了 best_version，则加入请求体 ★★★
         if best_version is not None:
             subscribe_payload["best_version"] = best_version
-            logger.info(f"  -> 本次订阅为洗版订阅，指定版本为: {best_version}")
+            logger.info(f"  -> 本次订阅为洗版订阅")
 
         log_message = f"  -> 正在向 MoviePilot 提交订阅: '{series_title}'"
         if season_number is not None:

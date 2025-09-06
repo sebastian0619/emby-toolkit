@@ -369,7 +369,7 @@ class WatchlistProcessor:
                       AND jsonb_typeof(missing_info_json) IN ('object', 'array')
                     """
                 )
-                logger.info(f"阶段1：发现 {len(stuck_series)} 部 TMDb已完结但卡在追剧中的剧集。")
+                logger.info(f"  -> 阶段1：发现 {len(stuck_series)} 部 TMDb已完结但卡在追剧中的剧集。")
 
                 # 阶段二：捕获“僵尸剧”
                 today_minus_365_days = (datetime.now(timezone.utc).date() - timedelta(days=365)).isoformat()
@@ -381,13 +381,13 @@ class WatchlistProcessor:
                       AND (last_episode_to_air_json->>'air_date')::date < '{today_minus_365_days}'
                     """
                 )
-                logger.info(f"阶段2：发现 {len(zombie_series)} 部可能状态滞后的“僵尸剧”。")
+                logger.info(f"  -> 阶段2：发现 {len(zombie_series)} 部Tmdb状态滞后的“僵尸剧”。")
 
                 # 阶段三：捕获“已正常完结，但后来文件又被删除”的剧集
                 completed_missing_series = self._get_series_to_process(
                     f"WHERE status = '{STATUS_COMPLETED}' AND jsonb_typeof(missing_info_json) IN ('object', 'array')"
                 )
-                logger.info(f"阶段3：发现 {len(completed_missing_series)} 部已完结但文件缺失的剧集。")
+                logger.info(f"  -> 阶段3：发现 {len(completed_missing_series)} 部已完结但文件缺失的剧集。")
 
                 # 合并所有结果并去重
                 all_series_map = {s['item_id']: s for s in stuck_series}
@@ -400,7 +400,7 @@ class WatchlistProcessor:
                 if progress_callback: progress_callback(100, "所有流程已完成，未发现需洗版的剧集。")
                 return
 
-            logger.info(f"共发现 {total} 部剧集需要洗版，开始处理...")
+            logger.info(f"  -> 共发现 {total} 部剧集需要洗版，开始处理...")
             total_seasons_subscribed = 0
 
             # 循环内部的订阅逻辑是正确的，保持不变
@@ -432,7 +432,7 @@ class WatchlistProcessor:
                 
                 if not seasons_to_resubscribe: continue
 
-                logger.warning(f"检测到剧集《{item_name}》存在缺集: {sorted(list(seasons_to_resubscribe))}，准备逐季触发洗版订阅。")
+                logger.warning(f"  -> 检测到剧集《{item_name}》存在缺集: {sorted(list(seasons_to_resubscribe))}，准备逐季触发洗版订阅。")
 
                 for season_num in sorted(list(seasons_to_resubscribe)):
                     success = moviepilot_handler.subscribe_series_to_moviepilot(
@@ -443,7 +443,7 @@ class WatchlistProcessor:
                     time.sleep(1)
                 time.sleep(1)
 
-            final_message = f"所有流程已完成！共为 {total_seasons_subscribed} 个缺失的季提交了洗版订阅。"
+            final_message = f"  -> 所有流程已完成！共为 {total_seasons_subscribed} 个缺失的季提交了洗版订阅。"
             if progress_callback: progress_callback(100, final_message)
             logger.info(f"--- 后台任务 '{task_name}' 结束，最终状态: 处理完成。 ---")
 
