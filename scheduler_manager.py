@@ -115,7 +115,7 @@ class SchedulerManager:
             logger.warning("调度器未运行，无法更新'剧集复活检查'任务。")
             return
 
-        logger.info("正在设置固定的'剧集复活检查'定时任务...")
+        logger.trace("正在设置固定的'剧集复活检查'定时任务...")
 
         try:
             # 1. 同样，先移除旧的作业，防止重复
@@ -154,7 +154,7 @@ class SchedulerManager:
                 name=task_description,
                 replace_existing=True
             )
-            logger.info(f"已成功设置'{task_description}'任务，执行计划: 每周日 05:00。")
+            logger.trace(f"已成功设置'{task_description}'任务，执行计划: 每周日 05:00。")
         except ValueError as e:
             logger.error(f"设置'{task_description}'任务失败：CRON表达式 '{cron_str}' 无效。错误: {e}")
     
