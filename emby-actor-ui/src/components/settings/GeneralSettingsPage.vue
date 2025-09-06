@@ -241,10 +241,22 @@
                     <n-form-item-grid-item label="MoviePilot URL" path="moviepilot_url"><n-input v-model:value="configModel.moviepilot_url" placeholder="例如: http://192.168.1.100:3000"/></n-form-item-grid-item>
                     <n-form-item-grid-item label="用户名" path="moviepilot_username"><n-input v-model:value="configModel.moviepilot_username" placeholder="输入 MoviePilot 的登录用户名"/></n-form-item-grid-item>
                     <n-form-item-grid-item label="密码" path="moviepilot_password"><n-input type="password" show-password-on="mousedown" v-model:value="configModel.moviepilot_password" placeholder="输入 MoviePilot 的登录密码"/></n-form-item-grid-item>
+                    
                     <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">智能订阅设置</n-divider>
+                    
                     <n-form-item-grid-item label="启用智能订阅" path="autosub_enabled">
-                      <n-switch v-model:value="configModel.autosub_enabled" />
+                      <!-- ★★★ 修改点 1: 增加 disabled 绑定 ★★★ -->
+                      <n-switch v-model:value="configModel.autosub_enabled" :disabled="!isMoviePilotConfigured" />
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">总开关。开启后，智能订阅定时任务才会真正执行订阅操作。</n-text></template>
+                    </n-form-item-grid-item>
+
+                    <n-form-item-grid-item label="对缺集的已完结剧集触发洗版" path="resubscribe_completed_on_missing">
+                      <n-switch v-model:value="configModel.resubscribe_completed_on_missing" :disabled="!isMoviePilotConfigured" />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          开启后，“已完结剧集洗版”任务会检查所有已完结剧集，若本地文件不完整，则向MoviePilot提交整部剧集的洗版订阅 。
+                        </n-text>
+                      </template>
                     </n-form-item-grid-item>
                   </n-card>
                 </n-gi>
@@ -622,6 +634,16 @@ const embyUserIdRule = {
     return true;
   }
 };
+
+// ★★★ 新增计算属性，用于判断 MoviePilot 是否配置完整 ★★★
+const isMoviePilotConfigured = computed(() => {
+  if (!configModel.value) return false;
+  return !!(
+    configModel.value.moviepilot_url &&
+    configModel.value.moviepilot_username &&
+    configModel.value.moviepilot_password
+  );
+});
 
 // ★★★ 新增：测试代理连接的方法 ★★★
 const testProxy = async () => {

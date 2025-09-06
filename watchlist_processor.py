@@ -10,6 +10,8 @@ import threading
 import db_handler
 from db_handler import get_db_connection as get_central_db_connection
 # 导入我们需要的辅助模块
+import moviepilot_handler
+import constants
 import tmdb_handler
 import emby_handler
 import logging
@@ -317,6 +319,110 @@ class WatchlistProcessor:
                 time.sleep(2) # 保持API调用间隔
             
             final_message = f"复活检查完成。共发现 {revived_count} 部剧集回归。"
+            self.progress_callback(100, final_message)
+
+        except Exception as e:
+            logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
+            self.progress_callback(-1, f"错误: {e}")
+        finally:
+            self.progress_callback = None
+
+    # ★★★ 已完结剧集缺集洗版检查 ★★★
+    def run_completed_series_re_subscribe_check(self, progress_callback: callable):
+        """【V3 - 精确分季订阅版】检查所有已完结剧集，若本地文件不完整，则为每一个缺集的季单独触发洗版订阅。"""
+        self.progress_callback = progress_callback
+        task_name = "已完结剧集洗版检查"
+        
+        if not self.config.get(constants.CONFIG_OPTION_RESUBSCRIBE_COMPLETED_ON_MISSING):
+            logger.info(f"'{task_name}' 跳过：功能未在配置中启用。")
+            self.progress_callback(100, "任务跳过：未启用该功能。")
+            return
+
+        self.progress_callback(0, "准备开始已完结剧集洗版检查...")
+        try:
+            completed_series = self._get_series_to_process(f"WHERE status = '{STATUS_COMPLETED}'")
+            total = len(completed_series)
+            if not completed_series:
+                self.progress_callback(100, "没有已完结的剧集需要检查。")
+                return
+
+            logger.info(f"开始检查 {total} 部已完结剧集是否存在缺集...")
+            self.progress_callback(10, f"发现 {total} 部已完结剧集，开始检查...")
+            
+            # ★★★ 核心修改 1/3: 改变计数器，统计总共订阅的季数 ★★★
+            total_seasons_subscribed = 0
+
+            for i, series in enumerate(completed_series):
+                if self.is_stop_requested(): break
+                progress = 10 + int(((i + 1) / total) * 90)
+                item_name = series.get('item_name', '未知剧集')
+                self.progress_callback(progress, f"检查中: {item_name[:20]}... ({i+1}/{total})")
+
+                # ... (获取 TMDb 和 Emby 数据的逻辑保持不变) ...
+                tmdb_id = series.get('tmdb_id')
+                if not tmdb_id: continue
+                latest_series_data = tmdb_handler.get_tv_details_tmdb(tmdb_id, self.tmdb_api_key)
+                if not latest_series_data: continue
+                all_tmdb_episodes = []
+                for season_summary in latest_series_data.get("seasons", []):
+                    season_num = season_summary.get("season_number")
+                    if season_num is None or season_num == 0: continue
+                    season_details = tmdb_handler.get_season_details_tmdb(tmdb_id, season_num, self.tmdb_api_key)
+                    if season_details and season_details.get("episodes"):
+                        all_tmdb_episodes.extend(season_details.get("episodes", []))
+                    time.sleep(0.1)
+                item_id = series.get('item_id')
+                emby_children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields="ParentIndexNumber,IndexNumber")
+                emby_seasons = {}
+                if emby_children:
+                    for child in emby_children:
+                        s_num, e_num = child.get('ParentIndexNumber'), child.get('IndexNumber')
+                        if s_num is not None and e_num is not None:
+                            emby_seasons.setdefault(s_num, set()).add(e_num)
+                
+                missing_info = self._calculate_missing_info(latest_series_data.get('seasons', []), all_tmdb_episodes, emby_seasons)
+                has_missing_media = bool(missing_info["missing_seasons"] or missing_info["missing_episodes"])
+
+                # ★★★ 核心修改 2/3: 全新的分季订阅逻辑 ★★★
+                if has_missing_media:
+                    # 1. 收集所有存在缺失的季号，使用 set 自动去重
+                    seasons_to_resubscribe = set()
+                    for season in missing_info.get("missing_seasons", []):
+                        if season.get('season_number') is not None:
+                            seasons_to_resubscribe.add(season['season_number'])
+                    for episode in missing_info.get("missing_episodes", []):
+                        if episode.get('season_number') is not None:
+                            seasons_to_resubscribe.add(episode['season_number'])
+
+                    if not seasons_to_resubscribe:
+                        logger.info(f"  -> 检测到《{item_name}》有缺失，但无法确定具体季号，跳过订阅。")
+                        continue
+
+                    logger.warning(f"检测到已完结剧集《{item_name}》在以下季存在缺集: {sorted(list(seasons_to_resubscribe))}，准备逐季触发洗版订阅。")
+
+                    # 2. 遍历所有需要订阅的季，逐一提交请求
+                    for season_num in sorted(list(seasons_to_resubscribe)):
+                        logger.info(f"  -> 正在为《{item_name}》第 {season_num} 季提交洗版订阅...")
+                        
+                        success = moviepilot_handler.subscribe_series_to_moviepilot(
+                            series_info=series,
+                            season_number=season_num,  # <-- 传入精确的季号
+                            config=self.config,
+                            best_version=1
+                        )
+                        
+                        if success:
+                            total_seasons_subscribed += 1
+                            logger.info(f"  -> 已成功为《{item_name}》第 {season_num} 季提交洗版订阅请求。")
+                        else:
+                            logger.error(f"  -> 为《{item_name}》第 {season_num} 季提交洗版订阅请求失败。")
+                        
+                        time.sleep(1) # 在每次API调用之间稍作停顿
+                
+                time.sleep(2) # 在处理完一部剧后，等待2秒再处理下一部
+            
+            # ★★★ 核心修改 3/3: 更新最终的总结信息 ★★★
+            final_message = f"洗版检查完成。共为 {total_seasons_subscribed} 个缺失的剧集季提交了洗版订阅。"
             self.progress_callback(100, final_message)
 
         except Exception as e:
