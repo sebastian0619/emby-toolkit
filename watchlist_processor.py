@@ -341,31 +341,37 @@ class WatchlistProcessor:
     # ★★★ 已完结剧集缺集洗版检查 ★★★
     def _run_wash_plate_check_logic(self, progress_callback: callable, item_id: Optional[str] = None):
         """
-        【V9 - 单项刷新兼容版】
-        可复用的内部洗版检查函数。如果指定了 item_id，则只检查该项目。
+        【V11 - 最终悖论修复版】
+        采用全新的三阶段查询，在不破坏核心状态逻辑的前提下，精确查找所有需要洗版的剧集。
         """
         task_name = "洗版缺集的季"
         
         if not self.config.get(constants.CONFIG_OPTION_RESUBSCRIBE_COMPLETED_ON_MISSING):
             logger.info(f"'{task_name}' 功能未启用，跳过。")
-            if progress_callback:
-                progress_callback(100, "所有流程已完成（洗版功能未启用）。")
+            if progress_callback: progress_callback(100, "所有流程已完成（洗版功能未启用）。")
             return
 
         logger.info(f"--- 后台任务 '{task_name}' 开始执行 ---")
-        if progress_callback:
-            progress_callback(0, "正在查找需要洗版的剧集...")
+        if progress_callback: progress_callback(0, "正在查找需要洗版的剧集...")
 
         try:
             series_to_check = []
-            # ★★★ 核心修正 1/2: 增加对 item_id 的处理逻辑 ★★★
             if item_id:
-                # 如果是单项检查，直接获取该项目的数据，无需判断条件
                 series_to_check = self._get_series_to_process("", item_id=item_id)
-                logger.info(f"单项洗版检查：将只处理项目 ID: {item_id}")
             else:
-                # 如果是全量检查，执行两阶段查询
-                # 阶段一：查询“僵尸剧”
+                # ★★★ 核心逻辑：三阶段查询，捕获所有目标 ★★★
+
+                # 阶段一：捕获“TMDb已完结，但因缺集而卡在追剧中”的剧集 (例如《长相思》)
+                stuck_series = self._get_series_to_process(
+                    f"""
+                    WHERE status IN ('{STATUS_WATCHING}', '{STATUS_PAUSED}')
+                      AND tmdb_status IN ('Ended', 'Canceled')
+                      AND jsonb_typeof(missing_info_json) IN ('object', 'array')
+                    """
+                )
+                logger.info(f"阶段1：发现 {len(stuck_series)} 部 TMDb已完结但卡在追剧中的剧集。")
+
+                # 阶段二：捕获“僵尸剧”
                 today_minus_365_days = (datetime.now(timezone.utc).date() - timedelta(days=365)).isoformat()
                 zombie_series = self._get_series_to_process(
                     f"""
@@ -375,29 +381,29 @@ class WatchlistProcessor:
                       AND (last_episode_to_air_json->>'air_date')::date < '{today_minus_365_days}'
                     """
                 )
-                logger.info(f"阶段1：发现 {len(zombie_series)} 部可能状态滞后的“僵尸剧”。")
+                logger.info(f"阶段2：发现 {len(zombie_series)} 部可能状态滞后的“僵尸剧”。")
 
-                # 阶段二：查询常规已完结剧
-                completed_series = self._get_series_to_process(
+                # 阶段三：捕获“已正常完结，但后来文件又被删除”的剧集
+                completed_missing_series = self._get_series_to_process(
                     f"WHERE status = '{STATUS_COMPLETED}' AND jsonb_typeof(missing_info_json) IN ('object', 'array')"
                 )
-                logger.info(f"阶段2：发现 {len(completed_series)} 部已完结但可能缺集的剧集。")
+                logger.info(f"阶段3：发现 {len(completed_missing_series)} 部已完结但文件缺失的剧集。")
 
-                # 合并与去重
-                all_series_map = {s['item_id']: s for s in zombie_series}
-                all_series_map.update({s['item_id']: s for s in completed_series})
+                # 合并所有结果并去重
+                all_series_map = {s['item_id']: s for s in stuck_series}
+                all_series_map.update({s['item_id']: s for s in zombie_series})
+                all_series_map.update({s['item_id']: s for s in completed_missing_series})
                 series_to_check = list(all_series_map.values())
             
             total = len(series_to_check)
             if not series_to_check:
-                if progress_callback:
-                    progress_callback(100, "所有流程已完成，未发现需洗版的剧集。")
+                if progress_callback: progress_callback(100, "所有流程已完成，未发现需洗版的剧集。")
                 return
 
             logger.info(f"共发现 {total} 部剧集需要洗版，开始处理...")
             total_seasons_subscribed = 0
 
-            # ★★★ 核心修正 2/2: 循环内部的逻辑对于单项和全量是通用的，无需修改 ★★★
+            # 循环内部的订阅逻辑是正确的，保持不变
             for i, series in enumerate(series_to_check):
                 if self.is_stop_requested(): break
                 item_name = series.get('item_name', '未知剧集')
@@ -424,13 +430,7 @@ class WatchlistProcessor:
                     for episode in missing_info.get("missing_episodes", []):
                         if episode.get('season_number') is not None: seasons_to_resubscribe.add(episode['season_number'])
                 
-                # 如果是僵尸剧，但检查后发现不缺集，则跳过
-                if not seasons_to_resubscribe and series['status'] != STATUS_COMPLETED:
-                    logger.info(f"  -> “僵尸剧”《{item_name}》检查发现文件完整，跳过订阅。")
-                    continue
-
-                if not seasons_to_resubscribe:
-                    continue
+                if not seasons_to_resubscribe: continue
 
                 logger.warning(f"检测到剧集《{item_name}》存在缺集: {sorted(list(seasons_to_resubscribe))}，准备逐季触发洗版订阅。")
 
@@ -444,17 +444,14 @@ class WatchlistProcessor:
                 time.sleep(1)
 
             final_message = f"所有流程已完成！共为 {total_seasons_subscribed} 个缺失的季提交了洗版订阅。"
-            if progress_callback:
-                progress_callback(100, final_message)
+            if progress_callback: progress_callback(100, final_message)
             logger.info(f"--- 后台任务 '{task_name}' 结束，最终状态: 处理完成。 ---")
 
         except Exception as e:
             logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
-            if progress_callback:
-                progress_callback(-1, f"错误: {e}")
+            if progress_callback: progress_callback(-1, f"错误: {e}")
         finally:
-            if progress_callback:
-                self.progress_callback = None
+            if progress_callback: self.progress_callback = None
 
     def _get_series_to_process(self, where_clause: str, item_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
