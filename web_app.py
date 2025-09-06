@@ -336,9 +336,9 @@ def init_db():
                             "official_rating": "TEXT",
                             "unified_rating": "TEXT"
                         },
-                        # 'custom_collections': {
-                        #     "emby_playlist_id": "TEXT"
-                        # }
+                        'watchlist': {
+                            "last_episode_to_air_json": "JSONB"
+                        }
                     }
 
                     # --- 2.3 遍历并执行升级 ---
