@@ -349,6 +349,23 @@ def task_refresh_single_watchlist_item(processor: WatchlistProcessor, item_id: s
         task_name = f"单项追剧刷新 (ID: {item_id})"
         logger.error(f"执行 '{task_name}' 时发生顶层错误: {e}", exc_info=True)
         progress_updater(-1, f"启动任务时发生错误: {e}")
+# ★★★ 低频任务 - 检查已完结剧集是否复活 ★★★
+def task_run_revival_check(processor: WatchlistProcessor):
+    """
+    【低频任务】后台任务入口：检查所有已完结剧集是否“复活”。
+    """
+    # 定义一个可以传递给处理器的回调函数
+    def progress_updater(progress, message):
+        task_manager.update_status_from_thread(progress, message)
+
+    try:
+        # 直接调用 processor 实例的方法，并将回调函数传入
+        processor.run_revival_check_task(progress_callback=progress_updater)
+
+    except Exception as e:
+        task_name = "已完结剧集复活检查"
+        logger.error(f"执行 '{task_name}' 时发生顶层错误: {e}", exc_info=True)
+        progress_updater(-1, f"启动任务时发生错误: {e}")
 # --- 辅助函数 1: 数据清洗与准备 ---
 def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) -> tuple[List[str], List[tuple]]:
     """
@@ -1271,6 +1288,7 @@ def get_task_registry(context: str = 'all'):
         # --- 不适合任务链的、需要特定参数的任务 ---
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
         'process-single-custom-collection': (task_process_custom_collection, "生成单个自建合集", 'media', False),
+        'revival-check': (task_run_revival_check, "检查剧集复活", 'watchlist', False),
     }
 
     if context == 'chain':
