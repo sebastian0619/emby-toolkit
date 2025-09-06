@@ -359,7 +359,7 @@ def task_resubscribe_completed_series(processor: WatchlistProcessor):
     try:
         processor.run_completed_series_re_subscribe_check(progress_callback=progress_updater)
     except Exception as e:
-        task_name = "已完结剧集洗版订阅"
+        task_name = "洗版缺集的季"
         logger.error(f"执行 '{task_name}' 时发生顶层错误: {e}", exc_info=True)
         progress_updater(-1, f"启动任务时发生错误: {e}")
 # --- 辅助函数 1: 数据清洗与准备 ---
@@ -1274,7 +1274,7 @@ def get_task_registry(context: str = 'all'):
         'full-scan': (task_run_full_scan, "中文化角色名", 'media', True),
         'actor-cleanup': (task_actor_translation_cleanup, "中文化演员名", 'media', True),
         'process-watchlist': (task_process_watchlist, "智能追剧更新", 'watchlist', True),
-        'resubscribe-completed': (task_resubscribe_completed_series, "已完结剧集洗版", 'watchlist', True),
+        'resubscribe-completed': (task_resubscribe_completed_series, "洗版缺集的季", 'watchlist', True),
         'refresh-collections': (task_refresh_collections, "原生合集刷新", 'media', True),
         'custom-collections': (task_process_all_custom_collections, "自建合集刷新", 'media', True),
         'actor-tracking': (task_process_actor_subscriptions, "演员订阅扫描", 'actor', True),

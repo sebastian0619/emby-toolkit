@@ -331,14 +331,14 @@ class WatchlistProcessor:
     def run_completed_series_re_subscribe_check(self, progress_callback: callable):
         """【V3 - 精确分季订阅版】检查所有已完结剧集，若本地文件不完整，则为每一个缺集的季单独触发洗版订阅。"""
         self.progress_callback = progress_callback
-        task_name = "已完结剧集洗版检查"
+        task_name = "已完结剧集缺集检查"
         
         if not self.config.get(constants.CONFIG_OPTION_RESUBSCRIBE_COMPLETED_ON_MISSING):
             logger.info(f"'{task_name}' 跳过：功能未在配置中启用。")
             self.progress_callback(100, "任务跳过：未启用该功能。")
             return
 
-        self.progress_callback(0, "准备开始已完结剧集洗版检查...")
+        self.progress_callback(0, "准备开始已完结剧集缺集检查...")
         try:
             completed_series = self._get_series_to_process(f"WHERE status = '{STATUS_COMPLETED}'")
             total = len(completed_series)
@@ -398,7 +398,7 @@ class WatchlistProcessor:
                         logger.info(f"  -> 检测到《{item_name}》有缺失，但无法确定具体季号，跳过订阅。")
                         continue
 
-                    logger.warning(f"检测到已完结剧集《{item_name}》在以下季存在缺集: {sorted(list(seasons_to_resubscribe))}，准备逐季触发洗版订阅。")
+                    logger.warning(f"检测到已完结剧集《{item_name}》在以下季存在缺集: {sorted(list(seasons_to_resubscribe))}，准备洗版订阅。")
 
                     # 2. 遍历所有需要订阅的季，逐一提交请求
                     for season_num in sorted(list(seasons_to_resubscribe)):

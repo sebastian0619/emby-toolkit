@@ -254,7 +254,7 @@
                       <n-switch v-model:value="configModel.resubscribe_completed_on_missing" :disabled="!isMoviePilotConfigured" />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          开启后，“已完结剧集洗版”任务会检查所有已完结剧集，若本地文件不完整，则向MoviePilot提交整部剧集的洗版订阅 。
+                          开启后，“洗版缺集的季”任务会检查所有已完结剧集，若本地文件不完整，则向MoviePilot提交整季的洗版订阅 。
                         </n-text>
                       </template>
                     </n-form-item-grid-item>
