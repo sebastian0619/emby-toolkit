@@ -106,7 +106,14 @@
                           <div v-else style="font-size: 12px; color: #888;">提示：请从 Emby 后台用户管理页的地址栏复制 userId。</div>
                         </template>
                       </n-form-item-grid-item>
-
+                      <n-form-item-grid-item label="Emby API 超时时间 (秒)" path="emby_api_timeout">
+                        <n-input-number v-model:value="configModel.emby_api_timeout" :min="15" :step="5" placeholder="建议 30-90" style="width: 100%;" />
+                        <template #feedback>
+                          <n-text depth="3" style="font-size:0.8em;">
+                            当Emby服务器性能较差或媒体库巨大时，适当增加此值可防止网络请求失败。
+                          </n-text>
+                        </template>
+                      </n-form-item-grid-item>
                       <n-divider title-placement="left" style="margin-top: 10px;">选择要处理的媒体库</n-divider>
                       
                       <n-form-item-grid-item label-placement="top">

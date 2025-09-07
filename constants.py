@@ -47,6 +47,7 @@ CONFIG_SECTION_EMBY = "Emby"
 CONFIG_OPTION_EMBY_SERVER_URL = "emby_server_url"       # Emby服务器地址
 CONFIG_OPTION_EMBY_API_KEY = "emby_api_key"             # Emby API密钥
 CONFIG_OPTION_EMBY_USER_ID = "emby_user_id"             # 用于操作的Emby用户ID
+CONFIG_OPTION_EMBY_API_TIMEOUT = "emby_api_timeout"     # Emby API 超时时间 
 CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS = "libraries_to_process" # 需要处理的媒体库名称列表
 
 # ==============================================================================
