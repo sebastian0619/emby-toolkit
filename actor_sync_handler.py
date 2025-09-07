@@ -21,10 +21,11 @@ class UnifiedSyncHandler:
         logger.trace(f"UnifiedSyncHandler 初始化完成。")
     def sync_emby_person_map_to_db(self, update_status_callback: Optional[callable] = None, stop_event: Optional[threading.Event] = None):
         """
-        【V4 - 彻底重构版】
-        将任务分为清晰的“读取”和“写入”两个阶段，彻底解决状态传递和事务问题。
+        【V5 - 增加熔断机制】
+        在从Emby获取到0条记录时，会先检查数据库现有数据量。
+        如果数据库数据量很大，则判定为连接或配置错误，安全中止任务以防止数据丢失。
         """
-        logger.trace("开始统一的演员映射表同步任务 (重构版)...")
+        logger.trace("开始统一的演员映射表同步任务 (V5 - 安全版)...")
         if update_status_callback: update_status_callback(0, "阶段 1/2: 从 Emby 读取所有演员数据...")
 
         # ======================================================================
@@ -48,18 +49,45 @@ class UnifiedSyncHandler:
             if update_status_callback: update_status_callback(-1, "从Emby读取数据失败")
             return
 
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # ★★★ 核心修改：在这里加入安全检查 (熔断机制) ★★★
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         if total_from_emby == 0:
-            logger.info("Emby 中没有找到任何演员条目，将执行清理。")
-        
+            logger.warning("从 Emby 获取到 0 个演员条目，正在执行安全检查以防止数据误删...")
+            try:
+                # 获取当前数据库中的记录总数
+                pids_in_db = get_all_emby_person_ids_from_map()
+                db_count = len(pids_in_db)
+                
+                # 设置一个安全阈值，例如100。如果数据库记录超过这个数，就不太可能是空的。
+                SAFETY_THRESHOLD = 100 
+                
+                if db_count > SAFETY_THRESHOLD:
+                    # 如果数据库记录很多，但Emby返回0，这绝对是异常情况
+                    error_message = f"安全中止：从 Emby 获取到 0 个演员，但数据库中存在 {db_count} 条记录。这极可能是Emby连接配置错误或API失效。为防止数据丢失，同步任务已中止。"
+                    logger.error(error_message)
+                    if update_status_callback:
+                        update_status_callback(-1, "安全中止：无法从Emby获取演员")
+                    return # ★★★ 在这里彻底中止函数，后面的代码都不会执行 ★★★
+                else:
+                    # 如果数据库本身就没多少数据，那么继续执行是安全的
+                    logger.info(f"数据库中记录数 ({db_count}) 低于安全阈值，将按预期继续执行清理。")
+            except Exception as e_check:
+                # 如果连安全检查都失败了，更不能继续
+                logger.error(f"执行安全检查时发生数据库错误: {e_check}", exc_info=True)
+                if update_status_callback:
+                    update_status_callback(-1, "安全检查失败")
+                return
+
         # ======================================================================
-        # 阶段二：处理与写入数据库（在一个事务中完成）
+        # 阶段二：处理与写入数据库（只有通过安全检查后才会执行）
         # ======================================================================
         stats = { "total": total_from_emby, "processed": 0, "inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0, "errors": 0, "deleted": 0 }
         
         try:
+            # ... (后续的所有代码，从 if update_status_callback: ... 到函数结束，都保持原样) ...
             if update_status_callback: update_status_callback(50, "阶段 2/2: 正在同步数据到数据库...")
             
-            # 在这个阶段才构建用于对比的ID集合
             all_emby_pids_from_sync = {str(p.get("Id", "")).strip() for p in all_persons_from_emby if p.get("Id")}
 
             with get_central_db_connection() as conn:
@@ -117,16 +145,16 @@ class UnifiedSyncHandler:
 
         except InterruptedError as e:
             logger.warning(str(e))
-            if conn: conn.rollback()
+            if 'conn' in locals() and conn: conn.rollback()
             if update_status_callback: update_status_callback(-1, "任务已中止")
             return
         except Exception as e_write:
             logger.error(f"写入或清理数据库时发生严重错误: {e_write}", exc_info=True)
-            if conn: conn.rollback()
+            if 'conn' in locals() and conn: conn.rollback()
             if update_status_callback: update_status_callback(-1, "数据库操作失败")
             return
 
-        # --- 最终的统计日志输出 (保持不变) ---
+        # ... (最终的统计日志输出，保持不变) ...
         total_changed = stats['inserted'] + stats['updated']
         total_failed = stats['skipped'] + stats['errors']
 
