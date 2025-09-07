@@ -82,18 +82,7 @@
                     <template #header><span class="card-title">Emby 连接设置</span></template>
                     <n-space vertical :size="18">
                       <!-- ▼▼▼ 修改点1: Emby URL 增加重启提示 ▼▼▼ -->
-                      <n-form-item-grid-item>
-                        <template #label>
-                          <n-space align="center">
-                            <span>Emby 服务器 URL</span>
-                            <n-tooltip trigger="hover">
-                              <template #trigger>
-                                <n-icon :component="AlertIcon" class="info-icon" />
-                              </template>
-                              此项修改需要重启容器才能生效。
-                            </n-tooltip>
-                          </n-space>
-                        </template>
+                      <n-form-item-grid-item label="Emby 服务器 URL" path="emby_server_url">
                         <n-input v-model:value="configModel.emby_server_url" placeholder="例如: http://localhost:8096" />
                       </n-form-item-grid-item>
                       <n-form-item-grid-item label="Emby API Key" path="emby_api_key">
@@ -145,33 +134,11 @@
                           <n-radio value="after">显示在虚拟库后面</n-radio>
                         </n-radio-group>
                       </n-form-item-grid-item>
-                      <n-form-item-grid-item>
-                        <template #label>
-                          <n-space align="center">
-                            <span>虚拟库访问端口</span>
-                            <n-tooltip trigger="hover">
-                              <template #trigger>
-                                <n-icon :component="AlertIcon" class="info-icon" />
-                              </template>
-                              此项修改需要重启容器才能生效。
-                            </n-tooltip>
-                          </n-space>
-                        </template>
+                      <n-form-item-grid-item label="虚拟库访问端口" path="proxy_port">
                         <n-input-number v-model:value="configModel.proxy_port" :min="1025" :max="65535" :disabled="!configModel.proxy_enabled"/>
                         <template #feedback><n-text depth="3" style="font-size:0.8em;">非host模式需要映射。</n-text></template>
                       </n-form-item-grid-item>
-                      <n-form-item-grid-item>
-                        <template #label>
-                          <n-space align="center">
-                            <span>302重定向服务地址</span>
-                             <n-tooltip trigger="hover">
-                              <template #trigger>
-                                <n-icon :component="AlertIcon" class="info-icon" />
-                              </template>
-                              此项修改需要重启容器才能生效。
-                            </n-tooltip>
-                          </n-space>
-                        </template>
+                      <n-form-item-grid-item label="302重定向服务地址" path="proxy_302_redirect_url">
                         <n-input 
                           v-model:value="configModel.proxy_302_redirect_url" 
                           placeholder="例如: http://192.168.31.177:9096" 
@@ -845,11 +812,8 @@ const save = async () => {
     // ▼▼▼ 修改点3: 增加 emby_server_url 到重启检查列表 ▼▼▼
     const restartNeeded =
       initialRestartableConfig.value && (
-        configModel.value.proxy_port !== initialRestartableConfig.value.proxy_port ||
-        configModel.value.proxy_302_redirect_url !== initialRestartableConfig.value.proxy_302_redirect_url ||
         configModel.value.log_rotation_size_mb !== initialRestartableConfig.value.log_rotation_size_mb ||
-        configModel.value.log_rotation_backup_count !== initialRestartableConfig.value.log_rotation_backup_count ||
-        configModel.value.emby_server_url !== initialRestartableConfig.value.emby_server_url
+        configModel.value.log_rotation_backup_count !== initialRestartableConfig.value.log_rotation_backup_count
       );
 
     // 封装保存操作，以便复用
@@ -859,11 +823,8 @@ const save = async () => {
         message.success('所有设置已成功保存！');
         // ▼▼▼ 修改点4: 更新初始状态时也包含 emby_server_url ▼▼▼
         initialRestartableConfig.value = {
-          proxy_port: configModel.value.proxy_port,
-          proxy_302_redirect_url: configModel.value.proxy_302_redirect_url,
           log_rotation_size_mb: configModel.value.log_rotation_size_mb,
           log_rotation_backup_count: configModel.value.log_rotation_backup_count,
-          emby_server_url: configModel.value.emby_server_url,
         };
       } else {
         message.error(configError.value || '配置保存失败，请检查后端日志。');
@@ -874,7 +835,7 @@ const save = async () => {
     if (restartNeeded) {
       dialog.warning({
         title: '需要重启容器',
-        content: '您修改了需要重启容器才能生效的设置（如Emby URL、虚拟库端口、日志配置等）。请选择如何操作：',
+        content: '您修改了需要重启容器才能生效的设置',
         positiveText: '保存并重启',
         negativeText: '仅保存',
         onPositiveClick: async () => {
@@ -1055,11 +1016,8 @@ onMounted(() => {
       }
       // ▼▼▼ 修改点5: 存储需要重启的配置项的初始值，包含 emby_server_url ▼▼▼
       initialRestartableConfig.value = {
-        proxy_port: configModel.value.proxy_port,
-        proxy_302_redirect_url: configModel.value.proxy_302_redirect_url,
         log_rotation_size_mb: configModel.value.log_rotation_size_mb,
         log_rotation_backup_count: configModel.value.log_rotation_backup_count,
-        emby_server_url: configModel.value.emby_server_url,
       };
 
       if (unwatchGlobal) {

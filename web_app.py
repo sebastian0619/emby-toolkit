@@ -2,6 +2,7 @@
 from gevent import monkey
 monkey.patch_all()
 import os
+import subprocess
 import sys
 import shutil
 import threading
@@ -392,23 +393,63 @@ def init_db():
 # --- 保存配置并重新加载的函数 ---
 def save_config_and_reload(new_config: Dict[str, Any]):
     """
-    【新版】调用配置管理器保存配置，并在此处执行所有必要的重新初始化操作。
+    【V3 - 终极热重载版】
+    保存配置到数据库，并重新初始化应用内组件。
+    如果检测到任何与Nginx相关的配置（Emby URL, 反代端口, 302地址）发生变动，
+    则自动重新生成配置文件并触发Nginx热重载。
     """
     try:
-        # 步骤 1: 调用 config_manager 来保存文件和更新内存中的 config_manager.APP_CONFIG
+        # 0. 在配置被覆盖前，从内存中提取所有需要监控的旧变量
+        old_emby_url = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_SERVER_URL, "")
+        old_proxy_port = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_PORT, 0)
+        old_proxy_url = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_302_REDIRECT_URL, "")
+        
+        # 1. 保存新配置到数据库，并更新内存中的 APP_CONFIG
         config_manager.save_config(new_config)
         
-        # 步骤 2: 执行所有依赖于新配置的重新初始化逻辑
+        # 2. 重新初始化应用内的组件
         initialize_processors()
         init_auth_from_blueprint()
-        
         scheduler_manager.update_task_chain_job()
         
+        # 3. 从新配置中提取对应变量，用于对比
+        new_emby_url = new_config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL, "")
+        new_proxy_port = new_config.get(constants.CONFIG_OPTION_PROXY_PORT, 0)
+        new_proxy_url = new_config.get(constants.CONFIG_OPTION_PROXY_302_REDIRECT_URL, "")
+
+        # ★★★ 核心修改：使用 "or" 逻辑判断，只要有一个变量变化就触发 ★★★
+        if (old_emby_url != new_emby_url or
+            old_proxy_port != new_proxy_port or
+            old_proxy_url != new_proxy_url):
+            
+            logger.info("检测到Nginx相关配置发生变化，将尝试热重载Nginx...")
+            try:
+                # 3.1 重新生成Nginx配置文件
+                ensure_nginx_config()
+                
+                # 3.2 执行Nginx热重载命令
+                process = subprocess.Popen(
+                    ['nginx', '-s', 'reload'],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                stdout, stderr = process.communicate()
+                
+                if process.returncode == 0:
+                    logger.info("✅ Nginx 热重载命令成功执行！")
+                else:
+                    logger.error(f"Nginx 热重载失败。返回码: {process.returncode}")
+                    logger.error(f"  -> Nginx Stderr: {stderr.strip()}")
+            except FileNotFoundError:
+                logger.warning("在容器内未找到 'nginx' 命令，无法执行热重载。请确保Nginx已安装并位于PATH中。")
+            except Exception as e_nginx:
+                logger.error(f"执行Nginx热重载时发生意外错误: {e_nginx}", exc_info=True)
+
         logger.info("所有组件已根据新配置重新初始化完毕。")
         
     except Exception as e:
         logger.error(f"保存配置文件或重新初始化时失败: {e}", exc_info=True)
-        # 向上抛出异常，让 API 端点可以捕获它并返回错误信息
         raise
 
 # --- 初始化所有需要的处理器实例 ---
