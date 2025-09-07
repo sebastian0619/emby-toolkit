@@ -263,11 +263,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
 
     # --- 封面生成逻辑 (保持不变) ---
     try:
-        cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, "cover_generator.json")
-        cover_config = {}
-        if os.path.exists(cover_config_path):
-            with open(cover_config_path, 'r', encoding='utf-8') as f:
-                cover_config = json.load(f)
+        cover_config = db_handler.get_setting('cover_generator_config') or {}
 
         if cover_config.get("enabled") and cover_config.get("transfer_monitor"):
             logger.info(f"  -> 检测到 '{item_details.get('Name')}' 入库，将为其所属媒体库生成新封面...")
@@ -1345,10 +1341,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
         cover_service = None
         cover_config = {}
         try:
-            cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, "cover_generator.json")
-            if os.path.exists(cover_config_path):
-                with open(cover_config_path, 'r', encoding='utf-8') as f:
-                    cover_config = json.load(f)
+            cover_config = db_handler.get_setting('cover_generator_config') or {}
             
             if cover_config.get("enabled"):
                 cover_service = CoverGeneratorService(config=cover_config)
@@ -1672,11 +1665,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
 
         # ★★★ 核心修复：在这里添加缺失的封面配置加载逻辑 ★★★
         try:
-            cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, "cover_generator.json")
-            cover_config = {}
-            if os.path.exists(cover_config_path):
-                with open(cover_config_path, 'r', encoding='utf-8') as f:
-                    cover_config = json.load(f)
+            cover_config = db_handler.get_setting('cover_generator_config') or {}
 
             if cover_config.get("enabled") and emby_collection_id:
                 logger.info(f"  -> 检测到封面生成器已启用，将为合集 '{collection_name}' 生成封面...")
@@ -1946,13 +1935,12 @@ def task_generate_all_covers(processor: MediaProcessor):
     
     try:
         # 1. 读取配置
-        cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, "cover_generator.json")
-        if not os.path.exists(cover_config_path):
-            task_manager.update_status_from_thread(-1, "错误：找不到封面生成器配置文件。")
-            return
+        cover_config = db_handler.get_setting('cover_generator_config') or {}
 
-        with open(cover_config_path, 'r', encoding='utf-8') as f:
-            cover_config = json.load(f)
+        if not cover_config:
+            # 如果数据库里连配置都没有，可以认为功能未配置
+            task_manager.update_status_from_thread(-1, "错误：未找到封面生成器配置，请先在设置页面保存一次。")
+            return
 
         if not cover_config.get("enabled"):
             task_manager.update_status_from_thread(100, "任务跳过：封面生成器未启用。")
