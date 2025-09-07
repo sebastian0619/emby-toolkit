@@ -70,6 +70,7 @@ import config_manager
 
 #临时导入，过段时间删除
 import configparser
+import json
 from config_manager import DYNAMIC_CONFIG_DEF
 
 import task_manager
@@ -552,56 +553,63 @@ def ensure_cover_generator_fonts():
 # --- 临时函数，过段时间删除 ---
 def run_one_time_config_migration():
     """
-    【临时一次性函数】
-    在应用启动时检查，如果数据库中没有动态配置，
-    则尝试从旧的 config.ini 文件中读取并迁移它们。
+    【临时一次性函数 - 超级版】
+    在应用启动时检查，并将所有旧的配置文件 (.ini, .json) 迁移到数据库。
+    每个迁移任务都是独立的，互不影响。
     """
     logger.info("正在检查是否需要执行一次性配置迁移...")
+
+    # --- 1. 迁移主配置 (config.ini) ---
     try:
-        # 1. 检查数据库中是否已存在配置，如果存在，则无需迁移
         if db_handler.get_setting('dynamic_app_config'):
-            logger.info("数据库中已存在动态配置，跳过迁移。")
-            return
-
-        # 2. 检查旧的 config.ini 文件是否存在
-        if not os.path.exists(config_manager.CONFIG_FILE_PATH):
-            logger.info("未找到旧的 config.ini 文件，无需迁移。")
-            return
-
-        logger.warning("检测到需要执行配置迁移：数据库为空，但 config.ini 文件存在。")
-        logger.warning("正在从 config.ini 导入动态配置到数据库...")
-
-        # 3. 读取 config.ini 文件并提取动态配置
-        parser = configparser.ConfigParser()
-        parser.read(config_manager.CONFIG_FILE_PATH, encoding='utf-8')
-        
-        config_to_migrate = {}
-        for key, (section, type, default) in DYNAMIC_CONFIG_DEF.items():
-            if not parser.has_section(section):
-                continue
-            
-            # 使用与 load_config 相同的逻辑来解析每种类型的值
-            if type == 'boolean':
-                config_to_migrate[key] = parser.getboolean(section, key, fallback=default)
-            elif type == 'int':
-                config_to_migrate[key] = parser.getint(section, key, fallback=default)
-            elif type == 'float':
-                config_to_migrate[key] = parser.getfloat(section, key, fallback=default)
-            elif type == 'list':
-                value_str = parser.get(section, key, fallback=",".join(map(str, default)))
-                config_to_migrate[key] = [item.strip() for item in value_str.split(',') if item.strip()]
-            else: # string
-                config_to_migrate[key] = parser.get(section, key, fallback=default)
-        
-        # 4. 将提取出的配置写入数据库
-        if config_to_migrate:
-            db_handler.save_setting('dynamic_app_config', config_to_migrate)
-            logger.warning(f"✅ 成功迁移 {len(config_to_migrate)} 条动态配置到数据库！")
+            logger.info("主配置 (dynamic_app_config) 已存在于数据库，跳过迁移。")
+        elif not os.path.exists(config_manager.CONFIG_FILE_PATH):
+            logger.info("未找到旧的 config.ini 文件，无需迁移主配置。")
         else:
-            logger.info("config.ini 中没有找到可迁移的动态配置项。")
+            logger.warning("检测到需要迁移主配置 (config.ini)...")
+            parser = configparser.ConfigParser()
+            parser.read(config_manager.CONFIG_FILE_PATH, encoding='utf-8')
+            
+            config_to_migrate = {}
+            # (这里的解析逻辑与之前完全相同)
+            for key, (section, type, default) in DYNAMIC_CONFIG_DEF.items():
+                if not parser.has_section(section): continue
+                if type == 'boolean': config_to_migrate[key] = parser.getboolean(section, key, fallback=default)
+                elif type == 'int': config_to_migrate[key] = parser.getint(section, key, fallback=default)
+                elif type == 'float': config_to_migrate[key] = parser.getfloat(section, key, fallback=default)
+                elif type == 'list':
+                    value_str = parser.get(section, key, fallback=",".join(map(str, default)))
+                    config_to_migrate[key] = [item.strip() for item in value_str.split(',') if item.strip()]
+                else: config_to_migrate[key] = parser.get(section, key, fallback=default)
+            
+            if config_to_migrate:
+                db_handler.save_setting('dynamic_app_config', config_to_migrate)
+                logger.warning(f"✅ 成功迁移 {len(config_to_migrate)} 条主配置到数据库！")
 
     except Exception as e:
-        logger.error(f"执行一次性配置迁移时发生严重错误: {e}", exc_info=True)
+        logger.error(f"迁移主配置 (config.ini) 时发生错误: {e}", exc_info=True)
+
+    # --- 2. 迁移封面生成器配置 (cover_generator.json) ---
+    try:
+        cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'cover_generator', 'cover_generator.json')
+        
+        if db_handler.get_setting('cover_generator_config'):
+            logger.info("封面生成器配置 (cover_generator_config) 已存在于数据库，跳过迁移。")
+        elif not os.path.exists(cover_config_path):
+            logger.info("未找到旧的 cover_generator.json 文件，无需迁移封面配置。")
+        else:
+            logger.warning("检测到需要迁移封面生成器配置 (cover_generator.json)...")
+            with open(cover_config_path, 'r', encoding='utf-8') as f:
+                cover_config = json.load(f)
+            
+            if cover_config and isinstance(cover_config, dict):
+                db_handler.save_setting('cover_generator_config', cover_config)
+                logger.warning("✅ 成功迁移封面生成器配置到数据库！")
+
+    except Exception as e:
+        logger.error(f"迁移封面生成器配置时发生错误: {e}", exc_info=True)
+    
+    logger.info("一次性配置迁移检查完成。")
 
 # --- 应用退出处理 ---
 def application_exit_handler():
