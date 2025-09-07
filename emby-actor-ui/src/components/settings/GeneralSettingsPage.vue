@@ -462,7 +462,7 @@
 </template>
 
 <script setup>
-import { ref, watch, computed, onMounted, onUnmounted, nextTick } from 'vue'; 
+import { ref, watch, computed, onMounted, onUnmounted, nextTick, isShallow } from 'vue'; 
 import draggable from 'vuedraggable';
 import { 
   NCard, NForm, NFormItem, NInputNumber, NSwitch, NButton, NGrid, NGi, 
@@ -482,6 +482,7 @@ import { useConfig } from '../../composables/useConfig.js';
 import axios from 'axios';
 
 const tableInfo = {
+  'app_settings': { cn: '基础配置', isSharable: false },
   'person_identity_map': { cn: '演员身份映射表', isSharable: false },
   'actor_metadata': { cn: '演员元数据', isSharable: false },
   'translation_cache': { cn: '翻译缓存', isSharable: false },
