@@ -222,29 +222,39 @@ class ListImporter:
     def _match_title_to_tmdb(self, title: str, item_type: str, year: Optional[str] = None) -> Optional[str]:
         if item_type == 'Movie':
             results = search_media(title, self.tmdb_api_key, 'Movie', year=year)
-            if results:
-                tmdb_id = str(results[0].get('id'))
-                year_info = f" (年份: {year})" if year else ""
-                logger.debug(f"电影标题 '{title}'{year_info} 成功匹配到: {results[0].get('title')} (ID: {tmdb_id})")
-                return tmdb_id
-            else:
-                year_info = f" (年份: {year})" if year else ""
-                logger.warning(f"电影标题 '{title}'{year_info} 未能在TMDb上找到匹配项。")
+            year_info = f" (年份: {year})" if year else ""
+
+            if not results:
+                logger.warning(f"电影标题 '{title}'{year_info} 未能在TMDb上找到任何搜索结果。")
                 return None
+
+            # ★★★ 核心修复：从“盲目相信第一个”改为“优先精确匹配” ★★★
+
+            # 步骤 1: 优先寻找标题完全一致的精确匹配项
+            normalized_title = title.strip().lower()
+            for result in results:
+                result_title = result.get('title', '').strip().lower()
+                result_original_title = result.get('original_title', '').strip().lower()
+
+                if result_title == normalized_title or result_original_title == normalized_title:
+                    tmdb_id = str(result.get('id'))
+                    logger.debug(f"电影标题 '{title}'{year_info} 通过【精确匹配】成功匹配到: {result.get('title')} (ID: {tmdb_id})")
+                    return tmdb_id
+
+            # 步骤 2: 如果没有找到精确匹配，则回退使用第一个最相关的结果，并发出警告
+            first_result = results[0]
+            tmdb_id = str(first_result.get('id'))
+            logger.warning(f"电影标题 '{title}'{year_info} 未找到精确匹配项。将【回退使用】最相关的搜索结果: {first_result.get('title')} (ID: {tmdb_id})")
+            return tmdb_id
         
         elif item_type == 'Series':
             show_name, season_number_to_validate = self._parse_series_title(title)
             
-            # ▼▼▼ 核心修改逻辑 ▼▼▼
-            # 1. 优先使用年份进行精确搜索
             results = search_media(show_name, self.tmdb_api_key, 'Series', year=year)
 
-            # 2. 如果带年份搜索失败，并且我们正在处理一个特定的季，则尝试不带年份回退搜索
-            #    这对于匹配老剧集的新一季至关重要 (例如 "星期三 第二季 (2025)")
             if not results and year and season_number_to_validate is not None:
                 logger.debug(f"带年份 '{year}' 搜索剧集 '{show_name}' 未找到结果，可能是后续季。尝试不带年份进行回退搜索...")
                 results = search_media(show_name, self.tmdb_api_key, 'Series', year=None)
-            # ▲▲▲ 修改结束 ▲▲▲
 
             if not results:
                 year_info = f" (年份: {year})" if year else ""
@@ -254,12 +264,10 @@ class ListImporter:
             series_result = results[0]
             series_id = str(series_result.get('id'))
             
-            # 如果标题中没有季号信息，直接返回匹配到的剧集ID
             if season_number_to_validate is None:
                 logger.debug(f"剧集标题 '{title}' 成功匹配到: {series_result.get('name')} (ID: {series_id})")
                 return series_id
             
-            # 如果有季号信息，则需要验证该季是否存在
             logger.debug(f"剧集 '{show_name}' (ID: {series_id}) 已找到，正在验证是否存在第 {season_number_to_validate} 季...")
             series_details = get_tv_details_tmdb(int(series_id), self.tmdb_api_key, append_to_response="seasons")
             if series_details and 'seasons' in series_details:
