@@ -591,7 +591,7 @@ def run_one_time_config_migration():
 
     # --- 2. 迁移封面生成器配置 (cover_generator.json) ---
     try:
-        cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'cover_generator', 'cover_generator.json')
+        cover_config_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'cover_generator.json')
         
         if db_handler.get_setting('cover_generator_config'):
             logger.info("封面生成器配置 (cover_generator_config) 已存在于数据库，跳过迁移。")
