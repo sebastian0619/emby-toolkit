@@ -161,6 +161,14 @@ def init_db():
                     )
                 """)
 
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS app_settings (
+                        setting_key TEXT PRIMARY KEY,
+                        value_json JSONB,
+                        last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+
                 # --- 2. 创建核心功能表 ---
                 logger.trace("  -> 正在创建 'collections_info' 表...")
                 cursor.execute("""

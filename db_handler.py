@@ -1841,3 +1841,49 @@ def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: st
             conn.rollback()
         logger.error(f"向规则合集 {collection_id} 的JSON缓存追加媒体项时发生数据库错误: {e}", exc_info=True)
         return False
+# ======================================================================
+# 模块 7: 应用设置数据访问 (Application Settings Data Access)
+# ======================================================================
+
+def get_setting(setting_key: str) -> Optional[Any]:
+    """
+    从 app_settings 表中获取一个设置项的值。
+    :param setting_key: 设置项的键。
+    :return: 设置项的值 (通常是字典)，如果未找到则返回 None。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value_json FROM app_settings WHERE setting_key = %s", (setting_key,))
+            row = cursor.fetchone()
+            # psycopg2 会自动将 JSONB 字段解析为 Python 对象
+            return row['value_json'] if row else None
+    except Exception as e:
+        logger.error(f"DB: 获取设置 '{setting_key}' 时失败: {e}", exc_info=True)
+        raise
+
+def save_setting(setting_key: str, value: Dict[str, Any]):
+    """
+    向 app_settings 表中保存或更新一个设置项。
+    :param setting_key: 设置项的键。
+    :param value: 要保存的设置值 (必须是可序列化为JSON的字典)。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 使用 ON CONFLICT 实现 upsert
+            sql = """
+                INSERT INTO app_settings (setting_key, value_json, last_updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (setting_key) DO UPDATE SET
+                    value_json = EXCLUDED.value_json,
+                    last_updated_at = NOW();
+            """
+            # 将 Python 字典转换为 JSON 字符串以存入 JSONB 字段
+            value_as_json = json.dumps(value, ensure_ascii=False)
+            cursor.execute(sql, (setting_key, value_as_json))
+            conn.commit()
+            logger.info(f"DB: 成功保存设置 '{setting_key}'。")
+    except Exception as e:
+        logger.error(f"DB: 保存设置 '{setting_key}' 时失败: {e}", exc_info=True)
+        raise
