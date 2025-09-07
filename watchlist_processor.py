@@ -323,7 +323,7 @@ class WatchlistProcessor:
                         "paused_until": None,
                         "tmdb_status": new_tmdb_status,
                         # 【关键】一旦因新一季而复活，就必须重置 force_ended 标志，让它恢复正常追剧逻辑
-                        "force_ended": 0 
+                        "force_ended": False 
                     }
                     self._update_watchlist_entry(series['item_id'], series['item_name'], updates_to_db)
                 
