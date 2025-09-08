@@ -2128,13 +2128,13 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
     - 引入B计划：在音轨信息为 und 或缺失时，会根据制片国家/地区来豁免中文字幕要求。
     """
     item_name = item_details.get('Name', '未知项目')
-    logger.debug(f"--- 开始为《{item_name}》检查洗版需求 ---")
-    logger.debug(f"  -> 传入的配置: {config}")
+    logger.trace(f"  -> 开始为《{item_name}》检查洗版需求 ---")
+    logger.trace(f"  -> 传入的配置: {config}")
     
     media_streams = item_details.get('MediaStreams', [])
     file_path = item_details.get('Path', '')
     file_name_lower = os.path.basename(file_path).lower() if file_path else ""
-    logger.debug(f"  -> 文件名 (小写): '{file_name_lower}'")
+    logger.trace(f"  -> 文件名 (小写): '{file_name_lower}'")
 
     reasons = []
     video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
@@ -2147,7 +2147,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
             else:
                 threshold = int(config.get("resubscribe_resolution_threshold") or 1920)
                 current_width = int(video_stream.get('Width') or 0)
-                logger.debug(f"  [分辨率检查] 阈值: {threshold}px, 当前宽度: {current_width}px")
+                logger.trace(f"  -> [分辨率检查] 阈值: {threshold}px, 当前宽度: {current_width}px")
                 if 0 < current_width < threshold:
                     threshold_name = "未知分辨率"
                     if threshold == 3840: threshold_name = "4K"
@@ -2155,7 +2155,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
                     elif threshold == 1280: threshold_name = "720p"
                     reasons.append(f"分辨率低于{threshold_name}")
     except (ValueError, TypeError) as e:
-        logger.warning(f"  [分辨率检查] 处理时发生类型错误: {e}")
+        logger.warning(f"  -> [分辨率检查] 处理时发生类型错误: {e}")
 
     # 2. 质量检查 
     try:
@@ -2163,13 +2163,13 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
             required_list_raw = config.get("resubscribe_quality_include", [])
             if isinstance(required_list_raw, list):
                 required_list = [str(q).lower() for q in required_list_raw]
-                logger.debug(f"  [质量检查] 要求文件名包含: {required_list}")
+                logger.trace(f"  -> [质量检查] 要求文件名包含: {required_list}")
                 if required_list and not any(required_term in file_name_lower for required_term in required_list):
                     reasons.append("质量不达标")
             else:
-                logger.warning(f"  [质量检查] 配置中的 'resubscribe_quality_include' 不是列表，已跳过。")
+                logger.warning(f"  -> [质量检查] 配置中的 'resubscribe_quality_include' 不是列表，已跳过。")
     except Exception as e:
-        logger.warning(f"  [质量检查] 处理时发生未知错误: {e}")
+        logger.warning(f"  -> [质量检查] 处理时发生未知错误: {e}")
 
     # 3. 特效检查 
     try:
@@ -2177,13 +2177,13 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
             required_list_raw = config.get("resubscribe_effect_include", [])
             if isinstance(required_list_raw, list):
                 required_list = [str(e).lower() for e in required_list_raw]
-                logger.debug(f"  [特效检查] 要求文件名包含: {required_list}")
+                logger.trace(f"  -> [特效检查] 要求文件名包含: {required_list}")
                 if required_list and not any(required_term in file_name_lower for required_term in required_list):
                     reasons.append("特效不达标")
             else:
-                logger.warning(f"  [特效检查] 配置中的 'resubscribe_effect_include' 不是列表，已跳过。")
+                logger.warning(f"  -> [特效检查] 配置中的 'resubscribe_effect_include' 不是列表，已跳过。")
     except Exception as e:
-        logger.warning(f"  [特效检查] 处理时发生未知错误: {e}")
+        logger.warning(f"  -> [特效检查] 处理时发生未知错误: {e}")
 
     # 4. 音轨检查
     try:
@@ -2192,13 +2192,13 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
             if isinstance(required_langs_raw, list) and required_langs_raw:
                 required_langs = set(str(lang).lower() for lang in required_langs_raw)
                 present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
-                logger.debug(f"  [音轨检查] 要求语言: {required_langs}, 现有语言: {present_langs}")
+                logger.trace(f"  -> [音轨检查] 要求语言: {required_langs}, 现有语言: {present_langs}")
                 if not required_langs.intersection(present_langs):
                      reasons.append("缺音轨")
             elif not isinstance(required_langs_raw, list):
-                logger.warning(f"  [音轨检查] 配置中的 'resubscribe_audio_missing_languages' 不是列表，已跳过。")
+                logger.warning(f"  -> [音轨检查] 配置中的 'resubscribe_audio_missing_languages' 不是列表，已跳过。")
     except Exception as e:
-        logger.warning(f"  [音轨检查] 处理时发生未知错误: {e}")
+        logger.warning(f"  -> [音轨检查] 处理时发生未知错误: {e}")
 
     # 5. 字幕检查 
     try:
@@ -2220,7 +2220,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
 
                     # Plan A: 检查中文音轨
                     if not present_audio_langs.isdisjoint(CHINESE_AUDIO_CODES):
-                        logger.debug(f"  [字幕豁免-A] 检测到中文音轨，豁免中字要求。")
+                        logger.trace(f"  -> [字幕豁免-A] 检测到中文音轨，豁免中字要求。")
                         is_exempted = True
                     
                     # Plan B: 如果A计划失败，且音轨信息无效，则检查制片国
@@ -2228,7 +2228,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
                         if media_metadata and media_metadata.get('countries_json'):
                             countries = set(media_metadata['countries_json'])
                             if not countries.isdisjoint(CHINESE_REGIONS):
-                                logger.debug(f"  [字幕豁免-B] 音轨信息不明，但检测到制片国家/地区为 ({', '.join(countries)})，豁免中字要求。")
+                                logger.trace(f"  -> [字幕豁免-B] 音轨信息不明，但检测到制片国家/地区为 ({', '.join(countries)})，豁免中字要求。")
                                 is_exempted = True
 
                     if is_exempted:
@@ -2237,30 +2237,29 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
 
                 if required_langs:
                     present_sub_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
-                    logger.debug(f"  [字幕检查] 最终要求语言: {required_langs}, 现有字幕: {present_sub_langs}")
+                    logger.trace(f"  -> [字幕检查] 最终要求语言: {required_langs}, 现有字幕: {present_sub_langs}")
                     if not required_langs.intersection(present_sub_langs):
                          reasons.append("缺字幕")
             elif not isinstance(required_langs_raw, list):
-                logger.warning(f"  [字幕检查] 配置中的 'resubscribe_subtitle_missing_languages' 不是列表，已跳过。")
+                logger.warning(f"  -> [字幕检查] 配置中的 'resubscribe_subtitle_missing_languages' 不是列表，已跳过。")
     except Exception as e:
-        logger.warning(f"  [字幕检查] 处理时发生未知错误: {e}")
+        logger.warning(f"  -> [字幕检查] 处理时发生未知错误: {e}")
                  
     if reasons:
-        logger.info(f"  -> 结论: 《{item_name}》需要洗版。原因: {'; '.join(reasons)}")
+        logger.info(f"  -> 《{item_name}》需要洗版。原因: {'; '.join(reasons)}")
         return True, "; ".join(reasons)
     else:
-        logger.debug(f"  -> 结论: 《{item_name}》质量达标。")
+        logger.debug(f"  -> 《{item_name}》质量达标。")
         return False, ""
 
 def task_resubscribe_library(processor: MediaProcessor):
     """【V5 - 全局配额终极版】后台任务：使用全局每日配额系统，运行时消耗额度。"""
-    task_name = "全库媒体智能洗版"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (全局配额模式) ---")
+    task_name = "媒体智能洗版"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     config = processor.config
     
     try:
-        # ★★★ 核心修改 1/3: 不再需要任何启动前检查 ★★★
         delay = float(config.get(constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS, 1.5))
 
         task_manager.update_status_from_thread(0, "正在从缓存中检索需洗版的项目...")
@@ -2274,18 +2273,17 @@ def task_resubscribe_library(processor: MediaProcessor):
             task_manager.update_status_from_thread(100, "任务完成：没有发现需要洗版的项目。")
             return
 
-        logger.info(f"共找到 {total_needed} 个项目待处理，将开始按配额订阅...")
+        logger.info(f"  -> 共找到 {total_needed} 个项目待处理，将开始订阅...")
         resubscribed_count = 0
 
         for i, item in enumerate(items_to_resubscribe):
             if processor.is_stop_requested():
-                logger.info("任务被用户中止。")
+                logger.info("  -> 任务被用户中止。")
                 break
             
-            # ★★★ 核心修改 2/3: 在每次循环开始时，检查配额 ★★★
             current_quota = db_handler.get_subscription_quota()
             if current_quota <= 0:
-                logger.warning("每日订阅配额已用尽，任务提前结束。")
+                logger.warning("  -> 每日订阅配额已用尽，任务提前结束。")
                 task_manager.update_status_from_thread(100, f"配额用尽！已订阅 {resubscribed_count} 项。")
                 break # 跳出循环
 
@@ -2306,7 +2304,6 @@ def task_resubscribe_library(processor: MediaProcessor):
             success = moviepilot_handler.subscribe_with_custom_payload(payload, config)
             
             if success:
-                # ★★★ 核心修改 3/3: 订阅成功后，消耗一个配额 ★★★
                 db_handler.decrement_subscription_quota()
                 
                 db_handler.update_resubscribe_item_status(item_id, 'subscribed')
@@ -2329,8 +2326,8 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
     【V10 - B计划豁免终极版】
     - 在音轨信息为 und 时，会根据制片国家/地区来豁免中文字幕要求。
     """
-    task_name = "刷新媒体洗版状态"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (B计划豁免终极版) ---")
+    task_name = "刷新洗版状态"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
         resubscribe_config = db_handler.get_resubscribe_settings()
@@ -2353,7 +2350,7 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
             task_manager.update_status_from_thread(100, "任务完成：未找到任何项目。")
             return
 
-        logger.info(f"将为 {total} 个媒体项目获取详情并检查洗版状态...")
+        logger.info(f"  -> 将为 {total} 个媒体项目获取详情并检查洗版状态...")
         
         cache_update_batch = []
         processed_count = 0
@@ -2370,7 +2367,7 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
                     user_id=processor.emby_user_id
                 )
                 if not item_details:
-                    logger.warning(f"无法获取项目 '{item_name}' (ID: {item_id}) 的完整详情，跳过。")
+                    logger.warning(f"  -> 无法获取项目 '{item_name}' (ID: {item_id}) 的完整详情，跳过。")
                     return None
 
                 # ★★★ 核心修改 1/2: 在这里获取媒体元数据，为B计划做准备 ★★★
