@@ -60,7 +60,7 @@ def trigger_refresh_status():
     except Exception as e:
         return jsonify({"error": f"提交任务失败: {e}"}), 500
 
-# ★★★ 新增：触发一键洗版全部的 API ★★★
+# ★★★ 触发一键洗版全部的 API ★★★
 @resubscribe_bp.route('/resubscribe_all', methods=['POST'])
 @login_required
 @task_lock_required
