@@ -2124,9 +2124,9 @@ def _build_resubscribe_payload(item_details: dict, config: dict) -> Optional[dic
 
 def _item_needs_resubscribe(item_details: dict, config: dict) -> tuple[bool, str]:
     """
-    【V6 - UI文本优化终极版】
-    - 修复了分辨率原因描述不准确的问题，将像素值转换为通用名称 (如 4K)。
-    - 保持了V5版本的所有健壮性修复和日志记录功能。
+    【V7 - 语言环境豁免终极版】
+    - 新增智能逻辑：如果电影已包含中文音轨，则自动豁免对中文字幕的要求。
+    - 保持了V6版本的所有健壮性修复和日志记录功能。
     """
     item_name = item_details.get('Name', '未知项目')
     logger.debug(f"--- 开始为《{item_name}》检查洗版需求 ---")
@@ -2140,7 +2140,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict) -> tuple[bool, str
     reasons = []
     video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
 
-    # 1. 分辨率检查
+    # 1. 分辨率检查 (逻辑不变)
     try:
         if config.get("resubscribe_resolution_enabled"):
             if not video_stream:
@@ -2150,20 +2150,15 @@ def _item_needs_resubscribe(item_details: dict, config: dict) -> tuple[bool, str
                 current_width = int(video_stream.get('Width') or 0)
                 logger.debug(f"  [分辨率检查] 阈值: {threshold}px, 当前宽度: {current_width}px")
                 if 0 < current_width < threshold:
-                    # ★★★ 核心修复：将数字阈值转换为用户友好的名称 ★★★
                     threshold_name = "未知分辨率"
-                    if threshold == 3840:
-                        threshold_name = "4K"
-                    elif threshold == 1920:
-                        threshold_name = "1080p"
-                    elif threshold == 1280:
-                        threshold_name = "720p"
-                    
+                    if threshold == 3840: threshold_name = "4K"
+                    elif threshold == 1920: threshold_name = "1080p"
+                    elif threshold == 1280: threshold_name = "720p"
                     reasons.append(f"分辨率低于{threshold_name}")
     except (ValueError, TypeError) as e:
         logger.warning(f"  [分辨率检查] 处理时发生类型错误: {e}")
 
-    # 2. 质量检查 (达标法)
+    # 2. 质量检查 (逻辑不变)
     try:
         if config.get("resubscribe_quality_enabled"):
             required_list_raw = config.get("resubscribe_quality_include", [])
@@ -2177,7 +2172,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict) -> tuple[bool, str
     except Exception as e:
         logger.warning(f"  [质量检查] 处理时发生未知错误: {e}")
 
-    # 3. 特效检查 (达标法)
+    # 3. 特效检查 (逻辑不变)
     try:
         if config.get("resubscribe_effect_enabled"):
             required_list_raw = config.get("resubscribe_effect_include", [])
@@ -2191,7 +2186,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict) -> tuple[bool, str
     except Exception as e:
         logger.warning(f"  [特效检查] 处理时发生未知错误: {e}")
 
-    # 4. 音轨检查
+    # 4. 音轨检查 (逻辑不变)
     try:
         if config.get("resubscribe_audio_enabled"):
             required_langs_raw = config.get("resubscribe_audio_missing_languages", [])
@@ -2206,16 +2201,33 @@ def _item_needs_resubscribe(item_details: dict, config: dict) -> tuple[bool, str
     except Exception as e:
         logger.warning(f"  [音轨检查] 处理时发生未知错误: {e}")
 
-    # 5. 字幕检查
+    # 5. 字幕检查 (★★★ 核心修改 ★★★)
     try:
         if config.get("resubscribe_subtitle_enabled"):
             required_langs_raw = config.get("resubscribe_subtitle_missing_languages", [])
             if isinstance(required_langs_raw, list) and required_langs_raw:
                 required_langs = set(str(lang).lower() for lang in required_langs_raw)
-                present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
-                logger.debug(f"  [字幕检查] 要求语言: {required_langs}, 现有语言: {present_langs}")
-                if not required_langs.intersection(present_langs):
-                     reasons.append("缺字幕")
+                
+                # --- START: 语言环境豁免逻辑 ---
+                CHINESE_SUB_CODES = {'chi', 'zho'}
+                CHINESE_AUDIO_CODES = {'chi', 'zho', 'cmn', 'yue'}
+
+                # 检查是否需要中文字幕
+                if not required_langs.isdisjoint(CHINESE_SUB_CODES):
+                    # 如果需要，则检查是否存在中文音轨
+                    present_audio_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
+                    if not present_audio_langs.isdisjoint(CHINESE_AUDIO_CODES):
+                        # 如果存在中文音轨，则豁免对中文字幕的要求
+                        logger.debug(f"  [字幕检查] 检测到中文音轨，已豁免对中文字幕的要求。")
+                        required_langs.difference_update(CHINESE_SUB_CODES)
+                # --- END: 豁免逻辑 ---
+
+                # 只有在还有其他字幕要求时，才继续检查
+                if required_langs:
+                    present_sub_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
+                    logger.debug(f"  [字幕检查] 最终要求语言: {required_langs}, 现有字幕: {present_sub_langs}")
+                    if not required_langs.intersection(present_sub_langs):
+                         reasons.append("缺字幕")
             elif not isinstance(required_langs_raw, list):
                 logger.warning(f"  [字幕检查] 配置中的 'resubscribe_subtitle_missing_languages' 不是列表，已跳过。")
     except Exception as e:
