@@ -80,13 +80,14 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
     if fields:
         fields_to_request = fields
     else:
-        fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines"
+        fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,MediaSources,MediaStreams,Chapters,DisplayPreferences,ImageTags,BackdropImageTags,ScreenshotImageTags,ProductionLocations,ExternalUrls,MediaSources,Chapters,SortName,ForcedSortName"
 
     params = {
         "api_key": emby_api_key,
-        "Fields": fields_to_request,
-        "PersonFields": "ImageTags,ProviderIds"  # 移到这里
+        "Fields": fields_to_request
     }
+    
+    params["PersonFields"] = "ImageTags,ProviderIds"
     
     try:
         # ★★★ 核心修改: 动态获取超时时间 ★★★
@@ -101,12 +102,6 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
         item_data = response.json()
         logger.trace(
             f"成功获取Emby项目 '{item_data.get('Name', item_id)}' (ID: {item_id}) 的详情。")
-
-        # 调试信息：检查是否包含演员数据
-        if 'People' in item_data:
-            logger.debug(f"项目 {item_id} 包含 {len(item_data['People'])} 个演员")
-        else:
-            logger.warning(f"项目 {item_id} 不包含People字段")
 
         if not item_data.get('Name') or not item_data.get('Type'):
             logger.warning(f"Emby项目 {item_id} 返回的数据缺少Name或Type字段。")
