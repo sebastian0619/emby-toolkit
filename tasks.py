@@ -1328,7 +1328,7 @@ def get_task_registry(context: str = 'all'):
         'actor-tracking': (task_process_actor_subscriptions, "演员订阅扫描", 'actor', True),
         'auto-subscribe': (task_auto_subscribe, "智能订阅缺失", 'media', True),
         'sync-images-map': (task_full_image_sync, "覆盖缓存备份", 'media', True),
-        'resubscribe-library': (task_resubscribe_library, "智能洗版订阅", 'media', True),
+        'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', True),
         'generate-all-covers': (task_generate_all_covers, "生成所有封面", 'media', True),
         
 
@@ -2094,7 +2094,7 @@ def task_generate_all_covers(processor: MediaProcessor):
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★★★ 新增：智能洗版任务 (基于精确API模型重构) ★★★
+# ★★★ 媒体洗版任务 (基于精确API模型重构) ★★★
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
 def _build_resubscribe_payload(item_details: dict, config: dict) -> Optional[dict]:
@@ -2267,7 +2267,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
 
 def task_resubscribe_library(processor: MediaProcessor):
     """【V5 - 全局配额终极版】后台任务：使用全局每日配额系统，运行时消耗额度。"""
-    task_name = "媒体智能洗版"
+    task_name = "媒体洗版"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     config = processor.config

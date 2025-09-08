@@ -29,7 +29,7 @@ def save_settings():
     try:
         settings_data = request.json
         db_handler.save_resubscribe_settings(settings_data)
-        return jsonify({"message": "智能洗版设置已成功保存！"})
+        return jsonify({"message": "媒体洗版设置已成功保存！"})
     except Exception as e:
         logger.error(f"保存洗版设置API出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
@@ -68,7 +68,7 @@ def trigger_resubscribe_all():
     try:
         task_manager.submit_task(
             tasks.task_resubscribe_library,
-            task_name="全库媒体智能洗版",
+            task_name="全库媒体洗版",
             processor_type='media'
         )
         return jsonify({"message": "一键洗版任务已提交！"}), 202

@@ -1894,11 +1894,11 @@ def save_setting(setting_key: str, value: Dict[str, Any]):
         logger.error(f"DB: 保存设置 '{setting_key}' 时失败: {e}", exc_info=True)
         raise
 # ======================================================================
-# 模块 8: 智能洗版设置数据访问 (Resubscribe Settings Data Access) - ★★★ 新增模块 ★★★
+# 模块 8: 媒体洗版设置数据访问 (Resubscribe Settings Data Access) - ★★★ 新增模块 ★★★
 # ======================================================================
 
 def get_resubscribe_settings() -> Dict[str, Any]:
-    """【V4 - NULL值过滤最终修复版】获取智能洗版设置。"""
+    """【V4 - NULL值过滤最终修复版】获取媒体洗版设置。"""
     defaults = {
         "resubscribe_enabled": False,
         "resubscribe_resolution_enabled": False,
@@ -1934,7 +1934,7 @@ def get_resubscribe_settings() -> Dict[str, Any]:
         return defaults
 
 def save_resubscribe_settings(settings: Dict[str, Any]):
-    """【V5 - Json适配器终极修复版】保存智能洗版设置。"""
+    """【V5 - Json适配器终极修复版】保存媒体洗版设置。"""
     sql = """
         INSERT INTO resubscribe_settings (
             id, resubscribe_enabled, resubscribe_resolution_enabled, 
@@ -1977,7 +1977,7 @@ def save_resubscribe_settings(settings: Dict[str, Any]):
             # 使用包装过的新字典执行SQL
             cursor.execute(sql, data_to_save)
             conn.commit()
-            logger.info("DB: 成功保存智能洗版设置。")
+            logger.info("DB: 成功保存媒体洗版设置。")
     except Exception as e:
         logger.error(f"DB: 保存洗版设置时失败: {e}", exc_info=True)
         raise

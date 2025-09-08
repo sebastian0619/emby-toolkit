@@ -5,7 +5,7 @@
       <n-page-header>
         <template #title>
           <n-space align="center">
-            <span>智能洗版</span>
+            <span>媒体洗版</span>
             <!-- 总数现在从 allItems 中获取 -->
             <n-tag v-if="allItems.length > 0" type="info" round :bordered="false" size="small">
               {{ allItems.length }} 项
@@ -14,7 +14,7 @@
         </template>
         <n-alert title="操作提示" type="info" style="margin-top: 24px;">
           先进行洗版规则设定，然后点击刷新按钮扫描全库媒体项，扫描完刷新页面会展示所有媒体项并按照预设的洗版规则显示是否需要洗版。<br />
-          需洗版的订阅后会转为已订阅的状态，下次刷新时如果已重新下并入库会转换状态成质量达标。
+          需洗版的订阅后会转为已订阅的状态，下次刷新时如果已重新下载并入库会转换状态成质量达标。
         </n-alert>
         <template #extra>
           <n-space>
@@ -23,7 +23,7 @@
               <n-radio-button value="needed">需洗版</n-radio-button>
             </n-radio-group>
             <n-button @click="showSettingsModal = true">洗版规则设定</n-button>
-            <n-button type="warning" @click="triggerResubscribeAll" :loading="isTaskRunning('全库媒体智能洗版')">一键洗版全部</n-button>
+            <n-button type="warning" @click="triggerResubscribeAll" :loading="isTaskRunning('全库媒体洗版')">一键洗版全部</n-button>
             <n-button type="primary" @click="triggerRefreshStatus" :loading="isTaskRunning('刷新媒体洗版状态')" circle>
               <template #icon><n-icon :component="SyncOutline" /></template>
             </n-button>
@@ -222,7 +222,7 @@ const triggerResubscribeAll = async () => { try { await axios.post('/api/resubsc
 const resubscribeItem = async (item) => { subscribing.value[item.item_id] = true; try { const response = await axios.post('/api/resubscribe/resubscribe_item', { item_id: item.item_id, item_name: item.item_name, tmdb_id: item.tmdb_id, item_type: item.item_type, }); message.success(response.data.message); const itemInList = allItems.value.find(i => i.item_id === item.item_id); if (itemInList) { itemInList.status = 'subscribed'; } } catch (err) { message.error(err.response?.data?.error || '洗版订阅失败。'); } finally { subscribing.value[item.item_id] = false; }};
 const getPosterUrl = (itemId) => `/image_proxy/Items/${itemId}/Images/Primary?maxHeight=480&tag=1`;
 const openInEmby = (itemId) => { const embyServerUrl = configModel.value?.emby_server_url; const serverId = configModel.value?.emby_server_id; if (!embyServerUrl || !itemId) { message.error('Emby服务器地址未配置，无法跳转。'); return; } const baseUrl = embyServerUrl.endsWith('/') ? embyServerUrl.slice(0, -1) : embyServerUrl; let finalUrl = `${baseUrl}/web/index.html#!/item?id=${itemId}`; if (serverId) { finalUrl += `&serverId=${serverId}`; } window.open(finalUrl, '_blank'); };
-watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => { if (wasRunning && !isRunning) { const relevantActions = [ '刷新媒体洗版状态', '全库媒体智能洗版', ]; if (relevantActions.some(action => props.taskStatus.current_action.includes(action))) { message.info('相关后台任务已结束，正在刷新海报墙...'); fetchData(); } } });
+watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => { if (wasRunning && !isRunning) { const relevantActions = [ '刷新媒体洗版状态', '全库媒体洗版', ]; if (relevantActions.some(action => props.taskStatus.current_action.includes(action))) { message.info('相关后台任务已结束，正在刷新海报墙...'); fetchData(); } } });
 
 </script>
 

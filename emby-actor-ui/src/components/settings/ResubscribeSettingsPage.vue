@@ -4,11 +4,11 @@
     <n-space vertical :size="24">
       <n-card :bordered="false">
         <template #header>
-          <span style="font-size: 1.2em; font-weight: bold;">智能洗版规则</span>
+          <span style="font-size: 1.2em; font-weight: bold;">媒体洗版规则</span>
         </template>
         <template #header-extra>
           <n-space align="center">
-            <span>启用智能洗版</span>
+            <span>启用媒体洗版</span>
             <n-switch v-model:value="configModel.resubscribe_enabled" />
           </n-space>
         </template>
@@ -184,7 +184,7 @@ const save = async () => {
   savingConfig.value = true;
   try {
     await axios.post('/api/resubscribe/settings', configModel.value);
-    message.success('智能洗版规则已成功保存！');
+    message.success('媒体洗版规则已成功保存！');
     // ★★★ 保存成功后，触发 'saved' 事件 ★★★
     emit('saved');
   } catch (error) {

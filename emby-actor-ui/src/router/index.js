@@ -99,7 +99,7 @@ const routes = [
     path: '/resubscribe',
     name: 'ResubscribePage',
     component: () => import('../components/ResubscribePage.vue'),
-    meta: { requiresAuth: true, title: '智能洗版' },
+    meta: { requiresAuth: true, title: '媒体洗版' },
   },
 ];
 
