@@ -70,33 +70,43 @@ def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_typ
         logger.error(f"通过 API 获取 {item_type} 总数时失败: {e}")
         return None
 # ✨✨✨ 获取Emby项目详情 ✨✨✨
-def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
+def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str, fields: Optional[str] = None) -> Optional[Dict[str, Any]]:
     if not all([item_id, emby_server_url, emby_api_key, user_id]):
         logger.error("获取Emby项目详情参数不足：缺少ItemID、服务器URL、API Key或UserID。")
         return None
 
     url = f"{emby_server_url.rstrip('/')}/Users/{user_id}/Items/{item_id}"
 
+    if fields:
+        fields_to_request = fields
+    else:
+        fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines"
+
     params = {
         "api_key": emby_api_key,
-        "Fields": "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines"
+        "Fields": fields_to_request,
+        "PersonFields": "ImageTags,ProviderIds"  # 移到这里
     }
-    logger.debug(
-        f"准备获取Emby项目详情 (UserSpecific)：ItemID='{item_id}', UserID='{user_id}', BaseURL='{url}', Params='{params}'")
-
+    
     try:
-        response = requests.get(url, params=params, timeout=15)
+        # ★★★ 核心修改: 动态获取超时时间 ★★★
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+        response = requests.get(url, params=params, timeout=api_timeout)
 
-        logger.debug(f"实际请求的完整URL: {response.url}")
-        logger.debug(f"响应状态码: {response.status_code}")
         if response.status_code != 200:
-            logger.debug(f"响应头部: {response.headers}")
-            logger.debug(f"响应内容 (前500字符): {response.text[:500]}")
+            logger.trace(f"响应头部: {response.headers}")
+            logger.trace(f"响应内容 (前500字符): {response.text[:500]}")
 
         response.raise_for_status()
         item_data = response.json()
-        logger.info(
-            f"成功获取Emby项目 '{item_data.get('Name', item_id)}' (ID: {item_id}, User: {user_id}) 的详情。")
+        logger.trace(
+            f"成功获取Emby项目 '{item_data.get('Name', item_id)}' (ID: {item_id}) 的详情。")
+
+        # 调试信息：检查是否包含演员数据
+        if 'People' in item_data:
+            logger.debug(f"项目 {item_id} 包含 {len(item_data['People'])} 个演员")
+        else:
+            logger.warning(f"项目 {item_id} 不包含People字段")
 
         if not item_data.get('Name') or not item_data.get('Type'):
             logger.warning(f"Emby项目 {item_id} 返回的数据缺少Name或Type字段。")
