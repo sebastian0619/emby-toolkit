@@ -1285,6 +1285,8 @@ def get_task_registry(context: str = 'all'):
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
         'process-single-custom-collection': (task_process_custom_collection, "生成单个自建合集", 'media', False),
         'revival-check': (task_run_revival_check, "检查剧集复活", 'watchlist', False),
+        'resubscribe-library': (task_resubscribe_library, "媒体智能洗版", 'media', False),
+        'update-resubscribe-cache': (task_update_resubscribe_cache, "刷新洗版状态", 'media', False),
     }
 
     if context == 'chain':
@@ -2042,3 +2044,377 @@ def task_generate_all_covers(processor: MediaProcessor):
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★★★ 新增：智能洗版任务 (基于精确API模型重构) ★★★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+def _build_resubscribe_payload(item_details: dict, config: dict) -> Optional[dict]:
+    """
+    【V6 - 回归本源最终版】
+    此版本只负责在需要洗版时，提交一个纯粹的、带 best_version: 1 的请求。
+    """
+    needs_resubscribe, reason = _item_needs_resubscribe(item_details, config)
+    if not needs_resubscribe:
+        return None
+
+    item_name = item_details.get('Name')
+    tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+    item_type = item_details.get("Type")
+    if not all([item_name, tmdb_id, item_type]):
+        return None
+
+    payload = {
+        "name": item_name,
+        "tmdbid": int(tmdb_id),
+        "type": "电影" if item_type == "Movie" else "电视剧",
+        "best_version": 1
+    }
+    
+    logger.info(f"  -> 发现不合规项目: 《{item_name}》。原因: {reason}。将提交纯粹的洗版请求。")
+    return payload
+
+def _item_needs_resubscribe(item_details: dict, config: dict) -> tuple[bool, str]:
+    """
+    【V6 - UI文本优化终极版】
+    - 修复了分辨率原因描述不准确的问题，将像素值转换为通用名称 (如 4K)。
+    - 保持了V5版本的所有健壮性修复和日志记录功能。
+    """
+    item_name = item_details.get('Name', '未知项目')
+    logger.debug(f"--- 开始为《{item_name}》检查洗版需求 ---")
+    logger.debug(f"  -> 传入的配置: {config}")
+    
+    media_streams = item_details.get('MediaStreams', [])
+    file_path = item_details.get('Path', '')
+    file_name_lower = os.path.basename(file_path).lower() if file_path else ""
+    logger.debug(f"  -> 文件名 (小写): '{file_name_lower}'")
+
+    reasons = []
+    video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
+
+    # 1. 分辨率检查
+    try:
+        if config.get("resubscribe_resolution_enabled"):
+            if not video_stream:
+                reasons.append("无视频流信息")
+            else:
+                threshold = int(config.get("resubscribe_resolution_threshold") or 1920)
+                current_width = int(video_stream.get('Width') or 0)
+                logger.debug(f"  [分辨率检查] 阈值: {threshold}px, 当前宽度: {current_width}px")
+                if 0 < current_width < threshold:
+                    # ★★★ 核心修复：将数字阈值转换为用户友好的名称 ★★★
+                    threshold_name = "未知分辨率"
+                    if threshold == 3840:
+                        threshold_name = "4K"
+                    elif threshold == 1920:
+                        threshold_name = "1080p"
+                    elif threshold == 1280:
+                        threshold_name = "720p"
+                    
+                    reasons.append(f"分辨率低于{threshold_name}")
+    except (ValueError, TypeError) as e:
+        logger.warning(f"  [分辨率检查] 处理时发生类型错误: {e}")
+
+    # 2. 质量检查 (达标法)
+    try:
+        if config.get("resubscribe_quality_enabled"):
+            required_list_raw = config.get("resubscribe_quality_include", [])
+            if isinstance(required_list_raw, list):
+                required_list = [str(q).lower() for q in required_list_raw]
+                logger.debug(f"  [质量检查] 要求文件名包含: {required_list}")
+                if required_list and not any(required_term in file_name_lower for required_term in required_list):
+                    reasons.append("质量不达标")
+            else:
+                logger.warning(f"  [质量检查] 配置中的 'resubscribe_quality_include' 不是列表，已跳过。")
+    except Exception as e:
+        logger.warning(f"  [质量检查] 处理时发生未知错误: {e}")
+
+    # 3. 特效检查 (达标法)
+    try:
+        if config.get("resubscribe_effect_enabled"):
+            required_list_raw = config.get("resubscribe_effect_include", [])
+            if isinstance(required_list_raw, list):
+                required_list = [str(e).lower() for e in required_list_raw]
+                logger.debug(f"  [特效检查] 要求文件名包含: {required_list}")
+                if required_list and not any(required_term in file_name_lower for required_term in required_list):
+                    reasons.append("特效不达标")
+            else:
+                logger.warning(f"  [特效检查] 配置中的 'resubscribe_effect_include' 不是列表，已跳过。")
+    except Exception as e:
+        logger.warning(f"  [特效检查] 处理时发生未知错误: {e}")
+
+    # 4. 音轨检查
+    try:
+        if config.get("resubscribe_audio_enabled"):
+            required_langs_raw = config.get("resubscribe_audio_missing_languages", [])
+            if isinstance(required_langs_raw, list) and required_langs_raw:
+                required_langs = set(str(lang).lower() for lang in required_langs_raw)
+                present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
+                logger.debug(f"  [音轨检查] 要求语言: {required_langs}, 现有语言: {present_langs}")
+                if not required_langs.intersection(present_langs):
+                     reasons.append("缺音轨")
+            elif not isinstance(required_langs_raw, list):
+                logger.warning(f"  [音轨检查] 配置中的 'resubscribe_audio_missing_languages' 不是列表，已跳过。")
+    except Exception as e:
+        logger.warning(f"  [音轨检查] 处理时发生未知错误: {e}")
+
+    # 5. 字幕检查
+    try:
+        if config.get("resubscribe_subtitle_enabled"):
+            required_langs_raw = config.get("resubscribe_subtitle_missing_languages", [])
+            if isinstance(required_langs_raw, list) and required_langs_raw:
+                required_langs = set(str(lang).lower() for lang in required_langs_raw)
+                present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
+                logger.debug(f"  [字幕检查] 要求语言: {required_langs}, 现有语言: {present_langs}")
+                if not required_langs.intersection(present_langs):
+                     reasons.append("缺字幕")
+            elif not isinstance(required_langs_raw, list):
+                logger.warning(f"  [字幕检查] 配置中的 'resubscribe_subtitle_missing_languages' 不是列表，已跳过。")
+    except Exception as e:
+        logger.warning(f"  [字幕检查] 处理时发生未知错误: {e}")
+                 
+    if reasons:
+        logger.info(f"  -> 结论: 《{item_name}》需要洗版。原因: {'; '.join(reasons)}")
+        return True, "; ".join(reasons)
+    else:
+        logger.debug(f"  -> 结论: 《{item_name}》质量达标。")
+        return False, ""
+
+def task_resubscribe_library(processor: MediaProcessor):
+    """【V4 - 安全阀门终极版】后台任务：为“一键洗版”增加了硬顶上限和速率限制。"""
+    task_name = "全库媒体智能洗版"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (安全阀门模式) ---")
+    
+    config = processor.config
+    
+    try:
+        # ★★★ 核心修改 1/3: 从配置中读取安全参数 ★★★
+        cap = int(config.get('resubscribe_daily_cap', 200))
+        delay = float(config.get('resubscribe_delay_seconds', 1.5))
+        logger.info(f"  -> 安全设置加载：单次上限 {cap} 项，请求间隔 {delay} 秒。")
+
+        task_manager.update_status_from_thread(0, "正在从缓存中检索需洗版的项目...")
+        with db_handler.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM resubscribe_cache WHERE status = 'needed'")
+            items_to_resubscribe = cursor.fetchall()
+
+        total = len(items_to_resubscribe)
+        if total == 0:
+            task_manager.update_status_from_thread(100, "任务完成：没有发现需要洗版的项目。")
+            return
+
+        # ★★★ 核心修改 2/3: 检查是否触发“安全阀” ★★★
+        if total > cap:
+            error_msg = f"任务中止：需要洗版的项目 ({total}个) 已超过单次任务上限 ({cap}个)。请调整规则或分批处理。"
+            logger.error(error_msg)
+            task_manager.update_status_from_thread(-1, error_msg)
+            return
+
+        logger.info(f"共找到 {total} 个项目需要提交洗版订阅，未超过上限，任务继续...")
+        resubscribed_count = 0
+
+        for i, item in enumerate(items_to_resubscribe):
+            if processor.is_stop_requested():
+                break
+            
+            item_name = item.get('item_name')
+            item_id = item.get('item_id')
+            task_manager.update_status_from_thread(int((i / total) * 100), f"({i+1}/{total}) 正在订阅: {item_name}")
+
+            payload = {
+                "name": item_name,
+                "tmdbid": int(item['tmdb_id']),
+                "type": "电影" if item['item_type'] == "Movie" else "电视剧",
+                "best_version": 1
+            }
+            
+            success = moviepilot_handler.subscribe_with_custom_payload(payload, config)
+            
+            if success:
+                db_handler.update_resubscribe_item_status(item_id, 'subscribed')
+                resubscribed_count += 1
+                
+                # ★★★ 核心修改 3/3: 启用“节流阀” ★★★
+                if i < total - 1: # 如果不是最后一个，就等待
+                    logger.debug(f"  -> 订阅成功，暂停 {delay} 秒...")
+                    time.sleep(delay)
+
+        final_message = f"任务完成！共检查 {total} 个项目，成功提交 {resubscribed_count} 个洗版订阅。"
+        if processor.is_stop_requested():
+            final_message = f"任务已中止。共检查 {i+1} 个项目，提交 {resubscribed_count} 个洗版订阅。"
+        
+        task_manager.update_status_from_thread(100, final_message)
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+def task_update_resubscribe_cache(processor: MediaProcessor):
+    """
+    【V9 - UI透明化终极版】
+    - 质量字段现在显示从文件名中提取的真实标签 (如 BLURAY, WEB-DL)，
+      而不是技术编码，彻底解决UI误导问题。
+    """
+    task_name = "刷新媒体洗版状态"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (UI透明化终极版) ---")
+    
+    try:
+        resubscribe_config = db_handler.get_resubscribe_settings()
+        task_manager.update_status_from_thread(0, "正在从Emby一次性获取所有媒体详情...")
+        
+        libs_to_process_ids = processor.config.get("libraries_to_process", [])
+        if not libs_to_process_ids:
+            raise ValueError("未在配置中指定要处理的媒体库。")
+
+        all_items_base_info = emby_handler.get_emby_library_items(
+            base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
+            media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
+            fields="ProviderIds,Name,Type,ChildCount"
+        ) or []
+        
+        current_db_status_map = {item['item_id']: item['status'] for item in db_handler.get_all_resubscribe_cache()}
+        
+        total = len(all_items_base_info)
+        if total == 0:
+            task_manager.update_status_from_thread(100, "任务完成：未找到任何项目。")
+            return
+
+        logger.info(f"将为 {total} 个媒体项目获取详情并检查洗版状态...")
+        
+        cache_update_batch = []
+        processed_count = 0
+
+        def process_item_for_cache(item_base_info):
+            item_id = item_base_info.get('Id')
+            item_name = item_base_info.get('Name')
+            
+            try:
+                item_details = emby_handler.get_emby_item_details(
+                    item_id=item_id,
+                    emby_server_url=processor.emby_url,
+                    emby_api_key=processor.emby_api_key,
+                    user_id=processor.emby_user_id
+                )
+                if not item_details:
+                    logger.warning(f"无法获取项目 '{item_name}' (ID: {item_id}) 的完整详情，跳过。")
+                    return None
+
+                item_type = item_details.get('Type')
+                
+                if item_type == 'Series' and item_details.get('ChildCount', 0) > 0:
+                    first_episode_list = emby_handler.get_series_children(
+                        series_id=item_id, base_url=processor.emby_url,
+                        api_key=processor.emby_api_key, user_id=processor.emby_user_id,
+                        include_item_types="Episode", fields="MediaStreams,Path"
+                    )
+                    if first_episode_list:
+                        first_episode = first_episode_list[0]
+                        item_details['MediaStreams'] = first_episode.get('MediaStreams', item_details.get('MediaStreams', []))
+                        item_details['Path'] = first_episode.get('Path', item_details.get('Path', ''))
+
+                needs_resubscribe, reason = _item_needs_resubscribe(item_details, resubscribe_config)
+                old_status = current_db_status_map.get(item_id)
+                new_status = 'ok' if not needs_resubscribe else ('subscribed' if old_status == 'subscribed' else 'needed')
+
+                AUDIO_LANG_MAP = {'chi': '国语', 'zho': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语', 'kor': '韩语'}
+                SUBTITLE_LANG_MAP = {'chi': '中字', 'zho': '中字', 'eng': '英文'}
+
+                media_streams = item_details.get('MediaStreams', [])
+                video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
+                
+                resolution_str = "未知"
+                if video_stream and video_stream.get('Width'):
+                    width = video_stream.get('Width')
+                    if width >= 3840: resolution_str = "4K"
+                    elif width >= 1920: resolution_str = "1080p"
+                    elif width >= 1280: resolution_str = "720p"
+                    else: resolution_str = f"{width}p"
+
+                # ★★★ 核心修改：调用新函数来获取质量标签 ★★★
+                file_name_lower = os.path.basename(item_details.get('Path', '')).lower()
+                quality_str = _extract_quality_tag_from_filename(file_name_lower, video_stream)
+                
+                effect_str = video_stream.get('VideoRangeType') or video_stream.get('VideoRange', '未知') if video_stream else '未知'
+
+                audio_langs = list(set(s.get('Language') for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')))
+                audio_str = ', '.join(sorted([AUDIO_LANG_MAP.get(lang, lang) for lang in audio_langs])) or '无'
+
+                subtitle_langs_raw = list(set(s.get('Language') for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')))
+                priority_langs = ['chi', 'zho', 'eng']
+                display_langs = []
+                
+                for lang in priority_langs:
+                    if lang in subtitle_langs_raw:
+                        display_langs.append(SUBTITLE_LANG_MAP.get(lang, lang))
+                        subtitle_langs_raw = [l for l in subtitle_langs_raw if l != lang]
+                
+                display_langs = sorted(list(set(display_langs)))
+                
+                remaining_to_show = 3 - len(display_langs)
+                if subtitle_langs_raw and remaining_to_show > 0:
+                    other_langs_translated = sorted([SUBTITLE_LANG_MAP.get(lang, lang.upper()) for lang in subtitle_langs_raw])
+                    display_langs.extend(other_langs_translated[:remaining_to_show])
+                    if len(subtitle_langs_raw) > remaining_to_show:
+                        display_langs.append('...')
+
+                subtitle_str = ', '.join(display_langs) or '无'
+                
+                return {
+                    "item_id": item_id, "item_name": item_details.get('Name'),
+                    "tmdb_id": item_details.get("ProviderIds", {}).get("Tmdb"),
+                    "item_type": item_type, "status": new_status, "reason": reason if needs_resubscribe else "",
+                    "resolution_display": resolution_str, "quality_display": quality_str,
+                    "effect_display": effect_str.upper(), "audio_display": audio_str,
+                    "subtitle_display": subtitle_str, "audio_languages_raw": audio_langs,
+                    "subtitle_languages_raw": subtitle_langs_raw,
+                }
+            except Exception as e:
+                logger.error(f"处理项目 '{item_name}' (ID: {item_id}) 时线程内发生错误: {e}", exc_info=True)
+                return None
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_item = {executor.submit(process_item_for_cache, item): item for item in all_items_base_info}
+            for future in as_completed(future_to_item):
+                if processor.is_stop_requested(): break
+                result = future.result()
+                if result: cache_update_batch.append(result)
+                processed_count += 1
+                progress = int((processed_count / total) * 100)
+                task_manager.update_status_from_thread(progress, f"({processed_count}/{total}) 正在分析: {future_to_item[future].get('Name')}")
+
+        if cache_update_batch:
+            logger.info(f"分析完成，正在将 {len(cache_update_batch)} 条记录写入缓存表...")
+            db_handler.upsert_resubscribe_cache_batch(cache_update_batch)
+
+        final_message = "媒体洗版状态刷新完成！"
+        if processor.is_stop_requested(): final_message = "任务已中止。"
+        task_manager.update_status_from_thread(100, final_message)
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+# ★★★ 新增：智能从文件名提取质量标签的辅助函数 ★★★
+def _extract_quality_tag_from_filename(filename_lower: str, video_stream: dict) -> str:
+    """
+    根据预定义的优先级，从文件名中提取最高级的质量标签。
+    如果找不到任何标签，则回退到使用视频编码作为备用方案。
+    """
+    # 定义质量标签的优先级，越靠前越高级
+    QUALITY_HIERARCHY = [
+        'remux',
+        'bluray',
+        'blu-ray', # 兼容写法
+        'web-dl',
+        'webdl',   # 兼容写法
+        'webrip',
+        'hdtv',
+        'dvdrip'
+    ]
+    
+    for tag in QUALITY_HIERARCHY:
+        # 为了更精确匹配，我们检查被点、空格或短横线包围的标签
+        if f".{tag}." in filename_lower or f" {tag} " in filename_lower or f"-{tag}-" in filename_lower:
+            # 返回大写的、更美观的标签
+            return tag.replace('-', '').upper()
+
+    # 如果循环结束都没找到，提供一个备用值
+    return (video_stream.get('Codec', '未知') if video_stream else '未知').upper()

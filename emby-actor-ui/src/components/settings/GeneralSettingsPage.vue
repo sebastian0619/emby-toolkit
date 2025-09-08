@@ -249,22 +249,39 @@
                     <n-form-item-grid-item label="用户名" path="moviepilot_username"><n-input v-model:value="configModel.moviepilot_username" placeholder="输入 MoviePilot 的登录用户名"/></n-form-item-grid-item>
                     <n-form-item-grid-item label="密码" path="moviepilot_password"><n-input type="password" show-password-on="mousedown" v-model:value="configModel.moviepilot_password" placeholder="输入 MoviePilot 的登录密码"/></n-form-item-grid-item>
                     
-                    <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">智能订阅设置</n-divider>
+                    <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">智能订阅与洗版</n-divider>
                     
                     <n-form-item-grid-item label="启用智能订阅" path="autosub_enabled">
-                      <!-- ★★★ 修改点 1: 增加 disabled 绑定 ★★★ -->
                       <n-switch v-model:value="configModel.autosub_enabled" :disabled="!isMoviePilotConfigured" />
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">总开关。开启后，智能订阅定时任务才会真正执行订阅操作。</n-text></template>
                     </n-form-item-grid-item>
 
                     <n-form-item-grid-item label="对缺集的已完结剧集触发洗版" path="resubscribe_completed_on_missing">
                       <n-switch v-model:value="configModel.resubscribe_completed_on_missing" :disabled="!isMoviePilotConfigured" />
+                      <template #feedback><n-text depth="3" style="font-size:0.8em;">开启后，“洗版缺集的季”任务会检查所有已完结剧集，若本地文件不完整，则向MoviePilot提交整季的洗版订阅 。</n-text></template>
+                    </n-form-item-grid-item>
+
+                    <!-- ★★★ 核心修改：在这里添加阀门设置 ★★★ -->
+                    <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">单次订阅上限</n-divider>
+
+                    <n-form-item-grid-item label="单次任务订阅上限" path="resubscribe_daily_cap">
+                      <n-input-number v-model:value="configModel.resubscribe_daily_cap" :min="1" :disabled="!isMoviePilotConfigured" />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          开启后，“洗版缺集的季”任务会检查所有已完结剧集，若本地文件不完整，则向MoviePilot提交整季的洗版订阅 。
+                          若单次订阅的项目超过此数量，任务将自动中止。
                         </n-text>
                       </template>
                     </n-form-item-grid-item>
+
+                    <n-form-item-grid-item label="订阅请求间隔 (秒)" path="resubscribe_delay_seconds">
+                      <n-input-number v-model:value="configModel.resubscribe_delay_seconds" :min="0.1" :step="0.1" :disabled="!isMoviePilotConfigured" />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          每次成功提交订阅后，等待指定的秒数再提交下一个，以避免对MoviePilot服务器造成冲击。
+                        </n-text>
+                      </template>
+                    </n-form-item-grid-item>
+
                   </n-card>
                 </n-gi>
               </n-grid>

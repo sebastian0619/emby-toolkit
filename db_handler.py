@@ -1,12 +1,12 @@
 # db_handler.py
 import psycopg2
 from psycopg2 import sql
-from psycopg2.extras import RealDictCursor # 关键：让查询结果返回字典
+from psycopg2.extras import RealDictCursor, Json
 import json
 import logging
 from typing import Optional, Dict, Any, List, Tuple
 from flask import jsonify
-
+from datetime import datetime, timezone
 # 核心模块导入
 import config_manager
 import emby_handler
@@ -1887,3 +1887,162 @@ def save_setting(setting_key: str, value: Dict[str, Any]):
     except Exception as e:
         logger.error(f"DB: 保存设置 '{setting_key}' 时失败: {e}", exc_info=True)
         raise
+# ======================================================================
+# 模块 8: 智能洗版设置数据访问 (Resubscribe Settings Data Access) - ★★★ 新增模块 ★★★
+# ======================================================================
+
+def get_resubscribe_settings() -> Dict[str, Any]:
+    """【V4 - NULL值过滤最终修复版】获取智能洗版设置。"""
+    defaults = {
+        "resubscribe_enabled": False,
+        "resubscribe_resolution_enabled": False,
+        "resubscribe_resolution_threshold": 1920,
+        "resubscribe_audio_enabled": False,
+        "resubscribe_audio_missing_languages": ["chi", "zho"],
+        "resubscribe_subtitle_enabled": False,
+        "resubscribe_subtitle_missing_languages": ["chi", "zho"],
+        "resubscribe_quality_enabled": False,
+        "resubscribe_quality_include": [],
+        "resubscribe_effect_enabled": False,
+        "resubscribe_effect_include": [],
+    }
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM resubscribe_settings WHERE id = 1")
+            row = cursor.fetchone()
+            if row:
+                settings = defaults.copy()
+                
+                # ★★★ 核心修复：只用数据库中非NULL的值来更新默认值 ★★★
+                # 这样可以防止因前端未传递某些字段导致数据库存入NULL，
+                # 从而意外覆盖掉有效的默认值。
+                db_values = {k: v for k, v in dict(row).items() if v is not None}
+                settings.update(db_values)
+                
+                return settings
+            else:
+                return defaults
+    except Exception as e:
+        logger.error(f"DB: 获取洗版设置失败，将使用默认值: {e}", exc_info=True)
+        return defaults
+
+def save_resubscribe_settings(settings: Dict[str, Any]):
+    """【V5 - Json适配器终极修复版】保存智能洗版设置。"""
+    sql = """
+        INSERT INTO resubscribe_settings (
+            id, resubscribe_enabled, resubscribe_resolution_enabled, 
+            resubscribe_resolution_threshold, resubscribe_audio_enabled, 
+            resubscribe_audio_missing_languages, resubscribe_subtitle_enabled, 
+            resubscribe_subtitle_missing_languages,
+            resubscribe_quality_enabled, resubscribe_quality_include,
+            resubscribe_effect_enabled, resubscribe_effect_include
+        ) VALUES (
+            1, %(resubscribe_enabled)s, %(resubscribe_resolution_enabled)s,
+            %(resubscribe_resolution_threshold)s, %(resubscribe_audio_enabled)s,
+            %(resubscribe_audio_missing_languages)s, %(resubscribe_subtitle_enabled)s,
+            %(resubscribe_subtitle_missing_languages)s,
+            %(resubscribe_quality_enabled)s, %(resubscribe_quality_include)s,
+            %(resubscribe_effect_enabled)s, %(resubscribe_effect_include)s
+        )
+        ON CONFLICT (id) DO UPDATE SET
+            resubscribe_enabled = EXCLUDED.resubscribe_enabled,
+            resubscribe_resolution_enabled = EXCLUDED.resubscribe_resolution_enabled,
+            resubscribe_resolution_threshold = EXCLUDED.resubscribe_resolution_threshold,
+            resubscribe_audio_enabled = EXCLUDED.resubscribe_audio_enabled,
+            resubscribe_audio_missing_languages = EXCLUDED.resubscribe_audio_missing_languages,
+            resubscribe_subtitle_enabled = EXCLUDED.resubscribe_subtitle_enabled,
+            resubscribe_subtitle_missing_languages = EXCLUDED.resubscribe_subtitle_missing_languages,
+            resubscribe_quality_enabled = EXCLUDED.resubscribe_quality_enabled,
+            resubscribe_quality_include = EXCLUDED.resubscribe_quality_include,
+            resubscribe_effect_enabled = EXCLUDED.resubscribe_effect_enabled,
+            resubscribe_effect_include = EXCLUDED.resubscribe_effect_include;
+    """
+    try:
+        # ★★★ 核心修复：创建一个新的字典，并用 Json() 包装所有需要存为 JSONB 的字段 ★★★
+        data_to_save = settings.copy()
+        data_to_save['resubscribe_audio_missing_languages'] = Json(settings.get('resubscribe_audio_missing_languages', []))
+        data_to_save['resubscribe_subtitle_missing_languages'] = Json(settings.get('resubscribe_subtitle_missing_languages', []))
+        data_to_save['resubscribe_quality_include'] = Json(settings.get('resubscribe_quality_include', []))
+        data_to_save['resubscribe_effect_include'] = Json(settings.get('resubscribe_effect_include', []))
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 使用包装过的新字典执行SQL
+            cursor.execute(sql, data_to_save)
+            conn.commit()
+            logger.info("DB: 成功保存智能洗版设置。")
+    except Exception as e:
+        logger.error(f"DB: 保存洗版设置时失败: {e}", exc_info=True)
+        raise
+def get_all_resubscribe_cache() -> List[Dict[str, Any]]:
+    """获取所有洗版缓存数据。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM resubscribe_cache ORDER BY item_name")
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 获取洗版缓存失败: {e}", exc_info=True)
+        return []
+
+def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
+    """【V3 - 状态机版】批量更新或插入洗版缓存数据。"""
+    # ...
+    sql = """
+        INSERT INTO resubscribe_cache (
+            item_id, item_name, tmdb_id, item_type, status, reason,
+            resolution_display, quality_display, effect_display, audio_display, subtitle_display,
+            audio_languages_raw, subtitle_languages_raw, last_checked_at
+        ) VALUES %s
+        ON CONFLICT (item_id) DO UPDATE SET
+            item_name = EXCLUDED.item_name,
+            tmdb_id = EXCLUDED.tmdb_id,
+            item_type = EXCLUDED.item_type,
+            status = EXCLUDED.status,
+            reason = EXCLUDED.reason,
+            resolution_display = EXCLUDED.resolution_display,
+            quality_display = EXCLUDED.quality_display,
+            effect_display = EXCLUDED.effect_display,
+            audio_display = EXCLUDED.audio_display,
+            subtitle_display = EXCLUDED.subtitle_display,
+            audio_languages_raw = EXCLUDED.audio_languages_raw,
+            subtitle_languages_raw = EXCLUDED.subtitle_languages_raw,
+            last_checked_at = EXCLUDED.last_checked_at;
+    """
+    values_to_insert = []
+    for item in items_data:
+        values_to_insert.append((
+            item.get('item_id'), item.get('item_name'), item.get('tmdb_id'),
+            item.get('item_type'), item.get('status'), item.get('reason'),
+            item.get('resolution_display'), item.get('quality_display'), item.get('effect_display'),
+            item.get('audio_display'), item.get('subtitle_display'),
+            json.dumps(item.get('audio_languages_raw', [])),
+            json.dumps(item.get('subtitle_languages_raw', [])),
+            datetime.now(timezone.utc)
+        ))
+    
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            from psycopg2.extras import execute_values
+            execute_values(cursor, sql, values_to_insert, page_size=500)
+            conn.commit()
+    except Exception as e:
+        logger.error(f"DB: 批量更新洗版缓存失败: {e}", exc_info=True)
+        raise
+# ★★★ 更新单个洗版项目状态的函数 ★★★
+def update_resubscribe_item_status(item_id: str, new_status: str) -> bool:
+    """更新单个洗版缓存条目的状态。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE resubscribe_cache SET status = %s WHERE item_id = %s",
+                (new_status, item_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"DB: 更新洗版缓存状态失败 for item {item_id}: {e}", exc_info=True)
+        return False

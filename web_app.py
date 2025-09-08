@@ -61,6 +61,7 @@ from routes.auth import auth_bp, init_auth as init_auth_from_blueprint
 from routes.actions import actions_bp
 from routes.cover_generator_config import cover_generator_config_bp
 from routes.tasks import tasks_bp
+from routes.resubscribe import resubscribe_bp
 # --- 核心模块导入 ---
 import constants # 你的常量定义\
 import logging
@@ -323,6 +324,46 @@ def init_db():
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_subscription_id ON tracked_actor_media (subscription_id)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_status ON tracked_actor_media (status)")
+
+                logger.trace("  -> 正在创建 'resubscribe_settings' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS resubscribe_settings (
+                        id INT PRIMARY KEY DEFAULT 1,
+                        resubscribe_enabled BOOLEAN DEFAULT FALSE,
+                        resubscribe_resolution_enabled BOOLEAN DEFAULT FALSE,
+                        resubscribe_resolution_threshold INT DEFAULT 1920,
+                        resubscribe_audio_enabled BOOLEAN DEFAULT FALSE,
+                        resubscribe_audio_missing_languages JSONB,
+                        resubscribe_subtitle_enabled BOOLEAN DEFAULT FALSE,
+                        resubscribe_subtitle_missing_languages JSONB,
+                        resubscribe_quality_enabled BOOLEAN DEFAULT FALSE,
+                        resubscribe_quality_include JSONB,
+                        resubscribe_effect_enabled BOOLEAN DEFAULT FALSE,
+                        resubscribe_effect_include JSONB,
+                        CONSTRAINT single_row_check CHECK (id = 1)
+                    )
+                """)
+
+                logger.trace("  -> 正在创建 'resubscribe_cache' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS resubscribe_cache (
+                        item_id TEXT PRIMARY KEY,
+                        item_name TEXT,
+                        tmdb_id TEXT,
+                        item_type TEXT,
+                        status TEXT DEFAULT 'unknown', -- 新增状态字段: 'ok', 'needed', 'subscribed'
+                        reason TEXT,
+                        resolution_display TEXT,
+                        quality_display TEXT,
+                        effect_display TEXT,
+                        audio_display TEXT,
+                        subtitle_display TEXT,
+                        audio_languages_raw JSONB,
+                        subtitle_languages_raw JSONB,
+                        last_checked_at TIMESTAMP WITH TIME ZONE
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_resubscribe_cache_status ON resubscribe_cache (status);")
 
                 # --- 2. 执行平滑升级检查 ---
                 logger.info("  -> 开始执行数据库表结构平滑升级检查...")
@@ -852,6 +893,7 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(actions_bp)
 app.register_blueprint(cover_generator_config_bp)
 app.register_blueprint(tasks_bp)
+app.register_blueprint(resubscribe_bp)
 
 def main_app_start():
     """将主应用启动逻辑封装成一个函数"""
