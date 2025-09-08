@@ -80,18 +80,27 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
     if fields:
         fields_to_request = fields
     else:
-        fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines"
+        # 【终极修复】为兼容老版本或TV剧集，添加了更多可能包含演职员信息的字段
+        fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,Cast,GuestStars,Artists"
 
+    # --- 【终极修复核心】---
+    # 伪装成一个官方的 Emby Web 客户端，以获取最完整的数据响应
+    # 某些 Emby 版本如果缺少这些参数，会返回不包含演员信息的“降级版”数据
     params = {
         "api_key": emby_api_key,
         "Fields": fields_to_request,
-        "PersonTypes": "Actor"
+        "PersonTypes": "Actor,GuestStar,Director,Writer,Producer",
+        
+        # --- 新增的客户端伪装参数 ---
+        "X-Emby-Client": "Emby Web",
+        "X-Emby-Device-Name": "Python Metadata Script",
+        "X-Emby-Device-Id": str(uuid.uuid4()), # 每次生成一个唯一的ID
+        "X-Emby-Client-Version": "4.8.11.0" # 使用一个较新的稳定版号
     }
     
     params["PersonFields"] = "ImageTags,ProviderIds"
     
     try:
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
         api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
         response = requests.get(url, params=params, timeout=api_timeout)
 
@@ -101,6 +110,13 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
 
         response.raise_for_status()
         item_data = response.json()
+        
+        # 增加一个关键日志，检查返回的数据里到底有没有 People 字段
+        if "People" in item_data and item_data["People"]:
+             logger.debug(f"成功获取到 {len(item_data['People'])} 位演职员信息。")
+        else:
+             logger.warning(f"Emby API 返回的数据中仍然不包含'People'字段或该字段为空。")
+
         logger.trace(
             f"成功获取Emby项目 '{item_data.get('Name', item_id)}' (ID: {item_id}) 的详情。")
 
