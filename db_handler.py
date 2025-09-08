@@ -3,6 +3,7 @@ import psycopg2
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor, Json
 import json
+import pytz
 import logging
 from typing import Optional, Dict, Any, List, Tuple
 from flask import jsonify
@@ -1862,26 +1863,31 @@ def get_setting(setting_key: str) -> Optional[Any]:
         logger.error(f"DB: 获取设置 '{setting_key}' 时失败: {e}", exc_info=True)
         raise
 
+def _save_setting_with_cursor(cursor, setting_key: str, value: Dict[str, Any]):
+    """
+    【内部函数】使用一个已有的数据库游标来保存设置。
+    这个函数不开启或提交事务，由调用方负责。
+    """
+    sql = """
+        INSERT INTO app_settings (setting_key, value_json, last_updated_at)
+        VALUES (%s, %s, NOW())
+        ON CONFLICT (setting_key) DO UPDATE SET
+            value_json = EXCLUDED.value_json,
+            last_updated_at = NOW();
+    """
+    value_as_json = json.dumps(value, ensure_ascii=False)
+    cursor.execute(sql, (setting_key, value_as_json))
+
 def save_setting(setting_key: str, value: Dict[str, Any]):
     """
-    向 app_settings 表中保存或更新一个设置项。
-    :param setting_key: 设置项的键。
-    :param value: 要保存的设置值 (必须是可序列化为JSON的字典)。
+    【V2 - 重构版】向 app_settings 表中保存或更新一个设置项。
+    现在它调用内部函数来完成工作。
     """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # 使用 ON CONFLICT 实现 upsert
-            sql = """
-                INSERT INTO app_settings (setting_key, value_json, last_updated_at)
-                VALUES (%s, %s, NOW())
-                ON CONFLICT (setting_key) DO UPDATE SET
-                    value_json = EXCLUDED.value_json,
-                    last_updated_at = NOW();
-            """
-            # 将 Python 字典转换为 JSON 字符串以存入 JSONB 字段
-            value_as_json = json.dumps(value, ensure_ascii=False)
-            cursor.execute(sql, (setting_key, value_as_json))
+            # ★★★ 核心修改：调用新的内部函数 ★★★
+            _save_setting_with_cursor(cursor, setting_key, value)
             conn.commit()
             logger.info(f"DB: 成功保存设置 '{setting_key}'。")
     except Exception as e:
@@ -2045,4 +2051,85 @@ def update_resubscribe_item_status(item_id: str, new_status: str) -> bool:
             return cursor.rowcount > 0
     except Exception as e:
         logger.error(f"DB: 更新洗版缓存状态失败 for item {item_id}: {e}", exc_info=True)
+        return False
+# ======================================================================
+# 模块 9: 全局订阅配额管理器 (Subscription Quota Manager) - ★★★ 新增模块 ★★★
+# ======================================================================
+
+def get_subscription_quota() -> int:
+    """
+    【核心】获取当前可用的订阅配额。
+    - 实现了“懒重置”：在每天第一次被调用时，会自动将配额重置为配置中的最大值。
+    """
+    try:
+        # 从主配置中读取最大配额，这是重置的基准
+        max_quota = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP, 200)
+        
+        # 获取今天的日期字符串，用于比较
+        today_str = datetime.now(pytz.timezone(constants.TIMEZONE)).strftime('%Y-%m-%d')
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # 从 app_settings 表中获取配额状态
+            state = get_setting('subscription_quota_state') or {}
+            
+            last_reset_date = state.get('last_reset_date')
+            
+            # --- 核心逻辑：判断是否需要重置 ---
+            if last_reset_date != today_str:
+                # 如果是新的一天，或者从未设置过
+                logger.info(f"检测到新的一天 ({today_str})，正在重置订阅配额为 {max_quota}。")
+                new_state = {
+                    'current_quota': max_quota,
+                    'last_reset_date': today_str
+                }
+                # 将新的状态存回数据库
+                save_setting('subscription_quota_state', new_state)
+                # 返回全新的、满满的配额
+                return max_quota
+            else:
+                # 如果今天已经重置过，直接返回当前剩余的配额
+                current_quota = state.get('current_quota', 0)
+                logger.debug(f"  -> 当前剩余订阅配额: {current_quota}")
+                return current_quota
+
+    except Exception as e:
+        logger.error(f"获取订阅配额时发生严重错误，将返回0以确保安全: {e}", exc_info=True)
+        return 0
+
+def decrement_subscription_quota() -> bool:
+    """
+    将当前订阅配额减一。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN;")
+            try:
+                cursor.execute("SELECT value_json FROM app_settings WHERE setting_key = 'subscription_quota_state' FOR UPDATE")
+                row = cursor.fetchone()
+                
+                if not row or not row.get('value_json'):
+                    conn.rollback()
+                    logger.warning("尝试减少配额，但未找到配额状态记录。")
+                    return False
+
+                state = row['value_json']
+                current_quota = state.get('current_quota', 0)
+
+                if current_quota > 0:
+                    state['current_quota'] = current_quota - 1
+                    # ★★★ 核心修改：直接调用内部函数，在同一个事务中完成所有操作 ★★★
+                    _save_setting_with_cursor(cursor, 'subscription_quota_state', state)
+                    logger.debug(f"  -> 配额已消耗，剩余: {state['current_quota']}")
+                
+                conn.commit()
+                return True
+            except Exception as e_trans:
+                conn.rollback()
+                logger.error(f"减少配额的数据库事务失败: {e_trans}", exc_info=True)
+                return False
+    except Exception as e:
+        logger.error(f"减少订阅配额时发生严重错误: {e}", exc_info=True)
         return False

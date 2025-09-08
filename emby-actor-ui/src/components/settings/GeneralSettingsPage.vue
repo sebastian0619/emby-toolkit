@@ -262,13 +262,13 @@
                     </n-form-item-grid-item>
 
                     <!-- ★★★ 核心修改：在这里添加阀门设置 ★★★ -->
-                    <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">单次订阅上限</n-divider>
+                    <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">每日订阅额度</n-divider>
 
-                    <n-form-item-grid-item label="单次任务订阅上限" path="resubscribe_daily_cap">
+                    <n-form-item-grid-item label="每日订阅上限" path="resubscribe_daily_cap">
                       <n-input-number v-model:value="configModel.resubscribe_daily_cap" :min="1" :disabled="!isMoviePilotConfigured" />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          若单次订阅的项目超过此数量，任务将自动中止。
+                          若每日订阅的项目超过此数量，任务将自动中止，每天0点重置。
                         </n-text>
                       </template>
                     </n-form-item-grid-item>

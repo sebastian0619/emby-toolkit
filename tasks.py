@@ -867,9 +867,14 @@ def task_refresh_collections(processor: MediaProcessor):
 # ★★★ 带智能预判的自动订阅任务 ★★★
 def task_auto_subscribe(processor: MediaProcessor):
     """
-    【V5.1 - PG 兼容版】
-    - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
+    【V6 - 全局配额终极版】
+    - 将所有订阅行为（电影、剧集、自定义合集）都纳入了全局每日配额管理。
+    - 在每次订阅前检查配额，并在订阅成功后消耗配额。
+    - 当配额用尽时，任务会提前、安全地结束。
     """
+    task_name = "智能订阅缺失"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (全局配额模式) ---")
+    
     task_manager.update_status_from_thread(0, "正在启动智能订阅任务...")
     
     if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
@@ -881,26 +886,29 @@ def task_auto_subscribe(processor: MediaProcessor):
         today = date.today()
         task_manager.update_status_from_thread(10, "智能订阅已启动...")
         successfully_subscribed_items = []
+        quota_exhausted = False # 新增一个标志，用于记录配额是否用尽
 
         with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
 
             # ★★★ 1. 处理原生电影合集 (collections_info) ★★★
-            if not processor.is_stop_requested():
-                # ... (这部分逻辑无需修改，因为 db_handler.py 中的 get_all_collections 已经处理了JSON) ...
+            if not processor.is_stop_requested() and not quota_exhausted:
                 task_manager.update_status_from_thread(20, "正在检查原生电影合集...")
                 sql_query_native_movies = "SELECT * FROM collections_info WHERE status = 'has_missing' AND missing_movies_json IS NOT NULL AND missing_movies_json != '[]'"
                 cursor.execute(sql_query_native_movies)
                 native_collections_to_check = cursor.fetchall()
                 logger.info(f"  -> 找到 {len(native_collections_to_check)} 个有缺失影片的原生合集。")
+                
                 for collection in native_collections_to_check:
-                    # ... (内部循环逻辑保持不变) ...
+                    if processor.is_stop_requested() or quota_exhausted: break
+                    
                     movies_to_keep = []
-                    # ★★★ 核心修复：直接使用已经是列表的 missing_movies_json 字段 ★★★
                     all_movies = collection['missing_movies_json']
                     movies_changed = False
+                    
                     for movie in all_movies:
-                        # ... (订阅逻辑不变) ...
+                        if processor.is_stop_requested(): break
+                        
                         if movie.get('status') == 'missing':
                             release_date_str = movie.get('release_date')
                             if not release_date_str:
@@ -911,8 +919,18 @@ def task_auto_subscribe(processor: MediaProcessor):
                             except (ValueError, TypeError):
                                 movies_to_keep.append(movie)
                                 continue
+
                             if release_date <= today:
+                                # ★★★ 核心修改 1/3: 在订阅前检查配额 ★★★
+                                current_quota = db_handler.get_subscription_quota()
+                                if current_quota <= 0:
+                                    quota_exhausted = True
+                                    logger.warning("每日订阅配额已用尽，原生合集检查提前结束。")
+                                    movies_to_keep.append(movie) # 把当前未处理的电影加回去
+                                    break # 跳出内层循环
+
                                 if moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG):
+                                    db_handler.decrement_subscription_quota() # 消耗配额
                                     successfully_subscribed_items.append(f"电影《{movie['title']}》")
                                     movies_changed = True
                                     movie['status'] = 'subscribed'
@@ -921,33 +939,33 @@ def task_auto_subscribe(processor: MediaProcessor):
                                 movies_to_keep.append(movie)
                         else:
                             movies_to_keep.append(movie)
+                            
                     if movies_changed:
                         new_missing_json = json.dumps(movies_to_keep)
                         new_status = 'ok' if not any(m.get('status') == 'missing' for m in movies_to_keep) else 'has_missing'
                         cursor.execute("UPDATE collections_info SET missing_movies_json = %s, status = %s WHERE emby_collection_id = %s", (new_missing_json, new_status, collection['emby_collection_id']))
 
             # --- 2. 处理智能追剧 ---
-            if not processor.is_stop_requested():
-                # ... (这部分逻辑也需要修复) ...
+            if not processor.is_stop_requested() and not quota_exhausted:
                 task_manager.update_status_from_thread(60, "正在检查缺失的剧集...")
                 sql_query = "SELECT * FROM watchlist WHERE status IN ('Watching', 'Paused') AND missing_info_json IS NOT NULL AND missing_info_json != '[]'"
                 cursor.execute(sql_query)
                 series_to_check = cursor.fetchall()
+                
                 for series in series_to_check:
-                    if processor.is_stop_requested(): break
+                    if processor.is_stop_requested() or quota_exhausted: break
                     series_name = series['item_name']
                     logger.info(f"  -> 正在检查: 《{series_name}》")
                     try:
-                        # ★★★ 核心修复：直接使用已经是字典的 missing_info_json 字段 ★★★
                         missing_info = series['missing_info_json']
                         missing_seasons = missing_info.get('missing_seasons', [])
-                        # ... (内部循环逻辑保持不变) ...
                         if not missing_seasons: continue
+                        
                         seasons_to_keep = []
                         seasons_changed = False
                         for season in missing_seasons:
-                            # ... (订阅逻辑不变) ...
-                            season_num = season.get('season_number')
+                            if processor.is_stop_requested(): break
+                            
                             air_date_str = season.get('air_date')
                             if not air_date_str:
                                 seasons_to_keep.append(season)
@@ -957,15 +975,26 @@ def task_auto_subscribe(processor: MediaProcessor):
                             except (ValueError, TypeError):
                                 seasons_to_keep.append(season)
                                 continue
+
                             if season_date <= today:
+                                # ★★★ 核心修改 2/3: 在订阅前检查配额 ★★★
+                                current_quota = db_handler.get_subscription_quota()
+                                if current_quota <= 0:
+                                    quota_exhausted = True
+                                    logger.warning("每日订阅配额已用尽，追剧检查提前结束。")
+                                    seasons_to_keep.append(season)
+                                    break
+
                                 success = moviepilot_handler.subscribe_series_to_moviepilot(dict(series), season['season_number'], config_manager.APP_CONFIG)
                                 if success:
+                                    db_handler.decrement_subscription_quota() # 消耗配额
                                     successfully_subscribed_items.append(f"《{series['item_name']}》第 {season['season_number']} 季")
                                     seasons_changed = True
                                 else:
                                     seasons_to_keep.append(season)
                             else:
                                 seasons_to_keep.append(season)
+                                
                         if seasons_changed:
                             missing_info['missing_seasons'] = seasons_to_keep
                             cursor.execute("UPDATE watchlist SET missing_info_json = %s WHERE item_id = %s", (json.dumps(missing_info), series['item_id']))
@@ -973,32 +1002,34 @@ def task_auto_subscribe(processor: MediaProcessor):
                         logger.error(f"【智能订阅-剧集】处理剧集 '{series['item_name']}' 时出错: {e_series}")
 
             # ★★★ 3. 处理自定义合集 (custom_collections) ★★★
-            if not processor.is_stop_requested():
-                # ... (这部分逻辑也需要修复) ...
+            if not processor.is_stop_requested() and not quota_exhausted:
                 task_manager.update_status_from_thread(70, "正在检查自定义榜单合集...")
                 sql_query_custom_collections = "SELECT * FROM custom_collections WHERE type = 'list' AND health_status = 'has_missing' AND generated_media_info_json IS NOT NULL AND generated_media_info_json != '[]'"
                 cursor.execute(sql_query_custom_collections)
                 custom_collections_to_check = cursor.fetchall()
+                
                 for collection in custom_collections_to_check:
-                    if processor.is_stop_requested(): break
+                    if processor.is_stop_requested() or quota_exhausted: break
                     collection_id = collection['id']
                     collection_name = collection['name']
                     try:
-                        # ★★★ 核心修复：直接使用已经是字典/列表的 _json 字段 ★★★
                         definition = collection['definition_json']
                         all_media = collection['generated_media_info_json']
-                        # ... (内部循环和订阅逻辑保持不变) ...
+                        
                         item_type_from_db = definition.get('item_type', 'Movie')
-                        authoritative_type = None
+                        authoritative_type = 'Movie'
                         if isinstance(item_type_from_db, list) and item_type_from_db:
                             authoritative_type = item_type_from_db[0]
                         elif isinstance(item_type_from_db, str):
                             authoritative_type = item_type_from_db
                         if authoritative_type not in ['Movie', 'Series']:
                             authoritative_type = 'Movie'
+                            
                         media_to_keep = []
                         media_changed = False
                         for media_item in all_media:
+                            if processor.is_stop_requested(): break
+                            
                             if media_item.get('status') == 'missing':
                                 release_date_str = media_item.get('release_date')
                                 if not release_date_str:
@@ -1009,7 +1040,16 @@ def task_auto_subscribe(processor: MediaProcessor):
                                 except (ValueError, TypeError):
                                     media_to_keep.append(media_item)
                                     continue
+
                                 if release_date <= today:
+                                    # ★★★ 核心修改 3/3: 在订阅前检查配额 ★★★
+                                    current_quota = db_handler.get_subscription_quota()
+                                    if current_quota <= 0:
+                                        quota_exhausted = True
+                                        logger.warning("每日订阅配额已用尽，自定义合集检查提前结束。")
+                                        media_to_keep.append(media_item)
+                                        break
+                                        
                                     success = False
                                     media_title = media_item.get('title', '未知标题')
                                     if authoritative_type == 'Movie':
@@ -1017,7 +1057,9 @@ def task_auto_subscribe(processor: MediaProcessor):
                                     elif authoritative_type == 'Series':
                                         series_info = { "item_name": media_title, "tmdb_id": media_item.get('tmdb_id') }
                                         success = moviepilot_handler.subscribe_series_to_moviepilot(series_info, season_number=None, config=config_manager.APP_CONFIG)
+                                    
                                     if success:
+                                        db_handler.decrement_subscription_quota() # 消耗配额
                                         successfully_subscribed_items.append(f"{authoritative_type}《{media_title}》")
                                         media_changed = True
                                         media_item['status'] = 'subscribed'
@@ -1026,6 +1068,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                                     media_to_keep.append(media_item)
                             else:
                                 media_to_keep.append(media_item)
+                                
                         if media_changed:
                             new_missing_json = json.dumps(media_to_keep, ensure_ascii=False)
                             new_missing_count = sum(1 for m in media_to_keep if m.get('status') == 'missing')
@@ -1039,12 +1082,17 @@ def task_auto_subscribe(processor: MediaProcessor):
 
             conn.commit()
 
+        summary = ""
         if successfully_subscribed_items:
-            summary = "  -> ✅ 任务完成！已自动订阅: " + ", ".join(successfully_subscribed_items)
-            logger.info(summary)
-            task_manager.update_status_from_thread(100, summary)
+            summary = "✅ 任务完成！已自动订阅: " + ", ".join(successfully_subscribed_items)
         else:
-            task_manager.update_status_from_thread(100, "任务完成：本次运行没有发现符合自动订阅条件的媒体。")
+            summary = "任务完成：本次运行没有发现符合自动订阅条件的媒体。"
+        
+        if quota_exhausted:
+            summary += " (注意：每日订阅配额已用尽，部分项目可能未处理)"
+
+        logger.info(summary)
+        task_manager.update_status_from_thread(100, summary)
 
     except Exception as e:
         logger.error(f"智能订阅任务失败: {e}", exc_info=True)
@@ -1273,20 +1321,21 @@ def get_task_registry(context: str = 'all'):
         'populate-metadata': (task_populate_metadata_cache, "同步媒体数据", 'media', True),
         'full-scan': (task_run_full_scan, "中文化角色名", 'media', True),
         'actor-cleanup': (task_actor_translation_cleanup, "中文化演员名", 'media', True),
-        'process-watchlist': (task_process_watchlist, "智能追剧更新", 'watchlist', True),
-        'refresh-collections': (task_refresh_collections, "原生合集刷新", 'media', True),
-        'custom-collections': (task_process_all_custom_collections, "自建合集刷新", 'media', True),
+        'process-watchlist': (task_process_watchlist, "刷新智能追剧", 'watchlist', True),
+        'refresh-collections': (task_refresh_collections, "刷新原生合集", 'media', True),
+        'custom-collections': (task_process_all_custom_collections, "刷新自建合集", 'media', True),
+        'update-resubscribe-cache': (task_update_resubscribe_cache, "刷新洗版状态", 'media', True),
         'actor-tracking': (task_process_actor_subscriptions, "演员订阅扫描", 'actor', True),
-        'generate-all-covers': (task_generate_all_covers, "生成所有封面", 'media', True),
         'auto-subscribe': (task_auto_subscribe, "智能订阅缺失", 'media', True),
         'sync-images-map': (task_full_image_sync, "覆盖缓存备份", 'media', True),
+        'resubscribe-library': (task_resubscribe_library, "智能洗版订阅", 'media', True),
+        'generate-all-covers': (task_generate_all_covers, "生成所有封面", 'media', True),
+        
 
         # --- 不适合任务链的、需要特定参数的任务 ---
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
         'process-single-custom-collection': (task_process_custom_collection, "生成单个自建合集", 'media', False),
         'revival-check': (task_run_revival_check, "检查剧集复活", 'watchlist', False),
-        'resubscribe-library': (task_resubscribe_library, "媒体智能洗版", 'media', False),
-        'update-resubscribe-cache': (task_update_resubscribe_cache, "刷新洗版状态", 'media', False),
     }
 
     if context == 'chain':
@@ -2180,17 +2229,15 @@ def _item_needs_resubscribe(item_details: dict, config: dict) -> tuple[bool, str
         return False, ""
 
 def task_resubscribe_library(processor: MediaProcessor):
-    """【V4 - 安全阀门终极版】后台任务：为“一键洗版”增加了硬顶上限和速率限制。"""
+    """【V5 - 全局配额终极版】后台任务：使用全局每日配额系统，运行时消耗额度。"""
     task_name = "全库媒体智能洗版"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (安全阀门模式) ---")
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (全局配额模式) ---")
     
     config = processor.config
     
     try:
-        # ★★★ 核心修改 1/3: 从配置中读取安全参数 ★★★
-        cap = int(config.get('resubscribe_daily_cap', 200))
-        delay = float(config.get('resubscribe_delay_seconds', 1.5))
-        logger.info(f"  -> 安全设置加载：单次上限 {cap} 项，请求间隔 {delay} 秒。")
+        # ★★★ 核心修改 1/3: 不再需要任何启动前检查 ★★★
+        delay = float(config.get(constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS, 1.5))
 
         task_manager.update_status_from_thread(0, "正在从缓存中检索需洗版的项目...")
         with db_handler.get_db_connection() as conn:
@@ -2198,28 +2245,32 @@ def task_resubscribe_library(processor: MediaProcessor):
             cursor.execute("SELECT * FROM resubscribe_cache WHERE status = 'needed'")
             items_to_resubscribe = cursor.fetchall()
 
-        total = len(items_to_resubscribe)
-        if total == 0:
+        total_needed = len(items_to_resubscribe)
+        if total_needed == 0:
             task_manager.update_status_from_thread(100, "任务完成：没有发现需要洗版的项目。")
             return
 
-        # ★★★ 核心修改 2/3: 检查是否触发“安全阀” ★★★
-        if total > cap:
-            error_msg = f"任务中止：需要洗版的项目 ({total}个) 已超过单次任务上限 ({cap}个)。请调整规则或分批处理。"
-            logger.error(error_msg)
-            task_manager.update_status_from_thread(-1, error_msg)
-            return
-
-        logger.info(f"共找到 {total} 个项目需要提交洗版订阅，未超过上限，任务继续...")
+        logger.info(f"共找到 {total_needed} 个项目待处理，将开始按配额订阅...")
         resubscribed_count = 0
 
         for i, item in enumerate(items_to_resubscribe):
             if processor.is_stop_requested():
+                logger.info("任务被用户中止。")
                 break
             
+            # ★★★ 核心修改 2/3: 在每次循环开始时，检查配额 ★★★
+            current_quota = db_handler.get_subscription_quota()
+            if current_quota <= 0:
+                logger.warning("每日订阅配额已用尽，任务提前结束。")
+                task_manager.update_status_from_thread(100, f"配额用尽！已订阅 {resubscribed_count} 项。")
+                break # 跳出循环
+
             item_name = item.get('item_name')
             item_id = item.get('item_id')
-            task_manager.update_status_from_thread(int((i / total) * 100), f"({i+1}/{total}) 正在订阅: {item_name}")
+            task_manager.update_status_from_thread(
+                int((i / total_needed) * 100), 
+                f"({i+1}/{total_needed}) [配额:{current_quota}] 正在订阅: {item_name}"
+            )
 
             payload = {
                 "name": item_name,
@@ -2231,18 +2282,19 @@ def task_resubscribe_library(processor: MediaProcessor):
             success = moviepilot_handler.subscribe_with_custom_payload(payload, config)
             
             if success:
+                # ★★★ 核心修改 3/3: 订阅成功后，消耗一个配额 ★★★
+                db_handler.decrement_subscription_quota()
+                
                 db_handler.update_resubscribe_item_status(item_id, 'subscribed')
                 resubscribed_count += 1
                 
-                # ★★★ 核心修改 3/3: 启用“节流阀” ★★★
-                if i < total - 1: # 如果不是最后一个，就等待
-                    logger.debug(f"  -> 订阅成功，暂停 {delay} 秒...")
+                if i < total_needed - 1:
                     time.sleep(delay)
 
-        final_message = f"任务完成！共检查 {total} 个项目，成功提交 {resubscribed_count} 个洗版订阅。"
-        if processor.is_stop_requested():
-            final_message = f"任务已中止。共检查 {i+1} 个项目，提交 {resubscribed_count} 个洗版订阅。"
-        
+        final_message = f"任务完成！共处理 {i+1}/{total_needed} 项，成功提交 {resubscribed_count} 个订阅。"
+        if not processor.is_stop_requested() and current_quota <= 0:
+             final_message = f"配额用尽！共处理 {i+1}/{total_needed} 项，成功提交 {resubscribed_count} 个订阅。"
+
         task_manager.update_status_from_thread(100, final_message)
 
     except Exception as e:

@@ -12,6 +12,10 @@
             </n-tag>
           </n-space>
         </template>
+        <n-alert title="操作提示" type="info" style="margin-top: 24px;">
+          先进行洗版规则设定，然后点击刷新按钮扫描全库媒体项，扫描完刷新页面会展示所有媒体项并按照预设的洗版规则显示是否需要洗版。<br />
+          需洗版的订阅后会转为已订阅的状态，下次刷新时如果已重新下并入库会转换状态成质量达标。
+        </n-alert>
         <template #extra>
           <n-space>
             <n-radio-group v-model:value="filter" size="small">

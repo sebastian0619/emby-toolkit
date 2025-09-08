@@ -80,7 +80,7 @@ def trigger_resubscribe_all():
 @login_required
 def resubscribe_single_item():
     """
-    API端点：为单个媒体项提交洗版订阅，并立即将其数据库状态更新为 'subscribed'。
+    API端点：为单个媒体项提交洗版订阅 (已集成全局配额系统)。
     """
     data = request.json
     item_id = data.get('item_id')
@@ -92,8 +92,12 @@ def resubscribe_single_item():
         return jsonify({"error": "请求中缺少必要的媒体项参数"}), 400
 
     try:
-        # 步骤 1: 准备提交给 MoviePilot 的纯粹洗版请求
-        # 我们需要主配置来获取MoviePilot的凭据
+        # ★★★ 核心修改 1/2: 在订阅前检查配额 ★★★
+        current_quota = db_handler.get_subscription_quota()
+        if current_quota <= 0:
+            logger.warning(f"API: 用户尝试为《{item_name}》单独洗版，但每日配额已用尽。")
+            return jsonify({"error": "今日订阅配额已用尽，请明天再试。"}), 429 # 429 Too Many Requests
+
         main_config = config_manager.APP_CONFIG
         payload = {
             "name": item_name,
@@ -102,20 +106,20 @@ def resubscribe_single_item():
             "best_version": 1
         }
         
-        # 步骤 2: 调用 MoviePilot 处理器提交订阅
         success = moviepilot_handler.subscribe_with_custom_payload(payload, main_config)
         
         if success:
-            # 步骤 3: 订阅成功后，立即更新数据库中的状态为 'subscribed'
-            logger.info(f"API: 洗版订阅成功 for '{item_name}'，正在更新数据库状态...")
+            # ★★★ 核心修改 2/2: 订阅成功后，消耗一个配额 ★★★
+            db_handler.decrement_subscription_quota()
+            
+            logger.info(f"API: 单独洗版订阅成功 for '{item_name}'，正在更新数据库状态...")
             db_handler.update_resubscribe_item_status(item_id, 'subscribed')
             
             return jsonify({"message": f"《{item_name}》的洗版请求已成功提交！"})
         else:
-            # 如果订阅失败，不改变数据库状态，并返回错误
-            logger.error(f"API: 提交《{item_name}》的洗版订阅请求到 MoviePilot 失败。")
+            logger.error(f"API: 提交《{item_name}》的单独洗版请求到 MoviePilot 失败。")
             return jsonify({"error": "提交洗版请求失败，请检查MoviePilot连接或查看后端日志。"}), 500
             
     except Exception as e:
-        logger.error(f"API: 处理洗版订阅请求时发生未知错误: {e}", exc_info=True)
+        logger.error(f"API: 处理单独洗版请求时发生未知错误: {e}", exc_info=True)
         return jsonify({"error": f"处理请求时发生服务器内部错误: {e}"}), 500
