@@ -70,55 +70,33 @@ def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_typ
         logger.error(f"通过 API 获取 {item_type} 总数时失败: {e}")
         return None
 # ✨✨✨ 获取Emby项目详情 ✨✨✨
-def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str, fields: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
     if not all([item_id, emby_server_url, emby_api_key, user_id]):
         logger.error("获取Emby项目详情参数不足：缺少ItemID、服务器URL、API Key或UserID。")
         return None
 
     url = f"{emby_server_url.rstrip('/')}/Users/{user_id}/Items/{item_id}"
 
-    if fields:
-        fields_to_request = fields
-    else:
-        # 【终极修复】为兼容老版本或TV剧集，添加了更多可能包含演职员信息的字段
-        fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,Cast,GuestStars,Artists"
-
-    # --- 【终极修复核心】---
-    # 伪装成一个官方的 Emby Web 客户端，以获取最完整的数据响应
-    # 某些 Emby 版本如果缺少这些参数，会返回不包含演员信息的“降级版”数据
     params = {
         "api_key": emby_api_key,
-        "Fields": fields_to_request,
-        "PersonTypes": "Actor,GuestStar,Director,Writer,Producer",
-        
-        # --- 新增的客户端伪装参数 ---
-        "X-Emby-Client": "Emby Web",
-        "X-Emby-Device-Name": "Python Metadata Script",
-        "X-Emby-Device-Id": str(uuid.uuid4()), # 每次生成一个唯一的ID
-        "X-Emby-Client-Version": "4.8.11.0" # 使用一个较新的稳定版号
+        "Fields": "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines"
     }
-    
-    params["PersonFields"] = "ImageTags,ProviderIds"
-    
-    try:
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(url, params=params, timeout=api_timeout)
+    logger.debug(
+        f"准备获取Emby项目详情 (UserSpecific)：ItemID='{item_id}', UserID='{user_id}', BaseURL='{url}', Params='{params}'")
 
+    try:
+        response = requests.get(url, params=params, timeout=15)
+
+        logger.debug(f"实际请求的完整URL: {response.url}")
+        logger.debug(f"响应状态码: {response.status_code}")
         if response.status_code != 200:
-            logger.trace(f"响应头部: {response.headers}")
-            logger.trace(f"响应内容 (前500字符): {response.text[:500]}")
+            logger.debug(f"响应头部: {response.headers}")
+            logger.debug(f"响应内容 (前500字符): {response.text[:500]}")
 
         response.raise_for_status()
         item_data = response.json()
-        
-        # 增加一个关键日志，检查返回的数据里到底有没有 People 字段
-        if "People" in item_data and item_data["People"]:
-             logger.debug(f"成功获取到 {len(item_data['People'])} 位演职员信息。")
-        else:
-             logger.warning(f"Emby API 返回的数据中仍然不包含'People'字段或该字段为空。")
-
-        logger.trace(
-            f"成功获取Emby项目 '{item_data.get('Name', item_id)}' (ID: {item_id}) 的详情。")
+        logger.info(
+            f"成功获取Emby项目 '{item_data.get('Name', item_id)}' (ID: {item_id}, User: {user_id}) 的详情。")
 
         if not item_data.get('Name') or not item_data.get('Type'):
             logger.warning(f"Emby项目 {item_id} 返回的数据缺少Name或Type字段。")
