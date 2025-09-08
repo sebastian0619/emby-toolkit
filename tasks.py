@@ -2193,8 +2193,21 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
                 required_langs = set(str(lang).lower() for lang in required_langs_raw)
                 present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
                 logger.trace(f"  -> [音轨检查] 要求语言: {required_langs}, 现有语言: {present_langs}")
+
                 if not required_langs.intersection(present_langs):
-                     reasons.append("缺音轨")
+                    # --- START: 音轨 B 计划豁免逻辑 ---
+                    is_exempted = False
+                    # 如果存在 und（未知语言）或没有音轨信息，则尝试用制片国免除
+                    if 'und' in present_langs or not present_langs:
+                        CHINESE_REGIONS = {'中国', '中国大陆', '香港', '台湾', '新加坡'}
+                        if media_metadata and media_metadata.get('countries_json'):
+                            countries = set(media_metadata['countries_json'])
+                            if not countries.isdisjoint(CHINESE_REGIONS):
+                                logger.trace(f"  -> [音轨豁免-B] 音轨信息不明，但检测到制片国家/地区为 ({', '.join(countries)})，豁免音轨缺失要求。")
+                                is_exempted = True
+                    if not is_exempted:
+                        reasons.append("缺音轨")
+                    # --- END: 音轨 B 计划豁免 ---
             elif not isinstance(required_langs_raw, list):
                 logger.warning(f"  -> [音轨检查] 配置中的 'resubscribe_audio_missing_languages' 不是列表，已跳过。")
     except Exception as e:
