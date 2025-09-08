@@ -2019,14 +2019,27 @@ class MediaProcessor:
     # --- 备份元数据 ---
     def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str):
         """
-        【V11 - Emby ID 权威匹配最终版】
-        以 Emby Person ID 作为唯一可靠标识，从数据库精确查找 TMDB ID 和完整元数据，
-        彻底解决“同名异人”问题，并确保数据一致性。
+        【V12 - 健壮性修复版】
+        无论传入的 item_details 是轻量级还是重量级，都在内部重新获取一次完整的详情，
+        确保后续逻辑总能拿到包含 'People' 的重量级对象。
         """
-        item_type = item_details.get("Type")
-        item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_details.get('Id')})")
+        item_id = item_details.get("Id")
+        item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
         log_prefix = "[元数据备份]"
         logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 执行元数据备份...")
+
+        # ★★★ 核心修复：在这里重新获取一次完整的项目详情 ★★★
+        logger.debug(f"  -> {log_prefix} 正在获取 '{item_name_for_log}' 的完整详情以确保演员信息存在...")
+        full_item_details = emby_handler.get_emby_item_details(
+            item_id, self.emby_url, self.emby_api_key, self.emby_user_id
+        )
+
+        if not full_item_details:
+            logger.error(f"  -> {log_prefix} 无法获取项目 {item_id} 的完整详情，元数据备份中止。")
+            return
+        
+        # 从这里开始，所有对 item_details 的引用都应改为 full_item_details
+        item_type = full_item_details.get("Type")
 
         # 1. 路径定义和基础文件复制 (不变)
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
@@ -2043,10 +2056,10 @@ class MediaProcessor:
             logger.error(f"  -> {log_prefix} 复制元数据时失败: {e}", exc_info=True)
             return
 
-        # 2. 获取 Emby 中的“完美演员表”作为我们的目标 (不变)
-        emby_people = item_details.get("People", [])
+        # 2. 获取 Emby 中的“完美演员表”作为我们的目标 (使用修复后的对象)
+        emby_people = full_item_details.get("People", []) # <--- 现在这里总能拿到数据了
         if not emby_people:
-            logger.debug(f"  -> {log_prefix} Emby中没有演员信息，无需重建演员表。")
+            logger.debug(f"  -> {log_prefix} Emby中确实没有演员信息，无需重建演员表。")
             return
 
         # 3. 核心：以 Emby ID 为基准，重建全新的 cast 列表
