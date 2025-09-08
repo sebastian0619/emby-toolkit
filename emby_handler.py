@@ -84,7 +84,8 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
 
     params = {
         "api_key": emby_api_key,
-        "Fields": fields_to_request
+        "Fields": fields_to_request,
+        "PersonTypes": "Actor"
     }
     
     params["PersonFields"] = "ImageTags,ProviderIds"
