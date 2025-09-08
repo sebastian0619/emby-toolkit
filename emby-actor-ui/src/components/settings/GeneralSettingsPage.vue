@@ -519,6 +519,8 @@ const tableInfo = {
   'users': { cn: '用户账户', isSharable: false },
   'custom_collections': { cn: '自建合集', isSharable: false },
   'media_metadata': { cn: '媒体元数据', isSharable: false },
+  'resubscribe_settings': { cn: '媒体洗版设置', isSharable: false },
+  'resubscribe_cache': { cn: '媒体洗版缓存', isSharable: false },
 };
 
 // ★★★ START: 新增的依赖关系自动勾选逻辑 ★★★
