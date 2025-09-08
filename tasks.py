@@ -2122,11 +2122,10 @@ def _build_resubscribe_payload(item_details: dict, config: dict) -> Optional[dic
     logger.info(f"  -> 发现不合规项目: 《{item_name}》。原因: {reason}。将提交纯粹的洗版请求。")
     return payload
 
-def _item_needs_resubscribe(item_details: dict, config: dict) -> tuple[bool, str]:
+def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Optional[dict] = None) -> tuple[bool, str]:
     """
-    【V7 - 语言环境豁免终极版】
-    - 新增智能逻辑：如果电影已包含中文音轨，则自动豁免对中文字幕的要求。
-    - 保持了V6版本的所有健壮性修复和日志记录功能。
+    【V8 - B计划豁免终极版】
+    - 引入B计划：在音轨信息为 und 或缺失时，会根据制片国家/地区来豁免中文字幕要求。
     """
     item_name = item_details.get('Name', '未知项目')
     logger.debug(f"--- 开始为《{item_name}》检查洗版需求 ---")
@@ -2140,7 +2139,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict) -> tuple[bool, str
     reasons = []
     video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
 
-    # 1. 分辨率检查 (逻辑不变)
+    # 1. 分辨率检查
     try:
         if config.get("resubscribe_resolution_enabled"):
             if not video_stream:
@@ -2158,7 +2157,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict) -> tuple[bool, str
     except (ValueError, TypeError) as e:
         logger.warning(f"  [分辨率检查] 处理时发生类型错误: {e}")
 
-    # 2. 质量检查 (逻辑不变)
+    # 2. 质量检查 
     try:
         if config.get("resubscribe_quality_enabled"):
             required_list_raw = config.get("resubscribe_quality_include", [])
@@ -2172,7 +2171,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict) -> tuple[bool, str
     except Exception as e:
         logger.warning(f"  [质量检查] 处理时发生未知错误: {e}")
 
-    # 3. 特效检查 (逻辑不变)
+    # 3. 特效检查 
     try:
         if config.get("resubscribe_effect_enabled"):
             required_list_raw = config.get("resubscribe_effect_include", [])
@@ -2186,7 +2185,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict) -> tuple[bool, str
     except Exception as e:
         logger.warning(f"  [特效检查] 处理时发生未知错误: {e}")
 
-    # 4. 音轨检查 (逻辑不变)
+    # 4. 音轨检查
     try:
         if config.get("resubscribe_audio_enabled"):
             required_langs_raw = config.get("resubscribe_audio_missing_languages", [])
@@ -2201,28 +2200,41 @@ def _item_needs_resubscribe(item_details: dict, config: dict) -> tuple[bool, str
     except Exception as e:
         logger.warning(f"  [音轨检查] 处理时发生未知错误: {e}")
 
-    # 5. 字幕检查 (★★★ 核心修改 ★★★)
+    # 5. 字幕检查 
     try:
         if config.get("resubscribe_subtitle_enabled"):
             required_langs_raw = config.get("resubscribe_subtitle_missing_languages", [])
             if isinstance(required_langs_raw, list) and required_langs_raw:
                 required_langs = set(str(lang).lower() for lang in required_langs_raw)
                 
-                # --- START: 语言环境豁免逻辑 ---
+                # --- START: 语言环境豁免逻辑 (Plan A & B) ---
                 CHINESE_SUB_CODES = {'chi', 'zho'}
                 CHINESE_AUDIO_CODES = {'chi', 'zho', 'cmn', 'yue'}
+                CHINESE_REGIONS = {'中国', '中国大陆', '香港', '台湾', '新加坡'}
 
-                # 检查是否需要中文字幕
-                if not required_langs.isdisjoint(CHINESE_SUB_CODES):
-                    # 如果需要，则检查是否存在中文音轨
+                needs_chinese_sub = not required_langs.isdisjoint(CHINESE_SUB_CODES)
+                
+                if needs_chinese_sub:
+                    is_exempted = False
                     present_audio_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
+
+                    # Plan A: 检查中文音轨
                     if not present_audio_langs.isdisjoint(CHINESE_AUDIO_CODES):
-                        # 如果存在中文音轨，则豁免对中文字幕的要求
-                        logger.debug(f"  [字幕检查] 检测到中文音轨，已豁免对中文字幕的要求。")
+                        logger.debug(f"  [字幕豁免-A] 检测到中文音轨，豁免中字要求。")
+                        is_exempted = True
+                    
+                    # Plan B: 如果A计划失败，且音轨信息无效，则检查制片国
+                    elif 'und' in present_audio_langs or not present_audio_langs:
+                        if media_metadata and media_metadata.get('countries_json'):
+                            countries = set(media_metadata['countries_json'])
+                            if not countries.isdisjoint(CHINESE_REGIONS):
+                                logger.debug(f"  [字幕豁免-B] 音轨信息不明，但检测到制片国家/地区为 ({', '.join(countries)})，豁免中字要求。")
+                                is_exempted = True
+
+                    if is_exempted:
                         required_langs.difference_update(CHINESE_SUB_CODES)
                 # --- END: 豁免逻辑 ---
 
-                # 只有在还有其他字幕要求时，才继续检查
                 if required_langs:
                     present_sub_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
                     logger.debug(f"  [字幕检查] 最终要求语言: {required_langs}, 现有字幕: {present_sub_langs}")
@@ -2314,12 +2326,11 @@ def task_resubscribe_library(processor: MediaProcessor):
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 def task_update_resubscribe_cache(processor: MediaProcessor):
     """
-    【V9 - UI透明化终极版】
-    - 质量字段现在显示从文件名中提取的真实标签 (如 BLURAY, WEB-DL)，
-      而不是技术编码，彻底解决UI误导问题。
+    【V10 - B计划豁免终极版】
+    - 在音轨信息为 und 时，会根据制片国家/地区来豁免中文字幕要求。
     """
     task_name = "刷新媒体洗版状态"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (UI透明化终极版) ---")
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (B计划豁免终极版) ---")
     
     try:
         resubscribe_config = db_handler.get_resubscribe_settings()
@@ -2362,6 +2373,12 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
                     logger.warning(f"无法获取项目 '{item_name}' (ID: {item_id}) 的完整详情，跳过。")
                     return None
 
+                # ★★★ 核心修改 1/2: 在这里获取媒体元数据，为B计划做准备 ★★★
+                tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+                media_metadata = None
+                if tmdb_id:
+                    media_metadata = db_handler.get_media_metadata_by_tmdb_id(tmdb_id)
+
                 item_type = item_details.get('Type')
                 
                 if item_type == 'Series' and item_details.get('ChildCount', 0) > 0:
@@ -2375,7 +2392,9 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
                         item_details['MediaStreams'] = first_episode.get('MediaStreams', item_details.get('MediaStreams', []))
                         item_details['Path'] = first_episode.get('Path', item_details.get('Path', ''))
 
-                needs_resubscribe, reason = _item_needs_resubscribe(item_details, resubscribe_config)
+                # ★★★ 核心修改 2/2: 将元数据传递给核心判断函数 ★★★
+                needs_resubscribe, reason = _item_needs_resubscribe(item_details, resubscribe_config, media_metadata)
+                
                 old_status = current_db_status_map.get(item_id)
                 new_status = 'ok' if not needs_resubscribe else ('subscribed' if old_status == 'subscribed' else 'needed')
 
