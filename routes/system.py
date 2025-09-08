@@ -131,60 +131,61 @@ def api_save_config():
         if not new_config_data:
             return jsonify({"error": "请求体中未包含配置数据"}), 400
         
-        # ★★★ 严格校验 User ID (这部分逻辑是好的，予以保留) ★★★
+        # User ID 校验 (保留)
         user_id_to_save = new_config_data.get("emby_user_id", "").strip()
         if not user_id_to_save:
-            error_message = "Emby User ID 不能为空！这是获取媒体库列表的必需项。"
+            error_message = "Emby User ID 不能为空！"
             logger.warning(f"API /api/config (POST): 拒绝保存，原因: {error_message}")
             return jsonify({"error": error_message}), 400
         if not re.match(r'^[a-f0-9]{32}$', user_id_to_save, re.I):
-            error_message = "Emby User ID 格式不正确！它应该是一串32位的字母和数字。"
-            logger.warning(f"API /api/config (POST): 拒绝保存，原因: {error_message} (输入值: '{user_id_to_save}')")
+            error_message = "Emby User ID 格式不正确！"
+            logger.warning(f"API /api/config (POST): 拒绝保存，原因: {error_message}")
             return jsonify({"error": error_message}), 400
         
-        logger.info(f"API /api/config (POST): 收到新的配置数据，准备净化并保存...")
+        logger.info(f"API /api/config (POST): 收到新的配置数据，准备全面净化并保存...")
 
-        # ▼▼▼ 核心修正：在保存前，增加“幽灵媒体库”自动净化逻辑 ▼▼▼
+        # ▼▼▼ 核心修正：全面净化逻辑 ▼▼▼
         
-        # 1. 检查前端是否提交了要处理的媒体库列表
-        if 'libraries_to_process' in new_config_data and isinstance(new_config_data['libraries_to_process'], list):
-            
-            # 2. 从 Emby 实时获取当前所有真实存在的媒体库
-            #    连接信息直接从前端提交的新配置中获取，保证实时性
-            emby_url = new_config_data.get('emby_server_url')
-            emby_api_key = new_config_data.get('emby_api_key')
-            user_id = new_config_data.get('emby_user_id')
+        # 1. 提取Emby连接信息，准备获取“白名单”
+        emby_url = new_config_data.get('emby_server_url')
+        emby_api_key = new_config_data.get('emby_api_key')
+        user_id = new_config_data.get('emby_user_id')
+        
+        valid_library_ids = None
+        if emby_url and emby_api_key and user_id:
+            logger.info("正在从Emby获取有效媒体库列表以进行净化...")
+            valid_libraries = emby_handler.get_emby_libraries(emby_url, emby_api_key, user_id)
+            if valid_libraries is not None:
+                valid_library_ids = {lib['Id'] for lib in valid_libraries}
+            else:
+                logger.warning("无法从Emby获取媒体库列表，本次保存将跳过净化步骤。")
 
-            if emby_url and emby_api_key and user_id:
-                logger.info("检测到媒体库配置更新，正在从Emby获取有效媒体库列表以进行净化...")
-                
-                # 调用 emby_handler 获取一份“白名单”
-                valid_libraries = emby_handler.get_emby_libraries(emby_url, emby_api_key, user_id)
-                
-                if valid_libraries is not None:
-                    # 将白名单转换为ID集合，以便高效查询
-                    valid_library_ids = {lib['Id'] for lib in valid_libraries}
-                    
-                    # 3. 过滤前端提交的列表，只保留那些真实存在的ID
-                    original_ids = new_config_data['libraries_to_process']
-                    cleaned_ids = [lib_id for lib_id in original_ids if lib_id in valid_library_ids]
-                    
-                    if len(cleaned_ids) < len(original_ids):
-                        removed_count = len(original_ids) - len(cleaned_ids)
-                        removed_ids = set(original_ids) - set(cleaned_ids)
-                        logger.info(f"配置净化：已自动移除 {removed_count} 个在Emby中已不存在的“幽灵”媒体库ID: {removed_ids}。")
-                    
-                    # 4. 用净化后的干净列表替换掉 new_config_data 中的旧列表
-                    new_config_data['libraries_to_process'] = cleaned_ids
-                else:
-                    logger.warning("无法从Emby获取媒体库列表，本次保存将跳过净化步骤。请检查Emby连接设置。")
+        # 2. 如果成功获取到白名单，则对所有相关字段进行净化
+        if valid_library_ids is not None:
+            
+            # --- 净化字段 1: libraries_to_process ---
+            if 'libraries_to_process' in new_config_data and isinstance(new_config_data['libraries_to_process'], list):
+                original_ids = new_config_data['libraries_to_process']
+                cleaned_ids = [lib_id for lib_id in original_ids if lib_id in valid_library_ids]
+                if len(cleaned_ids) < len(original_ids):
+                    removed_ids = set(original_ids) - set(cleaned_ids)
+                    logger.info(f"配置净化 (任务库): 已自动移除 {len(removed_ids)} 个无效ID: {removed_ids}。")
+                new_config_data['libraries_to_process'] = cleaned_ids
+
+            # --- 净化字段 2: proxy_native_view_selection (新增逻辑) ---
+            if 'proxy_native_view_selection' in new_config_data and isinstance(new_config_data['proxy_native_view_selection'], list):
+                original_ids = new_config_data['proxy_native_view_selection']
+                cleaned_ids = [lib_id for lib_id in original_ids if lib_id in valid_library_ids]
+                if len(cleaned_ids) < len(original_ids):
+                    removed_ids = set(original_ids) - set(cleaned_ids)
+                    logger.info(f"配置净化 (虚拟库): 已自动移除 {len(removed_ids)} 个无效ID: {removed_ids}。")
+                new_config_data['proxy_native_view_selection'] = cleaned_ids
         
         # ▲▲▲ 净化逻辑结束 ▲▲▲
 
-        # 现在，传递给 save_config_and_reload 的 new_config_data 已经是被净化过的了
         save_config_and_reload(new_config_data)  
         
-        logger.debug("API /api/config (POST): 净化后的配置已成功传递给保存函数。")
+        logger.debug("API /api/config (POST): 全面净化后的配置已成功传递给保存函数。")
         return jsonify({"message": "配置已成功保存并自动净化！"})
         
     except Exception as e:
