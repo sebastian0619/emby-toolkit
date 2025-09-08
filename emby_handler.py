@@ -80,23 +80,8 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
     if fields:
         fields_to_request = fields
     else:
-        fields_to_request = ",".join([
-            "ProviderIds",
-            "People",  # 关键字段，确保有
-            "Path",
-            "OriginalTitle",
-            "DateCreated",
-            "PremiereDate",
-            "ProductionYear",
-            "ChildCount",
-            "RecursiveItemCount",
-            "Overview",
-            "CommunityRating",
-            "OfficialRating",
-            "Genres",
-            "Studios",
-            "Taglines"
-        ])
+        fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines"
+
     params = {
         "api_key": emby_api_key,
         "Fields": fields_to_request
