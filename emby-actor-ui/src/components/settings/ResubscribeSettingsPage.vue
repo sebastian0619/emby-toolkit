@@ -41,7 +41,7 @@
               <template #header-extra>
                 <n-switch v-model:value="configModel.resubscribe_quality_enabled" :disabled="!configModel.resubscribe_enabled" />
               </template>
-              <n-form-item label="当文件名【不包含】以下任一关键词时触发洗版 (达标法)" label-placement="top">
+              <n-form-item label="当文件名【不包含】以下任一关键词时触发洗版" label-placement="top">
                 <!-- ▼▼▼ 核心修改：增加 tag 属性，允许用户自由输入 ▼▼▼ -->
                 <n-select
                   v-model:value="configModel.resubscribe_quality_include"
@@ -63,7 +63,7 @@
               <template #header-extra>
                 <n-switch v-model:value="configModel.resubscribe_effect_enabled" :disabled="!configModel.resubscribe_enabled" />
               </template>
-              <n-form-item label="当文件名【不包含】以下任一关键词时触发洗版 (达标法)" label-placement="top">
+              <n-form-item label="当文件名【不包含】以下任一关键词时触发洗版" label-placement="top">
                 <!-- ▼▼▼ 核心修改：增加 tag 属性，允许用户自由输入 ▼▼▼ -->
                 <n-select
                   v-model:value="configModel.resubscribe_effect_include"

@@ -2157,30 +2157,64 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
     except (ValueError, TypeError) as e:
         logger.warning(f"  -> [分辨率检查] 处理时发生类型错误: {e}")
 
-    # 2. 质量检查 
+    # 2. 质量检查
     try:
         if config.get("resubscribe_quality_enabled"):
             required_list_raw = config.get("resubscribe_quality_include", [])
-            if isinstance(required_list_raw, list):
+            if isinstance(required_list_raw, list) and required_list_raw:
                 required_list = [str(q).lower() for q in required_list_raw]
-                logger.trace(f"  -> [质量检查] 要求文件名包含: {required_list}")
-                if required_list and not any(required_term in file_name_lower for required_term in required_list):
+                logger.trace(f"  -> [质量检查] 要求: {required_list}")
+
+                quality_met = False
+
+                # 优先从文件名匹配
+                if any(required_term in file_name_lower for required_term in required_list):
+                    quality_met = True
+                    logger.trace(f"  -> [质量检查] 文件名匹配成功。")
+                else:
+                    # 文件名匹配不到，从 MediaStreams 匹配
+                    if video_stream:
+                        # Combine relevant video stream properties into a searchable string
+                        video_stream_info = f"{video_stream.get('Codec', '')} {video_stream.get('Profile', '')} {video_stream.get('VideoRange', '')} {video_stream.get('VideoRangeType', '')} {video_stream.get('DisplayTitle', '')}".lower()
+                        logger.trace(f"  -> [质量检查] MediaStream信息: '{video_stream_info}'")
+                        if any(required_term in video_stream_info for required_term in required_list):
+                            quality_met = True
+                            logger.trace(f"  -> [质量检查] MediaStream匹配成功。")
+
+                if not quality_met:
                     reasons.append("质量不达标")
-            else:
+            elif not isinstance(required_list_raw, list):
                 logger.warning(f"  -> [质量检查] 配置中的 'resubscribe_quality_include' 不是列表，已跳过。")
     except Exception as e:
         logger.warning(f"  -> [质量检查] 处理时发生未知错误: {e}")
 
-    # 3. 特效检查 
+    # 3. 特效检查
     try:
         if config.get("resubscribe_effect_enabled"):
             required_list_raw = config.get("resubscribe_effect_include", [])
-            if isinstance(required_list_raw, list):
+            if isinstance(required_list_raw, list) and required_list_raw:
                 required_list = [str(e).lower() for e in required_list_raw]
-                logger.trace(f"  -> [特效检查] 要求文件名包含: {required_list}")
-                if required_list and not any(required_term in file_name_lower for required_term in required_list):
+                logger.trace(f"  -> [特效检查] 要求: {required_list}")
+
+                effect_met = False
+
+                # 优先从文件名匹配
+                if any(required_term in file_name_lower for required_term in required_list):
+                    effect_met = True
+                    logger.trace(f"  -> [特效检查] 文件名匹配成功。")
+                else:
+                    # 文件名匹配不到，从 MediaStreams 匹配
+                    if video_stream:
+                        # Combine relevant video stream properties for effects
+                        video_stream_effect_info = f"{video_stream.get('VideoRange', '')} {video_stream.get('VideoRangeType', '')} {video_stream.get('DisplayTitle', '')}".lower()
+                        logger.trace(f"  -> [特效检查] MediaStream效果信息: '{video_stream_effect_info}'")
+                        if any(required_term in video_stream_effect_info for required_term in required_list):
+                            effect_met = True
+                            logger.trace(f"  -> [特效检查] MediaStream匹配成功。")
+
+                if not effect_met:
                     reasons.append("特效不达标")
-            else:
+            elif not isinstance(required_list_raw, list):
                 logger.warning(f"  -> [特效检查] 配置中的 'resubscribe_effect_include' 不是列表，已跳过。")
     except Exception as e:
         logger.warning(f"  -> [特效检查] 处理时发生未知错误: {e}")
