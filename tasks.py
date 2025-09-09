@@ -1781,12 +1781,20 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
         emby_tmdb_ids = set(emby_items_map.keys())
         logger.info(f"  -> 从 Emby 获取到 {len(emby_tmdb_ids)} 个有效的媒体项。")
 
+        if processor.is_stop_requested():
+            logger.info("任务在获取 Emby 媒体项后被中止。")
+            return
+
         db_tmdb_ids = set()
         with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT tmdb_id FROM media_metadata")
             db_tmdb_ids = {row["tmdb_id"] for row in cursor.fetchall()}
         logger.info(f"  -> 从本地数据库 media_metadata 表中获取到 {len(db_tmdb_ids)} 个媒体项。")
+
+        if processor.is_stop_requested():
+            logger.info("任务在获取本地数据库媒体项后被中止。")
+            return
 
         # --- 核心逻辑修改 ---
         ids_to_process: set
@@ -1807,11 +1815,18 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                 cursor = conn.cursor()
                 ids_to_delete_list = list(items_to_delete_tmdb_ids)
                 for i in range(0, len(ids_to_delete_list), 500):
+                    if processor.is_stop_requested():
+                        logger.info("任务在删除冗余数据时被中止。")
+                        break
                     batch_ids = ids_to_delete_list[i:i+500]
                     sql = "DELETE FROM media_metadata WHERE tmdb_id = ANY(%s)"
                     cursor.execute(sql, (batch_ids,))
                 conn.commit()
             logger.info("  -> 冗余数据清理完成。")
+
+        if processor.is_stop_requested():
+            logger.info("任务在冗余数据清理后被中止。")
+            return
 
         items_to_process = [emby_items_map[tmdb_id] for tmdb_id in ids_to_process]
         
@@ -1846,6 +1861,10 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
             enriched_people_list = processor._enrich_cast_from_db_and_api(batch_people_to_enrich)
             enriched_people_map = {str(p.get("Id")): p for p in enriched_people_list}
 
+            if processor.is_stop_requested():
+                logger.info("任务在演员数据补充后被中止。")
+                break
+
             logger.info(f"  -> 开始从Tmdb补充导演/国家数据...")
             tmdb_details_map = {}
             def fetch_tmdb_details(item):
@@ -1862,12 +1881,22 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 future_to_tmdb_id = {executor.submit(fetch_tmdb_details, item): item.get("ProviderIds", {}).get("Tmdb") for item in batch_items}
                 for future in concurrent.futures.as_completed(future_to_tmdb_id):
+                    if processor.is_stop_requested():
+                        logger.info("任务在并发获取 TMDb 详情时被中止。")
+                        break
                     tmdb_id, details = future.result()
                     if tmdb_id and details:
                         tmdb_details_map[tmdb_id] = details
             
+            if processor.is_stop_requested():
+                logger.info("任务在 TMDb 详情获取后被中止。")
+                break
+
             metadata_batch = []
             for item in batch_items:
+                if processor.is_stop_requested():
+                    logger.info("任务在处理单个媒体项时被中止。")
+                    break
                 tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
                 if not tmdb_id: continue
 
@@ -1927,6 +1956,10 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                 }
                 metadata_batch.append(metadata_to_save)
 
+            if processor.is_stop_requested():
+                logger.info("任务在构建元数据批次后被中止。")
+                break
+
             if metadata_batch:
                 with db_handler.get_db_connection() as conn:
                     cursor = conn.cursor()
@@ -1934,6 +1967,9 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                     # 开启一个总事务
                     cursor.execute("BEGIN;")
                     for idx, metadata in enumerate(metadata_batch):
+                        if processor.is_stop_requested():
+                            logger.info("任务在数据库写入循环中被中止。")
+                            break
                         savepoint_name = f"sp_{idx}"
                         try:
                             # 为每个条目创建一个保存点
@@ -1966,6 +2002,8 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
             processed_count += len(batch_items)
 
         final_message = f"同步完成！本次处理 {processed_count}/{total_to_process} 项, 删除 {len(items_to_delete_tmdb_ids)} 项。"
+        if processor.is_stop_requested():
+            final_message = "任务已中止，部分数据可能未处理。"
         task_manager.update_status_from_thread(100, final_message)
         logger.trace(f"--- '{task_name}' 任务成功完成 ---")
 

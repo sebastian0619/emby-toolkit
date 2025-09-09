@@ -1,3 +1,4 @@
+<!-- src/components/settings/ResubscribeSettingsPage.vue -->
 <template>
   <!-- 这个组件现在没有完整的 n-layout，因为它只是一个弹窗内容 -->
   <n-spin :show="loadingConfig">
@@ -89,11 +90,10 @@
                   v-model:value="configModel.resubscribe_audio_missing_languages"
                   multiple
                   tag
-                  placeholder="例如: chi, zho, yue"
                   :options="languageOptions"
                   :disabled="!configModel.resubscribe_enabled || !configModel.resubscribe_audio_enabled"
                 />
-                <template #feedback>请填写音轨的3字母语言代码 (ISO 639-2)。常用的有 chi/zho (国语), yue (粤语), eng (英语)。</template>
+                <template #feedback>请填写音轨的3字母语言代码 (ISO 639-2)。常用的有 chi (国语), yue (粤语), eng (英语)。</template>
               </n-form-item>
             </n-card>
           </n-gi>
@@ -109,11 +109,10 @@
                   v-model:value="configModel.resubscribe_subtitle_missing_languages"
                   multiple
                   tag
-                  placeholder="例如: chi, zho"
-                  :options="languageOptions"
+                  :options="subtitleLanguageOptions"
                   :disabled="!configModel.resubscribe_enabled || !configModel.resubscribe_subtitle_enabled"
                 />
-                <template #feedback>请填写字幕的3字母语言代码。通常只需要关心 chi/zho (中字)。</template>
+                <template #feedback>请填写字幕的3字母语言代码。通常只需要关心 chi (中字)。</template>
               </n-form-item>
             </n-card>
           </n-gi>
@@ -163,9 +162,14 @@ const effectOptions = ref([
 ]);
 
 const languageOptions = ref([
-    { label: '国语 (chi/zho)', value: 'chi' },
-    { label: '粤语 (yue)', value: 'yue' },
-    { label: '英语 (eng)', value: 'eng' },
+    { label: '国语', value: 'chi' },
+    { label: '粤语', value: 'yue' },
+    { label: '英语', value: 'eng' },
+]);
+
+const subtitleLanguageOptions = ref([
+    { label: '中文', value: 'chi' },
+    { label: '英文', value: 'eng' },
 ]);
 
 const loadSettings = async () => {
@@ -173,6 +177,30 @@ const loadSettings = async () => {
   try {
     const response = await axios.get('/api/resubscribe/settings');
     configModel.value = response.data;
+
+    // Normalize loaded languages for display
+    if (configModel.value.resubscribe_audio_missing_languages) {
+      const processed = new Set();
+      for (const lang of configModel.value.resubscribe_audio_missing_languages) {
+        if (lang === 'zho' || lang === 'chi') {
+          processed.add('chi'); // Normalize zho to chi for display
+        } else {
+          processed.add(lang);
+        }
+      }
+      configModel.value.resubscribe_audio_missing_languages = Array.from(processed);
+    }
+    if (configModel.value.resubscribe_subtitle_missing_languages) {
+      const processed = new Set();
+      for (const lang of configModel.value.resubscribe_subtitle_missing_languages) {
+        if (lang === 'zho' || lang === 'chi') {
+          processed.add('chi'); // Normalize zho to chi for display
+        } else {
+          processed.add(lang);
+        }
+      }
+      configModel.value.resubscribe_subtitle_missing_languages = Array.from(processed);
+    }
   } catch (error) {
     message.error('加载洗版设置失败，请检查网络或后端日志。');
   } finally {
@@ -183,7 +211,35 @@ const loadSettings = async () => {
 const save = async () => {
   savingConfig.value = true;
   try {
-    await axios.post('/api/resubscribe/settings', configModel.value);
+    const dataToSave = { ...configModel.value };
+
+    // Transform languages for backend
+    if (dataToSave.resubscribe_audio_missing_languages) {
+      const transformed = new Set();
+      for (const lang of dataToSave.resubscribe_audio_missing_languages) {
+        if (lang === 'chi') {
+          transformed.add('chi');
+          transformed.add('zho'); // Expand 'chi' to 'chi' and 'zho' for backend
+        } else {
+          transformed.add(lang);
+        }
+      }
+      dataToSave.resubscribe_audio_missing_languages = Array.from(transformed);
+    }
+    if (dataToSave.resubscribe_subtitle_missing_languages) {
+      const transformed = new Set();
+      for (const lang of dataToSave.resubscribe_subtitle_missing_languages) {
+        if (lang === 'chi') {
+          transformed.add('chi');
+          transformed.add('zho'); // Expand 'chi' to 'chi' and 'zho' for backend
+        } else {
+          transformed.add(lang);
+        }
+      }
+      dataToSave.resubscribe_subtitle_missing_languages = Array.from(transformed);
+    }
+
+    await axios.post('/api/resubscribe/settings', dataToSave);
     message.success('媒体洗版规则已成功保存！');
     // ★★★ 保存成功后，触发 'saved' 事件 ★★★
     emit('saved');
