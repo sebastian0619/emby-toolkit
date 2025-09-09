@@ -2338,18 +2338,22 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
         return False, ""
 
 def task_resubscribe_library(processor: MediaProcessor):
-    """【V5 - 全局配额终极版】后台任务：使用全局每日配额系统，运行时消耗额度。"""
+    """【V6 - 支持联动删除最终版】后台任务：根据规则订阅并选择性删除源文件。"""
     task_name = "媒体洗版"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     config = processor.config
     
     try:
+        # 1. 任务开始时，获取所有最新的规则定义
+        all_rules = db_handler.get_all_resubscribe_rules()
+        
         delay = float(config.get(constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS, 1.5))
 
         task_manager.update_status_from_thread(0, "正在从缓存中检索需洗版的项目...")
         with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
+            # 确保查询出 matched_rule_id
             cursor.execute("SELECT * FROM resubscribe_cache WHERE status = 'needed'")
             items_to_resubscribe = cursor.fetchall()
 
@@ -2360,6 +2364,7 @@ def task_resubscribe_library(processor: MediaProcessor):
 
         logger.info(f"  -> 共找到 {total_needed} 个项目待处理，将开始订阅...")
         resubscribed_count = 0
+        deleted_count = 0
 
         for i, item in enumerate(items_to_resubscribe):
             if processor.is_stop_requested():
@@ -2369,8 +2374,7 @@ def task_resubscribe_library(processor: MediaProcessor):
             current_quota = db_handler.get_subscription_quota()
             if current_quota <= 0:
                 logger.warning("  -> 每日订阅配额已用尽，任务提前结束。")
-                task_manager.update_status_from_thread(100, f"配额用尽！已订阅 {resubscribed_count} 项。")
-                break # 跳出循环
+                break
 
             item_name = item.get('item_name')
             item_id = item.get('item_id')
@@ -2390,77 +2394,133 @@ def task_resubscribe_library(processor: MediaProcessor):
             
             if success:
                 db_handler.decrement_subscription_quota()
-                
                 db_handler.update_resubscribe_item_status(item_id, 'subscribed')
                 resubscribed_count += 1
+                
+                # --- ★★★ 核心删除逻辑在这里 ★★★ ---
+                matched_rule_id = item.get('matched_rule_id')
+                if matched_rule_id:
+                    # 从内存中查找最新的规则，而不是依赖缓存
+                    rule = next((r for r in all_rules if r['id'] == matched_rule_id), None)
+                    if rule and rule.get('delete_after_resubscribe'):
+                        logger.warning(f"规则 '{rule['name']}' 要求删除源文件，正在删除 Emby 项目: {item_name} (ID: {item_id})")
+                        
+                        delete_success = emby_handler.delete_item(
+                            item_id=item_id,
+                            emby_server_url=processor.emby_url,
+                            emby_api_key=processor.emby_api_key,
+                            user_id=processor.emby_user_id
+                        )
+                        if delete_success:
+                            deleted_count += 1
                 
                 if i < total_needed - 1:
                     time.sleep(delay)
 
-        final_message = f"任务完成！共处理 {i+1}/{total_needed} 项，成功提交 {resubscribed_count} 个订阅。"
+        final_message = f"任务完成！成功提交 {resubscribed_count} 个订阅，并根据规则删除了 {deleted_count} 个媒体项。"
         if not processor.is_stop_requested() and current_quota <= 0:
-             final_message = f"配额用尽！共处理 {i+1}/{total_needed} 项，成功提交 {resubscribed_count} 个订阅。"
+             final_message = f"配额用尽！成功提交 {resubscribed_count} 个订阅，删除 {deleted_count} 个媒体项。"
 
         task_manager.update_status_from_thread(100, final_message)
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+
 def task_update_resubscribe_cache(processor: MediaProcessor):
     """
-    【V10 - B计划豁免终极版】
-    - 在音轨信息为 und 时，会根据制片国家/地区来豁免中文字幕要求。
+    【V12 - 精准扫描最终版】
+    - 任务启动后，首先从所有启用的规则中提取出需要扫描的媒体库ID。
+    - 只扫描被规则明确指定的媒体库，不再读取全局配置。
+    - 后续逻辑保持不变，为每个媒体项应用其对应的规则。
     """
-    task_name = "刷新洗版状态"
+    task_name = "刷新洗版状态 (精准扫描模式)"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
-        resubscribe_config = db_handler.get_resubscribe_settings()
-        task_manager.update_status_from_thread(0, "正在从Emby一次性获取所有媒体详情...")
+        # --- 核心改造 1/3: 首先从规则中构建需要扫描的媒体库列表 ---
+        task_manager.update_status_from_thread(0, "正在加载并解析所有洗版规则...")
+        all_enabled_rules = [rule for rule in db_handler.get_all_resubscribe_rules() if rule.get('enabled')]
         
-        libs_to_process_ids = processor.config.get("libraries_to_process", [])
-        if not libs_to_process_ids:
-            raise ValueError("未在配置中指定要处理的媒体库。")
+        library_ids_to_scan = set()
+        for rule in all_enabled_rules:
+            target_libs = rule.get('target_library_ids')
+            if isinstance(target_libs, list):
+                library_ids_to_scan.update(target_libs)
 
+        # 将 set 转换为 list
+        libs_to_process_ids = list(library_ids_to_scan)
+
+        try:
+            db_handler.delete_resubscribe_cache_for_unwatched_libraries(libs_to_process_ids)
+        except Exception as e_clean:
+            logger.error(f"任务前自愈清理失败: {e_clean}", exc_info=True)
+
+        if not libs_to_process_ids:
+            logger.info("  -> 没有任何启用的洗版规则指定了媒体库，任务结束。")
+            task_manager.update_status_from_thread(100, "任务跳过：没有规则指定媒体库")
+            return
+        
+        logger.info(f"  -> 根据规则，本次将只扫描以下媒体库ID: {libs_to_process_ids}")
+
+        # 创建一个高效的查找映射 (这部分逻辑不变)
+        library_to_rule_map = {}
+        for rule in reversed(all_enabled_rules):
+            target_libs = rule.get('target_library_ids')
+            if isinstance(target_libs, list):
+                for lib_id in target_libs:
+                    library_to_rule_map[lib_id] = rule
+        
+        task_manager.update_status_from_thread(5, f"正在从 {len(libs_to_process_ids)} 个目标媒体库中获取项目...")
+        
+        # --- 核心改造 2/3: 使用从规则中生成的 libs_to_process_ids 进行扫描 ---
         all_items_base_info = emby_handler.get_emby_library_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
-            media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
+            media_type_filter="Movie,Series", 
+            library_ids=libs_to_process_ids, # ★★★ 使用我们新生成的、精准的媒体库列表
             fields="ProviderIds,Name,Type,ChildCount"
         ) or []
         
+        # --- 后续的所有逻辑都保持不变，因为它们已经是正确的 ---
         current_db_status_map = {item['item_id']: item['status'] for item in db_handler.get_all_resubscribe_cache()}
         
         total = len(all_items_base_info)
         if total == 0:
-            task_manager.update_status_from_thread(100, "任务完成：未找到任何项目。")
+            task_manager.update_status_from_thread(100, "任务完成：在目标媒体库中未找到任何项目。")
             return
 
-        logger.info(f"  -> 将为 {total} 个媒体项目获取详情并检查洗版状态...")
+        logger.info(f"  -> 将为 {total} 个媒体项目获取详情并按规则检查洗版状态...")
         
         cache_update_batch = []
         processed_count = 0
 
+        # --- 核心改造 3/3: 这里的并发处理逻辑完全不需要修改，因为它已经是正确的 ---
         def process_item_for_cache(item_base_info):
+            # ... (这个内部函数的全部内容保持原样，无需改动)
             item_id = item_base_info.get('Id')
             item_name = item_base_info.get('Name')
-            
+            source_lib_id = item_base_info.get('_SourceLibraryId')
+
             try:
+                applicable_rule = library_to_rule_map.get(source_lib_id)
+
+                if not applicable_rule:
+                    return {
+                        "item_id": item_id, "item_name": item_name,
+                        "tmdb_id": item_base_info.get("ProviderIds", {}).get("Tmdb"),
+                        "item_type": item_base_info.get('Type'), "status": 'ok', "reason": "无匹配规则",
+                        "matched_rule_id": None, "matched_rule_name": None, "source_library_id": source_lib_id
+                    }
+
                 item_details = emby_handler.get_emby_item_details(
-                    item_id=item_id,
-                    emby_server_url=processor.emby_url,
-                    emby_api_key=processor.emby_api_key,
-                    user_id=processor.emby_user_id
+                    item_id=item_id, emby_server_url=processor.emby_url,
+                    emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
                 )
                 if not item_details:
-                    logger.warning(f"  -> 无法获取项目 '{item_name}' (ID: {item_id}) 的完整详情，跳过。")
                     return None
 
-                # ★★★ 核心修改 1/2: 在这里获取媒体元数据，为B计划做准备 ★★★
                 tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-                media_metadata = None
-                if tmdb_id:
-                    media_metadata = db_handler.get_media_metadata_by_tmdb_id(tmdb_id)
-
+                media_metadata = db_handler.get_media_metadata_by_tmdb_id(tmdb_id) if tmdb_id else None
                 item_type = item_details.get('Type')
                 
                 if item_type == 'Series' and item_details.get('ChildCount', 0) > 0:
@@ -2474,18 +2534,16 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
                         item_details['MediaStreams'] = first_episode.get('MediaStreams', item_details.get('MediaStreams', []))
                         item_details['Path'] = first_episode.get('Path', item_details.get('Path', ''))
 
-                # ★★★ 核心修改 2/2: 将元数据传递给核心判断函数 ★★★
-                needs_resubscribe, reason = _item_needs_resubscribe(item_details, resubscribe_config, media_metadata)
+                needs_resubscribe, reason = _item_needs_resubscribe(item_details, applicable_rule, media_metadata)
                 
                 old_status = current_db_status_map.get(item_id)
                 new_status = 'ok' if not needs_resubscribe else ('subscribed' if old_status == 'subscribed' else 'needed')
 
+                # ... (显示信息的代码保持不变)
                 AUDIO_LANG_MAP = {'chi': '国语', 'zho': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语', 'kor': '韩语'}
                 SUBTITLE_LANG_MAP = {'chi': '中字', 'zho': '中字', 'eng': '英文'}
-
                 media_streams = item_details.get('MediaStreams', [])
                 video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
-                
                 resolution_str = "未知"
                 if video_stream and video_stream.get('Width'):
                     width = video_stream.get('Width')
@@ -2493,44 +2551,37 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
                     elif width >= 1920: resolution_str = "1080p"
                     elif width >= 1280: resolution_str = "720p"
                     else: resolution_str = f"{width}p"
-
-                # ★★★ 核心修改：调用新函数来获取质量标签 ★★★
                 file_name_lower = os.path.basename(item_details.get('Path', '')).lower()
                 quality_str = _extract_quality_tag_from_filename(file_name_lower, video_stream)
-                
                 effect_str = video_stream.get('VideoRangeType') or video_stream.get('VideoRange', '未知') if video_stream else '未知'
-
                 audio_langs = list(set(s.get('Language') for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')))
                 audio_str = ', '.join(sorted([AUDIO_LANG_MAP.get(lang, lang) for lang in audio_langs])) or '无'
-
                 subtitle_langs_raw = list(set(s.get('Language') for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')))
                 priority_langs = ['chi', 'zho', 'eng']
                 display_langs = []
-                
                 for lang in priority_langs:
                     if lang in subtitle_langs_raw:
                         display_langs.append(SUBTITLE_LANG_MAP.get(lang, lang))
                         subtitle_langs_raw = [l for l in subtitle_langs_raw if l != lang]
-                
                 display_langs = sorted(list(set(display_langs)))
-                
                 remaining_to_show = 3 - len(display_langs)
                 if subtitle_langs_raw and remaining_to_show > 0:
                     other_langs_translated = sorted([SUBTITLE_LANG_MAP.get(lang, lang.upper()) for lang in subtitle_langs_raw])
                     display_langs.extend(other_langs_translated[:remaining_to_show])
                     if len(subtitle_langs_raw) > remaining_to_show:
                         display_langs.append('...')
-
                 subtitle_str = ', '.join(display_langs) or '无'
                 
                 return {
                     "item_id": item_id, "item_name": item_details.get('Name'),
-                    "tmdb_id": item_details.get("ProviderIds", {}).get("Tmdb"),
+                    "tmdb_id": tmdb_id,
                     "item_type": item_type, "status": new_status, "reason": reason if needs_resubscribe else "",
                     "resolution_display": resolution_str, "quality_display": quality_str,
                     "effect_display": effect_str.upper(), "audio_display": audio_str,
                     "subtitle_display": subtitle_str, "audio_languages_raw": audio_langs,
                     "subtitle_languages_raw": subtitle_langs_raw,
+                    "matched_rule_id": applicable_rule.get('id'),
+                    "matched_rule_name": applicable_rule.get('name')
                 }
             except Exception as e:
                 logger.error(f"处理项目 '{item_name}' (ID: {item_id}) 时线程内发生错误: {e}", exc_info=True)
@@ -2543,7 +2594,7 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
                 result = future.result()
                 if result: cache_update_batch.append(result)
                 processed_count += 1
-                progress = int((processed_count / total) * 100)
+                progress = int(10 + (processed_count / total) * 90)
                 task_manager.update_status_from_thread(progress, f"({processed_count}/{total}) 正在分析: {future_to_item[future].get('Name')}")
 
         if cache_update_batch:
@@ -2557,6 +2608,7 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+
 # ★★★ 新增：智能从文件名提取质量标签的辅助函数 ★★★
 def _extract_quality_tag_from_filename(filename_lower: str, video_stream: dict) -> str:
     """

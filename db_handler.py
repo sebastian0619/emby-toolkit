@@ -1896,91 +1896,115 @@ def save_setting(setting_key: str, value: Dict[str, Any]):
 # ======================================================================
 # 模块 8: 媒体洗版设置数据访问 (Resubscribe Settings Data Access) - ★★★ 新增模块 ★★★
 # ======================================================================
+# --- 规则管理 (Rules Management) ---
 
-def get_resubscribe_settings() -> Dict[str, Any]:
-    """【V4 - NULL值过滤最终修复版】获取媒体洗版设置。"""
-    defaults = {
-        "resubscribe_enabled": False,
-        "resubscribe_resolution_enabled": False,
-        "resubscribe_resolution_threshold": 1920,
-        "resubscribe_audio_enabled": False,
-        "resubscribe_audio_missing_languages": ["chi", "zho"],
-        "resubscribe_subtitle_enabled": False,
-        "resubscribe_subtitle_missing_languages": ["chi", "zho"],
-        "resubscribe_quality_enabled": False,
-        "resubscribe_quality_include": [],
-        "resubscribe_effect_enabled": False,
-        "resubscribe_effect_include": [],
-    }
+def _prepare_rule_data_for_db(rule_data: Dict[str, Any]) -> Dict[str, Any]:
+    """【内部函数】准备规则数据以便存入数据库，自动包装JSONB字段。"""
+    data_to_save = rule_data.copy()
+    jsonb_fields = [
+        'target_library_ids', 'resubscribe_audio_missing_languages',
+        'resubscribe_subtitle_missing_languages', 'resubscribe_quality_include',
+        'resubscribe_effect_include'
+    ]
+    for field in jsonb_fields:
+        if field in data_to_save and data_to_save[field] is not None:
+            data_to_save[field] = Json(data_to_save[field])
+    return data_to_save
+
+def get_all_resubscribe_rules() -> List[Dict[str, Any]]:
+    """获取所有洗版规则，按优先级排序。"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM resubscribe_settings WHERE id = 1")
-            row = cursor.fetchone()
-            if row:
-                settings = defaults.copy()
-                
-                # ★★★ 核心修复：只用数据库中非NULL的值来更新默认值 ★★★
-                # 这样可以防止因前端未传递某些字段导致数据库存入NULL，
-                # 从而意外覆盖掉有效的默认值。
-                db_values = {k: v for k, v in dict(row).items() if v is not None}
-                settings.update(db_values)
-                
-                return settings
-            else:
-                return defaults
+            cursor.execute("SELECT * FROM resubscribe_rules ORDER BY sort_order ASC, id ASC")
+            return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"DB: 获取洗版设置失败，将使用默认值: {e}", exc_info=True)
-        return defaults
+        logger.error(f"DB: 获取所有洗版规则时失败: {e}", exc_info=True)
+        return []
 
-def save_resubscribe_settings(settings: Dict[str, Any]):
-    """【V5 - Json适配器终极修复版】保存媒体洗版设置。"""
-    sql = """
-        INSERT INTO resubscribe_settings (
-            id, resubscribe_enabled, resubscribe_resolution_enabled, 
-            resubscribe_resolution_threshold, resubscribe_audio_enabled, 
-            resubscribe_audio_missing_languages, resubscribe_subtitle_enabled, 
-            resubscribe_subtitle_missing_languages,
-            resubscribe_quality_enabled, resubscribe_quality_include,
-            resubscribe_effect_enabled, resubscribe_effect_include
-        ) VALUES (
-            1, %(resubscribe_enabled)s, %(resubscribe_resolution_enabled)s,
-            %(resubscribe_resolution_threshold)s, %(resubscribe_audio_enabled)s,
-            %(resubscribe_audio_missing_languages)s, %(resubscribe_subtitle_enabled)s,
-            %(resubscribe_subtitle_missing_languages)s,
-            %(resubscribe_quality_enabled)s, %(resubscribe_quality_include)s,
-            %(resubscribe_effect_enabled)s, %(resubscribe_effect_include)s
-        )
-        ON CONFLICT (id) DO UPDATE SET
-            resubscribe_enabled = EXCLUDED.resubscribe_enabled,
-            resubscribe_resolution_enabled = EXCLUDED.resubscribe_resolution_enabled,
-            resubscribe_resolution_threshold = EXCLUDED.resubscribe_resolution_threshold,
-            resubscribe_audio_enabled = EXCLUDED.resubscribe_audio_enabled,
-            resubscribe_audio_missing_languages = EXCLUDED.resubscribe_audio_missing_languages,
-            resubscribe_subtitle_enabled = EXCLUDED.resubscribe_subtitle_enabled,
-            resubscribe_subtitle_missing_languages = EXCLUDED.resubscribe_subtitle_missing_languages,
-            resubscribe_quality_enabled = EXCLUDED.resubscribe_quality_enabled,
-            resubscribe_quality_include = EXCLUDED.resubscribe_quality_include,
-            resubscribe_effect_enabled = EXCLUDED.resubscribe_effect_enabled,
-            resubscribe_effect_include = EXCLUDED.resubscribe_effect_include;
-    """
+def create_resubscribe_rule(rule_data: Dict[str, Any]) -> int:
+    """创建一条新的洗版规则，并返回其ID。"""
     try:
-        # ★★★ 核心修复：创建一个新的字典，并用 Json() 包装所有需要存为 JSONB 的字段 ★★★
-        data_to_save = settings.copy()
-        data_to_save['resubscribe_audio_missing_languages'] = Json(settings.get('resubscribe_audio_missing_languages', []))
-        data_to_save['resubscribe_subtitle_missing_languages'] = Json(settings.get('resubscribe_subtitle_missing_languages', []))
-        data_to_save['resubscribe_quality_include'] = Json(settings.get('resubscribe_quality_include', []))
-        data_to_save['resubscribe_effect_include'] = Json(settings.get('resubscribe_effect_include', []))
-
+        prepared_data = _prepare_rule_data_for_db(rule_data)
+        columns = prepared_data.keys()
+        placeholders = ', '.join(['%s'] * len(columns))
+        sql = f"INSERT INTO resubscribe_rules ({', '.join(columns)}) VALUES ({placeholders}) RETURNING id"
+        
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # 使用包装过的新字典执行SQL
-            cursor.execute(sql, data_to_save)
+            cursor.execute(sql, list(prepared_data.values()))
+            result = cursor.fetchone()
+            if not result:
+                raise psycopg2.Error("数据库未能返回新创建的规则ID。")
+            new_id = result['id']
             conn.commit()
-            logger.info("DB: 成功保存媒体洗版设置。")
-    except Exception as e:
-        logger.error(f"DB: 保存洗版设置时失败: {e}", exc_info=True)
+            logger.info(f"DB: 成功创建洗版规则 '{rule_data.get('name')}' (ID: {new_id})。")
+            return new_id
+    except psycopg2.IntegrityError as e:
+        logger.warning(f"DB: 创建洗版规则失败，可能名称 '{rule_data.get('name')}' 已存在: {e}")
         raise
+    except Exception as e:
+        logger.error(f"DB: 创建洗版规则时发生未知错误: {e}", exc_info=True)
+        raise
+
+def update_resubscribe_rule(rule_id: int, rule_data: Dict[str, Any]) -> bool:
+    """更新指定ID的洗版规则。"""
+    try:
+        prepared_data = _prepare_rule_data_for_db(rule_data)
+        set_clauses = [f"{key} = %s" for key in prepared_data.keys()]
+        sql = f"UPDATE resubscribe_rules SET {', '.join(set_clauses)} WHERE id = %s"
+        values = list(prepared_data.values())
+        values.append(rule_id)
+        
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, tuple(values))
+            if cursor.rowcount == 0:
+                logger.warning(f"DB: 尝试更新洗版规则ID {rule_id}，但在数据库中未找到。")
+                return False
+            conn.commit()
+            logger.info(f"DB: 成功更新洗版规则ID {rule_id}。")
+            return True
+    except Exception as e:
+        logger.error(f"DB: 更新洗版规则ID {rule_id} 时失败: {e}", exc_info=True)
+        raise
+
+def delete_resubscribe_rule(rule_id: int) -> bool:
+    """删除指定ID的洗版规则。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM resubscribe_rules WHERE id = %s", (rule_id,))
+            if cursor.rowcount == 0:
+                logger.warning(f"DB: 尝试删除洗版规则ID {rule_id}，但在数据库中未找到。")
+                return False
+            conn.commit()
+            logger.info(f"DB: 成功删除洗版规则ID {rule_id}。")
+            return True
+    except Exception as e:
+        logger.error(f"DB: 删除洗版规则ID {rule_id} 时失败: {e}", exc_info=True)
+        raise
+
+def update_resubscribe_rules_order(ordered_ids: List[int]) -> bool:
+    """根据ID列表批量更新洗版规则的排序。"""
+    if not ordered_ids:
+        return True
+    data_to_update = [(index, rule_id) for index, rule_id in enumerate(ordered_ids)]
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            from psycopg2.extras import execute_values
+            sql = "UPDATE resubscribe_rules SET sort_order = data.sort_order FROM (VALUES %s) AS data(sort_order, id) WHERE resubscribe_rules.id = data.id;"
+            execute_values(cursor, sql, data_to_update)
+            conn.commit()
+            logger.info(f"DB: 成功更新了 {len(ordered_ids)} 个洗版规则的顺序。")
+            return True
+    except Exception as e:
+        logger.error(f"DB: 批量更新洗版规则顺序时失败: {e}", exc_info=True)
+        raise
+
+# --- 缓存管理 (Cache Management) ---
+
 def get_all_resubscribe_cache() -> List[Dict[str, Any]]:
     """获取所有洗版缓存数据。"""
     try:
@@ -1993,28 +2017,29 @@ def get_all_resubscribe_cache() -> List[Dict[str, Any]]:
         return []
 
 def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
-    """【V3 - 状态机版】批量更新或插入洗版缓存数据。"""
-    # ...
+    """【V5 - 增加来源库ID】批量更新或插入洗版缓存数据。"""
+    if not items_data:
+        return
+
     sql = """
         INSERT INTO resubscribe_cache (
             item_id, item_name, tmdb_id, item_type, status, reason,
             resolution_display, quality_display, effect_display, audio_display, subtitle_display,
-            audio_languages_raw, subtitle_languages_raw, last_checked_at
+            audio_languages_raw, subtitle_languages_raw, last_checked_at,
+            matched_rule_id, matched_rule_name, source_library_id
         ) VALUES %s
         ON CONFLICT (item_id) DO UPDATE SET
-            item_name = EXCLUDED.item_name,
-            tmdb_id = EXCLUDED.tmdb_id,
-            item_type = EXCLUDED.item_type,
-            status = EXCLUDED.status,
-            reason = EXCLUDED.reason,
-            resolution_display = EXCLUDED.resolution_display,
-            quality_display = EXCLUDED.quality_display,
-            effect_display = EXCLUDED.effect_display,
-            audio_display = EXCLUDED.audio_display,
-            subtitle_display = EXCLUDED.subtitle_display,
+            item_name = EXCLUDED.item_name, tmdb_id = EXCLUDED.tmdb_id,
+            item_type = EXCLUDED.item_type, status = EXCLUDED.status,
+            reason = EXCLUDED.reason, resolution_display = EXCLUDED.resolution_display,
+            quality_display = EXCLUDED.quality_display, effect_display = EXCLUDED.effect_display,
+            audio_display = EXCLUDED.audio_display, subtitle_display = EXCLUDED.subtitle_display,
             audio_languages_raw = EXCLUDED.audio_languages_raw,
             subtitle_languages_raw = EXCLUDED.subtitle_languages_raw,
-            last_checked_at = EXCLUDED.last_checked_at;
+            last_checked_at = EXCLUDED.last_checked_at,
+            matched_rule_id = EXCLUDED.matched_rule_id,
+            matched_rule_name = EXCLUDED.matched_rule_name,
+            source_library_id = EXCLUDED.source_library_id;
     """
     values_to_insert = []
     for item in items_data:
@@ -2025,7 +2050,10 @@ def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
             item.get('audio_display'), item.get('subtitle_display'),
             json.dumps(item.get('audio_languages_raw', [])),
             json.dumps(item.get('subtitle_languages_raw', [])),
-            datetime.now(timezone.utc)
+            datetime.now(timezone.utc),
+            item.get('matched_rule_id'),
+            item.get('matched_rule_name'),
+            item.get('source_library_id')
         ))
     
     try:
@@ -2037,7 +2065,7 @@ def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
     except Exception as e:
         logger.error(f"DB: 批量更新洗版缓存失败: {e}", exc_info=True)
         raise
-# ★★★ 更新单个洗版项目状态的函数 ★★★
+
 def update_resubscribe_item_status(item_id: str, new_status: str) -> bool:
     """更新单个洗版缓存条目的状态。"""
     try:
@@ -2052,8 +2080,69 @@ def update_resubscribe_item_status(item_id: str, new_status: str) -> bool:
     except Exception as e:
         logger.error(f"DB: 更新洗版缓存状态失败 for item {item_id}: {e}", exc_info=True)
         return False
+
+def delete_resubscribe_cache_by_rule_id(rule_id: int) -> int:
+    """根据规则ID，删除所有关联的洗版缓存项。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM resubscribe_cache WHERE matched_rule_id = %s", (rule_id,))
+            deleted_count = cursor.rowcount
+            conn.commit()
+            logger.info(f"DB: 联动删除了 {deleted_count} 条与规则ID {rule_id} 关联的洗版缓存。")
+            return deleted_count
+    except Exception as e:
+        logger.error(f"DB: 根据规则ID {rule_id} 删除洗版缓存时失败: {e}", exc_info=True)
+        raise
+
+def delete_resubscribe_cache_for_unwatched_libraries(watched_library_ids: List[str]) -> int:
+    """删除所有来自“未被任何规则监控的”媒体库的缓存项。"""
+    if not watched_library_ids:
+        sql = "DELETE FROM resubscribe_cache"
+        params = []
+    else:
+        # 使用元组作为IN子句的参数
+        sql = "DELETE FROM resubscribe_cache WHERE source_library_id IS NOT NULL AND source_library_id NOT IN %s"
+        params = [tuple(watched_library_ids)]
+    
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, params)
+            deleted_count = cursor.rowcount
+            conn.commit()
+            if deleted_count > 0:
+                logger.info(f"DB: [自愈清理] 成功删除了 {deleted_count} 条来自无效媒体库的陈旧洗版缓存。")
+            return deleted_count
+    except Exception as e:
+        logger.error(f"DB: [自愈清理] 清理无效洗版缓存时失败: {e}", exc_info=True)
+        raise
+
+def get_resubscribe_cache_item(item_id: str) -> Optional[Dict[str, Any]]:
+    """根据 item_id 获取单个洗版缓存项。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM resubscribe_cache WHERE item_id = %s", (item_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"DB: 获取单个洗版缓存项 {item_id} 失败: {e}", exc_info=True)
+        return None
+
+def get_resubscribe_rule_by_id(rule_id: int) -> Optional[Dict[str, Any]]:
+    """根据 rule_id 获取单个洗版规则。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM resubscribe_rules WHERE id = %s", (rule_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"DB: 获取单个洗版规则 {rule_id} 失败: {e}", exc_info=True)
+        return None
 # ======================================================================
-# 模块 9: 全局订阅配额管理器 (Subscription Quota Manager) - ★★★ 新增模块 ★★★
+# 模块 9: 全局订阅配额管理器 (Subscription Quota Manager) -          ★★★
 # ======================================================================
 
 def get_subscription_quota() -> int:

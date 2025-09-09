@@ -325,11 +325,30 @@ def init_db():
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_subscription_id ON tracked_actor_media (subscription_id)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_status ON tracked_actor_media (status)")
 
-                logger.trace("  -> 正在创建 'resubscribe_settings' 表...")
+                try:
+                    logger.warning("  -> [数据库升级] 正在删除旧的 'resubscribe_settings' 表...")
+                    cursor.execute("DROP TABLE IF EXISTS resubscribe_settings CASCADE;")
+                    logger.info("  -> [数据库升级] 旧表 'resubscribe_settings' 已成功删除。")
+                except Exception as e_drop:
+                    logger.error(f"  -> [数据库升级] 删除旧表 'resubscribe_settings' 时出错（可能已不存在）: {e_drop}")
+                
+                logger.trace("  -> 正在创建 'resubscribe_rules' 表 (多规则洗版)...")
                 cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS resubscribe_settings (
-                        id INT PRIMARY KEY DEFAULT 1,
-                        resubscribe_enabled BOOLEAN DEFAULT FALSE,
+                    CREATE TABLE IF NOT EXISTS resubscribe_rules (
+                        id SERIAL PRIMARY KEY,
+                        name TEXT NOT NULL UNIQUE,
+                        enabled BOOLEAN DEFAULT TRUE,
+                        
+                        -- ★ 新增：规则应用的目标媒体库ID列表
+                        target_library_ids JSONB, 
+                        
+                        -- ★ 新增：洗版成功后是否删除Emby媒体项
+                        delete_after_resubscribe BOOLEAN DEFAULT FALSE,
+                        
+                        -- ★ 新增：规则优先级，数字越小越优先
+                        sort_order INTEGER DEFAULT 0,
+
+                        -- ▼ 下面是原来 settings 表里的所有字段
                         resubscribe_resolution_enabled BOOLEAN DEFAULT FALSE,
                         resubscribe_resolution_threshold INT DEFAULT 1920,
                         resubscribe_audio_enabled BOOLEAN DEFAULT FALSE,
@@ -339,8 +358,7 @@ def init_db():
                         resubscribe_quality_enabled BOOLEAN DEFAULT FALSE,
                         resubscribe_quality_include JSONB,
                         resubscribe_effect_enabled BOOLEAN DEFAULT FALSE,
-                        resubscribe_effect_include JSONB,
-                        CONSTRAINT single_row_check CHECK (id = 1)
+                        resubscribe_effect_include JSONB
                     )
                 """)
 
@@ -360,7 +378,8 @@ def init_db():
                         subtitle_display TEXT,
                         audio_languages_raw JSONB,
                         subtitle_languages_raw JSONB,
-                        last_checked_at TIMESTAMP WITH TIME ZONE
+                        last_checked_at TIMESTAMP WITH TIME ZONE,
+                        source_library_id TEXT
                     )
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_resubscribe_cache_status ON resubscribe_cache (status);")
@@ -393,6 +412,11 @@ def init_db():
                         },
                         'watchlist': {
                             "last_episode_to_air_json": "JSONB"
+                        },
+                        'resubscribe_cache': {
+                            "matched_rule_id": "INTEGER",
+                            "matched_rule_name": "TEXT",
+                            "source_library_id": "TEXT"
                         }
                     }
 
@@ -418,6 +442,28 @@ def init_db():
                     logger.error(f"  -> [数据库升级] 检查或添加新字段时出错: {e_alter}", exc_info=True)
                     # 即使升级失败，也继续执行，不中断主程序启动
                 
+                try:
+                    # 检查 resubscribe_cache 表上是否已存在名为 fk_matched_rule 的外键
+                    cursor.execute("""
+                        SELECT 1 FROM pg_constraint 
+                        WHERE conname = 'fk_matched_rule' AND conrelid = 'resubscribe_cache'::regclass;
+                    """)
+                    if cursor.fetchone() is None:
+                        logger.info("    -> [数据库升级] 检测到 'resubscribe_cache' 表缺少外键，正在添加...")
+                        # ON DELETE SET NULL: 如果规则被删除，缓存项的 matched_rule_id 会被设为 NULL，而不是删除缓存项
+                        cursor.execute("""
+                            ALTER TABLE resubscribe_cache 
+                            ADD CONSTRAINT fk_matched_rule 
+                            FOREIGN KEY (matched_rule_id) 
+                            REFERENCES resubscribe_rules(id) 
+                            ON DELETE SET NULL;
+                        """)
+                        logger.info("    -> [数据库升级] 外键 'fk_matched_rule' 添加成功。")
+                    else:
+                        logger.trace("    -> 外键 'fk_matched_rule' 已存在，跳过。")
+                except Exception as e_fk:
+                     logger.error(f"  -> [数据库升级] 检查或添加外键时出错: {e_fk}", exc_info=True)
+
                 logger.info("  -> 数据库平滑升级检查完成。")
 
             conn.commit()

@@ -1242,3 +1242,45 @@ def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server
     except Exception as e:
         logger.error(f"更新项目详情时发生未知错误 (ID: {item_id}): {e}", exc_info=True)
         return False
+    
+def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
+    """
+    【V12 - 日志破案终极版】根据ID删除一个Emby媒体项。
+    - 根据服务器堆栈追踪，确认 UserId 是必需的。
+    - 采用最稳妥的双重认证方式：Header Token + URL Param UserId。
+    - 使用社区更推荐的 POST /Items/{Id}/Delete 接口。
+    """
+    if not all([item_id, emby_server_url, emby_api_key, user_id]):
+        logger.error(f"删除 Emby 项失败：关键参数缺失！ item_id: {item_id}, user_id: '{user_id}'。请检查配置。")
+        return False
+        
+    api_url = f"{emby_server_url.rstrip('/')}/Items/{item_id}/Delete"
+    
+    # --- ★★★ 核心修复 1/2: 在 Header 中提供“门禁卡” ★★★ ---
+    headers = {
+        'X-Emby-Token': emby_api_key
+    }
+    
+    # --- ★★★ 核心修复 2/2: 在 URL 参数中提供“工牌” ★★★ ---
+    params = {
+        'UserId': user_id
+    }
+    
+    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+    
+    try:
+        # 使用 POST 方法，同时传入 headers 和 params
+        response = requests.post(api_url, headers=headers, params=params, timeout=api_timeout)
+        
+        response.raise_for_status()
+        logger.info(f"  -> ✅ 成功发送 POST (王炸版) 删除请求，Emby 媒体项 ID: {item_id} 已被删除。")
+        return True
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            logger.warning(f"  -> 尝试删除 Emby 媒体项 ID: {item_id}，但它已不存在。")
+            return True
+        logger.error(f"删除 Emby 媒体项 ID: {item_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
+        return False
+    except Exception as e:
+        logger.error(f"删除 Emby 媒体项 ID: {item_id} 时发生未知错误: {e}")
+        return False
