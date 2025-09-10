@@ -2155,6 +2155,23 @@ def delete_resubscribe_cache_item(item_id: str) -> bool:
         logger.error(f"DB: 删除单条洗版缓存项 {item_id} 失败: {e}", exc_info=True)
         return False
     
+def batch_update_resubscribe_cache_status(item_ids: List[str], new_status: str) -> int:
+    """批量更新一组洗版缓存项的状态。"""
+    if not item_ids or not new_status:
+        return 0
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = "UPDATE resubscribe_cache SET status = %s WHERE item_id = ANY(%s)"
+            cursor.execute(sql, (new_status, item_ids))
+            updated_count = cursor.rowcount
+            conn.commit()
+            logger.info(f"DB: 成功将 {updated_count} 个洗版缓存项的状态批量更新为 '{new_status}'。")
+            return updated_count
+    except Exception as e:
+        logger.error(f"DB: 批量更新洗版缓存状态时失败: {e}", exc_info=True)
+        return 0
+
 # ======================================================================
 # 模块 9: 全局订阅配额管理器 (Subscription Quota Manager) -          ★★★
 # ======================================================================

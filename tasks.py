@@ -1438,17 +1438,21 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                     for item in tmdb_items if item['id'] in tmdb_to_emby_item_map
                 ]
 
-                emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
-                    collection_name=collection_name, 
-                    emby_ids_in_library=ordered_emby_ids_in_library, 
-                    base_url=processor.emby_url,
-                    api_key=processor.emby_api_key, 
-                    user_id=processor.emby_user_id,
-                    prefetched_collection_map=prefetched_collection_map
-                )
-                
-                if not emby_collection_id:
-                    raise RuntimeError("在Emby中创建或更新合集失败。")
+                emby_collection_id = None # 先初始化为 None
+                if not ordered_emby_ids_in_library:
+                    logger.warning(f"榜单 '{collection_name}' 解析成功，但在您的媒体库中未找到任何匹配项目。将只更新数据库，不创建Emby合集。")
+                else:
+                    emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
+                        collection_name=collection_name, 
+                        emby_ids_in_library=ordered_emby_ids_in_library, 
+                        base_url=processor.emby_url,
+                        api_key=processor.emby_api_key, 
+                        user_id=processor.emby_user_id,
+                        prefetched_collection_map=prefetched_collection_map
+                    )
+                    # 检查只在尝试创建时才有意义
+                    if not emby_collection_id:
+                        raise RuntimeError("在Emby中创建或更新合集失败，请检查Emby日志。")
                 
                 update_data = {
                     "emby_collection_id": emby_collection_id,
@@ -1617,16 +1621,22 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         
         ordered_emby_ids_in_library = [tmdb_to_emby_item_map[item['id']]['Id'] for item in tmdb_items if item['id'] in tmdb_to_emby_item_map]
 
-        emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
-            collection_name=collection_name, 
-            emby_ids_in_library=ordered_emby_ids_in_library, 
-            base_url=processor.emby_url,
-            api_key=processor.emby_api_key, 
-            user_id=processor.emby_user_id
-        )
+        if not ordered_emby_ids_in_library:
+            logger.warning(f"榜单 '{collection_name}' 解析成功，但在您的媒体库中未找到任何匹配项目。将只更新数据库，不创建Emby合集。")
+            # 此时，我们仍然需要执行后面的健康度分析和数据库更新，但要跳过Emby创建
+            emby_collection_id = None 
+        else:
+            # 只有在库里有匹配项时，才去创建或更新Emby合集
+            emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
+                collection_name=collection_name, 
+                emby_ids_in_library=ordered_emby_ids_in_library, 
+                base_url=processor.emby_url,
+                api_key=processor.emby_api_key, 
+                user_id=processor.emby_user_id
+            )
 
-        if not emby_collection_id:
-            raise RuntimeError("在Emby中创建或更新合集失败。")
+            if not emby_collection_id:
+                raise RuntimeError("在Emby中创建或更新合集失败。")
         
         update_data = {
             "emby_collection_id": emby_collection_id,
@@ -2340,8 +2350,92 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
         logger.debug(f"  -> 《{item_name}》质量达标。")
         return False, ""
 
+# ★★★ 精准批量订阅的后台任务 ★★★
+def task_resubscribe_batch(processor: MediaProcessor, item_ids: List[str]):
+    """【精准批量版】后台任务：只订阅列表中指定的一批媒体项。"""
+    task_name = "批量媒体洗版"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (精准模式) ---")
+    
+    items_to_subscribe = []
+    
+    try:
+        # 1. 从数据库中精确获取需要处理的项目
+        with db_handler.get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = "SELECT * FROM resubscribe_cache WHERE item_id = ANY(%s)"
+            cursor.execute(sql, (item_ids,))
+            items_to_subscribe = cursor.fetchall()
+
+        total_to_process = len(items_to_subscribe)
+        if total_to_process == 0:
+            task_manager.update_status_from_thread(100, "任务完成：选中的项目中没有需要订阅的项。")
+            return
+
+        logger.info(f"  -> 精准任务：共找到 {total_to_process} 个项目待处理，将开始订阅...")
+        
+        # 2. 后续的订阅、删除、配额检查逻辑和“一键洗版”完全一致
+        all_rules = db_handler.get_all_resubscribe_rules()
+        config = processor.config
+        delay = float(config.get(constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS, 1.5))
+        resubscribed_count = 0
+        deleted_count = 0
+
+        for i, item in enumerate(items_to_subscribe):
+            if processor.is_stop_requested():
+                logger.info("  -> 任务被用户中止。")
+                break
+            
+            current_quota = db_handler.get_subscription_quota()
+            if current_quota <= 0:
+                logger.warning("  -> 每日订阅配额已用尽，任务提前结束。")
+                break
+
+            item_id = item.get('item_id')
+            item_name = item.get('item_name')
+            task_manager.update_status_from_thread(
+                int((i / total_to_process) * 100), 
+                f"({i+1}/{total_to_process}) [配额:{current_quota}] 正在订阅: {item_name}"
+            )
+
+            payload = {
+                "name": item_name, "tmdbid": int(item['tmdb_id']),
+                "type": "电影" if item['item_type'] == "Movie" else "电视剧",
+                "best_version": 1
+            }
+            
+            success = moviepilot_handler.subscribe_with_custom_payload(payload, config)
+            
+            if success:
+                db_handler.decrement_subscription_quota()
+                resubscribed_count += 1
+                
+                matched_rule_id = item.get('matched_rule_id')
+                rule = next((r for r in all_rules if r['id'] == matched_rule_id), None) if matched_rule_id else None
+
+                if rule and rule.get('delete_after_resubscribe'):
+                    delete_success = emby_handler.delete_item(
+                        item_id=item_id, emby_server_url=processor.emby_url,
+                        emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
+                    )
+                    if delete_success:
+                        db_handler.delete_resubscribe_cache_item(item_id)
+                        deleted_count += 1
+                    else:
+                        db_handler.update_resubscribe_item_status(item_id, 'subscribed')
+                else:
+                    db_handler.update_resubscribe_item_status(item_id, 'subscribed')
+                
+                if i < total_to_process - 1: time.sleep(delay)
+
+        final_message = f"批量任务完成！成功提交 {resubscribed_count} 个订阅，删除 {deleted_count} 个媒体项。"
+        task_manager.update_status_from_thread(100, final_message)
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+
 def task_resubscribe_library(processor: MediaProcessor):
-    """【V7 - 优化数据流最终版】后台任务：订阅成功后，根据规则删除或更新缓存。"""
+    """ 后台任务：订阅成功后，根据规则删除或更新缓存。"""
     task_name = "媒体洗版"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
@@ -2424,6 +2518,55 @@ def task_resubscribe_library(processor: MediaProcessor):
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
+# ★★★ 精准批量删除的后台任务 ★★★
+def task_delete_batch(processor: MediaProcessor, item_ids: List[str]):
+    """【精准批量版】后台任务：只删除列表中指定的一批媒体项。"""
+    task_name = "批量删除媒体"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (精准模式) ---")
+    
+    items_to_delete = []
+    try:
+        with db_handler.get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = "SELECT * FROM resubscribe_cache WHERE item_id = ANY(%s)"
+            cursor.execute(sql, (item_ids,))
+            items_to_delete = cursor.fetchall()
+
+        total_to_process = len(items_to_delete)
+        if total_to_process == 0:
+            task_manager.update_status_from_thread(100, "任务完成：选中的项目中没有可删除的项。")
+            return
+
+        logger.info(f"  -> 精准删除：共找到 {total_to_process} 个项目待处理...")
+        deleted_count = 0
+
+        for i, item in enumerate(items_to_delete):
+            if processor.is_stop_requested(): break
+            
+            item_id = item.get('item_id')
+            item_name = item.get('item_name')
+            task_manager.update_status_from_thread(
+                int((i / total_to_process) * 100), 
+                f"({i+1}/{total_to_process}) 正在删除: {item_name}"
+            )
+            
+            delete_success = emby_handler.delete_item(
+                item_id=item_id, emby_server_url=processor.emby_url,
+                emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
+            )
+            if delete_success:
+                db_handler.delete_resubscribe_cache_item(item_id)
+                deleted_count += 1
+            
+            time.sleep(0.5) # 避免请求过快
+
+        final_message = f"批量删除任务完成！成功删除了 {deleted_count} 个媒体项。"
+        task_manager.update_status_from_thread(100, final_message)
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+
 def task_update_resubscribe_cache(processor: MediaProcessor):
     """
     【V-Final Simple - 简化最终版】
@@ -2478,6 +2621,14 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
             item_id = item_base_info.get('Id')
             item_name = item_base_info.get('Name')
             source_lib_id = item_base_info.get('_SourceLibraryId')
+
+            # 跳过忽略
+            old_status = current_db_status_map.get(item_id)
+            if old_status == 'ignored':
+                logger.trace(f"  -> 项目《{item_name}》已被用户忽略，本次刷新跳过。")
+                # 直接返回 None，让它从本次的更新批次中被排除
+                return None
+        
             try:
                 applicable_rule = library_to_rule_map.get(source_lib_id)
                 if not applicable_rule:
@@ -2575,7 +2726,7 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
-# ★★★ 新增：智能从文件名提取质量标签的辅助函数 ★★★
+# ★★★ 智能从文件名提取质量标签的辅助函数 ★★★
 def _extract_quality_tag_from_filename(filename_lower: str, video_stream: dict) -> str:
     """
     根据预定义的优先级，从文件名中提取最高级的质量标签。
