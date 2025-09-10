@@ -1438,17 +1438,21 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                     for item in tmdb_items if item['id'] in tmdb_to_emby_item_map
                 ]
 
-                emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
-                    collection_name=collection_name, 
-                    emby_ids_in_library=ordered_emby_ids_in_library, 
-                    base_url=processor.emby_url,
-                    api_key=processor.emby_api_key, 
-                    user_id=processor.emby_user_id,
-                    prefetched_collection_map=prefetched_collection_map
-                )
-                
-                if not emby_collection_id:
-                    raise RuntimeError("在Emby中创建或更新合集失败。")
+                emby_collection_id = None # 先初始化为 None
+                if not ordered_emby_ids_in_library:
+                    logger.warning(f"榜单 '{collection_name}' 解析成功，但在您的媒体库中未找到任何匹配项目。将只更新数据库，不创建Emby合集。")
+                else:
+                    emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
+                        collection_name=collection_name, 
+                        emby_ids_in_library=ordered_emby_ids_in_library, 
+                        base_url=processor.emby_url,
+                        api_key=processor.emby_api_key, 
+                        user_id=processor.emby_user_id,
+                        prefetched_collection_map=prefetched_collection_map
+                    )
+                    # 检查只在尝试创建时才有意义
+                    if not emby_collection_id:
+                        raise RuntimeError("在Emby中创建或更新合集失败，请检查Emby日志。")
                 
                 update_data = {
                     "emby_collection_id": emby_collection_id,
@@ -1617,16 +1621,22 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         
         ordered_emby_ids_in_library = [tmdb_to_emby_item_map[item['id']]['Id'] for item in tmdb_items if item['id'] in tmdb_to_emby_item_map]
 
-        emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
-            collection_name=collection_name, 
-            emby_ids_in_library=ordered_emby_ids_in_library, 
-            base_url=processor.emby_url,
-            api_key=processor.emby_api_key, 
-            user_id=processor.emby_user_id
-        )
+        if not ordered_emby_ids_in_library:
+            logger.warning(f"榜单 '{collection_name}' 解析成功，但在您的媒体库中未找到任何匹配项目。将只更新数据库，不创建Emby合集。")
+            # 此时，我们仍然需要执行后面的健康度分析和数据库更新，但要跳过Emby创建
+            emby_collection_id = None 
+        else:
+            # 只有在库里有匹配项时，才去创建或更新Emby合集
+            emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
+                collection_name=collection_name, 
+                emby_ids_in_library=ordered_emby_ids_in_library, 
+                base_url=processor.emby_url,
+                api_key=processor.emby_api_key, 
+                user_id=processor.emby_user_id
+            )
 
-        if not emby_collection_id:
-            raise RuntimeError("在Emby中创建或更新合集失败。")
+            if not emby_collection_id:
+                raise RuntimeError("在Emby中创建或更新合集失败。")
         
         update_data = {
             "emby_collection_id": emby_collection_id,
