@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "3.9.5"  # 更新版本号
+APP_VERSION = "3.9.6"  # 更新版本号
 GITHUB_REPO_OWNER = "hbq0405"  # 您的 GitHub 用户名
 GITHUB_REPO_NAME = "emby-toolkit" # 您的 GitHub 仓库名
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
@@ -47,6 +47,8 @@ CONFIG_OPTION_EMBY_API_KEY = "emby_api_key"             # Emby API密钥
 CONFIG_OPTION_EMBY_USER_ID = "emby_user_id"             # 用于操作的Emby用户ID
 CONFIG_OPTION_EMBY_API_TIMEOUT = "emby_api_timeout"     # Emby API 超时时间 
 CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS = "libraries_to_process" # 需要处理的媒体库名称列表
+CONFIG_OPTION_EMBY_ADMIN_USER = "emby_admin_user"       # (可选) 用于自动登录获取令牌的管理员用户名
+CONFIG_OPTION_EMBY_ADMIN_PASS = "emby_admin_pass"       # (可选) 用于自动登录获取令牌的管理员密码
 
 # ==============================================================================
 # ✨ 数据处理流程配置 (Processing Workflow)

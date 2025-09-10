@@ -106,6 +106,26 @@
                           <div v-else style="font-size: 12px; color: #888;">提示：请从 Emby 后台用户管理页的地址栏复制 userId。</div>
                         </template>
                       </n-form-item-grid-item>
+                      <n-divider title-placement="left" style="margin: 10px 0;">管理员登录凭证 (用于删除等高级操作)</n-divider>
+                      <n-form-item-grid-item label="Emby 管理员用户名" path="emby_admin_user">
+                        <n-input v-model:value="configModel.emby_admin_user" placeholder="输入用于登录的管理员用户名" />
+                      </n-form-item-grid-item>
+
+                      <n-form-item-grid-item label="Emby 管理员密码" path="emby_admin_pass">
+                        <n-input 
+                          v-model:value="configModel.emby_admin_pass" 
+                          type="password" 
+                          show-password-on="click" 
+                          placeholder="输入对应的密码" 
+                        />
+                        <template #feedback>
+                          <n-text depth="3" style="font-size:0.8em;">
+                            此凭证仅用于执行删除媒体等需要临时令牌的高级操作，不会被用于常规扫描。
+                          </n-text>
+                        </template>
+                      </n-form-item-grid-item>
+
+                      <n-divider style="margin: 10px 0;" />
                       <n-form-item-grid-item label="Emby API 超时时间 (秒)" path="emby_api_timeout">
                         <n-input-number v-model:value="configModel.emby_api_timeout" :min="15" :step="5" placeholder="建议 30-90" style="width: 100%;" />
                         <template #feedback>

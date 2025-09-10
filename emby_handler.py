@@ -27,6 +27,37 @@ class SimpleLogger:
 _emby_id_cache = {}
 _emby_season_cache = {}
 _emby_episode_cache = {}
+# ★★★ 模拟用户登录以获取临时 AccessToken 的辅助函数 ★★★
+def _get_emby_access_token(emby_url, username, password) -> tuple[Optional[str], Optional[str]]:
+    """通过用户名和密码登录，获取临时的 AccessToken 和 UserId。"""
+    auth_url = f"{emby_url.rstrip('/')}/Users/AuthenticateByName"
+    
+    # Emby 登录需要特定的请求头来表明自己是哪个应用
+    headers = {
+        'Content-Type': 'application/json',
+        'X-Emby-Authorization': 'Emby Client="Emby Toolkit", Device="Toolkit", DeviceId="d4f3e4b4-9f5b-4b8f-8b8a-5c5c5c5c5c5c", Version="1.0.0"'
+    }
+    
+    payload = {
+        "Username": username,
+        "Pw": password
+    }
+    
+    try:
+        response = requests.post(auth_url, headers=headers, json=payload, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        access_token = data.get("AccessToken")
+        user_id = data.get("User", {}).get("Id")
+        if access_token and user_id:
+            logger.debug("  -> [自动登录] 成功，已获取到临时的 AccessToken。")
+            return access_token, user_id
+        else:
+            logger.error("  -> [自动登录] 登录 Emby 成功，但响应中未找到 AccessToken 或 UserId。")
+            return None, None
+    except Exception as e:
+        logger.error(f"  -> [自动登录] 模拟登录 Emby 失败: {e}")
+        return None, None
 # ✨✨✨ 快速获取指定类型的项目总数，不获取项目本身 ✨✨✨
 def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_type: str, parent_id: Optional[str] = None) -> Optional[int]:
     """
@@ -1245,42 +1276,49 @@ def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server
     
 def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
     """
-    【V12 - 日志破案终极版】根据ID删除一个Emby媒体项。
-    - 根据服务器堆栈追踪，确认 UserId 是必需的。
-    - 采用最稳妥的双重认证方式：Header Token + URL Param UserId。
-    - 使用社区更推荐的 POST /Items/{Id}/Delete 接口。
+    【V-Final Frontier 终极版】
+    通过模拟管理员登录获取临时 AccessToken 来执行删除，绕过永久 API Key 的权限问题。
     """
-    if not all([item_id, emby_server_url, emby_api_key, user_id]):
-        logger.error(f"删除 Emby 项失败：关键参数缺失！ item_id: {item_id}, user_id: '{user_id}'。请检查配置。")
+    logger.warning(f"检测到删除请求，将尝试使用 [自动登录模式] 执行...")
+    
+    # 从全局配置中获取管理员登录凭证
+    cfg = config_manager.APP_CONFIG
+    admin_user = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_USER)
+    admin_pass = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_PASS)
+
+    if not all([admin_user, admin_pass]):
+        logger.error("删除操作失败：未在设置中配置 [Emby 管理员用户名] 和 [Emby 管理员密码]。")
         return False
-        
+
+    # 1. 登录获取临时令牌
+    access_token, logged_in_user_id = _get_emby_access_token(emby_server_url, admin_user, admin_pass)
+    
+    if not access_token:
+        logger.error("无法获取临时 AccessToken，删除操作中止。请检查管理员账号密码是否正确。")
+        return False
+
+    # 2. 使用临时令牌执行删除
+    # 使用最被社区推荐的 POST /Items/{Id}/Delete 接口
     api_url = f"{emby_server_url.rstrip('/')}/Items/{item_id}/Delete"
     
-    # --- ★★★ 核心修复 1/2: 在 Header 中提供“门禁卡” ★★★ ---
     headers = {
-        'X-Emby-Token': emby_api_key
+        'X-Emby-Token': access_token  # ★ 使用临时的 AccessToken
     }
     
-    # --- ★★★ 核心修复 2/2: 在 URL 参数中提供“工牌” ★★★ ---
     params = {
-        'UserId': user_id
+        'UserId': logged_in_user_id # ★ 使用登录后返回的 UserId
     }
     
-    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+    api_timeout = cfg.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
     
     try:
-        # 使用 POST 方法，同时传入 headers 和 params
         response = requests.post(api_url, headers=headers, params=params, timeout=api_timeout)
-        
         response.raise_for_status()
-        logger.info(f"  -> ✅ 成功发送 POST (王炸版) 删除请求，Emby 媒体项 ID: {item_id} 已被删除。")
+        logger.info(f"  -> ✅ 成功使用临时令牌删除 Emby 媒体项 ID: {item_id}。")
         return True
     except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-            logger.warning(f"  -> 尝试删除 Emby 媒体项 ID: {item_id}，但它已不存在。")
-            return True
-        logger.error(f"删除 Emby 媒体项 ID: {item_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
+        logger.error(f"使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
         return False
     except Exception as e:
-        logger.error(f"删除 Emby 媒体项 ID: {item_id} 时发生未知错误: {e}")
+        logger.error(f"使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生未知错误: {e}")
         return False
