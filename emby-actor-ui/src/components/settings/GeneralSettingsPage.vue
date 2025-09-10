@@ -533,13 +533,13 @@ const tableInfo = {
   'watchlist': { cn: '追剧列表', isSharable: false },
   'actor_subscriptions': { cn: '演员订阅配置', isSharable: false },
   'tracked_actor_media': { cn: '已追踪的演员作品', isSharable: false },
-  'collections_info': { cn: '电影合集信息', isSharable: false },
+  'collections_info': { cn: '原生合集', isSharable: false },
   'processed_log': { cn: '已处理日志', isSharable: false },
   'failed_log': { cn: '待复核日志', isSharable: false },
   'users': { cn: '用户账户', isSharable: false },
   'custom_collections': { cn: '自建合集', isSharable: false },
   'media_metadata': { cn: '媒体元数据', isSharable: false },
-  'resubscribe_settings': { cn: '媒体洗版设置', isSharable: false },
+  'resubscribe_rules': { cn: '媒体洗版规则', isSharable: false },
   'resubscribe_cache': { cn: '媒体洗版缓存', isSharable: false },
 };
 

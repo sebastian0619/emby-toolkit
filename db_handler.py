@@ -2141,6 +2141,51 @@ def get_resubscribe_rule_by_id(rule_id: int) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"DB: 获取单个洗版规则 {rule_id} 失败: {e}", exc_info=True)
         return None
+    
+def delete_resubscribe_cache_item(item_id: str) -> bool:
+    """根据 item_id 从洗版缓存中删除单条记录。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM resubscribe_cache WHERE item_id = %s", (item_id,))
+            conn.commit()
+            # 确认是否真的删掉了一行
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"DB: 删除单条洗版缓存项 {item_id} 失败: {e}", exc_info=True)
+        return False
+    
+def get_resubscribe_cache_item_ids_by_library(library_ids: List[str]) -> set:
+    """根据媒体库ID列表，获取所有相关的洗版缓存项目ID。"""
+    if not library_ids:
+        return set()
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 使用 ANY(%s) 语法可以高效地查询数组中的成员
+            sql = "SELECT item_id FROM resubscribe_cache WHERE source_library_id = ANY(%s)"
+            cursor.execute(sql, (library_ids,))
+            return {row['item_id'] for row in cursor.fetchall()}
+    except Exception as e:
+        logger.error(f"DB: 根据媒体库ID获取洗版缓存ID时失败: {e}", exc_info=True)
+        return set()
+
+def delete_resubscribe_cache_by_item_ids(item_ids: List[str]) -> int:
+    """根据 item_id 列表，批量删除洗版缓存记录。"""
+    if not item_ids:
+        return 0
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = "DELETE FROM resubscribe_cache WHERE item_id = ANY(%s)"
+            cursor.execute(sql, (item_ids,))
+            deleted_count = cursor.rowcount
+            conn.commit()
+            return deleted_count
+    except Exception as e:
+        logger.error(f"DB: 批量删除洗版缓存项时失败: {e}", exc_info=True)
+        return 0
+    
 # ======================================================================
 # 模块 9: 全局订阅配额管理器 (Subscription Quota Manager) -          ★★★
 # ======================================================================

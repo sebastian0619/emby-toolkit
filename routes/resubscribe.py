@@ -178,33 +178,33 @@ def resubscribe_single_item():
         
         if success:
             db_handler.decrement_subscription_quota()
-            db_handler.update_resubscribe_item_status(item_id, 'subscribed')
             
-            rule_to_check = None
+            message = f"《{item_name}》的洗版请求已成功提交！"
+            
             cache_item = db_handler.get_resubscribe_cache_item(item_id)
+            rule_to_check = None
             if cache_item and cache_item.get('matched_rule_id'):
                 rule_to_check = db_handler.get_resubscribe_rule_by_id(cache_item['matched_rule_id'])
 
-            message = f"《{item_name}》的洗版请求已成功提交！"
-
+            # --- ★★★ 核心逻辑改造：根据规则决定是“删除”还是“更新” ★★★ ---
             if rule_to_check and rule_to_check.get('delete_after_resubscribe'):
                 logger.warning(f"规则 '{rule_to_check['name']}' 要求删除源文件，正在为项目 {item_name} 执行删除...")
-                
-                # --- ★★★ 核心修复 2/2: 调用删除时，也从处理器获取配置 ★★★
                 delete_success = emby_handler.delete_item(
-                    item_id=item_id,
-                    emby_server_url=processor.emby_url,
-                    emby_api_key=processor.emby_api_key,
-                    user_id=processor.emby_user_id
+                    item_id=item_id, emby_server_url=processor.emby_url,
+                    emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
                 )
                 if delete_success:
-                    message += " Emby中的源文件已根据规则删除。"
+                    db_handler.delete_resubscribe_cache_item(item_id)
+                    message += " Emby中的源文件已根据规则删除，并已从洗版列表移除。"
                 else:
+                    db_handler.update_resubscribe_item_status(item_id, 'subscribed')
                     message += " 但根据规则删除Emby源文件时失败。"
-            
+            else:
+                db_handler.update_resubscribe_item_status(item_id, 'subscribed')
+
             return jsonify({"message": message})
         else:
-            return jsonify({"error": "提交洗版请求失败，请检查MoviePilot连接或查看后端日志。"}), 500
+            return jsonify({"error": "提交洗版请求失败..."}), 500
             
     except Exception as e:
         logger.error(f"API: 处理单独洗版请求时发生未知错误: {e}", exc_info=True)
