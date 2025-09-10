@@ -12,6 +12,8 @@ import tmdb_handler
 import emby_handler
 from db_handler import get_db_connection # ★★★ 核心修改：导入新的数据库连接函数
 import moviepilot_handler
+import db_handler
+import constants
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +30,13 @@ class MediaType(Enum):
 class ActorSubscriptionProcessor:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        # self.db_path 不再需要
         self.tmdb_api_key = config.get('tmdb_api_key')
         self.emby_url = config.get('emby_server_url')
         self.emby_api_key = config.get('emby_api_key')
         self.emby_user_id = config.get('emby_user_id')
-        self.subscribe_delay_sec = config.get('subscribe_delay_sec', 0.5)
+        self.subscribe_delay_sec = config.get(constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS, 1.5)
         self._stop_event = threading.Event()
+        self._quota_warning_logged = False
 
     def signal_stop(self):
         self._stop_event.set()
@@ -56,6 +58,8 @@ class ActorSubscriptionProcessor:
 
         logger.trace("--- 开始执行定时演员订阅扫描任务 ---")
         _update_status(0, "正在准备订阅列表...")
+
+        self._quota_warning_logged = False
         
         try:
             # ★★★ 核心修改：使用新的 get_db_connection，不再需要 db_path
@@ -271,7 +275,15 @@ class ActorSubscriptionProcessor:
         if release_date_str > today_str:
             return MediaStatus.PENDING_RELEASE
         
-        logger.info(f"  -> 发现缺失作品: {work.get('title') or work.get('name')}，准备提交订阅...")
+        current_quota = db_handler.get_subscription_quota()
+        if current_quota <= 0:
+            # 使用实例变量确保警告只打印一次
+            if not self._quota_warning_logged:
+                logger.warning("每日订阅配额已用尽，演员订阅任务将不再提交新的订阅请求。")
+                self._quota_warning_logged = True
+            return MediaStatus.MISSING # 配额用尽，标记为缺失，等待下次扫描
+
+        logger.info(f"  -> 发现缺失作品: {work.get('title') or work.get('name')}，准备提交订阅... (剩余配额: {current_quota})")
         success = False
         media_type_raw = work.get('media_type', 'movie' if 'title' in work else 'tv')
 
@@ -285,14 +297,18 @@ class ActorSubscriptionProcessor:
         time.sleep(self.subscribe_delay_sec)
 
         if success:
+            db_handler.decrement_subscription_quota()
             session_subscribed_ids.add(media_id_str)
+            
+            time.sleep(self.subscribe_delay_sec)
+            
             return MediaStatus.SUBSCRIBED
         else:
+            time.sleep(0.5)
             return MediaStatus.MISSING
 
     def _prepare_media_dict(self, work: Dict, subscription_id: int, status: MediaStatus) -> Dict:
         """根据作品信息和状态，准备用于插入数据库的字典。"""
-        # ... (此函数无数据库交互，无需修改) ...
         media_type_raw = work.get('media_type', 'movie' if 'title' in work else 'tv')
         media_type = MediaType.SERIES if media_type_raw == 'tv' else MediaType.MOVIE
         
