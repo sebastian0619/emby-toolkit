@@ -73,7 +73,7 @@
           <n-form-item>
             <template #label>
               <n-space align="center">
-                <span>洗版成功后删除Emby中的媒体项</span>
+                <span>订阅成功后删除Emby中的媒体项</span>
                 <n-tooltip trigger="hover" v-if="!isEmbyAdminConfigured">
                   <template #trigger>
                     <n-icon :component="AlertIcon" style="color: var(--n-warning-color);" />
