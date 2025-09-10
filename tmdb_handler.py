@@ -7,9 +7,14 @@ from utils import contains_chinese, normalize_name_for_matching
 from typing import Optional, List, Dict, Any
 import logging
 import config_manager
+import constants
 logger = logging.getLogger(__name__)
-# TMDb API 的基础 URL
-TMDB_API_BASE_URL = "https://api.themoviedb.org/3"
+
+def get_tmdb_api_base_url() -> str:
+    """
+    从配置管理器获取TMDb API基础URL，如果未配置则使用默认值
+    """
+    return config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_BASE_URL, "https://api.themoviedb.org/3")
 
 # 默认语言设置
 DEFAULT_LANGUAGE = "zh-CN"
@@ -21,7 +26,8 @@ def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] 
         logger.error("TMDb API Key 未提供，无法发起请求。")
         return None
 
-    full_url = f"{TMDB_API_BASE_URL}{endpoint}"
+    tmdb_base_url = get_tmdb_api_base_url()
+    full_url = f"{tmdb_base_url}{endpoint}"
     base_params = {
         "api_key": api_key,
         "language": DEFAULT_LANGUAGE
@@ -266,7 +272,8 @@ def find_person_by_external_id(external_id: str, api_key: str, source: str = "im
     """
     if not all([external_id, api_key, source]):
         return None
-    api_url = f"https://api.themoviedb.org/3/find/{external_id}"
+    tmdb_base_url = get_tmdb_api_base_url()
+    api_url = f"{tmdb_base_url}/find/{external_id}"
     params = {"api_key": api_key, "external_source": source, "language": "en-US"}
     logger.debug(f"TMDb: 正在通过 {source} '{external_id}' 查找人物...")
     try:
@@ -424,7 +431,8 @@ def get_tmdb_id_by_imdb_id(imdb_id: str, api_key: str, media_type: str) -> Optio
     通过 TMDb API v3 /find/{imdb_id} 方式获取TMDb ID。
     media_type: 'movie' 或 'tv'
     """
-    url = f"https://api.themoviedb.org/3/find/{imdb_id}"
+    tmdb_base_url = get_tmdb_api_base_url()
+    url = f"{tmdb_base_url}/find/{imdb_id}"
     params = {
         "api_key": api_key,
         "external_source": "imdb_id"
