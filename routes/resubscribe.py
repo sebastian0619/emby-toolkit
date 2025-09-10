@@ -249,26 +249,41 @@ def get_emby_libraries_for_rules():
 @resubscribe_bp.route('/batch_action', methods=['POST'])
 @login_required
 def batch_action():
-    """【V3 - 异步任务版】处理对洗版缓存项的批量操作。"""
+    """【V4 - 支持一键操作】处理对洗版缓存项的批量操作。"""
     data = request.json
     item_ids = data.get('item_ids')
     action = data.get('action')
+    is_one_click = data.get('is_one_click', False) # ★ 新增：接收“一键”标志
 
+    # 如果是一键操作，我们就不需要 item_ids，而是自己去数据库里找
+    if is_one_click:
+        current_filter = data.get('filter', 'all') # 接收当前视图
+        if current_filter == 'needed':
+            sql = "SELECT item_id FROM resubscribe_cache WHERE status = 'needed'"
+        elif current_filter == 'ignored':
+            sql = "SELECT item_id FROM resubscribe_cache WHERE status = 'ignored'"
+        else: # 'all'
+            # “一键全部订阅”没有意义，所以我们只处理“需洗版”的
+            sql = "SELECT item_id FROM resubscribe_cache WHERE status = 'needed'"
+
+        with db_handler.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            item_ids = [row['item_id'] for row in cursor.fetchall()]
+    
     if not isinstance(item_ids, list) or not item_ids:
-        return jsonify({"error": "缺少有效的 item_ids 列表"}), 400
-    if action not in ['subscribe', 'ignore', 'ok']:
+        return jsonify({"message": "当前视图下没有可操作的项目。"}), 200
+    if action not in ['subscribe', 'ignore', 'ok', 'delete']: # ★ 新增：支持 'delete'
         return jsonify({"error": "无效的操作类型"}), 400
 
     try:
         if action == 'subscribe':
-            # --- ★★★ 核心改造：提交一个带参数的后台任务 ★★★ ---
             task_manager.submit_task(
-                tasks.task_resubscribe_batch, # 调用我们新建的精准任务
+                tasks.task_resubscribe_batch,
                 task_name="批量媒体洗版",
                 processor_type='media',
-                item_ids=item_ids # ★ 把选中的ID列表作为参数传给任务
+                item_ids=item_ids
             )
-            # 乐观更新，让前端立即看到变化
             db_handler.batch_update_resubscribe_cache_status(item_ids, 'subscribed')
             return jsonify({"message": "批量订阅任务已提交到后台！"}), 202
 
@@ -279,6 +294,16 @@ def batch_action():
         elif action == 'ok':
             updated_count = db_handler.batch_update_resubscribe_cache_status(item_ids, 'ok')
             return jsonify({"message": f"成功取消忽略了 {updated_count} 个媒体项。"})
+        
+        # ★★★ 新增：处理删除动作 ★★★
+        elif action == 'delete':
+            task_manager.submit_task(
+                tasks.task_delete_batch, # ★ 需要一个新的后台任务
+                task_name="批量删除媒体",
+                processor_type='media',
+                item_ids=item_ids
+            )
+            return jsonify({"message": "批量删除任务已提交到后台！"}), 202
 
     except Exception as e:
         logger.error(f"API: 处理批量操作 '{action}' 时失败: {e}", exc_info=True)

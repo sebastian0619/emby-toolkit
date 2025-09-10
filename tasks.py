@@ -2508,6 +2508,55 @@ def task_resubscribe_library(processor: MediaProcessor):
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
+# ★★★ 精准批量删除的后台任务 ★★★
+def task_delete_batch(processor: MediaProcessor, item_ids: List[str]):
+    """【精准批量版】后台任务：只删除列表中指定的一批媒体项。"""
+    task_name = "批量删除媒体"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (精准模式) ---")
+    
+    items_to_delete = []
+    try:
+        with db_handler.get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = "SELECT * FROM resubscribe_cache WHERE item_id = ANY(%s)"
+            cursor.execute(sql, (item_ids,))
+            items_to_delete = cursor.fetchall()
+
+        total_to_process = len(items_to_delete)
+        if total_to_process == 0:
+            task_manager.update_status_from_thread(100, "任务完成：选中的项目中没有可删除的项。")
+            return
+
+        logger.info(f"  -> 精准删除：共找到 {total_to_process} 个项目待处理...")
+        deleted_count = 0
+
+        for i, item in enumerate(items_to_delete):
+            if processor.is_stop_requested(): break
+            
+            item_id = item.get('item_id')
+            item_name = item.get('item_name')
+            task_manager.update_status_from_thread(
+                int((i / total_to_process) * 100), 
+                f"({i+1}/{total_to_process}) 正在删除: {item_name}"
+            )
+            
+            delete_success = emby_handler.delete_item(
+                item_id=item_id, emby_server_url=processor.emby_url,
+                emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
+            )
+            if delete_success:
+                db_handler.delete_resubscribe_cache_item(item_id)
+                deleted_count += 1
+            
+            time.sleep(0.5) # 避免请求过快
+
+        final_message = f"批量删除任务完成！成功删除了 {deleted_count} 个媒体项。"
+        task_manager.update_status_from_thread(100, final_message)
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+
 def task_update_resubscribe_cache(processor: MediaProcessor):
     """
     【V-Final Simple - 简化最终版】

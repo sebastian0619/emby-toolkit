@@ -20,10 +20,9 @@
             <n-dropdown 
               trigger="click"
               :options="batchActions"
-              :disabled="selectedItems.size === 0"
               @select="handleBatchAction"
             >
-              <n-button :disabled="selectedItems.size === 0">
+              <n-button>
                 批量操作 ({{ selectedItems.size }})
               </n-button>
             </n-dropdown>
@@ -118,7 +117,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, h, watch, nextTick } from 'vue';
 import axios from 'axios';
-import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTooltip, NText, NDropdown } from 'naive-ui';
+import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTooltip, NText, NDropdown, useDialog } from 'naive-ui';
 import { SyncOutline } from '@vicons/ionicons5';
 import { useConfig } from '../composables/useConfig.js';
 import ResubscribeSettingsPage from './settings/ResubscribeSettingsPage.vue';
@@ -128,6 +127,7 @@ const TMDbIcon = () => h('svg', { xmlns: "http://www.w.org/2000/svg", viewBox: "
 
 const { configModel } = useConfig();
 const message = useMessage();
+const dialog = useDialog();
 const props = defineProps({ taskStatus: { type: Object, required: true } });
 
 const allItems = ref([]); 
@@ -230,65 +230,130 @@ const handleCardClick = (event, item, index) => {
 
 // ★★★ 批量操作逻辑 ★★★
 const batchActions = computed(() => {
-  // 根据当前激活的视图 (filter.value)，动态生成操作列表
-  switch (filter.value) {
-    case 'ignored':
-      // 在“已忽略”视图下，只提供“批量取消忽略”
-      return [
-        { label: '批量取消忽略', key: 'unignore' }
-      ];
-    
-    case 'all':
-    case 'needed':
-    default:
-      // ★★★ 核心修复：在“全部”和“需洗版”视图下，都提供“订阅”和“忽略”两个选项 ★★★
-      return [
-        { label: '批量订阅', key: 'subscribe' },
-        { label: '批量忽略', key: 'ignore' }
-      ];
+  const actions = [];
+  const noSelection = selectedItems.value.size === 0;
+
+  // 1. 基础批量操作 (基于勾选)
+  if (filter.value === 'ignored') {
+    actions.push({ 
+      label: '批量取消忽略', 
+      key: 'unignore', 
+      disabled: noSelection
+    });
+  } else {
+    actions.push({ 
+      label: '批量订阅', 
+      key: 'subscribe', 
+      disabled: noSelection
+    });
+    actions.push({ 
+      label: '批量忽略', 
+      key: 'ignore', 
+      disabled: noSelection
+    });
   }
+  actions.push({ 
+    label: '批量删除', 
+    key: 'delete', 
+    props: { type: 'error' }, 
+    disabled: noSelection
+  });
+  
+  // 2. 分割线
+  actions.push({ type: 'divider', key: 'd1' });
+
+  // 3. “一键”操作 (基于当前视图，且不冗余)
+  // ★★★ 核心修复：只保留“一键忽略”和“一键删除” ★★★
+  
+  if (filter.value === 'needed') {
+    // 在“需洗版”视图，提供“一键忽略”
+    actions.push({ label: '一键忽略当前页所有“需洗版”项', key: 'oneclick-ignore' });
+  }
+  if (filter.value === 'ignored') {
+    // 在“已忽略”视图，提供“一键取消忽略”
+    actions.push({ label: '一键取消忽略当前页所有项', key: 'oneclick-unignore' });
+  }
+  
+  // 在“需洗版”和“已忽略”视图下，都提供“一键删除”
+  if (filter.value === 'needed' || filter.value === 'ignored') {
+      actions.push({ 
+          label: `一键删除当前页所有“${filter.value === 'needed' ? '需洗版' : '已忽略'}”项`, 
+          key: 'oneclick-delete',
+          props: { type: 'error' } 
+      });
+  }
+  
+  return actions;
 });
 
-const handleBatchAction = async (key) => {
-  const ids = Array.from(selectedItems.value);
-  if (ids.length === 0) return;
+const handleBatchAction = (key) => {
+  let ids = Array.from(selectedItems.value);
+  let actionKey = key;
+  let isOneClick = false;
 
-  // 前端只负责告诉后端：我要对这些ID，执行这个动作
+  if (key.startsWith('oneclick-')) {
+    isOneClick = true;
+    actionKey = key.split('-')[1];
+    ids = []; 
+  }
+  
+  if (!isOneClick && ids.length === 0) return;
+  executeBatchAction(actionKey, ids, isOneClick);
+};
+
+const sendBatchActionRequest = async (actionKey, ids, isOneClick) => {
   const actionMap = {
-    subscribe: 'subscribe',
-    ignore: 'ignore',
-    unignore: 'ok'
+    subscribe: 'subscribe', ignore: 'ignore',
+    unignore: 'ok', delete: 'delete'
   };
-  const action = actionMap[key];
+  const action = actionMap[actionKey];
 
   try {
     const response = await axios.post('/api/resubscribe/batch_action', {
       item_ids: ids,
-      action: action
+      action: action,
+      is_one_click: isOneClick,
+      filter: filter.value
     });
     message.success(response.data.message);
     
-    // 乐观更新UI
-    const optimisticStatusMap = {
-      subscribe: 'subscribed',
-      ignore: 'ignored',
-      unignore: 'ok'
-    };
-    const optimisticStatus = optimisticStatusMap[key];
-
-    if (optimisticStatus === 'ok') {
-      allItems.value = allItems.value.filter(i => !ids.includes(i.item_id));
+    if (!isOneClick) {
+      const optimisticStatusMap = { subscribe: 'subscribed', ignore: 'ignored', unignore: 'ok' };
+      const optimisticStatus = optimisticStatusMap[actionKey];
+      if (optimisticStatus === 'ok' || actionKey === 'delete') {
+        allItems.value = allItems.value.filter(i => !ids.includes(i.item_id));
+      } else {
+        ids.forEach(id => {
+          const item = allItems.value.find(i => i.item_id === id);
+          if (item) item.status = optimisticStatus;
+        });
+      }
+      selectedItems.value.clear();
     } else {
-      ids.forEach(id => {
-        const item = allItems.value.find(i => i.item_id === id);
-        if (item) {
-          item.status = optimisticStatus;
-        }
-      });
+      fetchData();
     }
-    selectedItems.value.clear();
   } catch (err) {
     message.error(err.response?.data?.error || `批量操作失败。`);
+  }
+};
+
+const executeBatchAction = async (actionKey, ids, isOneClick) => {
+  // 对于危险操作，显示确认框
+  if (actionKey === 'delete' || actionKey === 'oneclick-delete') {
+    const countText = isOneClick ? `当前视图下所有` : `${ids.length}`;
+    dialog.warning({
+      title: '高危操作确认',
+      content: `确定要永久删除选中的 ${countText} 个媒体项吗？此操作会从 Emby 和硬盘中删除文件，且不可恢复！`,
+      positiveText: '我确定，删除！',
+      negativeText: '取消',
+      // ★★★ 核心修复：确认后，调用我们新建的“发货”函数 ★★★
+      onPositiveClick: () => {
+        sendBatchActionRequest(actionKey, ids, isOneClick);
+      }
+    });
+  } else {
+    // 对于安全操作，直接“发货”
+    sendBatchActionRequest(actionKey, ids, isOneClick);
   }
 };
 
