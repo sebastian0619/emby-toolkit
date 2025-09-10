@@ -70,8 +70,23 @@
               placeholder="选择一个或多个媒体库"
             />
           </n-form-item>
-          <n-form-item label="洗版成功后删除Emby中的媒体项">
-            <n-switch v-model:value="currentRule.delete_after_resubscribe" />
+          <n-form-item>
+            <template #label>
+              <n-space align="center">
+                <span>洗版成功后删除Emby中的媒体项</span>
+                <n-tooltip trigger="hover" v-if="!isEmbyAdminConfigured">
+                  <template #trigger>
+                    <n-icon :component="AlertIcon" style="color: var(--n-warning-color);" />
+                  </template>
+                  请先在 设置 -> Emby & 虚拟库 标签页中，配置“管理员登录凭证”。
+                </n-tooltip>
+              </n-space>
+            </template>
+            <n-switch 
+              v-model:value="currentRule.delete_after_resubscribe"
+              :disabled="!isEmbyAdminConfigured"
+              @update:value="handleDeleteSwitchChange"
+            />
           </n-form-item>
           
           <n-divider />
@@ -167,10 +182,17 @@ import {
 } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { 
-  Add as AddIcon, Pencil as EditIcon, Trash as DeleteIcon, Move as DragHandleIcon 
+  Add as AddIcon, Pencil as EditIcon, Trash as DeleteIcon, Move as DragHandleIcon, AlertCircleOutline as AlertIcon, 
 } from '@vicons/ionicons5';
 
 const message = useMessage();
+const embyAdminUser = ref('');
+const embyAdminPass = ref('');
+
+// 计算属性，实时判断管理员账密是否已配置
+const isEmbyAdminConfigured = computed(() => {
+  return embyAdminUser.value && embyAdminPass.value;
+});
 const loading = ref(true);
 const saving = ref(false);
 const showModal = ref(false);
@@ -215,14 +237,35 @@ const subtitleLanguageOptions = ref([
 const loadData = async () => {
   loading.value = true;
   try {
-    // 只请求规则
-    const rulesRes = await axios.get('/api/resubscribe/rules');
+    // ▼▼▼ 把 Promise.all 改成这样，增加第三个请求 ▼▼▼
+    const [rulesRes, libsRes, configRes] = await Promise.all([
+      axios.get('/api/resubscribe/rules'),
+      axios.get('/api/resubscribe/libraries'),
+      axios.get('/api/config') // ★ 新增：获取完整配置
+    ]);
+    
     rules.value = rulesRes.data;
-    // 不再在这里请求媒体库
+    libraryOptions.value = libsRes.data;
+
+    // ★ 新增：从完整配置中提取我们需要的管理员账密
+    embyAdminUser.value = configRes.data.emby_admin_user;
+    embyAdminPass.value = configRes.data.emby_admin_pass;
+
   } catch (error) {
-    message.error('加载规则列表失败。');
+    message.error('加载数据失败，请检查网络或后端日志。');
   } finally {
     loading.value = false;
+  }
+};
+
+const handleDeleteSwitchChange = (value) => {
+  if (value && !isEmbyAdminConfigured.value) {
+    // 如果用户尝试打开开关，但配置不完整
+    message.warning('请先在 设置 -> Emby & 虚拟库 标签页中，配置“管理员登录凭证”，否则删除功能无法生效。');
+    // 阻止开关被打开
+    nextTick(() => {
+      currentRule.value.delete_after_resubscribe = false;
+    });
   }
 };
 
