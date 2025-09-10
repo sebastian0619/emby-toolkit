@@ -2180,7 +2180,6 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
         "type": "电影" if item_type == "Movie" else "电视剧",
     }
 
-    # ★★★ 核心修改：在这里加入总开关判断 ★★★
     # 从全局配置中读取开关状态
     use_custom_subscribe = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE, False)
 
