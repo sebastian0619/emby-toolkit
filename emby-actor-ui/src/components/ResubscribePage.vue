@@ -12,7 +12,9 @@
           </n-space>
         </template>
         <n-alert title="操作提示" type="info" style="margin-top: 24px;">
-          使用 Shift + 点击 来选择一个范围内的卡片。选中的卡片会显示绿色边框。
+          先进行洗版规则设定，然后点击刷新按钮扫描全库媒体项，扫描完刷新页面会展示所有媒体项并按照预设的洗版规则显示是否需要洗版。<br />
+          按住Shift键可以进行多选然后批量操作。<br />
+          本模块所有涉及删除的功能都是删除Emby的媒体项和媒体文件，危险操作，慎用！！！
         </n-alert>
         <template #extra>
           <n-space>
