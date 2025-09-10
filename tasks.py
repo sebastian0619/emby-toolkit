@@ -2176,7 +2176,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
     video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
 
     # --- ★★★ 核心改造 1/3: 定义一个更全面的中文代码集合 ★★★ ---
-    CHINESE_LANG_CODES = {'chi', 'zho', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn', 'yue'}
+    CHINESE_LANG_CODES = {'chi', 'zho', 'chs', 'cht', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn', 'yue'}
     CHINESE_SUB_CODES = CHINESE_LANG_CODES
     CHINESE_AUDIO_CODES = CHINESE_LANG_CODES
 

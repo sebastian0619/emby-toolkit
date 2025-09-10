@@ -14,7 +14,8 @@
         </template>
         <n-alert title="操作提示" type="info" style="margin-top: 24px;">
           先进行洗版规则设定，然后点击刷新按钮扫描全库媒体项，扫描完刷新页面会展示所有媒体项并按照预设的洗版规则显示是否需要洗版。<br />
-          需洗版的订阅后会转为已订阅的状态，下次刷新时如果已重新下载并入库会转换状态成质量达标。
+          需洗版的订阅后会转为已订阅的状态，下次刷新时如果已重新下载并入库会转换状态成质量达标。<br />
+          如果勾选《订阅成功后删除Emby中的媒体项》，那么在成功订阅的同时会删除媒体项和洗版缓存，危险操作，慎选！！！
         </n-alert>
         <template #extra>
           <n-space>
@@ -104,7 +105,7 @@
           <n-spin v-if="displayedItems.length < filteredItems.length" />
         </div>
       </div>
-      <div v-else class="center-container"><n-empty description="缓存为空，请点击右上角刷新按钮来扫描媒体库。" size="huge" /></div>
+      <div v-else class="center-container"><n-empty description="缓存为空，请添加洗版规则后点击右上角刷新按钮来扫描媒体库。" size="huge" /></div>
     </div>
 
     <n-modal v-model:show="showSettingsModal" preset="card" style="width: 90%; max-width: 800px;" title="洗版规则设定">

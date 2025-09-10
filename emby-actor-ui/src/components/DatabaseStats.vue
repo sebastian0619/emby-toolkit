@@ -1,4 +1,4 @@
-<!-- src/components/DatabaseStats.vue (并列布局优化版) -->
+<!-- src/components/DatabaseStats.vue (精装修终版) -->
 <template>
  <n-layout content-style="padding: 24px;">
   <div>
@@ -51,39 +51,106 @@
       <n-gi span="4 m:2 l:1">
         <n-card :bordered="false" class="dashboard-card">
           <template #header>
-            <!-- 将 card-title 类应用到标题文本的容器上 -->
             <span class="card-title">合集管理</span>
           </template>
           <n-space vertical size="large" align="center">
-            <n-statistic label="已识别TMDB合集" class="centered-statistic" :value="stats.collections?.total_tmdb_collections" />
-            <n-statistic label="存在缺失的合集" class="centered-statistic" :value="stats.collections?.collections_with_missing" />
+            <n-statistic label="已识别TMDB合集" class="centered-statistic" :value="stats.collections_card?.total_tmdb_collections" />
             <n-divider />
             <n-statistic label="活跃的自建合集" class="centered-statistic">
-              <span class="stat-value">{{ stats.collections?.total_custom_collections }}</span>
+              <span class="stat-value">{{ stats.collections_card?.total_custom_collections }}</span>
             </n-statistic>
           </n-space>
         </n-card>
       </n-gi>
       
-      <!-- 卡片3: 订阅服务 -->
+      <!-- ★★★ 卡片3: 订阅中心 (全新精装修布局) ★★★ -->
       <n-gi span="4 m:4 l:2">
         <n-card :bordered="false" class="dashboard-card">
           <template #header>
-            <!-- 将 card-title 类应用到标题文本的容器上 -->
-            <span class="card-title">订阅服务</span>
+            <span class="card-title">订阅中心</span>
           </template>
-          <n-grid :x-gap="12" :y-gap="20" :cols="3">
-            <n-gi><n-statistic label="追剧中" class="centered-statistic" :value="stats.subscriptions?.watchlist_active" /></n-gi>
-            <n-gi><n-statistic label="已暂停" class="centered-statistic" :value="stats.subscriptions?.watchlist_paused" /></n-gi>
-            <n-gi><n-statistic label="已完结" class="centered-statistic" :value="stats.subscriptions?.watchlist_ended" /></n-gi>
-            <n-gi><n-statistic label="演员订阅" class="centered-statistic" :value="stats.subscriptions?.actor_subscriptions_active" /></n-gi>
-            <n-gi><n-statistic label="追踪的媒体" class="centered-statistic" :value="stats.subscriptions?.tracked_media_total" /></n-gi>
-            <n-gi><n-statistic label="已入库" class="centered-statistic" :value="stats.subscriptions?.tracked_media_in_library" /></n-gi>
-          </n-grid>
+          <n-space vertical :size="24" class="subscription-center-card">
+            <!-- 分组1: 媒体追踪 -->
+            <div class="section-container">
+              <div class="section-title">媒体追踪</div>
+              <n-grid :cols="2" :x-gap="12">
+                <n-gi class="stat-block">
+                  <div class="stat-block-title">追剧订阅</div>
+                  <div class="stat-item-group">
+                    <div class="stat-item">
+                      <div class="stat-item-label">追剧中</div>
+                      <div class="stat-item-value">{{ stats.subscriptions_card?.watchlist.watching }}</div>
+                    </div>
+                    <div class="stat-item">
+                      <div class="stat-item-label">已暂停</div>
+                      <div class="stat-item-value">{{ stats.subscriptions_card?.watchlist.paused }}</div>
+                    </div>
+                  </div>
+                </n-gi>
+                <n-gi class="stat-block">
+                  <div class="stat-block-title">演员订阅</div>
+                  <div class="stat-item-group">
+                    <div class="stat-item">
+                      <div class="stat-item-label">已订阅</div>
+                      <div class="stat-item-value">{{ stats.subscriptions_card?.actors.subscriptions }}</div>
+                    </div>
+                    <div class="stat-item">
+                      <div class="stat-item-label">作品入库</div>
+                      <div class="stat-item-value">
+                        {{ stats.subscriptions_card?.actors.tracked_in_library }} / {{ stats.subscriptions_card?.actors.tracked_total }}
+                      </div>
+                    </div>
+                  </div>
+                </n-gi>
+              </n-grid>
+            </div>
+
+            <!-- 分组2: 自动化订阅 -->
+            <div class="section-container">
+              <div class="section-title">自动化订阅</div>
+              <n-grid :cols="2" :x-gap="12">
+                <n-gi class="stat-block">
+                  <div class="stat-block-title">洗版任务</div>
+                  <div class="stat-item">
+                    <div class="stat-item-label">待洗版</div>
+                    <div class="stat-item-value">{{ stats.subscriptions_card?.resubscribe.pending }}</div>
+                  </div>
+                </n-gi>
+                <n-gi class="stat-block">
+                  <div class="stat-block-title">合集补全</div>
+                  <div class="stat-item">
+                    <div class="stat-item-label">待补全合集</div>
+                    <div class="stat-item-value">{{ stats.subscriptions_card?.collections.with_missing }}</div>
+                  </div>
+                </n-gi>
+              </n-grid>
+            </div>
+
+            <n-divider />
+
+            <!-- 分组3: 今日配额 -->
+            <n-grid :cols="3" :x-gap="12" class="quota-grid">
+              <n-gi class="quota-label-container">
+                <span>订阅配额</span>
+              </n-gi>
+              <n-gi class="stat-block">
+                <div class="stat-item">
+                  <div class="stat-item-label">今日已用</div>
+                  <div class="stat-item-value">{{ stats.subscriptions_card?.quota.consumed }}</div>
+                </div>
+              </n-gi>
+              <n-gi class="stat-block">
+                <div class="stat-item">
+                  <div class="stat-item-label">今日剩余</div>
+                  <div class="stat-item-value">{{ stats.subscriptions_card?.quota.available }}</div>
+                </div>
+              </n-gi>
+            </n-grid>
+          </n-space>
         </n-card>
       </n-gi>
 
-      <!-- ★ 修改点1: 调整 span 属性以实现并列布局 -->
+      <!-- 卡片4: 系统与缓存 -->
       <n-gi span="4 l:2">
         <n-card :bordered="false" class="dashboard-card">
           <template #header>
@@ -106,7 +173,7 @@
         </n-card>
       </n-gi>
 
-      <!-- ★ 修改点2: 调整 span 属性并确保卡片高度一致 -->
+      <!-- 卡片5: 实时日志 -->
       <n-gi span="4 l:2">
         <n-card 
           :bordered="false" 
@@ -116,7 +183,6 @@
           header-style="padding-bottom: 12px;"
         >
         <template #header>
-            <!-- 将 card-title 类应用到标题文本的容器上 -->
             <span class="card-title">实时日志</span>
           </template>
           <template #header-extra>
@@ -144,9 +210,8 @@ import {
   NLog, NButton
 } from 'naive-ui';
 import { FilmOutline as FilmIcon, TvOutline as TvIcon, DocumentTextOutline } from '@vicons/ionicons5';
-import LogViewer from './LogViewer.vue'; // 确保 LogViewer 组件路径正确
+import LogViewer from './LogViewer.vue';
 
-// --- Props ---
 const props = defineProps({
   taskStatus: {
     type: Object,
@@ -159,26 +224,19 @@ const props = defineProps({
   }
 });
 
-// --- 数据看板相关状态 ---
 const loading = ref(true);
 const error = ref(null);
 const stats = ref({});
-
-// --- 日志相关状态 ---
 const logRef = ref(null);
 const isLogViewerVisible = ref(false);
 
-// --- Computed ---
 const logContent = computed(() => props.taskStatus?.logs?.join('\n') || '等待任务日志...');
 
-// --- Watchers ---
 watch(() => props.taskStatus.logs, async () => {
   await nextTick();
   logRef.value?.scrollTo({ position: 'bottom', slient: true });
 }, { deep: true });
 
-
-// --- Methods ---
 const fetchStats = async () => {
   loading.value = true;
   error.value = null;
@@ -197,7 +255,6 @@ const fetchStats = async () => {
   }
 };
 
-// --- Lifecycle Hooks ---
 onMounted(() => {
   fetchStats();
 });
@@ -211,29 +268,72 @@ onMounted(() => {
   align-items: center;
   height: 400px;
 }
-.loading-container p {
-  margin-top: 15px;
-}
 .centered-statistic {
   text-align: center;
 }
 .stat-value {
-  font-size: 1.8em; /* 放大核心数字 */
+  font-size: 1.8em;
   font-weight: 600;
   line-height: 1.2;
 }
-.centered-statistic .n-statistic__prefix {
-  margin-right: 6px;
-}
-
-/* 确保所有卡片在栅格中高度一致 */
 .content-card {
   height: 100%;
 }
-
 .log-panel {
   font-size: 13px;
   line-height: 1.6;
   background-color: transparent;
+}
+
+/* --- 全新订阅中心样式 --- */
+.subscription-center-card {
+  width: 100%;
+}
+.section-container {
+  width: 100%;
+}
+.section-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--n-title-text-color);
+  margin-bottom: 16px;
+}
+.stat-block {
+  text-align: center;
+}
+.stat-block-title {
+  font-size: 14px;
+  color: var(--n-text-color-2);
+  margin-bottom: 12px;
+}
+.stat-item-group {
+  display: flex;
+  justify-content: center;
+  gap: 32px;
+}
+.stat-item {
+  text-align: center;
+}
+.stat-item-label {
+  font-size: 13px;
+  color: var(--n-text-color-3);
+  margin-bottom: 4px;
+}
+.stat-item-value {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--n-statistic-value-text-color);
+}
+.quota-grid {
+  align-items: center;
+}
+.quota-label-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--n-text-color-2);
 }
 </style>

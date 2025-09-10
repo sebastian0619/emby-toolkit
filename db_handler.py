@@ -2155,78 +2155,74 @@ def delete_resubscribe_cache_item(item_id: str) -> bool:
         logger.error(f"DB: 删除单条洗版缓存项 {item_id} 失败: {e}", exc_info=True)
         return False
     
-def get_resubscribe_cache_item_ids_by_library(library_ids: List[str]) -> set:
-    """根据媒体库ID列表，获取所有相关的洗版缓存项目ID。"""
-    if not library_ids:
-        return set()
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            # 使用 ANY(%s) 语法可以高效地查询数组中的成员
-            sql = "SELECT item_id FROM resubscribe_cache WHERE source_library_id = ANY(%s)"
-            cursor.execute(sql, (library_ids,))
-            return {row['item_id'] for row in cursor.fetchall()}
-    except Exception as e:
-        logger.error(f"DB: 根据媒体库ID获取洗版缓存ID时失败: {e}", exc_info=True)
-        return set()
-
-def delete_resubscribe_cache_by_item_ids(item_ids: List[str]) -> int:
-    """根据 item_id 列表，批量删除洗版缓存记录。"""
-    if not item_ids:
-        return 0
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = "DELETE FROM resubscribe_cache WHERE item_id = ANY(%s)"
-            cursor.execute(sql, (item_ids,))
-            deleted_count = cursor.rowcount
-            conn.commit()
-            return deleted_count
-    except Exception as e:
-        logger.error(f"DB: 批量删除洗版缓存项时失败: {e}", exc_info=True)
-        return 0
-    
 # ======================================================================
 # 模块 9: 全局订阅配额管理器 (Subscription Quota Manager) -          ★★★
 # ======================================================================
 
 def get_subscription_quota() -> int:
     """
-    【核心】获取当前可用的订阅配额。
-    - 实现了“懒重置”：在每天第一次被调用时，会自动将配额重置为配置中的最大值。
+    【V3 - 终极健壮版】获取当前可用的订阅配额。
+    - 彻底修复了因每日上限下调导致剩余配额>总配额、已用配额为负数的BUG。
+    - 增加了最终安全校验，确保返回的剩余配额永远不会超过当前设定的每日上限。
+    - 能够自动修复和迁移旧的、不一致的数据库状态。
     """
     try:
-        # 从主配置中读取最大配额，这是重置的基准
-        max_quota = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP, 200)
+        # 1. 永远从主配置中读取最新的最大配额，这是当前的“权威”值
+        current_max_quota = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP, 200)
         
-        # 获取今天的日期字符串，用于比较
+        # 获取今天的日期字符串
         today_str = datetime.now(pytz.timezone(constants.TIMEZONE)).strftime('%Y-%m-%d')
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # 从 app_settings 表中获取配额状态
+            # 2. 从数据库获取配额状态
             state = get_setting('subscription_quota_state') or {}
-            
             last_reset_date = state.get('last_reset_date')
             
-            # --- 核心逻辑：判断是否需要重置 ---
+            # --- 逻辑分支 A：新的一天，执行重置 ---
             if last_reset_date != today_str:
-                # 如果是新的一天，或者从未设置过
-                logger.info(f"检测到新的一天 ({today_str})，正在重置订阅配额为 {max_quota}。")
+                logger.info(f"检测到新的一天 ({today_str})，正在重置订阅配额为 {current_max_quota}。")
                 new_state = {
-                    'current_quota': max_quota,
-                    'last_reset_date': today_str
+                    'current_quota': current_max_quota,
+                    'last_reset_date': today_str,
+                    'max_quota_on_reset': current_max_quota
                 }
-                # 将新的状态存回数据库
                 save_setting('subscription_quota_state', new_state)
-                # 返回全新的、满满的配额
-                return max_quota
+                return current_max_quota
+
+            # --- 逻辑分支 B：仍在当天，进行动态计算和校验 ---
             else:
-                # 如果今天已经重置过，直接返回当前剩余的配额
-                current_quota = state.get('current_quota', 0)
-                logger.debug(f"  -> 当前剩余订阅配额: {current_quota}")
-                return current_quota
+                max_quota_on_reset = state.get('max_quota_on_reset', -1) # 使用-1作为哨兵，表示状态是旧版的
+                current_quota_in_db = state.get('current_quota', 0)
+                
+                effective_remaining_quota = 0
+                
+                # 如果是现代状态（有重置记录）且配置发生了变化
+                if max_quota_on_reset != -1 and current_max_quota != max_quota_on_reset:
+                    # 精确计算已消耗数量
+                    consumed = max_quota_on_reset - current_quota_in_db
+                    # 基于新上限，计算理论上应剩余的数量
+                    effective_remaining_quota = max(0, current_max_quota - consumed)
+                else:
+                    # 如果是旧版状态，或配置未变，则先沿用数据库中的值
+                    effective_remaining_quota = current_quota_in_db
+                    
+                # ★★★ 终极安全校验 ★★★
+                # 无论经过何种计算，剩余配额绝对不能超过当前的总上限。
+                final_remaining_quota = min(effective_remaining_quota, current_max_quota)
+                
+                # 如果计算结果与数据库不符（说明需要修正），或者状态是旧版的，就更新数据库
+                if final_remaining_quota != current_quota_in_db or max_quota_on_reset == -1:
+                    logger.info(f"动态调整或修正了当日订阅配额。旧剩余: {current_quota_in_db}, 新剩余: {final_remaining_quota}, 当前上限: {current_max_quota}")
+                    new_state = {
+                        'current_quota': final_remaining_quota,
+                        'last_reset_date': today_str,
+                        'max_quota_on_reset': current_max_quota # 将基准更新为当前上限
+                    }
+                    save_setting('subscription_quota_state', new_state)
+                
+                return final_remaining_quota
 
     except Exception as e:
         logger.error(f"获取订阅配额时发生严重错误，将返回0以确保安全: {e}", exc_info=True)
