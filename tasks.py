@@ -2196,6 +2196,8 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
     rule_name = rule.get('name', '未知规则')
     include_keywords = []
 
+    final_include_parts = []
+
     # --- 分辨率处理 ---
     if rule.get("resubscribe_resolution_enabled"):
         threshold = rule.get("resubscribe_resolution_threshold")
@@ -2224,36 +2226,47 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
             params_added = True
             logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 要求特效: {payload['effect']}")
 
-    # ★★★ 新增：音轨和字幕处理 ★★★
-    # 音轨
+    # --- 音轨处理 ---
     if rule.get("resubscribe_audio_enabled"):
         audio_langs = rule.get("resubscribe_audio_missing_languages", [])
         if isinstance(audio_langs, list) and audio_langs:
+            audio_keywords = []
             for lang_code in audio_langs:
                 keywords = AUDIO_SUBTITLE_KEYWORD_MAP.get(lang_code)
-                if keywords:
-                    include_keywords.extend(keywords)
-            params_added = True # 只要启用了，就算一个精确参数
+                if keywords: audio_keywords.extend(keywords)
+            
+            if audio_keywords:
+                unique_keywords = sorted(list(set(audio_keywords)), key=len, reverse=True)
+                # 构建音轨部分的 OR 正则，并用括号包围
+                audio_regex_part = f"({'|'.join(unique_keywords)})"
+                final_include_parts.append(audio_regex_part)
+                logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 要求音轨 (正则部分): {audio_regex_part}")
+
+            params_added = True
     
-    # 字幕
+    # --- 字幕处理 ---
     if rule.get("resubscribe_subtitle_enabled"):
         subtitle_langs = rule.get("resubscribe_subtitle_missing_languages", [])
         if isinstance(subtitle_langs, list) and subtitle_langs:
+            subtitle_keywords = []
             for lang_code in subtitle_langs:
-                # 使用 'sub_' 前缀来查找字幕专用关键词
                 keywords = AUDIO_SUBTITLE_KEYWORD_MAP.get(f"sub_{lang_code}")
-                if keywords:
-                    include_keywords.extend(keywords)
+                if keywords: subtitle_keywords.extend(keywords)
+
+            if subtitle_keywords:
+                unique_keywords = sorted(list(set(subtitle_keywords)), key=len, reverse=True)
+                # 构建字幕部分的 OR 正则，并用括号包围
+                subtitle_regex_part = f"({'|'.join(unique_keywords)})"
+                final_include_parts.append(subtitle_regex_part)
+                logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 要求字幕 (正则部分): {subtitle_regex_part}")
+
             params_added = True
 
-    # 将收集到的所有关键词去重并组合成最终的 include 字符串
-    if include_keywords:
-        # 使用正则表达式的 OR `|` 来组合所有关键词，效果拔群
-        # 这样做比简单的逗号分隔更强大，能匹配包含任意一个关键词的资源
-        unique_keywords = sorted(list(set(include_keywords)), key=len, reverse=True)
-        include_regex = "|".join(unique_keywords)
-        payload['include'] = include_regex
-        logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 要求音轨/字幕 (正则): {include_regex}")
+    # ★★★ 核心修改：用逗号 (AND) 连接所有正则部分 ★★★
+    if final_include_parts:
+        # 用逗号连接，实现 AND 逻辑
+        payload['include'] = ",".join(final_include_parts)
+        logger.info(f"  -> 《{item_name}》最终生成的 include 参数: {payload['include']}")
 
     # --- 最终决策 ---
     if not params_added:
