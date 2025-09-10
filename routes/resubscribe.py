@@ -244,3 +244,42 @@ def get_emby_libraries_for_rules():
     except Exception as e:
         logger.error(f"API: 获取洗版用媒体库列表时失败: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
+    
+# ★★★ 处理批量操作的 API ★★★
+@resubscribe_bp.route('/batch_action', methods=['POST'])
+@login_required
+def batch_action():
+    """【V3 - 异步任务版】处理对洗版缓存项的批量操作。"""
+    data = request.json
+    item_ids = data.get('item_ids')
+    action = data.get('action')
+
+    if not isinstance(item_ids, list) or not item_ids:
+        return jsonify({"error": "缺少有效的 item_ids 列表"}), 400
+    if action not in ['subscribe', 'ignore', 'ok']:
+        return jsonify({"error": "无效的操作类型"}), 400
+
+    try:
+        if action == 'subscribe':
+            # --- ★★★ 核心改造：提交一个带参数的后台任务 ★★★ ---
+            task_manager.submit_task(
+                tasks.task_resubscribe_batch, # 调用我们新建的精准任务
+                task_name="批量媒体洗版",
+                processor_type='media',
+                item_ids=item_ids # ★ 把选中的ID列表作为参数传给任务
+            )
+            # 乐观更新，让前端立即看到变化
+            db_handler.batch_update_resubscribe_cache_status(item_ids, 'subscribed')
+            return jsonify({"message": "批量订阅任务已提交到后台！"}), 202
+
+        elif action == 'ignore':
+            updated_count = db_handler.batch_update_resubscribe_cache_status(item_ids, 'ignored')
+            return jsonify({"message": f"成功忽略了 {updated_count} 个媒体项。"})
+
+        elif action == 'ok':
+            updated_count = db_handler.batch_update_resubscribe_cache_status(item_ids, 'ok')
+            return jsonify({"message": f"成功取消忽略了 {updated_count} 个媒体项。"})
+
+    except Exception as e:
+        logger.error(f"API: 处理批量操作 '{action}' 时失败: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
