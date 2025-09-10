@@ -47,12 +47,12 @@ EFFECT_KEYWORD_MAP = {
 
 AUDIO_SUBTITLE_KEYWORD_MAP = {
     # 音轨关键词
-    "chi": ["Mandarin", "CHI", "ZHO", "国语", "公映", "台配", "京译"],
+    "chi": ["Mandarin", "CHI", "ZHO", "国语", "国配", "国英双语", "公映", "台配", "京译", "上译", "央译"],
     "yue": ["Cantonese", "YUE", "粤语"],
     "eng": ["English", "ENG", "英语"],
     "jpn": ["Japanese", "JPN", "日语"],
     # 字幕关键词 (可以和音轨共用，也可以分开定义)
-    "sub_chi": ["CHS", "CHT", "中字", "简中", "繁中"],
+    "sub_chi": ["CHS", "CHT", "中字", "简中", "繁中", "简", "繁"],
     "sub_eng": ["ENG", "英字"],
 }
 
@@ -2164,8 +2164,8 @@ def task_generate_all_covers(processor: MediaProcessor):
 def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
     """
     根据媒体详情和匹配到的规则，构建发送给 MoviePilot 的最终 payload。
-    - 智能处理分辨率、质量、特效、音轨、字幕，生成精确订阅。
-    - 如果没有精确参数，则回退到使用 best_version: 1 的全局洗版。
+    - 核心修复：使用正向零宽断言 (?=.*REGEX) 来构建 AND 关系的正则表达式。
+    - 所有洗版请求都带 best_version: 1，自定义参数作为额外过滤器。
     """
     item_name = item_details.get('Name') or item_details.get('item_name')
     tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb") or item_details.get('tmdb_id')
@@ -2178,27 +2178,19 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
     payload = {
         "name": item_name, "tmdbid": int(tmdb_id),
         "type": "电影" if item_type == "Movie" else "电视剧",
+        "best_version": 1
     }
 
-    # 从全局配置中读取开关状态
     use_custom_subscribe = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE, False)
-
-    # 如果自定义洗版开关是关闭的，或者没有匹配到任何规则，直接使用全局洗版并返回
     if not use_custom_subscribe or not rule:
-        payload["best_version"] = 1
         log_reason = "自定义洗版未开启" if not use_custom_subscribe else "未匹配到规则"
         logger.info(f"  -> 《{item_name}》将使用全局洗版 ({log_reason})。")
         return payload
 
-    # --- 如果自定义洗版开关开启，才执行下面的精确参数构建逻辑 ---
-
-    params_added = False
     rule_name = rule.get('name', '未知规则')
-    include_keywords = []
+    final_include_lookaheads = []
 
-    final_include_parts = []
-
-    # --- 分辨率处理 ---
+    # --- 分辨率、质量、特效 (独立字段，逻辑不变) ---
     if rule.get("resubscribe_resolution_enabled"):
         threshold = rule.get("resubscribe_resolution_threshold")
         target_resolution = None
@@ -2207,25 +2199,20 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
         elif threshold == 1280: target_resolution = "720p"
         if target_resolution:
             payload['resolution'] = target_resolution
-            params_added = True
-            logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 要求分辨率: {target_resolution}")
-
-    # --- 质量处理 ---
+            logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 分辨率: {target_resolution}")
     if rule.get("resubscribe_quality_enabled"):
         quality_list = rule.get("resubscribe_quality_include")
         if isinstance(quality_list, list) and quality_list:
             payload['quality'] = ",".join(quality_list)
-            params_added = True
-            logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 要求质量: {payload['quality']}")
-
-    # --- 特效处理 ---
+            logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 质量: {payload['quality']}")
     if rule.get("resubscribe_effect_enabled"):
         effect_list = rule.get("resubscribe_effect_include")
         if isinstance(effect_list, list) and effect_list:
             payload['effect'] = ",".join(effect_list)
-            params_added = True
-            logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 要求特效: {payload['effect']}")
+            logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 特效: {payload['effect']}")
 
+    # ★★★ 核心修改：构建 Lookahead 正则表达式列表 ★★★
+    
     # --- 音轨处理 ---
     if rule.get("resubscribe_audio_enabled"):
         audio_langs = rule.get("resubscribe_audio_missing_languages", [])
@@ -2234,16 +2221,13 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
             for lang_code in audio_langs:
                 keywords = AUDIO_SUBTITLE_KEYWORD_MAP.get(lang_code)
                 if keywords: audio_keywords.extend(keywords)
-            
             if audio_keywords:
                 unique_keywords = sorted(list(set(audio_keywords)), key=len, reverse=True)
-                # 构建音轨部分的 OR 正则，并用括号包围
-                audio_regex_part = f"({'|'.join(unique_keywords)})"
-                final_include_parts.append(audio_regex_part)
-                logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 要求音轨 (正则部分): {audio_regex_part}")
+                # 构建音轨部分的 OR 正则
+                audio_or_regex = f"({'|'.join(unique_keywords)})"
+                # 将其包装成一个 lookahead
+                final_include_lookaheads.append(f"(?=.*{audio_or_regex})")
 
-            params_added = True
-    
     # --- 字幕处理 ---
     if rule.get("resubscribe_subtitle_enabled"):
         subtitle_langs = rule.get("resubscribe_subtitle_missing_languages", [])
@@ -2252,26 +2236,16 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
             for lang_code in subtitle_langs:
                 keywords = AUDIO_SUBTITLE_KEYWORD_MAP.get(f"sub_{lang_code}")
                 if keywords: subtitle_keywords.extend(keywords)
-
             if subtitle_keywords:
                 unique_keywords = sorted(list(set(subtitle_keywords)), key=len, reverse=True)
-                # 构建字幕部分的 OR 正则，并用括号包围
-                subtitle_regex_part = f"({'|'.join(unique_keywords)})"
-                final_include_parts.append(subtitle_regex_part)
-                logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 要求字幕 (正则部分): {subtitle_regex_part}")
+                subtitle_or_regex = f"({'|'.join(unique_keywords)})"
+                final_include_lookaheads.append(f"(?=.*{subtitle_or_regex})")
 
-            params_added = True
-
-    # ★★★ 核心修改：用逗号 (AND) 连接所有正则部分 ★★★
-    if final_include_parts:
-        # 用逗号连接，实现 AND 逻辑
-        payload['include'] = ",".join(final_include_parts)
-        logger.info(f"  -> 《{item_name}》最终生成的 include 参数: {payload['include']}")
-
-    # --- 最终决策 ---
-    if not params_added:
-        payload["best_version"] = 1
-        logger.info(f"  -> 《{item_name}》规则 '{rule_name}' 未设置有效参数，使用全局洗版。")
+    # ★★★ 核心修改：将所有 lookahead 直接连接起来，形成最终的 AND 正则 ★★★
+    if final_include_lookaheads:
+        # 直接连接，不需要任何分隔符
+        payload['include'] = "".join(final_include_lookaheads)
+        logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 生成的 AND 正则过滤器: {payload['include']}")
 
     return payload
 
@@ -2294,6 +2268,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
     CHINESE_LANG_CODES = {'chi', 'zho', 'chs', 'cht', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn', 'yue'}
     CHINESE_SUB_CODES = CHINESE_LANG_CODES
     CHINESE_AUDIO_CODES = CHINESE_LANG_CODES
+    CHINESE_SPEAKING_REGIONS = {'中国', '中国大陆', '香港', '中国香港', '台湾', '中国台湾', '新加坡'}
 
     # 1. 分辨率检查
     try:
@@ -2379,67 +2354,63 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
     except Exception as e:
         logger.warning(f"  -> [特效检查] 处理时发生未知错误: {e}")
 
-    # 4. 音轨检查
+    # ★★★ 核心修改：将豁免逻辑提取成一个独立的辅助函数 ★★★
+    def _is_exempted_from_chinese_check() -> bool:
+        """
+        判断当前媒体是否应该被豁免“必须包含中文音轨/字幕”的检查。
+        豁免条件：
+        1. 媒体本身已经有一条中文音轨。
+        2. 或者，媒体的音轨语言未知(und)，但其制片国家是华语地区。
+        """
+        # Plan A: 检查是否已有中文音轨
+        present_audio_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
+        if not present_audio_langs.isdisjoint(CHINESE_AUDIO_CODES):
+            return True
+        
+        # Plan B: 如果音轨信息无效 (und 或空)，则检查制片国
+        if 'und' in present_audio_langs or not present_audio_langs:
+            if media_metadata and media_metadata.get('countries_json'):
+                countries = set(media_metadata['countries_json'])
+                if not countries.isdisjoint(CHINESE_SPEAKING_REGIONS):
+                    logger.trace(f"  -> [豁免检查] 媒体音轨语言未知，但制片国家为华语地区 ({countries})，已豁免中文音轨/字幕检查。")
+                    return True
+        return False
+
+    # 4. 音轨检查 (应用豁免逻辑)
     try:
         if config.get("resubscribe_audio_enabled"):
             required_langs_raw = config.get("resubscribe_audio_missing_languages", [])
             if isinstance(required_langs_raw, list) and required_langs_raw:
                 required_langs = set(str(lang).lower() for lang in required_langs_raw)
-                present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
                 
-                # --- ★★★ 核心改造 2/3: 使用新的中文代码集合进行判断 ★★★ ---
-                # 检查要求的语言是否包含任何一种中文
                 requires_chinese = not required_langs.isdisjoint(CHINESE_LANG_CODES)
-                # 检查现有的音轨是否包含任何一种中文
-                has_chinese = not present_langs.isdisjoint(CHINESE_LANG_CODES)
-
-                # 如果要求中文但没有中文，则标记为缺失
-                if requires_chinese and not has_chinese:
-                    reasons.append("缺中文音轨")
                 
-                # 检查其他非中文的语言
+                if requires_chinese and not _is_exempted_from_chinese_check():
+                    present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
+                    if present_langs.isdisjoint(CHINESE_AUDIO_CODES):
+                         reasons.append("缺中文音轨")
+                
                 other_required_langs = required_langs - CHINESE_LANG_CODES
-                if not other_required_langs.issubset(present_langs):
-                    reasons.append("缺其他音轨")
-
+                if other_required_langs:
+                    present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
+                    if not other_required_langs.issubset(present_langs):
+                        reasons.append("缺其他音轨")
     except Exception as e:
         logger.warning(f"  -> [音轨检查] 处理时发生未知错误: {e}")
 
-    # 5. 字幕检查
+    # 5. 字幕检查 (应用豁免逻辑)
     try:
         if config.get("resubscribe_subtitle_enabled"):
             required_langs_raw = config.get("resubscribe_subtitle_missing_languages", [])
             if isinstance(required_langs_raw, list) and required_langs_raw:
                 required_langs = set(str(lang).lower() for lang in required_langs_raw)
                 
-                # --- ★★★ 核心改造 3/3: 使用新的中文代码集合进行豁免和判断 ★★★ ---
-                CHINESE_REGIONS = {'中国', '中国大陆', '香港', '中国香港', '台湾', '中国台湾', '新加坡'}
-                
-                # 检查是否要求中文字幕
                 needs_chinese_sub = not required_langs.isdisjoint(CHINESE_SUB_CODES)
+                if needs_chinese_sub and not _is_exempted_from_chinese_check():
+                    present_sub_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
+                    if present_sub_langs.isdisjoint(CHINESE_SUB_CODES):
+                        reasons.append("缺中文字幕")
                 
-                if needs_chinese_sub:
-                    is_exempted = False
-                    present_audio_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
-
-                    # Plan A: 检查是否已有中文音轨
-                    if not present_audio_langs.isdisjoint(CHINESE_AUDIO_CODES):
-                        is_exempted = True
-                    
-                    # Plan B: 如果音轨信息无效，则检查制片国
-                    elif 'und' in present_audio_langs or not present_audio_langs:
-                        if media_metadata and media_metadata.get('countries_json'):
-                            countries = set(media_metadata['countries_json'])
-                            if not countries.isdisjoint(CHINESE_REGIONS):
-                                is_exempted = True
-
-                    # 如果没有被豁免，才去真正检查字幕
-                    if not is_exempted:
-                        present_sub_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
-                        if present_sub_langs.isdisjoint(CHINESE_SUB_CODES):
-                            reasons.append("缺中文字幕")
-                
-                # 检查其他非中文的字幕
                 other_required_subs = required_langs - CHINESE_SUB_CODES
                 if other_required_subs:
                     present_sub_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
@@ -2450,7 +2421,6 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
         logger.warning(f"  -> [字幕检查] 处理时发生未知错误: {e}")
                  
     if reasons:
-        # 使用 set 去重，避免出现 "缺其他音轨; 缺其他字幕" 这种重复提示
         unique_reasons = sorted(list(set(reasons)))
         final_reason = "; ".join(unique_reasons)
         logger.info(f"  -> 《{item_name}》需要洗版。原因: {final_reason}")
