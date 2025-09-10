@@ -66,7 +66,7 @@
               v-model:value="currentRule.target_library_ids"
               multiple
               filterable
-              :options="libraryOptions"
+              :options="availableLibraryOptions"
               placeholder="选择一个或多个媒体库"
             />
           </n-form-item>
@@ -200,7 +200,7 @@ const showModal = ref(false);
 const rules = ref([]);
 const currentRule = ref({});
 const formRef = ref(null);
-const libraryOptions = ref([]);
+const allEmbyLibraries = ref([]);
 
 const isEditing = computed(() => currentRule.value && currentRule.value.id);
 const modalTitle = computed(() => isEditing.value ? '编辑规则' : '新增规则');
@@ -237,22 +237,18 @@ const subtitleLanguageOptions = ref([
 const loadData = async () => {
   loading.value = true;
   try {
-    // ▼▼▼ 把 Promise.all 改成这样，增加第三个请求 ▼▼▼
-    const [rulesRes, libsRes, configRes] = await Promise.all([
+    // ▼▼▼ 把 Promise.all 改成这样，不再请求 libraries ▼▼▼
+    const [rulesRes, configRes] = await Promise.all([
       axios.get('/api/resubscribe/rules'),
-      axios.get('/api/resubscribe/libraries'),
-      axios.get('/api/config') // ★ 新增：获取完整配置
+      axios.get('/api/config')
     ]);
     
     rules.value = rulesRes.data;
-    libraryOptions.value = libsRes.data;
-
-    // ★ 新增：从完整配置中提取我们需要的管理员账密
     embyAdminUser.value = configRes.data.emby_admin_user;
     embyAdminPass.value = configRes.data.emby_admin_pass;
 
   } catch (error) {
-    message.error('加载数据失败，请检查网络或后端日志。');
+    message.error('加载基础数据失败，请检查网络或后端日志。');
   } finally {
     loading.value = false;
   }
@@ -270,12 +266,13 @@ const handleDeleteSwitchChange = (value) => {
 };
 
 const openRuleModal = async (rule = null) => {
-  // ▼▼▼ 在函数开头加入加载逻辑 ▼▼▼
+  // 1. 显示加载状态
+  saving.value = true; 
+  
   try {
-    // 显示加载状态
-    saving.value = true; 
+    // 2. 每次打开弹窗时，都重新获取最新的媒体库列表
     const libsRes = await axios.get('/api/resubscribe/libraries');
-    libraryOptions.value = libsRes.data;
+    allEmbyLibraries.value = libsRes.data;
   } catch (error) {
     message.error('获取媒体库列表失败！');
     saving.value = false;
@@ -283,30 +280,39 @@ const openRuleModal = async (rule = null) => {
   } finally {
     saving.value = false;
   }
+
+  // 3. 准备当前要编辑的规则数据
   if (rule) {
-    // Deep copy for editing to avoid reactive changes before saving
     currentRule.value = JSON.parse(JSON.stringify(rule));
   } else {
-    // Default new rule structure
     currentRule.value = {
-      name: '',
-      enabled: true,
-      target_library_ids: [],
-      delete_after_resubscribe: false,
-      resubscribe_resolution_enabled: false,
-      resubscribe_resolution_threshold: 1920,
-      resubscribe_audio_enabled: false,
-      resubscribe_audio_missing_languages: [],
-      resubscribe_subtitle_enabled: false,
-      resubscribe_subtitle_missing_languages: [],
-      resubscribe_quality_enabled: false,
-      resubscribe_quality_include: [],
-      resubscribe_effect_enabled: false,
+      name: '', enabled: true, target_library_ids: [],
+      delete_after_resubscribe: false, resubscribe_resolution_enabled: false,
+      resubscribe_resolution_threshold: 1920, resubscribe_audio_enabled: false,
+      resubscribe_audio_missing_languages: [], resubscribe_subtitle_enabled: false,
+      resubscribe_subtitle_missing_languages: [], resubscribe_quality_enabled: false,
+      resubscribe_quality_include: [], resubscribe_effect_enabled: false,
       resubscribe_effect_include: [],
     };
   }
+
+  // 4. 显示弹窗
   showModal.value = true;
 };
+
+const availableLibraryOptions = computed(() => {
+  if (!rules.value || !allEmbyLibraries.value) {
+    return [];
+  }
+
+  const assignedIdsByOtherRules = new Set(
+    rules.value
+      .filter(rule => rule.id !== currentRule.value.id)
+      .flatMap(rule => rule.target_library_ids || [])
+  );
+
+  return allEmbyLibraries.value.filter(lib => !assignedIdsByOtherRules.has(lib.value));
+});
 
 const saveRule = async () => {
   formRef.value?.validate(async (errors) => {
