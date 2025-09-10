@@ -40,6 +40,22 @@ from utils import get_country_translation_map, translate_country_list, get_unifi
 
 logger = logging.getLogger(__name__)
 
+EFFECT_KEYWORD_MAP = {
+    "杜比视界": ["dolby vision", "dovi"],
+    "HDR": ["hdr", "hdr10", "hdr10+", "hlg"]
+}
+
+AUDIO_SUBTITLE_KEYWORD_MAP = {
+    # 音轨关键词
+    "chi": ["Mandarin", "CHI", "ZHO", "国语", "公映", "台配", "京译"],
+    "yue": ["Cantonese", "YUE", "粤语"],
+    "eng": ["English", "ENG", "英语"],
+    "jpn": ["Japanese", "JPN", "日语"],
+    # 字幕关键词 (可以和音轨共用，也可以分开定义)
+    "sub_chi": ["CHS", "CHT", "中字", "简中", "繁中"],
+    "sub_eng": ["ENG", "英字"],
+}
+
 # ★★★ 全量处理任务 ★★★
 def task_run_full_scan(processor: MediaProcessor, force_reprocess: bool = False):
     """
@@ -2145,29 +2161,106 @@ def task_generate_all_covers(processor: MediaProcessor):
 # ★★★ 媒体洗版任务 (基于精确API模型重构) ★★★
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
-def _build_resubscribe_payload(item_details: dict, config: dict) -> Optional[dict]:
+def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
     """
-    【V6 - 回归本源最终版】
-    此版本只负责在需要洗版时，提交一个纯粹的、带 best_version: 1 的请求。
+    根据媒体详情和匹配到的规则，构建发送给 MoviePilot 的最终 payload。
+    - 智能处理分辨率、质量、特效、音轨、字幕，生成精确订阅。
+    - 如果没有精确参数，则回退到使用 best_version: 1 的全局洗版。
     """
-    needs_resubscribe, reason = _item_needs_resubscribe(item_details, config)
-    if not needs_resubscribe:
-        return None
+    item_name = item_details.get('Name') or item_details.get('item_name')
+    tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb") or item_details.get('tmdb_id')
+    item_type = item_details.get("Type") or item_details.get('item_type')
 
-    item_name = item_details.get('Name')
-    tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-    item_type = item_details.get("Type")
     if not all([item_name, tmdb_id, item_type]):
+        logger.error(f"构建Payload失败：缺少核心媒体信息 {item_details}")
         return None
 
     payload = {
-        "name": item_name,
-        "tmdbid": int(tmdb_id),
+        "name": item_name, "tmdbid": int(tmdb_id),
         "type": "电影" if item_type == "Movie" else "电视剧",
-        "best_version": 1
     }
+
+    # ★★★ 核心修改：在这里加入总开关判断 ★★★
+    # 从全局配置中读取开关状态
+    use_custom_subscribe = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE, False)
+
+    # 如果自定义洗版开关是关闭的，或者没有匹配到任何规则，直接使用全局洗版并返回
+    if not use_custom_subscribe or not rule:
+        payload["best_version"] = 1
+        log_reason = "自定义洗版未开启" if not use_custom_subscribe else "未匹配到规则"
+        logger.info(f"  -> 《{item_name}》将使用全局洗版 ({log_reason})。")
+        return payload
+
+    # --- 如果自定义洗版开关开启，才执行下面的精确参数构建逻辑 ---
+
+    params_added = False
+    rule_name = rule.get('name', '未知规则')
+    include_keywords = []
+
+    # --- 分辨率处理 ---
+    if rule.get("resubscribe_resolution_enabled"):
+        threshold = rule.get("resubscribe_resolution_threshold")
+        target_resolution = None
+        if threshold == 3840: target_resolution = "4k"
+        elif threshold == 1920: target_resolution = "1080p"
+        elif threshold == 1280: target_resolution = "720p"
+        if target_resolution:
+            payload['resolution'] = target_resolution
+            params_added = True
+            logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 要求分辨率: {target_resolution}")
+
+    # --- 质量处理 ---
+    if rule.get("resubscribe_quality_enabled"):
+        quality_list = rule.get("resubscribe_quality_include")
+        if isinstance(quality_list, list) and quality_list:
+            payload['quality'] = ",".join(quality_list)
+            params_added = True
+            logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 要求质量: {payload['quality']}")
+
+    # --- 特效处理 ---
+    if rule.get("resubscribe_effect_enabled"):
+        effect_list = rule.get("resubscribe_effect_include")
+        if isinstance(effect_list, list) and effect_list:
+            payload['effect'] = ",".join(effect_list)
+            params_added = True
+            logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 要求特效: {payload['effect']}")
+
+    # ★★★ 新增：音轨和字幕处理 ★★★
+    # 音轨
+    if rule.get("resubscribe_audio_enabled"):
+        audio_langs = rule.get("resubscribe_audio_missing_languages", [])
+        if isinstance(audio_langs, list) and audio_langs:
+            for lang_code in audio_langs:
+                keywords = AUDIO_SUBTITLE_KEYWORD_MAP.get(lang_code)
+                if keywords:
+                    include_keywords.extend(keywords)
+            params_added = True # 只要启用了，就算一个精确参数
     
-    logger.info(f"  -> 发现不合规项目: 《{item_name}》。原因: {reason}。将提交纯粹的洗版请求。")
+    # 字幕
+    if rule.get("resubscribe_subtitle_enabled"):
+        subtitle_langs = rule.get("resubscribe_subtitle_missing_languages", [])
+        if isinstance(subtitle_langs, list) and subtitle_langs:
+            for lang_code in subtitle_langs:
+                # 使用 'sub_' 前缀来查找字幕专用关键词
+                keywords = AUDIO_SUBTITLE_KEYWORD_MAP.get(f"sub_{lang_code}")
+                if keywords:
+                    include_keywords.extend(keywords)
+            params_added = True
+
+    # 将收集到的所有关键词去重并组合成最终的 include 字符串
+    if include_keywords:
+        # 使用正则表达式的 OR `|` 来组合所有关键词，效果拔群
+        # 这样做比简单的逗号分隔更强大，能匹配包含任意一个关键词的资源
+        unique_keywords = sorted(list(set(include_keywords)), key=len, reverse=True)
+        include_regex = "|".join(unique_keywords)
+        payload['include'] = include_regex
+        logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 要求音轨/字幕 (正则): {include_regex}")
+
+    # --- 最终决策 ---
+    if not params_added:
+        payload["best_version"] = 1
+        logger.info(f"  -> 《{item_name}》规则 '{rule_name}' 未设置有效参数，使用全局洗版。")
+
     return payload
 
 def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Optional[dict] = None) -> tuple[bool, str]:
@@ -2242,30 +2335,34 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
     # 3. 特效检查
     try:
         if config.get("resubscribe_effect_enabled"):
-            required_list_raw = config.get("resubscribe_effect_include", [])
-            if isinstance(required_list_raw, list) and required_list_raw:
-                required_list = [str(e).lower() for e in required_list_raw]
-                logger.trace(f"  -> [特效检查] 要求: {required_list}")
+            user_choices = config.get("resubscribe_effect_include", [])
+            if isinstance(user_choices, list) and user_choices:
+                expanded_keywords_for_file_check = []
+                for choice in user_choices:
+                    file_keywords = EFFECT_KEYWORD_MAP.get(choice)
+                    if file_keywords:
+                        expanded_keywords_for_file_check.extend(file_keywords)
+                
+                logger.trace(f"  -> [特效检查] 用户选择: {user_choices}, 扩展后用于匹配的关键词: {expanded_keywords_for_file_check}")
 
                 effect_met = False
-
-                # 优先从文件名匹配
-                if any(required_term in file_name_lower for required_term in required_list):
-                    effect_met = True
-                    logger.trace(f"  -> [特效检查] 文件名匹配成功。")
-                else:
-                    # 文件名匹配不到，从 MediaStreams 匹配
-                    if video_stream:
-                        # Combine relevant video stream properties for effects
-                        video_stream_effect_info = f"{video_stream.get('VideoRange', '')} {video_stream.get('VideoRangeType', '')} {video_stream.get('DisplayTitle', '')}".lower()
-                        logger.trace(f"  -> [特效检查] MediaStream效果信息: '{video_stream_effect_info}'")
-                        if any(required_term in video_stream_effect_info for required_term in required_list):
-                            effect_met = True
-                            logger.trace(f"  -> [特效检查] MediaStream匹配成功。")
+                if expanded_keywords_for_file_check:
+                    # 步骤 1: 优先检查文件名
+                    if any(required_term in file_name_lower for required_term in expanded_keywords_for_file_check):
+                        effect_met = True
+                        logger.trace(f"  -> [特效检查] 文件名匹配成功。")
+                    # 步骤 2: 如果文件名匹配失败，则检查 MediaStreams
+                    else:
+                        if video_stream:
+                            video_stream_info = f"{video_stream.get('VideoRange', '')} {video_stream.get('VideoRangeType', '')} {video_stream.get('DisplayTitle', '')}".lower()
+                            logger.trace(f"  -> [特效检查] 文件名匹配失败，正在检查 MediaStream 信息: '{video_stream_info}'")
+                            if any(required_term in video_stream_info for required_term in expanded_keywords_for_file_check):
+                                effect_met = True
+                                logger.trace(f"  -> [特效检查] MediaStream 匹配成功。")
 
                 if not effect_met:
                     reasons.append("特效不达标")
-            elif not isinstance(required_list_raw, list):
+            elif not isinstance(user_choices, list):
                 logger.warning(f"  -> [特效检查] 配置中的 'resubscribe_effect_include' 不是列表，已跳过。")
     except Exception as e:
         logger.warning(f"  -> [特效检查] 处理时发生未知错误: {e}")
@@ -2397,12 +2494,18 @@ def task_resubscribe_batch(processor: MediaProcessor, item_ids: List[str]):
                 f"({i+1}/{total_to_process}) [配额:{current_quota}] 正在订阅: {item_name}"
             )
 
-            payload = {
-                "name": item_name, "tmdbid": int(item['tmdb_id']),
-                "type": "电影" if item['item_type'] == "Movie" else "电视剧",
-                "best_version": 1
-            }
-            
+            # 1. 获取当前项目匹配的规则
+            matched_rule_id = item.get('matched_rule_id')
+            rule = next((r for r in all_rules if r['id'] == matched_rule_id), None) if matched_rule_id else None
+
+            # 2. 让“智能荷官”配牌 (item 字典本身就包含了需要的信息)
+            payload = _build_resubscribe_payload(item, rule)
+
+            if not payload:
+                logger.warning(f"为《{item.get('item_name')}》构建订阅Payload失败，已跳过。")
+                continue # 跳过这个项目，继续下一个
+
+            # 3. 发送订阅
             success = moviepilot_handler.subscribe_with_custom_payload(payload, config)
             
             if success:
@@ -2474,12 +2577,18 @@ def task_resubscribe_library(processor: MediaProcessor):
                 f"({i+1}/{total_needed}) [配额:{current_quota}] 正在订阅: {item_name}"
             )
 
-            payload = {
-                "name": item_name, "tmdbid": int(item['tmdb_id']),
-                "type": "电影" if item['item_type'] == "Movie" else "电视剧",
-                "best_version": 1
-            }
-            
+            # 1. 获取当前项目匹配的规则
+            matched_rule_id = item.get('matched_rule_id')
+            rule = next((r for r in all_rules if r['id'] == matched_rule_id), None) if matched_rule_id else None
+
+            # 2. 让“智能荷官”配牌 (item 字典本身就包含了需要的信息)
+            payload = _build_resubscribe_payload(item, rule)
+
+            if not payload:
+                logger.warning(f"为《{item.get('item_name')}》构建订阅Payload失败，已跳过。")
+                continue # 跳过这个项目，继续下一个
+
+            # 3. 发送订阅
             success = moviepilot_handler.subscribe_with_custom_payload(payload, config)
             
             if success:

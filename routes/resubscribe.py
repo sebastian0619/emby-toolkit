@@ -166,14 +166,27 @@ def resubscribe_single_item():
         if not processor:
             return jsonify({"error": "核心处理器未初始化"}), 503
             
-        payload = {
-            "name": item_name,
-            "tmdbid": int(tmdb_id),
-            "type": "电影" if item_type == "Movie" else "电视剧",
-            "best_version": 1
+        # 1. 提前获取规则
+        cache_item = db_handler.get_resubscribe_cache_item(item_id)
+        rule_to_check = None
+        if cache_item and cache_item.get('matched_rule_id'):
+            rule_to_check = db_handler.get_resubscribe_rule_by_id(cache_item['matched_rule_id'])
+
+        # 2. 构建媒体信息字典
+        item_details_for_payload = {
+            'item_name': item_name,
+            'tmdb_id': tmdb_id,
+            'item_type': item_type
         }
+
+        # 3. 让“智能荷官”配牌
+        # 注意：这里要从 tasks 模块导入 _build_resubscribe_payload 函数
+        payload = tasks._build_resubscribe_payload(item_details_for_payload, rule_to_check)
+
+        if not payload:
+            return jsonify({"error": "构建订阅请求失败，请检查日志。"}), 500
         
-        # 使用 processor.config 这个可靠的数据源
+        # 4. 发送订阅
         success = moviepilot_handler.subscribe_with_custom_payload(payload, processor.config)
         
         if success:

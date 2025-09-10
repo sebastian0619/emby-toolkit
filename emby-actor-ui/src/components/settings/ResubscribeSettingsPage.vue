@@ -1,4 +1,4 @@
-<!-- src/components/settings/ResubscribeSettingsPage.vue (多规则改造最终版) -->
+<!-- src/components/settings/ResubscribeSettingsPage.vue (多规则改造最终版 - 选项优化) -->
 <template>
   <n-spin :show="loading">
     <n-space vertical :size="24">
@@ -174,7 +174,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, computed, nextTick } from 'vue';
 import axios from 'axios';
 import { 
   NCard, NSpace, NSwitch, NButton, useMessage, NSpin, NIcon, NPopconfirm, NModal, NForm, 
@@ -210,21 +210,34 @@ const formRules = {
   target_library_ids: { type: 'array', required: true, message: '请至少选择一个媒体库', trigger: 'change' },
 };
 
-// --- Options for Selects ---
+// --- Options for Selects (核心修改区域) ---
 const resolutionOptions = ref([
   { label: '低于 4K (3840px)', value: 3840 },
   { label: '低于 1080p (1920px)', value: 1920 },
   { label: '低于 720p (1280px)', value: 1280 },
 ]);
+
+// ★★★ 修改点 1: 质量选项，与 MoviePilot 对齐 ★★★
 const qualityOptions = ref([
-  { label: 'Remux', value: 'remux' }, { label: 'BluRay / 蓝光', value: 'bluray' },
-  { label: 'WEB-DL', value: 'web-dl' }, { label: 'UHD', value: 'uhd' },
-  { label: 'BDRip', value: 'bdrip' }, { label: 'HDTV', value: 'hdtv' },
+  // 第一梯队：无损/接近无损
+  { label: 'Remux', value: 'Remux' },
+  { label: '蓝光原盘 (ISO/BDMV)', value: '蓝光原盘' },
+  
+  // 第二梯队：高质量重编码
+  { label: 'BluRay (BDRip)', value: 'BluRay' },
+  { label: 'WEB-DL', value: 'WEB-DL' },
+
+  // 第三梯队：其他
+  { label: 'UHD', value: 'UHD' }, // UHD 通常指分辨率，但也可作为质量关键词
+  { label: 'HDTV', value: 'HDTV' },
 ]);
+
+// ★★★ 修改点 2: 特效选项，使用简洁、标准的关键词 ★★★
 const effectOptions = ref([
-  { label: 'HDR', value: 'hdr' }, { label: 'Dolby Vision / DoVi', value: 'dovi' },
-  { label: 'HDR10+', value: 'hdr10+' }, { label: 'HLG', value: 'hlg' },
+  { label: '杜比视界 (Dolby Vision)', value: '杜比视界' },
+  { label: 'HDR (包含 HDR10/HDR10+/HLG)', value: 'HDR' },
 ]);
+
 const languageOptions = ref([
     { label: '国语 (chi)', value: 'chi' }, { label: '粤语 (yue)', value: 'yue' },
     { label: '英语 (eng)', value: 'eng' }, { label: '日语 (jpn)', value: 'jpn' },
@@ -237,7 +250,6 @@ const subtitleLanguageOptions = ref([
 const loadData = async () => {
   loading.value = true;
   try {
-    // ▼▼▼ 把 Promise.all 改成这样，不再请求 libraries ▼▼▼
     const [rulesRes, configRes] = await Promise.all([
       axios.get('/api/resubscribe/rules'),
       axios.get('/api/config')
@@ -256,9 +268,7 @@ const loadData = async () => {
 
 const handleDeleteSwitchChange = (value) => {
   if (value && !isEmbyAdminConfigured.value) {
-    // 如果用户尝试打开开关，但配置不完整
     message.warning('请先在 设置 -> Emby & 虚拟库 标签页中，配置“管理员登录凭证”，否则删除功能无法生效。');
-    // 阻止开关被打开
     nextTick(() => {
       currentRule.value.delete_after_resubscribe = false;
     });
@@ -266,22 +276,19 @@ const handleDeleteSwitchChange = (value) => {
 };
 
 const openRuleModal = async (rule = null) => {
-  // 1. 显示加载状态
   saving.value = true; 
   
   try {
-    // 2. 每次打开弹窗时，都重新获取最新的媒体库列表
     const libsRes = await axios.get('/api/resubscribe/libraries');
     allEmbyLibraries.value = libsRes.data;
   } catch (error) {
     message.error('获取媒体库列表失败！');
     saving.value = false;
-    return; // 获取失败则不打开弹窗
+    return;
   } finally {
     saving.value = false;
   }
 
-  // 3. 准备当前要编辑的规则数据
   if (rule) {
     currentRule.value = JSON.parse(JSON.stringify(rule));
   } else {
@@ -296,7 +303,6 @@ const openRuleModal = async (rule = null) => {
     };
   }
 
-  // 4. 显示弹窗
   showModal.value = true;
 };
 
@@ -327,7 +333,7 @@ const saveRule = async () => {
           message.success('规则已创建！');
         }
         showModal.value = false;
-        loadData(); // Reload all rules
+        loadData();
       } catch (error) {
         message.error(error.response?.data?.error || '保存失败，请检查后端日志。');
       } finally {
@@ -353,7 +359,7 @@ const toggleRuleStatus = async (rule) => {
     message.success(`规则 “${rule.name}” 已${rule.enabled ? '启用' : '禁用'}`);
   } catch (error) {
     message.error('状态更新失败');
-    rule.enabled = !rule.enabled; // Revert on failure
+    rule.enabled = !rule.enabled;
   }
 };
 
@@ -364,7 +370,7 @@ const onDragEnd = async () => {
     message.success('规则优先级已更新！');
   } catch (error) {
     message.error('顺序保存失败，将刷新列表。');
-    loadData(); // Revert to server order on failure
+    loadData();
   }
 };
 
