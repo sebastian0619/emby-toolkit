@@ -2162,20 +2162,23 @@ def _build_resubscribe_payload(item_details: dict, config: dict) -> Optional[dic
 
 def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Optional[dict] = None) -> tuple[bool, str]:
     """
-    【V8 - B计划豁免终极版】
-    - 引入B计划：在音轨信息为 und 或缺失时，会根据制片国家/地区来豁免中文字幕要求。
+    【V9 - 中文识别升级版】
+    - 升级了字幕和音轨的中文识别逻辑，使其能够识别 zh-cn, zh-hans 等多种中文代码。
     """
     item_name = item_details.get('Name', '未知项目')
     logger.trace(f"  -> 开始为《{item_name}》检查洗版需求 ---")
-    logger.trace(f"  -> 传入的配置: {config}")
     
     media_streams = item_details.get('MediaStreams', [])
     file_path = item_details.get('Path', '')
     file_name_lower = os.path.basename(file_path).lower() if file_path else ""
-    logger.trace(f"  -> 文件名 (小写): '{file_name_lower}'")
 
     reasons = []
     video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
+
+    # --- ★★★ 核心改造 1/3: 定义一个更全面的中文代码集合 ★★★ ---
+    CHINESE_LANG_CODES = {'chi', 'zho', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn', 'yue'}
+    CHINESE_SUB_CODES = CHINESE_LANG_CODES
+    CHINESE_AUDIO_CODES = CHINESE_LANG_CODES
 
     # 1. 分辨率检查
     try:
@@ -2264,75 +2267,75 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
             if isinstance(required_langs_raw, list) and required_langs_raw:
                 required_langs = set(str(lang).lower() for lang in required_langs_raw)
                 present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
-                logger.trace(f"  -> [音轨检查] 要求语言: {required_langs}, 现有语言: {present_langs}")
+                
+                # --- ★★★ 核心改造 2/3: 使用新的中文代码集合进行判断 ★★★ ---
+                # 检查要求的语言是否包含任何一种中文
+                requires_chinese = not required_langs.isdisjoint(CHINESE_LANG_CODES)
+                # 检查现有的音轨是否包含任何一种中文
+                has_chinese = not present_langs.isdisjoint(CHINESE_LANG_CODES)
 
-                if not required_langs.intersection(present_langs):
-                    # --- START: 音轨 B 计划豁免逻辑 ---
-                    is_exempted = False
-                    # 如果存在 und（未知语言）或没有音轨信息，则尝试用制片国免除
-                    if 'und' in present_langs or not present_langs:
-                        CHINESE_REGIONS = {'中国', '中国大陆', '香港', '台湾', '新加坡'}
-                        if media_metadata and media_metadata.get('countries_json'):
-                            countries = set(media_metadata['countries_json'])
-                            if not countries.isdisjoint(CHINESE_REGIONS):
-                                logger.trace(f"  -> [音轨豁免-B] 音轨信息不明，但检测到制片国家/地区为 ({', '.join(countries)})，豁免音轨缺失要求。")
-                                is_exempted = True
-                    if not is_exempted:
-                        reasons.append("缺音轨")
-                    # --- END: 音轨 B 计划豁免 ---
-            elif not isinstance(required_langs_raw, list):
-                logger.warning(f"  -> [音轨检查] 配置中的 'resubscribe_audio_missing_languages' 不是列表，已跳过。")
+                # 如果要求中文但没有中文，则标记为缺失
+                if requires_chinese and not has_chinese:
+                    reasons.append("缺中文音轨")
+                
+                # 检查其他非中文的语言
+                other_required_langs = required_langs - CHINESE_LANG_CODES
+                if not other_required_langs.issubset(present_langs):
+                    reasons.append("缺其他音轨")
+
     except Exception as e:
         logger.warning(f"  -> [音轨检查] 处理时发生未知错误: {e}")
 
-    # 5. 字幕检查 
+    # 5. 字幕检查
     try:
         if config.get("resubscribe_subtitle_enabled"):
             required_langs_raw = config.get("resubscribe_subtitle_missing_languages", [])
             if isinstance(required_langs_raw, list) and required_langs_raw:
                 required_langs = set(str(lang).lower() for lang in required_langs_raw)
                 
-                # --- START: 语言环境豁免逻辑 (Plan A & B) ---
-                CHINESE_SUB_CODES = {'chi', 'zho'}
-                CHINESE_AUDIO_CODES = {'chi', 'zho', 'cmn', 'yue'}
-                CHINESE_REGIONS = {'中国', '中国大陆', '香港', '台湾', '新加坡'}
-
+                # --- ★★★ 核心改造 3/3: 使用新的中文代码集合进行豁免和判断 ★★★ ---
+                CHINESE_REGIONS = {'中国', '中国大陆', '香港', '中国香港', '台湾', '中国台湾', '新加坡'}
+                
+                # 检查是否要求中文字幕
                 needs_chinese_sub = not required_langs.isdisjoint(CHINESE_SUB_CODES)
                 
                 if needs_chinese_sub:
                     is_exempted = False
                     present_audio_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
 
-                    # Plan A: 检查中文音轨
+                    # Plan A: 检查是否已有中文音轨
                     if not present_audio_langs.isdisjoint(CHINESE_AUDIO_CODES):
-                        logger.trace(f"  -> [字幕豁免-A] 检测到中文音轨，豁免中字要求。")
                         is_exempted = True
                     
-                    # Plan B: 如果A计划失败，且音轨信息无效，则检查制片国
+                    # Plan B: 如果音轨信息无效，则检查制片国
                     elif 'und' in present_audio_langs or not present_audio_langs:
                         if media_metadata and media_metadata.get('countries_json'):
                             countries = set(media_metadata['countries_json'])
                             if not countries.isdisjoint(CHINESE_REGIONS):
-                                logger.trace(f"  -> [字幕豁免-B] 音轨信息不明，但检测到制片国家/地区为 ({', '.join(countries)})，豁免中字要求。")
                                 is_exempted = True
 
-                    if is_exempted:
-                        required_langs.difference_update(CHINESE_SUB_CODES)
-                # --- END: 豁免逻辑 ---
-
-                if required_langs:
+                    # 如果没有被豁免，才去真正检查字幕
+                    if not is_exempted:
+                        present_sub_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
+                        if present_sub_langs.isdisjoint(CHINESE_SUB_CODES):
+                            reasons.append("缺中文字幕")
+                
+                # 检查其他非中文的字幕
+                other_required_subs = required_langs - CHINESE_SUB_CODES
+                if other_required_subs:
                     present_sub_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
-                    logger.trace(f"  -> [字幕检查] 最终要求语言: {required_langs}, 现有字幕: {present_sub_langs}")
-                    if not required_langs.intersection(present_sub_langs):
-                         reasons.append("缺字幕")
-            elif not isinstance(required_langs_raw, list):
-                logger.warning(f"  -> [字幕检查] 配置中的 'resubscribe_subtitle_missing_languages' 不是列表，已跳过。")
+                    if not other_required_subs.issubset(present_sub_langs):
+                        reasons.append("缺其他字幕")
+
     except Exception as e:
         logger.warning(f"  -> [字幕检查] 处理时发生未知错误: {e}")
                  
     if reasons:
-        logger.info(f"  -> 《{item_name}》需要洗版。原因: {'; '.join(reasons)}")
-        return True, "; ".join(reasons)
+        # 使用 set 去重，避免出现 "缺其他音轨; 缺其他字幕" 这种重复提示
+        unique_reasons = sorted(list(set(reasons)))
+        final_reason = "; ".join(unique_reasons)
+        logger.info(f"  -> 《{item_name}》需要洗版。原因: {final_reason}")
+        return True, final_reason
     else:
         logger.debug(f"  -> 《{item_name}》质量达标。")
         return False, ""
