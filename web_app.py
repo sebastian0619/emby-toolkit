@@ -320,13 +320,6 @@ def init_db():
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_subscription_id ON tracked_actor_media (subscription_id)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_status ON tracked_actor_media (status)")
 
-                try:
-                    logger.warning("  -> [数据库升级] 正在删除旧的 'resubscribe_settings' 表...")
-                    cursor.execute("DROP TABLE IF EXISTS resubscribe_settings CASCADE;")
-                    logger.info("  -> [数据库升级] 旧表 'resubscribe_settings' 已成功删除。")
-                except Exception as e_drop:
-                    logger.error(f"  -> [数据库升级] 删除旧表 'resubscribe_settings' 时出错（可能已不存在）: {e_drop}")
-                
                 logger.trace("  -> 正在创建 'resubscribe_rules' 表 (多规则洗版)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS resubscribe_rules (
