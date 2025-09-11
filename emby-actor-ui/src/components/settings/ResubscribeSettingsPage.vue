@@ -88,7 +88,23 @@
               @update:value="handleDeleteSwitchChange"
             />
           </n-form-item>
-          
+          <n-form-item>
+            <template #label>
+              <n-space align="center">
+                <span>特效字幕优先</span>
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-icon :component="AlertIcon" style="color: var(--n-info-color);" />
+                  </template>
+                  勾选后，订阅时将只要求字幕包含“特效”关键字，而不关心具体语言。<br>
+                  注意：此选项仅影响订阅参数，不影响筛选逻辑。
+                </n-tooltip>
+              </n-space>
+            </template>
+            <n-switch 
+              v-model:value="currentRule.resubscribe_subtitle_effect_only"
+            />
+          </n-form-item>
           <n-divider />
 
           <!-- 洗版条件 -->
@@ -291,6 +307,7 @@ const openRuleModal = async (rule = null) => {
       resubscribe_subtitle_missing_languages: [], resubscribe_quality_enabled: false,
       resubscribe_quality_include: [], resubscribe_effect_enabled: false,
       resubscribe_effect_include: [],
+      resubscribe_subtitle_effect_only: false,
     };
   }
 

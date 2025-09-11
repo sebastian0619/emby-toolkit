@@ -2231,21 +2231,21 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
                 final_include_lookaheads.append(f"(?=.*{audio_or_regex})")
 
     # --- 字幕处理 ---
-    if rule.get("resubscribe_subtitle_enabled"):
+     # 1. 优先检查“特效字幕优先”开关，无论总开关是否开启
+    if rule.get("resubscribe_subtitle_effect_only"):
+        logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 应用了“特效字幕”优先订阅。")
+        final_include_lookaheads.append("(?=.*特效)")
+    
+    # 2. 否则，再检查“按字幕洗版”总开关是否开启，并按语言订阅
+    elif rule.get("resubscribe_subtitle_enabled"):
         subtitle_langs = rule.get("resubscribe_subtitle_missing_languages", [])
         if isinstance(subtitle_langs, list) and subtitle_langs:
-            subtitle_keywords = []
-            for lang_code in subtitle_langs:
-                keywords = AUDIO_SUBTITLE_KEYWORD_MAP.get(f"sub_{lang_code}")
-                if keywords: subtitle_keywords.extend(keywords)
+            subtitle_keywords = [k for lang in subtitle_langs for k in AUDIO_SUBTITLE_KEYWORD_MAP.get(f"sub_{lang}", [])]
             if subtitle_keywords:
-                unique_keywords = sorted(list(set(subtitle_keywords)), key=len, reverse=True)
-                subtitle_or_regex = f"({'|'.join(unique_keywords)})"
+                subtitle_or_regex = f"({'|'.join(sorted(list(set(subtitle_keywords)), key=len, reverse=True))})"
                 final_include_lookaheads.append(f"(?=.*{subtitle_or_regex})")
 
-    # ★★★ 核心修改：将所有 lookahead 直接连接起来，形成最终的 AND 正则 ★★★
     if final_include_lookaheads:
-        # 直接连接，不需要任何分隔符
         payload['include'] = "".join(final_include_lookaheads)
         logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 生成的 AND 正则过滤器: {payload['include']}")
 
@@ -2710,16 +2710,13 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
                     library_to_rule_map[lib_id] = rule
 
         def process_item_for_cache(item_base_info):
-            # ... (这个内部函数的全部内容保持原样，无需改动)
             item_id = item_base_info.get('Id')
             item_name = item_base_info.get('Name')
             source_lib_id = item_base_info.get('_SourceLibraryId')
 
-            # 跳过忽略
             old_status = current_db_status_map.get(item_id)
             if old_status == 'ignored':
                 logger.trace(f"  -> 项目《{item_name}》已被用户忽略，本次刷新跳过。")
-                # 直接返回 None，让它从本次的更新批次中被排除
                 return None
         
             try:
@@ -2752,8 +2749,8 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
                 needs_resubscribe, reason = _item_needs_resubscribe(item_details, applicable_rule, media_metadata)
                 old_status = current_db_status_map.get(item_id)
                 new_status = 'ok' if not needs_resubscribe else ('subscribed' if old_status == 'subscribed' else 'needed')
-                AUDIO_LANG_MAP = {'chi': '国语', 'zho': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语', 'kor': '韩语'}
-                SUBTITLE_LANG_MAP = {'chi': '中字', 'zho': '中字', 'eng': '英文'}
+                
+                # --- 分辨率、质量、特效 (逻辑不变) ---
                 media_streams = item_details.get('MediaStreams', [])
                 video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
                 resolution_str = "未知"
@@ -2765,31 +2762,62 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
                     else: resolution_str = f"{width}p"
                 file_name_lower = os.path.basename(item_details.get('Path', '')).lower()
                 quality_str = _extract_quality_tag_from_filename(file_name_lower, video_stream)
-                effect_str = video_stream.get('VideoRangeType') or video_stream.get('VideoRange', '未知') if video_stream else '未知'
-                audio_langs = list(set(s.get('Language') for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')))
-                audio_str = ', '.join(sorted([AUDIO_LANG_MAP.get(lang, lang) for lang in audio_langs])) or '无'
+                effect_str = (video_stream.get('VideoRangeType') or video_stream.get('VideoRange', '未知') if video_stream else '未知').upper()
+                
+                # ★★★ 核心修复：在这里加入音轨和字幕的智能精简逻辑 ★★★
+                
+                # --- 音轨处理 ---
+                AUDIO_LANG_MAP = {'chi': '国语', 'zho': '国语', 'yue': '粤语', 'eng': '英语'}
+                CHINESE_AUDIO_CODES = {'chi', 'zho', 'yue'}
+                
+                audio_langs_raw = list(set(s.get('Language') for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')))
+                
+                display_audio_langs = []
+                has_other_audio = False
+                for lang in audio_langs_raw:
+                    if lang in CHINESE_AUDIO_CODES:
+                        display_audio_langs.append(AUDIO_LANG_MAP.get(lang, lang))
+                    elif lang == 'eng': # 也保留英语
+                        display_audio_langs.append(AUDIO_LANG_MAP.get(lang, lang))
+                    else:
+                        has_other_audio = True
+                
+                display_audio_langs = sorted(list(set(display_audio_langs)))
+                if has_other_audio:
+                    display_audio_langs.append('...')
+                
+                audio_str = ', '.join(display_audio_langs) or '无'
+
+                # --- 字幕处理 ---
+                SUBTITLE_LANG_MAP = {'chi': '中字', 'zho': '中字', 'eng': '英文'}
+                CHINESE_SUB_CODES = {'chi', 'zho', 'chs', 'cht', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn'}
+
                 subtitle_langs_raw = list(set(s.get('Language') for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')))
-                priority_langs = ['chi', 'zho', 'eng']
-                display_langs = []
-                for lang in priority_langs:
-                    if lang in subtitle_langs_raw:
-                        display_langs.append(SUBTITLE_LANG_MAP.get(lang, lang))
-                        subtitle_langs_raw = [l for l in subtitle_langs_raw if l != lang]
-                display_langs = sorted(list(set(display_langs)))
-                remaining_to_show = 3 - len(display_langs)
-                if subtitle_langs_raw and remaining_to_show > 0:
-                    other_langs_translated = sorted([SUBTITLE_LANG_MAP.get(lang, lang.upper()) for lang in subtitle_langs_raw])
-                    display_langs.extend(other_langs_translated[:remaining_to_show])
-                    if len(subtitle_langs_raw) > remaining_to_show:
-                        display_langs.append('...')
-                subtitle_str = ', '.join(display_langs) or '无'
+                
+                display_subtitle_langs = []
+                has_other_subtitle = False
+                for lang in subtitle_langs_raw:
+                    lang_lower = str(lang).lower()
+                    if lang_lower in CHINESE_SUB_CODES:
+                        display_subtitle_langs.append(SUBTITLE_LANG_MAP.get('chi')) # 统一显示为中字
+                    elif lang_lower == 'eng': # 也保留英文
+                        display_subtitle_langs.append(SUBTITLE_LANG_MAP.get('eng'))
+                    else:
+                        has_other_subtitle = True
+                
+                display_subtitle_langs = sorted(list(set(display_subtitle_langs)))
+                if has_other_subtitle:
+                    display_subtitle_langs.append('...')
+
+                subtitle_str = ', '.join(display_subtitle_langs) or '无'
+                
                 return {
                     "item_id": item_id, "item_name": item_details.get('Name'),
                     "tmdb_id": tmdb_id, "item_type": item_type, "status": new_status, 
                     "reason": reason if needs_resubscribe else "", "resolution_display": resolution_str, 
-                    "quality_display": quality_str, "effect_display": effect_str.upper(), 
+                    "quality_display": quality_str, "effect_display": effect_str, 
                     "audio_display": audio_str, "subtitle_display": subtitle_str, 
-                    "audio_languages_raw": audio_langs, "subtitle_languages_raw": subtitle_langs_raw,
+                    "audio_languages_raw": audio_langs_raw, "subtitle_languages_raw": subtitle_langs_raw,
                     "matched_rule_id": applicable_rule.get('id'), "matched_rule_name": applicable_rule.get('name'),
                     "source_library_id": source_lib_id
                 }

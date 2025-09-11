@@ -422,6 +422,9 @@ def init_db():
                             "matched_rule_id": "INTEGER",
                             "matched_rule_name": "TEXT",
                             "source_library_id": "TEXT"
+                        },
+                        'resubscribe_rules': {
+                            "resubscribe_subtitle_effect_only": "BOOLEAN DEFAULT FALSE"
                         }
                     }
 
