@@ -2846,7 +2846,7 @@ def _extract_quality_tag_from_filename(filename_lower: str, video_stream: dict) 
     # 如果循环结束都没找到，提供一个备用值
     return (video_stream.get('Codec', '未知') if video_stream else '未知').upper()
 # ======================================================================
-# ★★★ 媒体清理模块 (Media Cleanup Module) - 新增 ★★★
+# ★★★ 媒体去重模块 (Media Cleanup Module) - 新增 ★★★
 # ======================================================================
 
 def _get_version_properties(version: Dict[str, Any]) -> Dict[str, Any]:
@@ -3032,18 +3032,18 @@ def task_scan_for_cleanup_issues(processor: MediaProcessor):
 
 def task_execute_cleanup(processor: MediaProcessor, task_ids: List[int], **kwargs):
     """
-    后台任务：执行指定的一批媒体清理任务（删除多余文件）。
+    后台任务：执行指定的一批媒体去重任务（删除多余文件）。
     这是一个高危的写操作。
     """
     # ★★★ 核心修复：这个函数签名现在可以正确接收 processor 和 task_ids 两个位置参数，
     # 同时用 **kwargs 忽略掉 task_manager 传来的其他所有参数。
 
     if not task_ids or not isinstance(task_ids, list):
-        logger.error("执行媒体清理任务失败：缺少有效的 'task_ids' 参数。")
+        logger.error("执行媒体去重任务失败：缺少有效的 'task_ids' 参数。")
         task_manager.update_status_from_thread(-1, "任务失败：缺少任务ID")
         return
 
-    task_name = "执行媒体清理"
+    task_name = "执行媒体去重"
     logger.info(f"--- 开始执行 '{task_name}' 任务 (任务ID: {task_ids}) ---")
     
     try:

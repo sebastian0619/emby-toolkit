@@ -36,7 +36,7 @@
             <n-button 
               type="primary" 
               @click="triggerScan" 
-              :loading="isTaskRunning('扫描媒体清理项')"
+              :loading="isTaskRunning('扫描媒体去重项')"
             >
               <template #icon><n-icon :component="ScanIcon" /></template>
               扫描媒体库
@@ -65,7 +65,7 @@
         v-model:show="showSettingsModal" 
         preset="card" 
         style="width: 90%; max-width: 700px;" 
-        title="媒体清理决策规则"
+        title="媒体去重决策规则"
       >
         <MediaCleanupSettingsPage />
       </n-modal>

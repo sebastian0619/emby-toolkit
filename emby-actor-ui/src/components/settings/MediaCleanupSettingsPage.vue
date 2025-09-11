@@ -4,10 +4,10 @@
     <n-space vertical :size="24">
       <n-card :bordered="false">
         <template #header>
-          <span style="font-size: 1.2em; font-weight: bold;">媒体清理决策规则</span>
+          <span style="font-size: 1.2em; font-weight: bold;">媒体去重决策规则</span>
         </template>
         <p style="margin-top: 0; color: #888;">
-          当检测到多版本或重复项时，系统将按照以下规则顺序（从上到下）进行比较，以决定保留哪个版本。<br>
+          当检测到重复项时，系统将按照以下规则顺序（从上到下）进行比较，以决定保留哪个版本。<br>
           拖拽规则可以调整优先级。第一个能区分出优劣的规则将决定结果。
         </p>
       </n-card>

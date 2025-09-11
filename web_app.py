@@ -474,7 +474,7 @@ def init_db():
                 # --- 2.4 初始化默认的应用设置 ---
                 try:
                     logger.info("    -> [数据库初始化] 正在检查并写入默认的应用设置...")
-                    # 检查媒体清理规则是否存在
+                    # 检查媒体去重规则是否存在
                     cursor.execute("SELECT 1 FROM app_settings WHERE setting_key = 'media_cleanup_rules'")
                     if cursor.fetchone() is None:
                         # 如果不存在，则写入一套推荐的默认规则
@@ -487,9 +487,9 @@ def init_db():
                             "INSERT INTO app_settings (setting_key, value_json) VALUES (%s, %s)",
                             ('media_cleanup_rules', json.dumps(default_cleanup_rules))
                         )
-                        logger.info("    -> 已成功写入默认的媒体清理规则。")
+                        logger.info("    -> 已成功写入默认的媒体去重规则。")
                     else:
-                        logger.trace("    -> 媒体清理规则已存在，跳过。")
+                        logger.trace("    -> 媒体去重规则已存在，跳过。")
                 except Exception as e_settings:
                     logger.error(f"    -> [数据库初始化] 写入默认设置时出错: {e_settings}", exc_info=True)
 

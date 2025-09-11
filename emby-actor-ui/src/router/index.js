@@ -105,7 +105,7 @@ const routes = [
     path: '/media-cleanup',
     name: 'MediaCleanupPage',
     component: () => import('../components/MediaCleanupPage.vue'),
-    meta: { requiresAuth: true, title: '媒体清理' },
+    meta: { requiresAuth: true, title: '媒体去重' },
   },
 ];
 

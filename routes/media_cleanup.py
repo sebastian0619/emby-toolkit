@@ -11,7 +11,7 @@ media_cleanup_bp = Blueprint('media_cleanup_bp', __name__)
 
 @media_cleanup_bp.route('/api/cleanup/tasks', methods=['GET'])
 def get_cleanup_tasks():
-    """获取所有待处理的媒体清理任务。"""
+    """获取所有待处理的媒体去重任务。"""
     try:
         tasks = db_handler.get_all_cleanup_tasks()
         return jsonify(tasks)
@@ -30,7 +30,7 @@ def execute_cleanup_tasks():
 
     task_manager.submit_task(
         task_execute_cleanup,
-        f"执行 {len(task_ids)} 项媒体清理", # task_name 是第二个位置参数
+        f"执行 {len(task_ids)} 项媒体去重", # task_name 是第二个位置参数
         'media',                         # processor_type 是第三个位置参数
         task_ids                         # task_ids 现在是第四个位置参数 (*args)
     )
@@ -66,7 +66,7 @@ def delete_cleanup_tasks():
     
 @media_cleanup_bp.route('/api/cleanup/rules', methods=['GET'])
 def get_cleanup_rules():
-    """获取当前的媒体清理规则。"""
+    """获取当前的媒体去重规则。"""
     try:
         rules = db_handler.get_setting('media_cleanup_rules')
         if not rules:
@@ -82,7 +82,7 @@ def get_cleanup_rules():
 
 @media_cleanup_bp.route('/api/cleanup/rules', methods=['POST'])
 def save_cleanup_rules():
-    """保存新的媒体清理规则。"""
+    """保存新的媒体去重规则。"""
     new_rules = request.get_json()
     if not isinstance(new_rules, list):
         return jsonify({"error": "无效的规则格式，必须是一个列表。"}), 400

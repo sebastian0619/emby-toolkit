@@ -2281,11 +2281,11 @@ def decrement_subscription_quota() -> bool:
         logger.error(f"减少订阅配额时发生严重错误: {e}", exc_info=True)
         return False
 # ======================================================================
-# 模块 10: 媒体清理模块数据访问 (Media Cleanup Data Access) - ★★★ 新增模块 ★★★
+# 模块 10: 媒体去重模块数据访问 (Media Cleanup Data Access) - ★★★ 新增模块 ★★★
 # ======================================================================
 
 def get_all_cleanup_tasks() -> List[Dict[str, Any]]:
-    """获取所有待处理的媒体清理任务。"""
+    """获取所有待处理的媒体去重任务。"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -2293,7 +2293,7 @@ def get_all_cleanup_tasks() -> List[Dict[str, Any]]:
             cursor.execute("SELECT * FROM media_cleanup_tasks WHERE status = 'pending' ORDER BY item_name")
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"DB: 获取媒体清理任务列表失败: {e}", exc_info=True)
+        logger.error(f"DB: 获取媒体去重任务列表失败: {e}", exc_info=True)
         return []
 
 def batch_insert_cleanup_tasks(tasks: List[Dict[str, Any]]):
@@ -2306,7 +2306,7 @@ def batch_insert_cleanup_tasks(tasks: List[Dict[str, Any]]):
         with get_db_connection() as conn:
             cursor = conn.cursor()
             # 使用 TRUNCATE RESTART IDENTITY 清空表并重置ID序列
-            logger.warning("正在清空旧的媒体清理任务列表...")
+            logger.warning("正在清空旧的媒体去重任务列表...")
             cursor.execute("TRUNCATE TABLE media_cleanup_tasks RESTART IDENTITY;")
 
             # 准备批量插入
@@ -2332,10 +2332,10 @@ def batch_insert_cleanup_tasks(tasks: List[Dict[str, Any]]):
             
             execute_values(cursor, sql, values_to_insert, page_size=500)
             conn.commit()
-            logger.info(f"DB: 成功批量插入 {len(tasks)} 条新的媒体清理任务。")
+            logger.info(f"DB: 成功批量插入 {len(tasks)} 条新的媒体去重任务。")
 
     except Exception as e:
-        logger.error(f"DB: 批量插入媒体清理任务时失败: {e}", exc_info=True)
+        logger.error(f"DB: 批量插入媒体去重任务时失败: {e}", exc_info=True)
         raise
 
 def get_cleanup_tasks_by_ids(task_ids: List[int]) -> List[Dict[str, Any]]:
