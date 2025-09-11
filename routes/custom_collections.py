@@ -14,7 +14,8 @@ import moviepilot_handler
 import emby_handler
 from extensions import login_required
 from custom_collection_handler import FilterEngine
-from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES
+from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES, get_tmdb_country_options
+from tmdb_handler import get_movie_genres_tmdb, get_tv_genres_tmdb, search_companies_tmdb, search_person_tmdb
 # 1. 创建自定义合集蓝图
 custom_collections_bp = Blueprint('custom_collections', __name__, url_prefix='/api/custom_collections')
 
@@ -461,4 +462,111 @@ def api_get_emby_libraries_for_filter():
         return jsonify(library_options)
     except Exception as e:
         logger.error(f"获取 Emby 媒体库列表时出错: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+    
+# --- 获取 TMDb 电影类型列表 ---
+@custom_collections_bp.route('/config/tmdb_movie_genres', methods=['GET'])
+@login_required
+def api_get_tmdb_movie_genres():
+    """为 TMDb 探索助手提供电影类型列表。"""
+    try:
+        api_key = config_manager.APP_CONFIG.get('tmdb_api_key')
+        if not api_key:
+            return jsonify({"error": "TMDb API Key 未配置"}), 500
+        
+        genres = get_movie_genres_tmdb(api_key)
+        if genres is not None:
+            return jsonify(genres)
+        else:
+            return jsonify({"error": "从 TMDb 获取电影类型失败"}), 500
+    except Exception as e:
+        logger.error(f"获取 TMDb 电影类型时出错: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+
+# --- 获取 TMDb 电视剧类型列表 ---
+@custom_collections_bp.route('/config/tmdb_tv_genres', methods=['GET'])
+@login_required
+def api_get_tmdb_tv_genres():
+    """为 TMDb 探索助手提供电视剧类型列表。"""
+    try:
+        api_key = config_manager.APP_CONFIG.get('tmdb_api_key')
+        if not api_key:
+            return jsonify({"error": "TMDb API Key 未配置"}), 500
+            
+        genres = get_tv_genres_tmdb(api_key)
+        if genres is not None:
+            return jsonify(genres)
+        else:
+            return jsonify({"error": "从 TMDb 获取电视剧类型失败"}), 500
+    except Exception as e:
+        logger.error(f"获取 TMDb 电视剧类型时出错: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+    
+# --- 搜索 TMDb 电影公司 ---
+@custom_collections_bp.route('/config/tmdb_search_companies', methods=['GET'])
+@login_required
+def api_search_tmdb_companies():
+    """为 TMDb 探索助手提供电影公司搜索功能。"""
+    query = request.args.get('q', '')
+    if len(query) < 1:
+        return jsonify([])
+    try:
+        api_key = config_manager.APP_CONFIG.get('tmdb_api_key')
+        results = search_companies_tmdb(api_key, query)
+        return jsonify(results or [])
+    except Exception as e:
+        logger.error(f"搜索 TMDb 电影公司时出错: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+    
+# --- 搜索 TMDb 人物 (演员/导演) ---
+@custom_collections_bp.route('/config/tmdb_search_persons', methods=['GET'])
+@login_required
+def api_search_tmdb_persons():
+    """【V2 - 增强版】为 TMDb 探索助手提供带详细信息的人物搜索功能。"""
+    query = request.args.get('q', '')
+    if len(query) < 1:
+        return jsonify([])
+    try:
+        api_key = config_manager.APP_CONFIG.get('tmdb_api_key')
+        results = search_person_tmdb(query, api_key)
+        
+        if not results:
+            return jsonify([])
+
+        # ★★★ 核心升级：处理数据，返回前端需要的所有信息 ★★★
+        processed_results = []
+        for person in results:
+            # 提取代表作的标题
+            known_for_titles = [
+                item.get('title') or item.get('name', '') 
+                for item in person.get('known_for', [])
+            ]
+            # 过滤掉空标题并拼接
+            known_for_string = '、'.join(filter(None, known_for_titles))
+
+            processed_results.append({
+                "id": person.get("id"),
+                "name": person.get("name"),
+                "profile_path": person.get("profile_path"),
+                "department": person.get("known_for_department"),
+                "known_for": known_for_string
+            })
+        
+        return jsonify(processed_results)
+
+    except Exception as e:
+        logger.error(f"搜索 TMDb 人物时出错: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+    
+# --- 获取 TMDb 国家/地区选项列表 ---
+@custom_collections_bp.route('/config/tmdb_countries', methods=['GET'])
+@login_required
+def api_get_tmdb_countries():
+    """为 TMDb 探索助手提供国家/地区选项列表 (含ISO代码)。"""
+    try:
+        # 调用我们刚刚在 utils.py 中创建的新函数
+        country_options = get_tmdb_country_options()
+        return jsonify(country_options)
+    except Exception as e:
+        logger.error(f"获取 TMDb 国家/地区选项时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500

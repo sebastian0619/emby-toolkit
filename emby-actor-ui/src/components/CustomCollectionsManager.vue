@@ -107,14 +107,15 @@
             />
           </n-form-item>
           <n-form-item label="榜单URL" path="definition.url">
+            <n-input-group>
               <n-input 
                 v-model:value="currentCollection.definition.url" 
-                :placeholder="urlInputPlaceholder"
-                :disabled="selectedBuiltInList !== 'custom'"
+                placeholder="可手动输入URL，或通过右侧助手生成"
               />
-              <template #feedback>
-                选择内置榜单时URL将自动填充；选择自定义时请在此处输入RSS地址。
-              </template>
+              <n-button type="primary" ghost @click="openDiscoverHelper">
+                TMDb 探索助手
+              </n-button>
+            </n-input-group>
           </n-form-item>
           <n-form-item label="数量限制" path="definition.limit">
             <n-input-number 
@@ -512,6 +513,131 @@
         </n-tabs>
       </div>
     </n-modal>
+    <n-modal
+      v-model:show="showDiscoverHelper"
+      preset="card"
+      style="width: 90%; max-width: 700px;"
+      title="TMDb 探索助手 ✨"
+      :bordered="false"
+    >
+      <n-space vertical :size="24">
+        <n-form-item label="类型" label-placement="left">
+          <n-radio-group v-model:value="discoverParams.type">
+            <n-radio-button value="movie">电影</n-radio-button>
+            <n-radio-button value="tv">电视剧</n-radio-button>
+          </n-radio-group>
+        </n-form-item>
+
+        <n-form-item label="排序" label-placement="left">
+          <n-select v-model:value="discoverParams.sort_by" :options="tmdbSortOptions" />
+        </n-form-item>
+
+        <n-form-item label="发行年份" label-placement="left">
+          <n-input-group>
+            <n-input-number v-model:value="discoverParams.release_year_gte" placeholder="从 (例如 1990)" :show-button="false" clearable style="width: 50%;" />
+            <n-input-number v-model:value="discoverParams.release_year_lte" placeholder="到 (例如 1999)" :show-button="false" clearable style="width: 50%;" />
+          </n-input-group>
+        </n-form-item>
+
+        <n-form-item label="风格 (可多选)" label-placement="left">
+          <n-select
+            v-model:value="discoverParams.with_genres"
+            multiple filterable
+            placeholder="选择或搜索风格"
+            :options="tmdbGenreOptions"
+            :loading="isLoadingTmdbGenres"
+          />
+        </n-form-item>
+
+        <n-form-item label="国家/地区" label-placement="left">
+          <n-select
+            v-model:value="discoverParams.with_origin_country"
+            filterable
+            clearable
+            placeholder="筛选特定的出品国家或地区"
+            :options="tmdbCountryOptions"
+            :loading="isLoadingTmdbCountries"
+          />
+        </n-form-item>
+
+        <!-- 公司/网络 -->
+        <n-form-item label="公司/网络" label-placement="left">
+          <n-input
+            v-model:value="companySearchText"
+            placeholder="搜索电影公司或电视网络，例如：A24, HBO"
+            @update:value="handleCompanySearch"
+            clearable
+          />
+          <div v-if="isSearchingCompanies || companyOptions.length > 0" class="search-results-box">
+            <n-spin v-if="isSearchingCompanies" size="small" />
+            <div v-else v-for="option in companyOptions" :key="option.value" class="search-result-item" @click="handleCompanySelect(option)">
+              {{ option.label }}
+            </div>
+          </div>
+          <n-dynamic-tags v-model:value="selectedCompanies" style="margin-top: 8px;" />
+        </n-form-item>
+
+        <!-- 演员 -->
+        <n-form-item label="演员" label-placement="left">
+          <n-input
+            v-model:value="actorSearchText"
+            placeholder="搜索演员，例如：周星驰"
+            @update:value="handleActorSearch" 
+            clearable
+          />
+          <div v-if="isSearchingActors || actorOptions.length > 0" class="search-results-box person-results">
+            <n-spin v-if="isSearchingActors" size="small" /> 
+            <div v-else v-for="option in actorOptions" :key="option.id" class="search-result-item person-item" @click="handleActorSelect(option)"> 
+              <n-avatar :size="40" :src="getTmdbImageUrl(option.profile_path, 'w92')" style="margin-right: 12px;" />
+              <div class="person-info">
+                <n-text>{{ option.name }}</n-text>
+                <n-text :depth="3" class="known-for">代表作: {{ option.known_for || '暂无' }}</n-text>
+              </div>
+            </div>
+          </div>
+          <n-dynamic-tags v-model:value="selectedActors" style="margin-top: 8px;" />
+        </n-form-item>
+
+        <!-- 导演 -->
+        <n-form-item label="导演" label-placement="left">
+          <n-input
+            v-model:value="directorSearchText"
+            placeholder="搜索导演，例如：克里斯托弗·诺兰"
+            @update:value="handleDirectorSearch" 
+            clearable
+          />
+          <div v-if="isSearchingDirectors || directorOptions.length > 0" class="search-results-box person-results"> 
+            <n-spin v-if="isSearchingDirectors" size="small" /> 
+            <div v-else v-for="option in directorOptions" :key="option.id" class="search-result-item person-item" @click="handleDirectorSelect(option)"> 
+              <n-avatar :size="40" :src="getTmdbImageUrl(option.profile_path, 'w92')" style="margin-right: 12px;" />
+              <div class="person-info">
+                <n-text>{{ option.name }}</n-text>
+                <n-text :depth="3" class="known-for">领域: {{ option.department || '未知' }}</n-text>
+              </div>
+            </div>
+          </div>
+          <n-dynamic-tags v-model:value="selectedDirectors" style="margin-top: 8px;" />
+        </n-form-item>
+
+        <n-form-item label="语言" label-placement="left">
+          <n-select v-model:value="discoverParams.with_original_language" :options="tmdbLanguageOptions" filterable clearable placeholder="不限" />
+        </n-form-item>
+        
+        <n-form-item :label="`最低评分 (当前: ${discoverParams.vote_average_gte})`" label-placement="left">
+           <n-slider v-model:value="discoverParams.vote_average_gte" :step="0.5" :min="0" :max="10" />
+        </n-form-item>
+
+        <n-form-item label="生成的URL (实时预览)">
+          <n-input :value="generatedDiscoverUrl" type="textarea" :autosize="{ minRows: 3 }" readonly />
+        </n-form-item>
+      </n-space>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showDiscoverHelper = false">取消</n-button>
+          <n-button type="primary" @click="confirmDiscoverUrl">使用这个URL</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </n-layout>
 </template>
 
@@ -522,7 +648,7 @@ import Sortable from 'sortablejs';
 import { 
   NLayout, NPageHeader, NButton, NIcon, NText, NDataTable, NTag, NSpace,
   useMessage, NPopconfirm, NModal, NForm, NFormItem, NInput, NSelect,
-  NAlert, NRadioGroup, NRadio, NTooltip, NSpin, NGrid, NGi, NCard, NEmpty, NTabs, NTabPane, NCheckboxGroup, NCheckbox, NInputNumber, NAutoComplete, NDynamicTags, NInputGroup
+  NAlert, NRadioGroup, NRadio, NTooltip, NSpin, NGrid, NGi, NCard, NEmpty, NTabs, NTabPane, NCheckboxGroup, NCheckbox, NInputNumber, NAutoComplete, NDynamicTags, NInputGroup, NRadioButton, NSlider, NAvatar
 } from 'naive-ui';
 import { 
   AddOutline as AddIcon, 
@@ -539,6 +665,9 @@ import {
 } from '@vicons/ionicons5';
 import { format } from 'date-fns';
 
+// ===================================================================
+// ▼▼▼ 确保所有 ref 变量都在这里定义好 ▼▼▼
+// ===================================================================
 const message = useMessage();
 const collections = ref([]);
 const isLoading = ref(true);
@@ -566,8 +695,50 @@ const embyLibraryOptions = ref([]);
 const isLoadingLibraries = ref(false);
 let sortableInstance = null;
 
+// --- TMDb 探索助手相关状态 ---
+const showDiscoverHelper = ref(false);
+const isLoadingTmdbGenres = ref(false);
+const tmdbMovieGenres = ref([]);
+const tmdbTvGenres = ref([]);
+const companySearchText = ref('');
+const selectedCompanies = ref([]);
+const actorSearchText = ref('');
+const selectedActors = ref([]);
+const directorSearchText = ref('');
+const selectedDirectors = ref([]);
+const isSearchingCompanies = ref(false);
+const companyOptions = ref([]);
+const isSearchingDirectors = ref(false);
+const directorOptions = ref([]);
+const tmdbCountryOptions = ref([]);
+const isLoadingTmdbCountries = ref(false);
+
+const getInitialDiscoverParams = () => ({
+  type: 'movie',
+  sort_by: 'popularity.desc',
+  release_year_gte: null,
+  release_year_lte: null,
+  with_genres: [],
+  with_companies: [],
+  with_cast: [],
+  with_crew: [],
+  with_origin_country: null,
+  with_original_language: null,
+  vote_average_gte: 0,
+});
+const discoverParams = ref(getInitialDiscoverParams());
+
+// ===================================================================
+// ▼▼▼ 确保所有函数和计算属性都在这里 ▼▼▼
+// ===================================================================
+
 const builtInLists = [
-  { label: '自定义RSS源', value: 'custom' },
+  { label: '自定义RSS/URL源', value: 'custom' },
+  { type: 'group', label: 'TMDb Discover 动态榜单', key: 'tmdb-discover' },
+  { label: '最近7天首播国语剧集', value: 'https://www.themoviedb.org/discover/tv?with_original_language=zh&first_air_date.gte={today-7}&first_air_date.lte={today}&sort_by=popularity.desc', contentType: ['Series'] },
+  { label: '最近30天首播国语剧集', value: 'https://www.themoviedb.org/discover/tv?with_original_language=zh&first_air_date.gte={today-30}&first_air_date.lte={today}&sort_by=popularity.desc', contentType: ['Series'] },
+  { label: '本月高分华语电影', value: 'https://www.themoviedb.org/discover/movie?with_original_language=zh&vote_count.gte=100&vote_average.gte=7.5&primary_release_date.gte={today-30}&primary_release_date.lte={today}&sort_by=vote_average.desc', contentType: ['Movie'] },
+  { label: 'IMDb Top 250 电影', value: 'https://www.themoviedb.org/list/7066840', contentType: ['Movie'] },
   { type: 'group', label: '猫眼电影榜单', key: 'maoyan-movie' },
   { label: '电影票房榜', value: 'maoyan://movie', contentType: ['Movie'] },
   { type: 'group', label: '猫眼全网热度榜', key: 'maoyan-all' },
@@ -601,7 +772,7 @@ const isContentTypeLocked = computed(() => {
 
 const urlInputPlaceholder = computed(() => {
   return selectedBuiltInList.value === 'custom'
-    ? '请输入RSS源的URL'
+    ? '请输入RSS、TMDb片单或Discover链接'
     : '已选择内置榜单，URL自动填充';
 });
 
@@ -629,7 +800,6 @@ const sortFieldOptions = computed(() => {
     { label: '社区评分', value: 'CommunityRating' },
     { label: '制作年份', value: 'ProductionYear' },
   ];
-  // 仅当合集类型为 'list' 时，才插入“榜单原始顺序”选项
   if (currentCollection.value.type === 'list') {
     options.splice(1, 0, { label: '榜单原始顺序', value: 'original' });
   }
@@ -651,12 +821,11 @@ const getInitialFormModel = () => ({
     url: '',
     limit: null,
     library_ids: [],
-    // --- ▼▼▼ 核心修改 2/3：为新创建的合集设置更合理的默认排序 ▼▼▼ ---
-    default_sort_by: 'original', // 对于榜单类型，默认使用原始顺序
+    default_sort_by: 'original',
     default_sort_order: 'Ascending',
-    dynamic_filter_enabled: false, // 动态筛选开关，默认关闭
-    dynamic_logic: 'AND',          // 动态筛选的逻辑
-    dynamic_rules: []              // 存放动态规则的数组 
+    dynamic_filter_enabled: false,
+    dynamic_logic: 'AND',
+    dynamic_rules: []
   }
 });
 const currentCollection = ref(getInitialFormModel());
@@ -684,7 +853,6 @@ watch(() => currentCollection.value.type, (newType) => {
   }
 });
 
-// 获取 Emby 媒体库列表
 const fetchEmbyLibraries = async () => {
   isLoadingLibraries.value = true;
   try {
@@ -735,27 +903,6 @@ const fetchTagOptions = async () => {
   }
 };
 
-let actorSearchTimeout = null;
-const handleActorSearch = (query) => {
-  if (!query) {
-    actorOptions.value = [];
-    return;
-  }
-  isSearchingActors.value = true;
-  if (actorSearchTimeout) clearTimeout(actorSearchTimeout);
-  actorSearchTimeout = setTimeout(async () => {
-    try {
-      const response = await axios.get(`/api/custom_collections/search_actors?q=${query}`);
-      actorOptions.value = response.data.map(name => ({ label: name, value: name }));
-    } catch (error) {
-      console.error('搜索演员失败:', error);
-      actorOptions.value = [];
-    } finally {
-      isSearchingActors.value = false;
-    }
-  }, 300);
-};
-
 let searchTimeout = null;
 const handleStudioSearch = (query) => {
   if (!query) {
@@ -799,24 +946,20 @@ watch(() => currentCollection.value.definition.rules, (newRules) => {
   }
 }, { deep: true });
 
-// 侦听动态规则的变化，以便在字段切换时重置值
 watch(() => currentCollection.value.definition.dynamic_rules, (newRules) => {
   if (Array.isArray(newRules)) {
     newRules.forEach(rule => {
-      // 当字段切换为“是否收藏”且当前值不是布尔值时，重置
       if (rule.field === 'is_favorite' && typeof rule.value !== 'boolean') {
-        rule.value = true; // 默认设置为 true (已收藏)
+        rule.value = true;
       } 
-      // 当字段切换为“播放状态”且当前值无效时，重置
       else if (rule.field === 'playback_status' && !['unplayed', 'in_progress', 'played'].includes(rule.value)) {
-        rule.value = 'unplayed'; // 默认设置为 'unplayed' (未播放)
+        rule.value = 'unplayed';
       }
     });
   }
 }, { deep: true });
 
 const ruleConfig = {
-  // --- 静态规则 ---
   title: { label: '标题', type: 'text', operators: ['contains', 'does_not_contain', 'starts_with', 'ends_with'] },
   actors: { label: '演员', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
   directors: { label: '导演', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
@@ -829,7 +972,6 @@ const ruleConfig = {
   unified_rating: { label: '家长分级', type: 'select', operators: ['is_one_of', 'is_none_of', 'eq'] },
   release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
   date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
-  // --- 动态规则 ---
   playback_status: { label: '播放状态', type: 'user_data', operators: ['is', 'is_not'] },
   is_favorite: { label: '是否收藏', type: 'user_data', operators: ['is', 'is_not'] },
 };
@@ -843,11 +985,9 @@ const operatorLabels = {
   is_not: '不是'
 };
 
-// 新的 ref 和获取分级选项的函数
 const unifiedRatingOptions = ref([]);
 const fetchUnifiedRatingOptions = async () => {
   try {
-    // 调用我们新的API
     const response = await axios.get('/api/custom_collections/config/unified_ratings');
     unifiedRatingOptions.value = response.data.map(name => ({
       label: name,
@@ -860,19 +1000,18 @@ const fetchUnifiedRatingOptions = async () => {
 
 const staticFieldOptions = computed(() => 
   Object.keys(ruleConfig)
-    .filter(key => ruleConfig[key].type !== 'user_data') // 只保留非用户数据的字段
+    .filter(key => ruleConfig[key].type !== 'user_data')
     .map(key => ({ label: ruleConfig[key].label, value: key }))
 );
 
 const dynamicFieldOptions = computed(() => 
   Object.keys(ruleConfig)
-    .filter(key => ruleConfig[key].type === 'user_data') // 只保留用户数据的字段
+    .filter(key => ruleConfig[key].type === 'user_data')
     .map(key => ({ label: ruleConfig[key].label, value: key }))
 );
 
 const getOperatorOptionsForRow = (rule) => {
   if (!rule.field) return [];
-  // 直接返回通过 ruleConfig 生成的选项
   return (ruleConfig[rule.field]?.operators || []).map(op => ({ label: operatorLabels[op] || op, value: op }));
 };
 
@@ -997,7 +1136,6 @@ const handleDragEnd = async (event) => {
   }
 };
 
-
 const openDetailsModal = async (collection) => {
   showDetailsModal.value = true;
   isLoadingDetails.value = true;
@@ -1095,20 +1233,15 @@ const handleCreateClick = () => {
 
 const handleEditClick = (row) => {
   isEditing.value = true;
-  // 深拷贝从表格行获取的数据
   const rowCopy = JSON.parse(JSON.stringify(row));
 
-  // ★★★ 核心修复：不再需要手动解析 definition_json ★★★
-  // 后端现在直接提供了名为 'definition' 的对象，我们只需确保它存在即可。
   if (!rowCopy.definition || typeof rowCopy.definition !== 'object') {
-    // 如果 definition 意外丢失，提供一个安全的回退
     console.error("合集定义 'definition' 丢失或格式不正确:", row);
     rowCopy.definition = rowCopy.type === 'filter'
       ? { item_type: ['Movie'], logic: 'AND', rules: [] }
       : { item_type: ['Movie'], url: '' };
   }
 
-  // 确保旧数据也兼容排序字段，避免出错
   if (!rowCopy.definition.default_sort_by) {
     rowCopy.definition.default_sort_by = 'none';
   }
@@ -1116,10 +1249,8 @@ const handleEditClick = (row) => {
     rowCopy.definition.default_sort_order = 'Ascending';
   }
 
-  // 将处理好的数据赋值给表单模型
   currentCollection.value = rowCopy;
 
-  // 如果是榜单类型，需要额外处理UI以下拉框正确显示
   if (rowCopy.type === 'list') {
     const url = rowCopy.definition.url || '';
     const isBuiltIn = builtInLists.some(item => item.value === url);
@@ -1194,7 +1325,7 @@ const columns = [
         if (matchedOption) {
             label = matchedOption.label;
         } else if (url) {
-            label = '榜单导入 (RSS)';
+            label = '榜单导入 (URL)';
         } else {
             label = '榜单导入';
         }
@@ -1267,20 +1398,238 @@ const columns = [
   }
 ];
 
-const getTmdbImageUrl = (posterPath) => posterPath ? `https://image.tmdb.org/t/p/w300${posterPath}` : '/img/poster-placeholder.png';
+const getTmdbImageUrl = (posterPath, size = 'w300') => posterPath ? `https://image.tmdb.org/t/p/${size}${posterPath}` : '/img/poster-placeholder.png';
 const extractYear = (dateStr) => dateStr ? dateStr.substring(0, 4) : null;
 
 const addDynamicRule = () => {
   if (!currentCollection.value.definition.dynamic_rules) {
     currentCollection.value.definition.dynamic_rules = [];
   }
-  // 修复：为新规则设置一个默认字段，避免UI显示为空
   currentCollection.value.definition.dynamic_rules.push({ field: 'playback_status', operator: 'is', value: 'unplayed' });
 };
 
 const removeDynamicRule = (index) => {
   currentCollection.value.definition.dynamic_rules.splice(index, 1);
 };
+
+// --- TMDb 探索助手函数 ---
+const tmdbSortOptions = [
+  { label: '热度降序', value: 'popularity.desc' },
+  { label: '热度升序', value: 'popularity.asc' },
+  { label: '评分降序', value: 'vote_average.desc' },
+  { label: '评分升序', value: 'vote_average.asc' },
+  { label: '上映日期降序', value: 'primary_release_date.desc' },
+  { label: '上映日期升序', value: 'primary_release_date.asc' },
+];
+
+const tmdbLanguageOptions = [
+    { label: '中文', value: 'zh' },
+    { label: '英文', value: 'en' },
+    { label: '日文', value: 'ja' },
+    { label: '韩文', value: 'ko' },
+    { label: '法语', value: 'fr' },
+    { label: '德语', value: 'de' },
+];
+
+const tmdbGenreOptions = computed(() => {
+  const source = discoverParams.value.type === 'movie' ? tmdbMovieGenres.value : tmdbTvGenres.value;
+  return source.map(g => ({ label: g.name, value: g.id }));
+});
+
+// 计算属性：实时生成URL (精简可靠版)
+const generatedDiscoverUrl = computed(() => {
+  const params = discoverParams.value;
+  const base = `https://www.themoviedb.org/discover/${params.type}`;
+  const query = new URLSearchParams();
+  
+  query.append('sort_by', params.sort_by);
+
+  // 年份
+  if (params.type === 'movie') {
+    if (params.release_year_gte) query.append('primary_release_date.gte', `${params.release_year_gte}-01-01`);
+    if (params.release_year_lte) query.append('primary_release_date.lte', `${params.release_year_lte}-12-31`);
+  } else {
+    if (params.release_year_gte) query.append('first_air_date.gte', `${params.release_year_gte}-01-01`);
+    if (params.release_year_lte) query.append('first_air_date.lte', `${params.release_year_lte}-12-31`);
+  }
+
+  // 各种ID类参数
+  if (params.with_genres?.length) query.append('with_genres', params.with_genres.join(','));
+  if (params.with_companies?.length) query.append('with_companies', params.with_companies.join(','));
+  if (params.with_cast?.length) query.append('with_cast', params.with_cast.join(','));
+  if (params.with_crew?.length) query.append('with_crew', params.with_crew.join(','));
+  
+  // 各种代码类参数
+  if (params.with_origin_country) {
+    query.append('with_origin_country', params.with_origin_country);
+  }
+  if (params.with_original_language) {
+    query.append('with_original_language', params.with_original_language);
+  }
+  
+  if (params.vote_average_gte > 0) {
+    query.append('vote_average.gte', params.vote_average_gte);
+    query.append('vote_count.gte', 100);
+  }
+  
+  return `${base}?${query.toString()}`;
+});
+
+const fetchTmdbGenres = async () => {
+  isLoadingTmdbGenres.value = true;
+  try {
+    const [movieRes, tvRes] = await Promise.all([
+      axios.get('/api/custom_collections/config/tmdb_movie_genres'),
+      axios.get('/api/custom_collections/config/tmdb_tv_genres')
+    ]);
+    tmdbMovieGenres.value = movieRes.data;
+    tmdbTvGenres.value = tvRes.data;
+  } catch (error) {
+    console.error("获取TMDb风格列表失败，后端返回错误:", error.response?.data || error.message);
+    message.error('获取TMDb风格列表失败，请检查后端日志。');
+  } finally {
+    isLoadingTmdbGenres.value = false;
+  }
+};
+
+const fetchTmdbCountries = async () => {
+  isLoadingTmdbCountries.value = true;
+  try {
+    const response = await axios.get('/api/custom_collections/config/tmdb_countries');
+    tmdbCountryOptions.value = response.data;
+  } catch (error) {
+    message.error('获取国家/地区列表失败。');
+  } finally {
+    isLoadingTmdbCountries.value = false;
+  }
+};
+
+const openDiscoverHelper = () => {
+  discoverParams.value = getInitialDiscoverParams();
+  // 清理工作区，确保每次打开都是全新的状态
+  selectedCompanies.value = [];
+  selectedActors.value = [];
+  selectedDirectors.value = [];
+  
+  // 清理可能残留的搜索结果和文本
+  companySearchText.value = '';
+  companyOptions.value = [];
+  actorSearchText.value = '';
+  actorOptions.value = [];
+  directorSearchText.value = '';
+  directorOptions.value = [];
+
+  showDiscoverHelper.value = true;
+};
+
+const confirmDiscoverUrl = () => {
+  currentCollection.value.definition.url = generatedDiscoverUrl.value;
+  const itemType = discoverParams.value.type === 'movie' ? 'Movie' : 'Series';
+  if (!currentCollection.value.definition.item_type.includes(itemType)) {
+      currentCollection.value.definition.item_type = [itemType];
+  }
+  showDiscoverHelper.value = false;
+};
+
+watch(() => discoverParams.value.type, () => {
+    discoverParams.value.with_genres = [];
+});
+
+let companySearchTimeout = null;
+const handleCompanySearch = (query) => {
+  companySearchText.value = query;
+  if (!query.length) {
+    companyOptions.value = [];
+    return;
+  }
+  isSearchingCompanies.value = true;
+  if (companySearchTimeout) clearTimeout(companySearchTimeout);
+  companySearchTimeout = setTimeout(async () => {
+    try {
+      const response = await axios.get(`/api/custom_collections/config/tmdb_search_companies?q=${query}`);
+      companyOptions.value = response.data.map(c => ({ label: c.name, value: c.id }));
+    } finally {
+      isSearchingCompanies.value = false;
+    }
+  }, 300);
+};
+const handleCompanySelect = (option) => {
+  if (!selectedCompanies.value.some(c => c.value === option.value)) {
+    selectedCompanies.value.push(option);
+  }
+  companySearchText.value = '';
+  companyOptions.value = [];
+};
+
+// --- 演员搜索 (独立版) ---
+let actorSearchTimeout = null;
+const handleActorSearch = (query) => {
+  actorSearchText.value = query;
+  if (!query.length) {
+    actorOptions.value = [];
+    return;
+  }
+  isSearchingActors.value = true;
+  if (actorSearchTimeout) clearTimeout(actorSearchTimeout);
+  actorSearchTimeout = setTimeout(async () => {
+    try {
+      const response = await axios.get(`/api/custom_collections/config/tmdb_search_persons?q=${query}`);
+      actorOptions.value = response.data;
+    } finally {
+      isSearchingActors.value = false;
+    }
+  }, 300);
+};
+
+// --- 导演搜索 (独立版) ---
+let directorSearchTimeout = null;
+const handleDirectorSearch = (query) => {
+  directorSearchText.value = query;
+  if (!query.length) {
+    directorOptions.value = [];
+    return;
+  }
+  isSearchingDirectors.value = true;
+  if (directorSearchTimeout) clearTimeout(directorSearchTimeout);
+  directorSearchTimeout = setTimeout(async () => {
+    try {
+      const response = await axios.get(`/api/custom_collections/config/tmdb_search_persons?q=${query}`);
+      directorOptions.value = response.data;
+    } finally {
+      isSearchingDirectors.value = false;
+    }
+  }, 300);
+};
+
+const handleActorSelect = (person) => {
+  const selection = { label: person.name, value: person.id };
+  if (!selectedActors.value.some(a => a.value === selection.value)) {
+    selectedActors.value.push(selection);
+  }
+  actorSearchText.value = '';
+  actorOptions.value = [];
+};
+
+const handleDirectorSelect = (person) => {
+  const selection = { label: person.name, value: person.id };
+  if (!selectedDirectors.value.some(d => d.value === selection.value)) {
+    selectedDirectors.value.push(selection);
+  }
+  directorSearchText.value = '';
+  directorOptions.value = [];
+};
+
+watch(selectedCompanies, (newValue) => {
+  discoverParams.value.with_companies = newValue.map(c => c.value);
+}, { deep: true });
+
+watch(selectedActors, (newValue) => {
+  discoverParams.value.with_cast = newValue.map(a => a.value);
+}, { deep: true });
+
+watch(selectedDirectors, (newValue) => {
+  discoverParams.value.with_crew = newValue.map(d => d.value);
+}, { deep: true });
 
 onMounted(() => {
   fetchCollections();
@@ -1289,6 +1638,8 @@ onMounted(() => {
   fetchTagOptions();
   fetchUnifiedRatingOptions();
   fetchEmbyLibraries();
+  fetchTmdbGenres();
+  fetchTmdbCountries();
 });
 </script>
 
@@ -1329,5 +1680,38 @@ onMounted(() => {
 }
 .drag-handle:hover {
   color: #2080f0;
+}
+
+.search-results-box {
+  width: 100%;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid #48484e;
+  border-radius: 3px;
+  margin-top: 4px;
+  background: #242428;
+}
+.search-result-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+.search-result-item:hover {
+  background-color: #3a3a40;
+}
+.person-item {
+  display: flex;
+  align-items: center;
+}
+.person-info {
+  display: flex;
+  flex-direction: column;
+}
+.known-for {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 250px; /* 防止代表作过长撑开布局 */
 }
 </style>

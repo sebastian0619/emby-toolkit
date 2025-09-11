@@ -264,9 +264,82 @@ class ListImporter:
         
         logger.info(f"  -> TMDb片单获取完成，从 {total_pages} 个页面中总共解析出 {len(all_items)} 个项目。")
         return all_items
+    
+    def _get_items_from_tmdb_discover(self, url: str) -> List[Dict[str, str]]:
+        """【V4.1 - 最终确认版】专门用于解析TMDb Discover URL并获取结果的函数，支持自动分页获取所有项目"""
+        from urllib.parse import urlparse, parse_qs
+        from datetime import datetime, timedelta
+        import re
 
+        logger.info(f"  -> 检测到TMDb Discover链接，开始动态获取 (支持分页): {url}")
+        
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+        params = {k: v[0] for k, v in query_params.items()}
+
+        today = datetime.now()
+        date_pattern = re.compile(r'{today([+-]\d+)?}')
+
+        for key, value in params.items():
+            match = date_pattern.search(value)
+            if match:
+                offset_str = match.group(1) 
+                target_date = today
+                if offset_str:
+                    days = int(offset_str)
+                    target_date = today + timedelta(days=days)
+                params[key] = value.replace(match.group(0), target_date.strftime('%Y-%m-%d'))
+
+        all_items = []
+        current_page = 1
+        total_pages = 1
+        MAX_PAGES_TO_FETCH = 10
+
+        while current_page <= total_pages and current_page <= MAX_PAGES_TO_FETCH:
+            try:
+                params['page'] = current_page
+                logger.debug(f"    -> 正在获取第 {current_page} / {total_pages} 页...")
+
+                discover_data = None
+                item_type_for_result = None
+
+                # ★★★ 使用最健壮的判断逻辑 ★★★
+                if '/discover/movie' in url:
+                    discover_data = tmdb_handler.discover_movie_tmdb(self.tmdb_api_key, params)
+                    item_type_for_result = 'Movie'
+                elif '/discover/tv' in url:
+                    discover_data = tmdb_handler.discover_tv_tmdb(self.tmdb_api_key, params)
+                    item_type_for_result = 'Series'
+                else:
+                    # 如果URL格式意外，直接跳出循环
+                    logger.warning(f"无法从URL '{url}' 判断是电影还是电视剧，discover任务中止。")
+                    break
+
+                if not discover_data or not discover_data.get('results'):
+                    logger.info("    -> 在当前页未发现更多项目，获取结束。")
+                    break
+
+                if current_page == 1:
+                    total_pages = discover_data.get('total_pages', 1)
+
+                for item in discover_data['results']:
+                    tmdb_id = item.get('id')
+                    if tmdb_id and item_type_for_result:
+                        all_items.append({'id': str(tmdb_id), 'type': item_type_for_result})
+                
+                current_page += 1
+
+            except Exception as e:
+                logger.error(f"获取或解析TMDb Discover链接的第 {current_page} 页时出错: {e}")
+                break
+
+        logger.info(f"  -> TMDb Discover 获取完成，从 {total_pages} 个页面中总共解析出 {len(all_items)} 个项目。")
+        return all_items
+    
     def _get_titles_and_imdbids_from_url(self, url: str) -> List[Dict[str, str]]:
         # ★★★ 智能路由：根据URL判断使用哪种解析方式 ★★★
+        if 'themoviedb.org/discover/' in url:
+            return self._get_items_from_tmdb_discover(url)
         if 'themoviedb.org/list/' in url:
             return self._get_items_from_tmdb_list(url)
         if 'douban.com/doulist' in url:

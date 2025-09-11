@@ -454,3 +454,50 @@ def get_list_details_tmdb(list_id: int, api_key: str, page: int = 1) -> Optional
     
     logger.debug(f"TMDb: 获取片单详情 (ID: {list_id}, Page: {page})")
     return _tmdb_request(endpoint, api_key, params)
+
+# --- 通过筛选条件发现电影 ---
+def discover_movie_tmdb(api_key: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """【最终确认版】使用TMDb的discover接口根据动态条件筛选电影。"""
+    if not api_key:
+        return None
+    
+    endpoint = "/discover/movie" # 确保是 movie
+    base_params = {"language": DEFAULT_LANGUAGE}
+    base_params.update(params)
+
+    logger.debug(f"TMDb: 发现电影 (条件: {base_params})") # 确保日志是“电影”
+    return _tmdb_request(endpoint, api_key, base_params)
+
+# --- 通过筛选条件发现电视剧 ---
+def discover_tv_tmdb(api_key: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """【最终确认版】使用TMDb的discover接口根据动态条件筛选电视剧。"""
+    if not api_key:
+        return None
+    
+    endpoint = "/discover/tv" # 确保是 tv
+    base_params = {"language": DEFAULT_LANGUAGE}
+    base_params.update(params)
+
+    logger.debug(f"TMDb: 发现电视剧 (条件: {base_params})") # 确保日志是“电视剧”
+    return _tmdb_request(endpoint, api_key, base_params)
+
+def get_movie_genres_tmdb(api_key: str) -> Optional[List[Dict[str, Any]]]:
+    """【新】获取TMDb所有电影类型的官方列表。"""
+    endpoint = "/genre/movie/list"
+    data = _tmdb_request(endpoint, api_key, {"language": DEFAULT_LANGUAGE})
+    return data.get("genres") if data else None
+
+# --- 获取电视剧类型列表 ---
+def get_tv_genres_tmdb(api_key: str) -> Optional[List[Dict[str, Any]]]:
+    """【新】获取TMDb所有电视剧类型的官方列表。"""
+    endpoint = "/genre/tv/list"
+    data = _tmdb_request(endpoint, api_key, {"language": DEFAULT_LANGUAGE})
+    return data.get("genres") if data else None
+
+# --- 搜索 TMDb 电影公司 ---
+def search_companies_tmdb(api_key: str, query: str) -> Optional[List[Dict[str, Any]]]:
+    """【新】根据文本搜索TMDb电影公司，返回ID和名称。"""
+    endpoint = "/search/company"
+    params = {"query": query}
+    data = _tmdb_request(endpoint, api_key, params)
+    return data.get("results") if data else None
