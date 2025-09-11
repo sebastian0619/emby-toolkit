@@ -62,6 +62,7 @@ from routes.actions import actions_bp
 from routes.cover_generator_config import cover_generator_config_bp
 from routes.tasks import tasks_bp
 from routes.resubscribe import resubscribe_bp
+from routes.media_cleanup import media_cleanup_bp
 # --- 核心模块导入 ---
 import constants # 你的常量定义\
 import logging
@@ -372,6 +373,22 @@ def init_db():
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_resubscribe_cache_status ON resubscribe_cache (status);")
 
+                logger.trace("  -> 正在创建 'media_cleanup_tasks' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS media_cleanup_tasks (
+                        id SERIAL PRIMARY KEY,
+                        task_type TEXT NOT NULL, -- 'multi_version' or 'duplicate'
+                        tmdb_id TEXT,
+                        item_name TEXT,
+                        versions_info_json JSONB,
+                        status TEXT DEFAULT 'pending', -- 'pending', 'processed', 'ignored'
+                        best_version_id TEXT,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_task_type ON media_cleanup_tasks (task_type);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_task_status ON media_cleanup_tasks (status);")
+                
                 # --- 2. 执行平滑升级检查 ---
                 logger.info("  -> 开始执行数据库表结构平滑升级检查...")
                 try:
@@ -453,6 +470,28 @@ def init_db():
                      logger.error(f"  -> [数据库升级] 检查或添加外键时出错: {e_fk}", exc_info=True)
 
                 logger.info("  -> 数据库平滑升级检查完成。")
+
+                # --- 2.4 初始化默认的应用设置 ---
+                try:
+                    logger.info("    -> [数据库初始化] 正在检查并写入默认的应用设置...")
+                    # 检查媒体清理规则是否存在
+                    cursor.execute("SELECT 1 FROM app_settings WHERE setting_key = 'media_cleanup_rules'")
+                    if cursor.fetchone() is None:
+                        # 如果不存在，则写入一套推荐的默认规则
+                        default_cleanup_rules = [
+                            {"id": "quality", "enabled": True, "priority": ["Remux", "BluRay", "WEB-DL", "HDTV"]},
+                            {"id": "resolution", "enabled": True, "priority": ["2160p", "1080p", "720p"]},
+                            {"id": "filesize", "enabled": True, "priority": "desc"}
+                        ]
+                        cursor.execute(
+                            "INSERT INTO app_settings (setting_key, value_json) VALUES (%s, %s)",
+                            ('media_cleanup_rules', json.dumps(default_cleanup_rules))
+                        )
+                        logger.info("    -> 已成功写入默认的媒体清理规则。")
+                    else:
+                        logger.trace("    -> 媒体清理规则已存在，跳过。")
+                except Exception as e_settings:
+                    logger.error(f"    -> [数据库初始化] 写入默认设置时出错: {e_settings}", exc_info=True)
 
             conn.commit()
             logger.info("✅ PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")
@@ -868,6 +907,7 @@ app.register_blueprint(actions_bp)
 app.register_blueprint(cover_generator_config_bp)
 app.register_blueprint(tasks_bp)
 app.register_blueprint(resubscribe_bp)
+app.register_blueprint(media_cleanup_bp)
 
 def main_app_start():
     """将主应用启动逻辑封装成一个函数"""

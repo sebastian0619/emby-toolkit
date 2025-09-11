@@ -5,10 +5,11 @@ import os
 import json
 import psycopg2
 import pytz
+import collections
 from psycopg2 import sql
 from psycopg2.extras import execute_values, Json
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Tuple, List
 from datetime import datetime, date, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed 
 import concurrent.futures
@@ -1351,6 +1352,7 @@ def get_task_registry(context: str = 'all'):
         # --- 不适合任务链的、需要特定参数的任务 ---
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
         'process-single-custom-collection': (task_process_custom_collection, "生成单个自建合集", 'media', False),
+        'scan-cleanup-issues': (task_scan_for_cleanup_issues, "扫描媒体重复项", 'media', True),
         'revival-check': (task_run_revival_check, "检查剧集复活", 'watchlist', False),
     }
 
@@ -2843,3 +2845,251 @@ def _extract_quality_tag_from_filename(filename_lower: str, video_stream: dict) 
 
     # 如果循环结束都没找到，提供一个备用值
     return (video_stream.get('Codec', '未知') if video_stream else '未知').upper()
+# ======================================================================
+# ★★★ 媒体清理模块 (Media Cleanup Module) - 新增 ★★★
+# ======================================================================
+
+def _get_version_properties(version: Dict[str, Any]) -> Dict[str, Any]:
+    """【V5 - 全标签标准化终极版】辅助函数：确保所有质量标签都被正确识别和归一化。"""
+    path_lower = version.get("path", "").lower()
+    
+    # ★★★ 核心修复 1/2: 定义一个完整的、包含所有别名的“官方名称”映射表 ★★★
+    QUALITY_ALIASES = {
+        "remux": "remux",
+        "bluray": "blu-ray",
+        "blu-ray": "blu-ray",
+        "web-dl": "web-dl",
+        "webdl": "web-dl",
+        "webrip": "webrip",
+        "hdtv": "hdtv",
+        "dvdrip": "dvdrip"
+    }
+    # 定义优先级顺序
+    QUALITY_HIERARCHY = ["remux", "blu-ray", "web-dl", "webrip", "hdtv", "dvdrip"]
+    
+    quality = "unknown"
+    # ★★★ 核心修复 2/2: 遍历所有已知的别名进行匹配 ★★★
+    for alias, official_name in QUALITY_ALIASES.items():
+        # 使用和你推荐的函数一样的可靠逻辑
+        if (f".{alias}." in path_lower or
+            f" {alias} " in path_lower or
+            f"-{alias}-" in path_lower or
+            f"·{alias}·" in path_lower):
+            
+            # 检查当前找到的标签是否比已有的更优先
+            current_priority = QUALITY_HIERARCHY.index(quality) if quality in QUALITY_HIERARCHY else 999
+            new_priority = QUALITY_HIERARCHY.index(official_name)
+            
+            if new_priority < current_priority:
+                quality = official_name
+
+    # 提取分辨率标签 (逻辑不变)
+    resolution_tag = "unknown"
+    resolution_wh = version.get("resolution_wh", (0, 0))
+    width = resolution_wh[0]
+    if width >= 3840: resolution_tag = "2160p"
+    elif width >= 1920: resolution_tag = "1080p"
+    elif width >= 1280: resolution_tag = "720p"
+
+    return {
+        "id": version.get("id"),
+        "quality": quality,
+        "resolution": resolution_tag,
+        "filesize": version.get("size", 0)
+    }
+
+def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """【V4 - 标准化终极修复版】"""
+    
+    rules = db_handler.get_setting('media_cleanup_rules')
+    if not rules:
+        rules = [
+            {"id": "quality", "priority": ["remux", "blu-ray", "web-dl", "hdtv"]},
+            {"id": "resolution", "priority": ["2160p", "1080p", "720p"]},
+            {"id": "filesize", "priority": "desc"}
+        ]
+
+    # ★★★ 核心修复 1/2: 在比较前，先对规则本身进行“标准化”处理 ★★★
+    processed_rules = []
+    for rule in rules:
+        new_rule = rule.copy()
+        if rule.get("id") == "quality" and "priority" in new_rule and isinstance(new_rule["priority"], list):
+            normalized_priority = []
+            for p in new_rule["priority"]:
+                p_lower = str(p).lower()
+                if p_lower == "bluray": p_lower = "blu-ray"   # 将 bluray 标准化为 blu-ray
+                if p_lower == "webdl": p_lower = "web-dl"     # 将 webdl 标准化为 web-dl
+                normalized_priority.append(p_lower)
+            new_rule["priority"] = normalized_priority
+        processed_rules.append(new_rule)
+    
+    version_properties = [_get_version_properties(v) for v in versions]
+
+    from functools import cmp_to_key
+    def compare_versions(item1_props, item2_props):
+        # ★★★ 核心修复 2/2: 使用标准化后的规则进行比较 ★★★
+        for rule in processed_rules:
+            if not rule.get("enabled", True): continue
+            
+            rule_id = rule.get("id")
+            val1 = item1_props.get(rule_id)
+            val2 = item2_props.get(rule_id)
+
+            if rule_id == "filesize":
+                if val1 > val2: return -1
+                if val1 < val2: return 1
+                continue
+
+            priority_list = rule.get("priority", [])
+            # 这里的 val1 和 val2 已经是标准化的小写了 (来自 _get_version_properties)
+            # 这里的 priority_list 也已经是标准化的小写了
+            try:
+                index1 = priority_list.index(val1) if val1 in priority_list else 999
+                index2 = priority_list.index(val2) if val2 in priority_list else 999
+                
+                if index1 < index2: return -1
+                if index1 > index2: return 1
+            except (ValueError, TypeError):
+                continue
+        return 0
+
+    sorted_versions = sorted(version_properties, key=cmp_to_key(compare_versions))
+    
+    best_version_id = sorted_versions[0]['id'] if sorted_versions else None
+    
+    return versions, best_version_id
+
+def task_scan_for_cleanup_issues(processor: MediaProcessor):
+    """
+    【V14 - 返璞归真终极版】
+    后台任务：只查找并报告“真·重复项”（拥有相同TMDb ID但不同Item ID的媒体项）。
+    """
+    task_name = "扫描媒体库重复项"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (返璞归真模式) ---")
+    task_manager.update_status_from_thread(0, "正在准备扫描媒体库...")
+
+    try:
+        libs_to_process_ids = processor.config.get("libraries_to_process", [])
+        if not libs_to_process_ids:
+            raise ValueError("未在配置中指定要处理的媒体库。")
+
+        task_manager.update_status_from_thread(5, f"正在从 {len(libs_to_process_ids)} 个媒体库获取项目...")
+        all_emby_items = emby_handler.get_emby_library_items(
+            base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
+            media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
+            fields="ProviderIds,Name,Type,MediaSources,Path,ProductionYear"
+        ) or []
+
+        if not all_emby_items:
+            task_manager.update_status_from_thread(100, "任务完成：在指定媒体库中未找到任何项目。")
+            return
+
+        task_manager.update_status_from_thread(30, f"已获取 {len(all_emby_items)} 个项目，正在分析...")
+        
+        # --- 步骤一：按 TMDB ID 对所有媒体项进行分组 ---
+        media_map = collections.defaultdict(list)
+        for item in all_emby_items:
+            tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
+            if tmdb_id:
+                media_map[tmdb_id].append(item)
+
+        # --- 步骤二：遍历分组，只找出真正的重复项 ---
+        duplicate_tasks = []
+        for tmdb_id, items in media_map.items():
+            # 只有当分组内的 Item 数量大于1时，才可能是重复项
+            if len(items) > 1:
+                logger.info(f"  -> [发现重复] TMDB ID {tmdb_id} 关联了 {len(items)} 个独立的媒体项。")
+                versions_info = []
+                for item in items:
+                    source = item.get("MediaSources", [{}])[0]
+                    video_stream = next((s for s in source.get("MediaStreams", []) if s.get("Type") == "Video"), None)
+                    versions_info.append({
+                        "id": item.get("Id"), # ID 就是 Item ID
+                        "path": source.get("Path") or item.get("Path"), "size": source.get("Size", 0),
+                        "resolution_wh": (video_stream.get("Width", 0), video_stream.get("Height", 0)) if video_stream else (0, 0),
+                    })
+                
+                analyzed_versions, best_id = _determine_best_version_by_rules(versions_info)
+                best_item_name = next((item.get("Name") for item in items if item.get("Id") == best_id), items[0].get("Name"))
+                
+                duplicate_tasks.append({
+                    "task_type": "duplicate", # 类型永远是 duplicate
+                    "tmdb_id": tmdb_id, "item_name": best_item_name,
+                    "versions_info_json": analyzed_versions, "best_version_id": best_id
+                })
+
+        # 3. 写入数据库
+        task_manager.update_status_from_thread(90, f"分析完成，正在将 {len(duplicate_tasks)} 组重复项写入数据库...")
+        db_handler.batch_insert_cleanup_tasks(duplicate_tasks)
+
+        final_message = f"扫描完成！共发现 {len(duplicate_tasks)} 组重复项，待清理。"
+        task_manager.update_status_from_thread(100, final_message)
+        logger.info(f"--- '{task_name}' 任务成功完成 ---")
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+
+def task_execute_cleanup(processor: MediaProcessor, task_ids: List[int], **kwargs):
+    """
+    后台任务：执行指定的一批媒体清理任务（删除多余文件）。
+    这是一个高危的写操作。
+    """
+    # ★★★ 核心修复：这个函数签名现在可以正确接收 processor 和 task_ids 两个位置参数，
+    # 同时用 **kwargs 忽略掉 task_manager 传来的其他所有参数。
+
+    if not task_ids or not isinstance(task_ids, list):
+        logger.error("执行媒体清理任务失败：缺少有效的 'task_ids' 参数。")
+        task_manager.update_status_from_thread(-1, "任务失败：缺少任务ID")
+        return
+
+    task_name = "执行媒体清理"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (任务ID: {task_ids}) ---")
+    
+    try:
+        tasks_to_execute = db_handler.get_cleanup_tasks_by_ids(task_ids)
+        total = len(tasks_to_execute)
+        if total == 0:
+            task_manager.update_status_from_thread(100, "任务完成：未找到指定的清理任务。")
+            return
+
+        deleted_count = 0
+        for i, task in enumerate(tasks_to_execute):
+            if processor.is_stop_requested():
+                logger.warning("任务被用户中止。")
+                break
+            
+            task_id = task['id']
+            item_name = task['item_name']
+            best_version_id = task['best_version_id']
+            versions = task['versions_info_json']
+
+            task_manager.update_status_from_thread(int((i / total) * 100), f"({i+1}/{total}) 正在清理: {item_name}")
+
+            for version in versions:
+                version_id_to_check = version.get('id')
+                if version_id_to_check != best_version_id:
+                    logger.warning(f"  -> 准备删除劣质版本: {version.get('path')}")
+                    
+                    id_to_delete = version_id_to_check
+                    
+                    success = emby_handler.delete_item(
+                        item_id=id_to_delete,
+                        emby_server_url=processor.emby_url,
+                        emby_api_key=processor.emby_api_key,
+                        user_id=processor.emby_user_id
+                    )
+                    if success:
+                        deleted_count += 1
+                        logger.info(f"    -> 成功删除 ID: {id_to_delete}")
+                    else:
+                        logger.error(f"    -> 删除 ID: {id_to_delete} 失败！")
+            
+            db_handler.batch_update_cleanup_task_status([task_id], 'processed')
+
+        final_message = f"清理完成！共处理 {total} 个任务，删除了 {deleted_count} 个多余版本/文件。"
+        task_manager.update_status_from_thread(100, final_message)
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")

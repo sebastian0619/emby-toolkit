@@ -2280,3 +2280,108 @@ def decrement_subscription_quota() -> bool:
     except Exception as e:
         logger.error(f"减少订阅配额时发生严重错误: {e}", exc_info=True)
         return False
+# ======================================================================
+# 模块 10: 媒体清理模块数据访问 (Media Cleanup Data Access) - ★★★ 新增模块 ★★★
+# ======================================================================
+
+def get_all_cleanup_tasks() -> List[Dict[str, Any]]:
+    """获取所有待处理的媒体清理任务。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 只获取待处理的任务，并按名称排序
+            cursor.execute("SELECT * FROM media_cleanup_tasks WHERE status = 'pending' ORDER BY item_name")
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 获取媒体清理任务列表失败: {e}", exc_info=True)
+        return []
+
+def batch_insert_cleanup_tasks(tasks: List[Dict[str, Any]]):
+    """批量插入新的清理任务，插入前会清空旧表。"""
+    if not tasks:
+        logger.info("没有发现需要清理的媒体项，无需更新数据库。")
+        return
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 使用 TRUNCATE RESTART IDENTITY 清空表并重置ID序列
+            logger.warning("正在清空旧的媒体清理任务列表...")
+            cursor.execute("TRUNCATE TABLE media_cleanup_tasks RESTART IDENTITY;")
+
+            # 准备批量插入
+            from psycopg2.extras import execute_values
+            sql = """
+                INSERT INTO media_cleanup_tasks (
+                    task_type, tmdb_id, item_name, versions_info_json, 
+                    status, best_version_id, created_at
+                ) VALUES %s
+            """
+            
+            values_to_insert = [
+                (
+                    task.get('task_type'),
+                    task.get('tmdb_id'),
+                    task.get('item_name'),
+                    Json(task.get('versions_info_json')), # 使用Json适配器
+                    task.get('status', 'pending'),
+                    task.get('best_version_id'),
+                    datetime.now(timezone.utc)
+                ) for task in tasks
+            ]
+            
+            execute_values(cursor, sql, values_to_insert, page_size=500)
+            conn.commit()
+            logger.info(f"DB: 成功批量插入 {len(tasks)} 条新的媒体清理任务。")
+
+    except Exception as e:
+        logger.error(f"DB: 批量插入媒体清理任务时失败: {e}", exc_info=True)
+        raise
+
+def get_cleanup_tasks_by_ids(task_ids: List[int]) -> List[Dict[str, Any]]:
+    """根据任务ID列表获取清理任务详情。"""
+    if not task_ids:
+        return []
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = "SELECT * FROM media_cleanup_tasks WHERE id = ANY(%s)"
+            cursor.execute(sql, (task_ids,))
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 根据ID获取清理任务时失败: {e}", exc_info=True)
+        return []
+
+def batch_update_cleanup_task_status(task_ids: List[int], new_status: str) -> int:
+    """批量更新一组清理任务的状态。"""
+    if not task_ids:
+        return 0
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = "UPDATE media_cleanup_tasks SET status = %s WHERE id = ANY(%s)"
+            cursor.execute(sql, (new_status, task_ids))
+            updated_count = cursor.rowcount
+            conn.commit()
+            logger.info(f"DB: 成功将 {updated_count} 个清理任务的状态更新为 '{new_status}'。")
+            return updated_count
+    except Exception as e:
+        logger.error(f"DB: 批量更新清理任务状态时失败: {e}", exc_info=True)
+        return 0
+
+def batch_delete_cleanup_tasks(task_ids: List[int]) -> int:
+    """批量删除一组清理任务。"""
+    if not task_ids:
+        return 0
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = "DELETE FROM media_cleanup_tasks WHERE id = ANY(%s)"
+            cursor.execute(sql, (task_ids,))
+            deleted_count = cursor.rowcount
+            conn.commit()
+            logger.info(f"DB: 成功删除了 {deleted_count} 个清理任务。")
+            return deleted_count
+    except Exception as e:
+        logger.error(f"DB: 批量删除清理任务时失败: {e}", exc_info=True)
+        return 0
