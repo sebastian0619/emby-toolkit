@@ -91,12 +91,12 @@
           <n-form-item>
             <template #label>
               <n-space align="center">
-                <span>特效字幕优先</span>
+                <span>特效字幕</span>
                 <n-tooltip trigger="hover">
                   <template #trigger>
                     <n-icon :component="AlertIcon" style="color: var(--n-info-color);" />
                   </template>
-                  勾选后，订阅时将只要求字幕包含“特效”关键字，而不关心具体语言。<br>
+                  勾选后，订阅时将要求字幕包含“特效”关键字，需开启自定义洗版订阅。<br>
                   注意：此选项仅影响订阅参数，不影响筛选逻辑。
                 </n-tooltip>
               </n-space>

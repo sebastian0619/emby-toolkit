@@ -1352,7 +1352,7 @@ def get_task_registry(context: str = 'all'):
         # --- 不适合任务链的、需要特定参数的任务 ---
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
         'process-single-custom-collection': (task_process_custom_collection, "生成单个自建合集", 'media', False),
-        'scan-cleanup-issues': (task_scan_for_cleanup_issues, "扫描媒体重复项", 'media', True),
+        'scan-cleanup-issues': (task_scan_for_cleanup_issues, "扫描媒体重复项", 'media', False),
         'revival-check': (task_run_revival_check, "检查剧集复活", 'watchlist', False),
     }
 
