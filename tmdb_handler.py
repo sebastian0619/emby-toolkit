@@ -438,3 +438,19 @@ def get_tmdb_id_by_imdb_id(imdb_id: str, api_key: str, media_type: str) -> Optio
             if data.get('tv_results'):
                 return data['tv_results'][0].get('id')
     return None
+
+def get_list_details_tmdb(list_id: int, api_key: str, page: int = 1) -> Optional[Dict[str, Any]]:
+    """
+    【新】获取指定 TMDb 片单的详细信息，支持分页。
+    """
+    if not list_id or not api_key:
+        return None
+        
+    endpoint = f"/list/{list_id}"
+    params = {
+        "language": DEFAULT_LANGUAGE,
+        "page": page
+    }
+    
+    logger.debug(f"TMDb: 获取片单详情 (ID: {list_id}, Page: {page})")
+    return _tmdb_request(endpoint, api_key, params)
