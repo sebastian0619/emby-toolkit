@@ -178,7 +178,7 @@ import { ref, onMounted, computed, nextTick } from 'vue';
 import axios from 'axios';
 import { 
   NCard, NSpace, NSwitch, NButton, useMessage, NSpin, NIcon, NPopconfirm, NModal, NForm, 
-  NFormItem, NInput, NSelect, NDivider, NCollapse, NCollapseItem, NTag, NEmpty
+  NFormItem, NInput, NSelect, NDivider, NCollapse, NCollapseItem, NTag, NEmpty, NTooltip
 } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { 
@@ -186,10 +186,10 @@ import {
 } from '@vicons/ionicons5';
 
 const message = useMessage();
+const emit = defineEmits(['saved']);
 const embyAdminUser = ref('');
 const embyAdminPass = ref('');
 
-// 计算属性，实时判断管理员账密是否已配置
 const isEmbyAdminConfigured = computed(() => {
   return embyAdminUser.value && embyAdminPass.value;
 });
@@ -210,29 +210,21 @@ const formRules = {
   target_library_ids: { type: 'array', required: true, message: '请至少选择一个媒体库', trigger: 'change' },
 };
 
-// --- Options for Selects (核心修改区域) ---
 const resolutionOptions = ref([
   { label: '低于 4K (3840px)', value: 3840 },
   { label: '低于 1080p (1920px)', value: 1920 },
   { label: '低于 720p (1280px)', value: 1280 },
 ]);
 
-// ★★★ 修改点 1: 质量选项，与 MoviePilot 对齐 ★★★
 const qualityOptions = ref([
-  // 第一梯队：无损/接近无损
   { label: 'Remux', value: 'Remux' },
   { label: '蓝光原盘 (ISO/BDMV)', value: '蓝光原盘' },
-  
-  // 第二梯队：高质量重编码
   { label: 'BluRay (BDRip)', value: 'BluRay' },
   { label: 'WEB-DL', value: 'WEB-DL' },
-
-  // 第三梯队：其他
-  { label: 'UHD', value: 'UHD' }, // UHD 通常指分辨率，但也可作为质量关键词
+  { label: 'UHD', value: 'UHD' },
   { label: 'HDTV', value: 'HDTV' },
 ]);
 
-// ★★★ 修改点 2: 特效选项，使用简洁、标准的关键词 ★★★
 const effectOptions = ref([
   { label: '杜比视界 (Dolby Vision)', value: '杜比视界' },
   { label: 'HDR (包含 HDR10/HDR10+/HLG)', value: 'HDR' },
@@ -246,7 +238,6 @@ const subtitleLanguageOptions = ref([
     { label: '中字 (chi)', value: 'chi' }, { label: '英字 (eng)', value: 'eng' },
 ]);
 
-// --- API Calls ---
 const loadData = async () => {
   loading.value = true;
   try {
@@ -334,6 +325,8 @@ const saveRule = async () => {
         }
         showModal.value = false;
         loadData();
+        // ★★★ 修改点: 新增/修改规则后，不刷新主页面 ★★★
+        emit('saved', { needsRefresh: false });
       } catch (error) {
         message.error(error.response?.data?.error || '保存失败，请检查后端日志。');
       } finally {
@@ -348,6 +341,8 @@ const deleteRule = async (ruleId) => {
     await axios.delete(`/api/resubscribe/rules/${ruleId}`);
     message.success('规则已删除！');
     loadData();
+    // ★★★ 修改点: 删除规则后，需要刷新主页面 ★★★
+    emit('saved', { needsRefresh: true });
   } catch (error) {
     message.error('删除失败，请检查后端日志。');
   }
@@ -357,6 +352,8 @@ const toggleRuleStatus = async (rule) => {
   try {
     await axios.put(`/api/resubscribe/rules/${rule.id}`, { enabled: rule.enabled });
     message.success(`规则 “${rule.name}” 已${rule.enabled ? '启用' : '禁用'}`);
+    // ★★★ 修改点: 切换状态后，不刷新主页面 ★★★
+    emit('saved', { needsRefresh: false });
   } catch (error) {
     message.error('状态更新失败');
     rule.enabled = !rule.enabled;
@@ -368,13 +365,14 @@ const onDragEnd = async () => {
   try {
     await axios.post('/api/resubscribe/rules/order', orderedIds);
     message.success('规则优先级已更新！');
+    // ★★★ 修改点: 调整顺序后，不刷新主页面 ★★★
+    emit('saved', { needsRefresh: false });
   } catch (error) {
     message.error('顺序保存失败，将刷新列表。');
     loadData();
   }
 };
 
-// --- UI Helpers ---
 const getLibraryCountText = (libs) => {
   if (!libs || libs.length === 0) return '未指定媒体库';
   return `应用于 ${libs.length} 个媒体库`;
