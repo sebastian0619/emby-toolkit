@@ -539,14 +539,21 @@
           </n-input-group>
         </n-form-item>
 
-        <n-form-item label="风格 (可多选)" label-placement="left">
+        <n-form-item label="类型 (可多选)" label-placement="left">
           <n-select
             v-model:value="discoverParams.with_genres"
             multiple filterable
-            placeholder="选择或搜索风格"
+            placeholder="选择或搜索类型"
             :options="tmdbGenreOptions"
             :loading="isLoadingTmdbGenres"
           />
+        </n-form-item>
+
+        <n-form-item v-if="discoverParams.type === 'tv'" label="单集时长 (分钟)" label-placement="left">
+          <n-input-group>
+            <n-input-number v-model:value="discoverParams.with_runtime_gte" placeholder="最短" :min="0" :show-button="false" clearable style="width: 50%;" />
+            <n-input-number v-model:value="discoverParams.with_runtime_lte" placeholder="最长" :min="0" :show-button="false" clearable style="width: 50%;" />
+          </n-input-group>
         </n-form-item>
 
         <n-form-item label="国家/地区" label-placement="left">
@@ -625,6 +632,10 @@
         
         <n-form-item :label="`最低评分 (当前: ${discoverParams.vote_average_gte})`" label-placement="left">
            <n-slider v-model:value="discoverParams.vote_average_gte" :step="0.5" :min="0" :max="10" />
+        </n-form-item>
+
+        <n-form-item :label="`最低评分人数 (当前: ${discoverParams.vote_count_gte})`" label-placement="left">
+           <n-slider v-model:value="discoverParams.vote_count_gte" :step="50" :min="0" :max="1000" />
         </n-form-item>
 
         <n-form-item label="生成的URL (实时预览)">
@@ -719,12 +730,15 @@ const getInitialDiscoverParams = () => ({
   release_year_gte: null,
   release_year_lte: null,
   with_genres: [],
+  with_runtime_gte: null, 
+  with_runtime_lte: null,
   with_companies: [],
   with_cast: [],
   with_crew: [],
   with_origin_country: null,
   with_original_language: null,
   vote_average_gte: 0,
+  vote_count_gte: 0,
 });
 const discoverParams = ref(getInitialDiscoverParams());
 
@@ -1413,14 +1427,29 @@ const removeDynamicRule = (index) => {
 };
 
 // --- TMDb 探索助手函数 ---
-const tmdbSortOptions = [
-  { label: '热度降序', value: 'popularity.desc' },
-  { label: '热度升序', value: 'popularity.asc' },
-  { label: '评分降序', value: 'vote_average.desc' },
-  { label: '评分升序', value: 'vote_average.asc' },
-  { label: '上映日期降序', value: 'primary_release_date.desc' },
-  { label: '上映日期升序', value: 'primary_release_date.asc' },
-];
+const tmdbSortOptions = computed(() => {
+  if (discoverParams.value.type === 'movie') {
+    // 如果是电影，使用电影的排序参数
+    return [
+      { label: '热度降序', value: 'popularity.desc' },
+      { label: '热度升序', value: 'popularity.asc' },
+      { label: '评分降序', value: 'vote_average.desc' },
+      { label: '评分升序', value: 'vote_average.asc' },
+      { label: '上映日期降序', value: 'primary_release_date.desc' },
+      { label: '上映日期升序', value: 'primary_release_date.asc' },
+    ];
+  } else {
+    // 如果是电视剧，使用电视剧的排序参数
+    return [
+      { label: '热度降序', value: 'popularity.desc' },
+      { label: '热度升序', value: 'popularity.asc' },
+      { label: '评分降序', value: 'vote_average.desc' },
+      { label: '评分升序', value: 'vote_average.asc' },
+      { label: '首播日期降序', value: 'first_air_date.desc' }, // ◀◀◀ 核心修正
+      { label: '首播日期升序', value: 'first_air_date.asc' },  // ◀◀◀ 核心修正
+    ];
+  }
+});
 
 const tmdbLanguageOptions = [
     { label: '中文', value: 'zh' },
@@ -1467,9 +1496,22 @@ const generatedDiscoverUrl = computed(() => {
     query.append('with_original_language', params.with_original_language);
   }
   
+  // 评分和评分人数
   if (params.vote_average_gte > 0) {
     query.append('vote_average.gte', params.vote_average_gte);
-    query.append('vote_count.gte', 100);
+  }
+  if (params.vote_count_gte > 0) {
+    query.append('vote_count.gte', params.vote_count_gte);
+  }
+  
+  // 时长
+  if (params.type === 'tv') {
+    if (params.with_runtime_gte) { // 只要有值就添加
+      query.append('with_runtime.gte', params.with_runtime_gte);
+    }
+    if (params.with_runtime_lte) { // 只要有值就添加
+      query.append('with_runtime.lte', params.with_runtime_lte);
+    }
   }
   
   return `${base}?${query.toString()}`;
@@ -1485,8 +1527,8 @@ const fetchTmdbGenres = async () => {
     tmdbMovieGenres.value = movieRes.data;
     tmdbTvGenres.value = tvRes.data;
   } catch (error) {
-    console.error("获取TMDb风格列表失败，后端返回错误:", error.response?.data || error.message);
-    message.error('获取TMDb风格列表失败，请检查后端日志。');
+    console.error("获取TMDb类型列表失败，后端返回错误:", error.response?.data || error.message);
+    message.error('获取TMDb类型列表失败，请检查后端日志。');
   } finally {
     isLoadingTmdbGenres.value = false;
   }
@@ -1533,6 +1575,8 @@ const confirmDiscoverUrl = () => {
 
 watch(() => discoverParams.value.type, () => {
     discoverParams.value.with_genres = [];
+    discoverParams.value.with_runtime_gte = null;
+    discoverParams.value.with_runtime_lte = null;
 });
 
 let companySearchTimeout = null;
