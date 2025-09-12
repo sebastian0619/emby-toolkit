@@ -21,7 +21,8 @@ DEFAULT_LANGUAGE = "zh-CN"
 DEFAULT_REGION = "CN"
 
 
-def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] = None, use_default_language: bool = True) -> Optional[Dict[str, Any]]:
+    """【V2.1 - 最终驱魔版】增加了 use_default_language 开关，用于控制是否添加默认语言参数。"""
     if not api_key:
         logger.error("TMDb API Key 未提供，无法发起请求。")
         return None
@@ -30,26 +31,27 @@ def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] 
     full_url = f"{tmdb_base_url}{endpoint}"
     base_params = {
         "api_key": api_key,
-        "language": DEFAULT_LANGUAGE
     }
+    # 只有当开启 use_default_language 时，才添加默认语言参数
+    if use_default_language:
+        base_params["language"] = DEFAULT_LANGUAGE
     if params:
         base_params.update(params)
 
     try:
         proxies = config_manager.get_proxies_for_requests()
-        # logger.debug(f"TMDb Request: URL={full_url}, Params={base_params}")
-        response = requests.get(full_url, params=base_params, timeout=15, proxies=proxies) # 增加超时
+        response = requests.get(full_url, params=base_params, timeout=15, proxies=proxies)
         response.raise_for_status()
         data = response.json()
         return data
     except requests.exceptions.HTTPError as e:
         error_details = ""
         try:
-            error_data = e.response.json() # type: ignore
+            error_data = e.response.json()
             error_details = error_data.get("status_message", str(e))
         except json.JSONDecodeError:
             error_details = str(e)
-        logger.error(f"TMDb API HTTP Error: {e.response.status_code} - {error_details}. URL: {full_url}", exc_info=False) # 减少日志冗余
+        logger.error(f"TMDb API HTTP Error: {e.response.status_code} - {error_details}. URL: {full_url}", exc_info=False)
         return None
     except requests.exceptions.RequestException as e:
         logger.error(f"TMDb API Request Error: {e}. URL: {full_url}", exc_info=False)
@@ -446,3 +448,60 @@ def get_tmdb_id_by_imdb_id(imdb_id: str, api_key: str, media_type: str) -> Optio
             if data.get('tv_results'):
                 return data['tv_results'][0].get('id')
     return None
+
+def get_list_details_tmdb(list_id: int, api_key: str, page: int = 1) -> Optional[Dict[str, Any]]:
+    """
+    【新】获取指定 TMDb 片单的详细信息，支持分页。
+    """
+    if not list_id or not api_key:
+        return None
+        
+    endpoint = f"/list/{list_id}"
+    params = {
+        "language": DEFAULT_LANGUAGE,
+        "page": page
+    }
+    
+    logger.debug(f"TMDb: 获取片单详情 (ID: {list_id}, Page: {page})")
+    return _tmdb_request(endpoint, api_key, params)
+
+# --- 通过筛选条件发现电影 ---
+def discover_movie_tmdb(api_key: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """【V3.1 - 最终驱魔版】调用底层请求时，明确禁用默认语言。"""
+    if not api_key:
+        return None
+    endpoint = "/discover/movie"
+    logger.debug(f"TMDb: 发现电影 (无语言限制，条件: {params})")
+    # ★★★ 明确告诉快递员：这次别贴“中文”标签！ ★★★
+    return _tmdb_request(endpoint, api_key, params, use_default_language=False)
+
+# --- 通过筛选条件发现电视剧 ---
+def discover_tv_tmdb(api_key: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """【V3.1 - 最终驱魔版】调用底层请求时，明确禁用默认语言。"""
+    if not api_key:
+        return None
+    endpoint = "/discover/tv"
+    logger.debug(f"TMDb: 发现电视剧 (无语言限制，条件: {params})")
+    # ★★★ 明确告诉快递员：这次也别贴！ ★★★
+    return _tmdb_request(endpoint, api_key, params, use_default_language=False)
+
+def get_movie_genres_tmdb(api_key: str) -> Optional[List[Dict[str, Any]]]:
+    """【新】获取TMDb所有电影类型的官方列表。"""
+    endpoint = "/genre/movie/list"
+    data = _tmdb_request(endpoint, api_key, {"language": DEFAULT_LANGUAGE})
+    return data.get("genres") if data else None
+
+# --- 获取电视剧类型列表 ---
+def get_tv_genres_tmdb(api_key: str) -> Optional[List[Dict[str, Any]]]:
+    """【新】获取TMDb所有电视剧类型的官方列表。"""
+    endpoint = "/genre/tv/list"
+    data = _tmdb_request(endpoint, api_key, {"language": DEFAULT_LANGUAGE})
+    return data.get("genres") if data else None
+
+# --- 搜索 TMDb 电影公司 ---
+def search_companies_tmdb(api_key: str, query: str) -> Optional[List[Dict[str, Any]]]:
+    """【新】根据文本搜索TMDb电影公司，返回ID和名称。"""
+    endpoint = "/search/company"
+    params = {"query": query}
+    data = _tmdb_request(endpoint, api_key, params)
+    return data.get("results") if data else None

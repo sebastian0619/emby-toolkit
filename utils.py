@@ -388,3 +388,51 @@ def translate_country_list(country_names_or_codes: list) -> list:
         translated_list.append(translated)
         
     return list(dict.fromkeys(translated_list))
+
+def get_tmdb_country_options():
+    """
+    【复用版】
+    复用 get_country_translation_map 中的硬编码数据源，
+    生成前端需要的 [{label: '中文', value: '代码'}, ...] 格式。
+    """
+    # 直接从你的函数中复制这份权威的数据源
+    source_data = {
+        "China": {"chinese_name": "中国大陆", "abbr": "CN"},
+        "Taiwan": {"chinese_name": "中国台湾", "abbr": "TW"},
+        "Hong Kong": {"chinese_name": "中国香港", "abbr": "HK"},
+        "United States of America": {"chinese_name": "美国", "abbr": "US"},
+        "Japan": {"chinese_name": "日本", "abbr": "JP"},
+        "South Korea": {"chinese_name": "韩国", "abbr": "KR"},
+        "United Kingdom": {"chinese_name": "英国", "abbr": "GB"},
+        "France": {"chinese_name": "法国", "abbr": "FR"},
+        "Germany": {"chinese_name": "德国", "abbr": "DE"},
+        "Canada": {"chinese_name": "加拿大", "abbr": "CA"},
+        "India": {"chinese_name": "印度", "abbr": "IN"},
+        "Italy": {"chinese_name": "意大利", "abbr": "IT"},
+        "Spain": {"chinese_name": "西班牙", "abbr": "ES"},
+        "Australia": {"chinese_name": "澳大利亚", "abbr": "AU"},
+        "Russia": {"chinese_name": "俄罗斯", "abbr": "RU"},
+        "Thailand": {"chinese_name": "泰国", "abbr": "TH"},
+        "Sweden": {"chinese_name": "瑞典", "abbr": "SE"},
+        "Denmark": {"chinese_name": "丹麦", "abbr": "DK"},
+        "Mexico": {"chinese_name": "墨西哥", "abbr": "MX"},
+        "Brazil": {"chinese_name": "巴西", "abbr": "BR"},
+        "Argentina": {"chinese_name": "阿根廷", "abbr": "AR"},
+        "Ireland": {"chinese_name": "爱尔兰", "abbr": "IE"},
+        "New Zealand": {"chinese_name": "新西兰", "abbr": "NZ"},
+        "Netherlands": {"chinese_name": "荷兰", "abbr": "NL"},
+        "Singapore": {"chinese_name": "新加坡", "abbr": "SG"},
+        "Belgium": {"chinese_name": "比利时", "abbr": "BE"}
+    }
+
+    options = []
+    for details in source_data.values():
+        # 确保中文名和缩写都存在
+        if details.get('chinese_name') and details.get('abbr'):
+            options.append({
+                "label": details['chinese_name'],
+                "value": details['abbr']
+            })
+    
+    # 按中文标签的拼音排序，对用户更友好
+    return sorted(options, key=lambda x: x['label'])

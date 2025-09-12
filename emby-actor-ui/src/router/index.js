@@ -101,6 +101,12 @@ const routes = [
     component: () => import('../components/ResubscribePage.vue'),
     meta: { requiresAuth: true, title: '媒体洗版' },
   },
+  {
+    path: '/media-cleanup',
+    name: 'MediaCleanupPage',
+    component: () => import('../components/MediaCleanupPage.vue'),
+    meta: { requiresAuth: true, title: '媒体去重' },
+  },
 ];
 
 // --- 3. 创建路由实例 (这部分保持不变) ---

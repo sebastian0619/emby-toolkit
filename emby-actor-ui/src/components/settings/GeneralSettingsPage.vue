@@ -280,6 +280,16 @@
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">总开关。开启后，智能订阅定时任务才会真正执行订阅操作。</n-text></template>
                     </n-form-item-grid-item>
 
+                    <n-form-item-grid-item label="启用自定义洗版订阅" path="use_custom_resubscribe">
+                      <n-switch v-model:value="configModel.use_custom_resubscribe" :disabled="!isMoviePilotConfigured" />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          <b>开启：</b>根据“媒体洗版”页面的规则，发送带分辨率/质量等参数的精确订阅。<br>
+                          <b>关闭：</b>使用 MoviePilot 的全局洗版功能，忽略本地规则中的具体参数。
+                        </n-text>
+                      </template>
+                    </n-form-item-grid-item>
+
                     <n-form-item-grid-item label="对缺集的已完结剧集触发洗版" path="resubscribe_completed_on_missing">
                       <n-switch v-model:value="configModel.resubscribe_completed_on_missing" :disabled="!isMoviePilotConfigured" />
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">开启后，“洗版缺集的季”任务会检查所有已完结剧集，若本地文件不完整，则向MoviePilot提交整季的洗版订阅 。</n-text></template>

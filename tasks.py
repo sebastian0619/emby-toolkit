@@ -5,10 +5,11 @@ import os
 import json
 import psycopg2
 import pytz
+import collections
 from psycopg2 import sql
 from psycopg2.extras import execute_values, Json
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Tuple, List
 from datetime import datetime, date, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed 
 import concurrent.futures
@@ -39,6 +40,22 @@ import utils
 from utils import get_country_translation_map, translate_country_list, get_unified_rating
 
 logger = logging.getLogger(__name__)
+
+EFFECT_KEYWORD_MAP = {
+    "杜比视界": ["dolby vision", "dovi"],
+    "HDR": ["hdr", "hdr10", "hdr10+", "hlg"]
+}
+
+AUDIO_SUBTITLE_KEYWORD_MAP = {
+    # 音轨关键词
+    "chi": ["Mandarin", "CHI", "ZHO", "国语", "国配", "国英双语", "公映", "台配", "京译", "上译", "央译"],
+    "yue": ["Cantonese", "YUE", "粤语"],
+    "eng": ["English", "ENG", "英语"],
+    "jpn": ["Japanese", "JPN", "日语"],
+    # 字幕关键词 (可以和音轨共用，也可以分开定义)
+    "sub_chi": ["CHS", "CHT", "中字", "简中", "繁中", "简", "繁"],
+    "sub_eng": ["ENG", "英字"],
+}
 
 # ★★★ 全量处理任务 ★★★
 def task_run_full_scan(processor: MediaProcessor, force_reprocess: bool = False):
@@ -1335,6 +1352,7 @@ def get_task_registry(context: str = 'all'):
         # --- 不适合任务链的、需要特定参数的任务 ---
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
         'process-single-custom-collection': (task_process_custom_collection, "生成单个自建合集", 'media', False),
+        'scan-cleanup-issues': (task_scan_for_cleanup_issues, "扫描媒体重复项", 'media', False),
         'revival-check': (task_run_revival_check, "检查剧集复活", 'watchlist', False),
     }
 
@@ -2145,29 +2163,92 @@ def task_generate_all_covers(processor: MediaProcessor):
 # ★★★ 媒体洗版任务 (基于精确API模型重构) ★★★
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
-def _build_resubscribe_payload(item_details: dict, config: dict) -> Optional[dict]:
+def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
     """
-    【V6 - 回归本源最终版】
-    此版本只负责在需要洗版时，提交一个纯粹的、带 best_version: 1 的请求。
+    根据媒体详情和匹配到的规则，构建发送给 MoviePilot 的最终 payload。
+    - 核心修复：使用正向零宽断言 (?=.*REGEX) 来构建 AND 关系的正则表达式。
+    - 所有洗版请求都带 best_version: 1，自定义参数作为额外过滤器。
     """
-    needs_resubscribe, reason = _item_needs_resubscribe(item_details, config)
-    if not needs_resubscribe:
-        return None
+    item_name = item_details.get('Name') or item_details.get('item_name')
+    tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb") or item_details.get('tmdb_id')
+    item_type = item_details.get("Type") or item_details.get('item_type')
 
-    item_name = item_details.get('Name')
-    tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-    item_type = item_details.get("Type")
     if not all([item_name, tmdb_id, item_type]):
+        logger.error(f"构建Payload失败：缺少核心媒体信息 {item_details}")
         return None
 
     payload = {
-        "name": item_name,
-        "tmdbid": int(tmdb_id),
+        "name": item_name, "tmdbid": int(tmdb_id),
         "type": "电影" if item_type == "Movie" else "电视剧",
         "best_version": 1
     }
+
+    use_custom_subscribe = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE, False)
+    if not use_custom_subscribe or not rule:
+        log_reason = "自定义洗版未开启" if not use_custom_subscribe else "未匹配到规则"
+        logger.info(f"  -> 《{item_name}》将使用全局洗版 ({log_reason})。")
+        return payload
+
+    rule_name = rule.get('name', '未知规则')
+    final_include_lookaheads = []
+
+    # --- 分辨率、质量、特效 (独立字段，逻辑不变) ---
+    if rule.get("resubscribe_resolution_enabled"):
+        threshold = rule.get("resubscribe_resolution_threshold")
+        target_resolution = None
+        if threshold == 3840: target_resolution = "4k"
+        elif threshold == 1920: target_resolution = "1080p"
+        elif threshold == 1280: target_resolution = "720p"
+        if target_resolution:
+            payload['resolution'] = target_resolution
+            logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 分辨率: {target_resolution}")
+    if rule.get("resubscribe_quality_enabled"):
+        quality_list = rule.get("resubscribe_quality_include")
+        if isinstance(quality_list, list) and quality_list:
+            payload['quality'] = ",".join(quality_list)
+            logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 质量: {payload['quality']}")
+    if rule.get("resubscribe_effect_enabled"):
+        effect_list = rule.get("resubscribe_effect_include")
+        if isinstance(effect_list, list) and effect_list:
+            payload['effect'] = ",".join(effect_list)
+            logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 特效: {payload['effect']}")
+
+    # ★★★ 核心修改：构建 Lookahead 正则表达式列表 ★★★
     
-    logger.info(f"  -> 发现不合规项目: 《{item_name}》。原因: {reason}。将提交纯粹的洗版请求。")
+    # --- 音轨处理 ---
+    if rule.get("resubscribe_audio_enabled"):
+        audio_langs = rule.get("resubscribe_audio_missing_languages", [])
+        if isinstance(audio_langs, list) and audio_langs:
+            audio_keywords = []
+            for lang_code in audio_langs:
+                keywords = AUDIO_SUBTITLE_KEYWORD_MAP.get(lang_code)
+                if keywords: audio_keywords.extend(keywords)
+            if audio_keywords:
+                unique_keywords = sorted(list(set(audio_keywords)), key=len, reverse=True)
+                # 构建音轨部分的 OR 正则
+                audio_or_regex = f"({'|'.join(unique_keywords)})"
+                # 将其包装成一个 lookahead
+                final_include_lookaheads.append(f"(?=.*{audio_or_regex})")
+
+    # --- 字幕处理 ---
+     # 1. 优先检查“特效字幕优先”开关，无论总开关是否开启
+    if rule.get("resubscribe_subtitle_effect_only"):
+        logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 应用了“特效字幕”优先订阅。")
+        final_include_lookaheads.append("(?=.*特效)")
+    
+    # 2. 否则，再检查“按字幕洗版”总开关是否开启，并按语言订阅
+    elif rule.get("resubscribe_subtitle_enabled"):
+        subtitle_langs = rule.get("resubscribe_subtitle_missing_languages", [])
+        if isinstance(subtitle_langs, list) and subtitle_langs:
+            subtitle_keywords = [k for lang in subtitle_langs for k in AUDIO_SUBTITLE_KEYWORD_MAP.get(f"sub_{lang}", [])]
+            if subtitle_keywords:
+                subtitle_or_regex = f"({'|'.join(sorted(list(set(subtitle_keywords)), key=len, reverse=True))})"
+                final_include_lookaheads.append(f"(?=.*{subtitle_or_regex})")
+
+    if final_include_lookaheads:
+        payload['include'] = "".join(final_include_lookaheads)
+        logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 生成的 AND 正则过滤器: {payload['include']}")
+
     return payload
 
 def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Optional[dict] = None) -> tuple[bool, str]:
@@ -2189,6 +2270,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
     CHINESE_LANG_CODES = {'chi', 'zho', 'chs', 'cht', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn', 'yue'}
     CHINESE_SUB_CODES = CHINESE_LANG_CODES
     CHINESE_AUDIO_CODES = CHINESE_LANG_CODES
+    CHINESE_SPEAKING_REGIONS = {'中国', '中国大陆', '香港', '中国香港', '台湾', '中国台湾', '新加坡'}
 
     # 1. 分辨率检查
     try:
@@ -2242,95 +2324,95 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
     # 3. 特效检查
     try:
         if config.get("resubscribe_effect_enabled"):
-            required_list_raw = config.get("resubscribe_effect_include", [])
-            if isinstance(required_list_raw, list) and required_list_raw:
-                required_list = [str(e).lower() for e in required_list_raw]
-                logger.trace(f"  -> [特效检查] 要求: {required_list}")
+            user_choices = config.get("resubscribe_effect_include", [])
+            if isinstance(user_choices, list) and user_choices:
+                expanded_keywords_for_file_check = []
+                for choice in user_choices:
+                    file_keywords = EFFECT_KEYWORD_MAP.get(choice)
+                    if file_keywords:
+                        expanded_keywords_for_file_check.extend(file_keywords)
+                
+                logger.trace(f"  -> [特效检查] 用户选择: {user_choices}, 扩展后用于匹配的关键词: {expanded_keywords_for_file_check}")
 
                 effect_met = False
-
-                # 优先从文件名匹配
-                if any(required_term in file_name_lower for required_term in required_list):
-                    effect_met = True
-                    logger.trace(f"  -> [特效检查] 文件名匹配成功。")
-                else:
-                    # 文件名匹配不到，从 MediaStreams 匹配
-                    if video_stream:
-                        # Combine relevant video stream properties for effects
-                        video_stream_effect_info = f"{video_stream.get('VideoRange', '')} {video_stream.get('VideoRangeType', '')} {video_stream.get('DisplayTitle', '')}".lower()
-                        logger.trace(f"  -> [特效检查] MediaStream效果信息: '{video_stream_effect_info}'")
-                        if any(required_term in video_stream_effect_info for required_term in required_list):
-                            effect_met = True
-                            logger.trace(f"  -> [特效检查] MediaStream匹配成功。")
+                if expanded_keywords_for_file_check:
+                    # 步骤 1: 优先检查文件名
+                    if any(required_term in file_name_lower for required_term in expanded_keywords_for_file_check):
+                        effect_met = True
+                        logger.trace(f"  -> [特效检查] 文件名匹配成功。")
+                    # 步骤 2: 如果文件名匹配失败，则检查 MediaStreams
+                    else:
+                        if video_stream:
+                            video_stream_info = f"{video_stream.get('VideoRange', '')} {video_stream.get('VideoRangeType', '')} {video_stream.get('DisplayTitle', '')}".lower()
+                            logger.trace(f"  -> [特效检查] 文件名匹配失败，正在检查 MediaStream 信息: '{video_stream_info}'")
+                            if any(required_term in video_stream_info for required_term in expanded_keywords_for_file_check):
+                                effect_met = True
+                                logger.trace(f"  -> [特效检查] MediaStream 匹配成功。")
 
                 if not effect_met:
                     reasons.append("特效不达标")
-            elif not isinstance(required_list_raw, list):
+            elif not isinstance(user_choices, list):
                 logger.warning(f"  -> [特效检查] 配置中的 'resubscribe_effect_include' 不是列表，已跳过。")
     except Exception as e:
         logger.warning(f"  -> [特效检查] 处理时发生未知错误: {e}")
 
-    # 4. 音轨检查
+    # ★★★ 核心修改：将豁免逻辑提取成一个独立的辅助函数 ★★★
+    def _is_exempted_from_chinese_check() -> bool:
+        """
+        判断当前媒体是否应该被豁免“必须包含中文音轨/字幕”的检查。
+        豁免条件：
+        1. 媒体本身已经有一条中文音轨。
+        2. 或者，媒体的音轨语言未知(und)，但其制片国家是华语地区。
+        """
+        # Plan A: 检查是否已有中文音轨
+        present_audio_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
+        if not present_audio_langs.isdisjoint(CHINESE_AUDIO_CODES):
+            return True
+        
+        # Plan B: 如果音轨信息无效 (und 或空)，则检查制片国
+        if 'und' in present_audio_langs or not present_audio_langs:
+            if media_metadata and media_metadata.get('countries_json'):
+                countries = set(media_metadata['countries_json'])
+                if not countries.isdisjoint(CHINESE_SPEAKING_REGIONS):
+                    logger.trace(f"  -> [豁免检查] 媒体音轨语言未知，但制片国家为华语地区 ({countries})，已豁免中文音轨/字幕检查。")
+                    return True
+        return False
+
+    # 4. 音轨检查 (应用豁免逻辑)
     try:
         if config.get("resubscribe_audio_enabled"):
             required_langs_raw = config.get("resubscribe_audio_missing_languages", [])
             if isinstance(required_langs_raw, list) and required_langs_raw:
                 required_langs = set(str(lang).lower() for lang in required_langs_raw)
-                present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
                 
-                # --- ★★★ 核心改造 2/3: 使用新的中文代码集合进行判断 ★★★ ---
-                # 检查要求的语言是否包含任何一种中文
                 requires_chinese = not required_langs.isdisjoint(CHINESE_LANG_CODES)
-                # 检查现有的音轨是否包含任何一种中文
-                has_chinese = not present_langs.isdisjoint(CHINESE_LANG_CODES)
-
-                # 如果要求中文但没有中文，则标记为缺失
-                if requires_chinese and not has_chinese:
-                    reasons.append("缺中文音轨")
                 
-                # 检查其他非中文的语言
+                if requires_chinese and not _is_exempted_from_chinese_check():
+                    present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
+                    if present_langs.isdisjoint(CHINESE_AUDIO_CODES):
+                         reasons.append("缺中文音轨")
+                
                 other_required_langs = required_langs - CHINESE_LANG_CODES
-                if not other_required_langs.issubset(present_langs):
-                    reasons.append("缺其他音轨")
-
+                if other_required_langs:
+                    present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
+                    if not other_required_langs.issubset(present_langs):
+                        reasons.append("缺其他音轨")
     except Exception as e:
         logger.warning(f"  -> [音轨检查] 处理时发生未知错误: {e}")
 
-    # 5. 字幕检查
+    # 5. 字幕检查 (应用豁免逻辑)
     try:
         if config.get("resubscribe_subtitle_enabled"):
             required_langs_raw = config.get("resubscribe_subtitle_missing_languages", [])
             if isinstance(required_langs_raw, list) and required_langs_raw:
                 required_langs = set(str(lang).lower() for lang in required_langs_raw)
                 
-                # --- ★★★ 核心改造 3/3: 使用新的中文代码集合进行豁免和判断 ★★★ ---
-                CHINESE_REGIONS = {'中国', '中国大陆', '香港', '中国香港', '台湾', '中国台湾', '新加坡'}
-                
-                # 检查是否要求中文字幕
                 needs_chinese_sub = not required_langs.isdisjoint(CHINESE_SUB_CODES)
+                if needs_chinese_sub and not _is_exempted_from_chinese_check():
+                    present_sub_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
+                    if present_sub_langs.isdisjoint(CHINESE_SUB_CODES):
+                        reasons.append("缺中文字幕")
                 
-                if needs_chinese_sub:
-                    is_exempted = False
-                    present_audio_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
-
-                    # Plan A: 检查是否已有中文音轨
-                    if not present_audio_langs.isdisjoint(CHINESE_AUDIO_CODES):
-                        is_exempted = True
-                    
-                    # Plan B: 如果音轨信息无效，则检查制片国
-                    elif 'und' in present_audio_langs or not present_audio_langs:
-                        if media_metadata and media_metadata.get('countries_json'):
-                            countries = set(media_metadata['countries_json'])
-                            if not countries.isdisjoint(CHINESE_REGIONS):
-                                is_exempted = True
-
-                    # 如果没有被豁免，才去真正检查字幕
-                    if not is_exempted:
-                        present_sub_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
-                        if present_sub_langs.isdisjoint(CHINESE_SUB_CODES):
-                            reasons.append("缺中文字幕")
-                
-                # 检查其他非中文的字幕
                 other_required_subs = required_langs - CHINESE_SUB_CODES
                 if other_required_subs:
                     present_sub_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
@@ -2341,7 +2423,6 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
         logger.warning(f"  -> [字幕检查] 处理时发生未知错误: {e}")
                  
     if reasons:
-        # 使用 set 去重，避免出现 "缺其他音轨; 缺其他字幕" 这种重复提示
         unique_reasons = sorted(list(set(reasons)))
         final_reason = "; ".join(unique_reasons)
         logger.info(f"  -> 《{item_name}》需要洗版。原因: {final_reason}")
@@ -2397,12 +2478,18 @@ def task_resubscribe_batch(processor: MediaProcessor, item_ids: List[str]):
                 f"({i+1}/{total_to_process}) [配额:{current_quota}] 正在订阅: {item_name}"
             )
 
-            payload = {
-                "name": item_name, "tmdbid": int(item['tmdb_id']),
-                "type": "电影" if item['item_type'] == "Movie" else "电视剧",
-                "best_version": 1
-            }
-            
+            # 1. 获取当前项目匹配的规则
+            matched_rule_id = item.get('matched_rule_id')
+            rule = next((r for r in all_rules if r['id'] == matched_rule_id), None) if matched_rule_id else None
+
+            # 2. 让“智能荷官”配牌 (item 字典本身就包含了需要的信息)
+            payload = _build_resubscribe_payload(item, rule)
+
+            if not payload:
+                logger.warning(f"为《{item.get('item_name')}》构建订阅Payload失败，已跳过。")
+                continue # 跳过这个项目，继续下一个
+
+            # 3. 发送订阅
             success = moviepilot_handler.subscribe_with_custom_payload(payload, config)
             
             if success:
@@ -2474,12 +2561,18 @@ def task_resubscribe_library(processor: MediaProcessor):
                 f"({i+1}/{total_needed}) [配额:{current_quota}] 正在订阅: {item_name}"
             )
 
-            payload = {
-                "name": item_name, "tmdbid": int(item['tmdb_id']),
-                "type": "电影" if item['item_type'] == "Movie" else "电视剧",
-                "best_version": 1
-            }
-            
+            # 1. 获取当前项目匹配的规则
+            matched_rule_id = item.get('matched_rule_id')
+            rule = next((r for r in all_rules if r['id'] == matched_rule_id), None) if matched_rule_id else None
+
+            # 2. 让“智能荷官”配牌 (item 字典本身就包含了需要的信息)
+            payload = _build_resubscribe_payload(item, rule)
+
+            if not payload:
+                logger.warning(f"为《{item.get('item_name')}》构建订阅Payload失败，已跳过。")
+                continue # 跳过这个项目，继续下一个
+
+            # 3. 发送订阅
             success = moviepilot_handler.subscribe_with_custom_payload(payload, config)
             
             if success:
@@ -2617,16 +2710,13 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
                     library_to_rule_map[lib_id] = rule
 
         def process_item_for_cache(item_base_info):
-            # ... (这个内部函数的全部内容保持原样，无需改动)
             item_id = item_base_info.get('Id')
             item_name = item_base_info.get('Name')
             source_lib_id = item_base_info.get('_SourceLibraryId')
 
-            # 跳过忽略
             old_status = current_db_status_map.get(item_id)
             if old_status == 'ignored':
                 logger.trace(f"  -> 项目《{item_name}》已被用户忽略，本次刷新跳过。")
-                # 直接返回 None，让它从本次的更新批次中被排除
                 return None
         
             try:
@@ -2659,8 +2749,8 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
                 needs_resubscribe, reason = _item_needs_resubscribe(item_details, applicable_rule, media_metadata)
                 old_status = current_db_status_map.get(item_id)
                 new_status = 'ok' if not needs_resubscribe else ('subscribed' if old_status == 'subscribed' else 'needed')
-                AUDIO_LANG_MAP = {'chi': '国语', 'zho': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语', 'kor': '韩语'}
-                SUBTITLE_LANG_MAP = {'chi': '中字', 'zho': '中字', 'eng': '英文'}
+                
+                # --- 分辨率、质量、特效 (逻辑不变) ---
                 media_streams = item_details.get('MediaStreams', [])
                 video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
                 resolution_str = "未知"
@@ -2672,31 +2762,62 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
                     else: resolution_str = f"{width}p"
                 file_name_lower = os.path.basename(item_details.get('Path', '')).lower()
                 quality_str = _extract_quality_tag_from_filename(file_name_lower, video_stream)
-                effect_str = video_stream.get('VideoRangeType') or video_stream.get('VideoRange', '未知') if video_stream else '未知'
-                audio_langs = list(set(s.get('Language') for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')))
-                audio_str = ', '.join(sorted([AUDIO_LANG_MAP.get(lang, lang) for lang in audio_langs])) or '无'
+                effect_str = (video_stream.get('VideoRangeType') or video_stream.get('VideoRange', '未知') if video_stream else '未知').upper()
+                
+                # ★★★ 核心修复：在这里加入音轨和字幕的智能精简逻辑 ★★★
+                
+                # --- 音轨处理 ---
+                AUDIO_LANG_MAP = {'chi': '国语', 'zho': '国语', 'yue': '粤语', 'eng': '英语'}
+                CHINESE_AUDIO_CODES = {'chi', 'zho', 'yue'}
+                
+                audio_langs_raw = list(set(s.get('Language') for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')))
+                
+                display_audio_langs = []
+                has_other_audio = False
+                for lang in audio_langs_raw:
+                    if lang in CHINESE_AUDIO_CODES:
+                        display_audio_langs.append(AUDIO_LANG_MAP.get(lang, lang))
+                    elif lang == 'eng': # 也保留英语
+                        display_audio_langs.append(AUDIO_LANG_MAP.get(lang, lang))
+                    else:
+                        has_other_audio = True
+                
+                display_audio_langs = sorted(list(set(display_audio_langs)))
+                if has_other_audio:
+                    display_audio_langs.append('...')
+                
+                audio_str = ', '.join(display_audio_langs) or '无'
+
+                # --- 字幕处理 ---
+                SUBTITLE_LANG_MAP = {'chi': '中字', 'zho': '中字', 'eng': '英文'}
+                CHINESE_SUB_CODES = {'chi', 'zho', 'chs', 'cht', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn'}
+
                 subtitle_langs_raw = list(set(s.get('Language') for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')))
-                priority_langs = ['chi', 'zho', 'eng']
-                display_langs = []
-                for lang in priority_langs:
-                    if lang in subtitle_langs_raw:
-                        display_langs.append(SUBTITLE_LANG_MAP.get(lang, lang))
-                        subtitle_langs_raw = [l for l in subtitle_langs_raw if l != lang]
-                display_langs = sorted(list(set(display_langs)))
-                remaining_to_show = 3 - len(display_langs)
-                if subtitle_langs_raw and remaining_to_show > 0:
-                    other_langs_translated = sorted([SUBTITLE_LANG_MAP.get(lang, lang.upper()) for lang in subtitle_langs_raw])
-                    display_langs.extend(other_langs_translated[:remaining_to_show])
-                    if len(subtitle_langs_raw) > remaining_to_show:
-                        display_langs.append('...')
-                subtitle_str = ', '.join(display_langs) or '无'
+                
+                display_subtitle_langs = []
+                has_other_subtitle = False
+                for lang in subtitle_langs_raw:
+                    lang_lower = str(lang).lower()
+                    if lang_lower in CHINESE_SUB_CODES:
+                        display_subtitle_langs.append(SUBTITLE_LANG_MAP.get('chi')) # 统一显示为中字
+                    elif lang_lower == 'eng': # 也保留英文
+                        display_subtitle_langs.append(SUBTITLE_LANG_MAP.get('eng'))
+                    else:
+                        has_other_subtitle = True
+                
+                display_subtitle_langs = sorted(list(set(display_subtitle_langs)))
+                if has_other_subtitle:
+                    display_subtitle_langs.append('...')
+
+                subtitle_str = ', '.join(display_subtitle_langs) or '无'
+                
                 return {
                     "item_id": item_id, "item_name": item_details.get('Name'),
                     "tmdb_id": tmdb_id, "item_type": item_type, "status": new_status, 
                     "reason": reason if needs_resubscribe else "", "resolution_display": resolution_str, 
-                    "quality_display": quality_str, "effect_display": effect_str.upper(), 
+                    "quality_display": quality_str, "effect_display": effect_str, 
                     "audio_display": audio_str, "subtitle_display": subtitle_str, 
-                    "audio_languages_raw": audio_langs, "subtitle_languages_raw": subtitle_langs_raw,
+                    "audio_languages_raw": audio_langs_raw, "subtitle_languages_raw": subtitle_langs_raw,
                     "matched_rule_id": applicable_rule.get('id'), "matched_rule_name": applicable_rule.get('name'),
                     "source_library_id": source_lib_id
                 }
@@ -2752,3 +2873,280 @@ def _extract_quality_tag_from_filename(filename_lower: str, video_stream: dict) 
 
     # 如果循环结束都没找到，提供一个备用值
     return (video_stream.get('Codec', '未知') if video_stream else '未知').upper()
+# ======================================================================
+# ★★★ 媒体去重模块 (Media Cleanup Module) - 新增 ★★★
+# ======================================================================
+
+def _get_version_properties(version: Optional[Dict]) -> Dict:
+    """【V2 - 安全加固版】从单个版本信息中提取并计算属性，能安全处理None输入。"""
+    
+    # ★★★ 在这里加上“安全气囊” ★★★
+    if not version or not isinstance(version, dict):
+        # 如果 version 是 None 或者不是一个字典，返回一个安全的、空的默认值
+        # 这样可以保证后续的逻辑不会因为拿到 None 而崩溃
+        return {
+            'id': 'unknown_or_invalid',
+            'path': '',
+
+            'resolution_rank': 0,
+            'video_range_rank': 0,
+            'audio_rank': 0,
+            'subtitle_rank': 0,
+            'source_rank': 0,
+            'tag_score': 0,
+            'final_score': 0,
+
+            'resolution': 'Unknown',
+            'video_range': 'SDR',
+            'audio_stream_count': 0,
+            'subtitle_stream_count': 0,
+            'size': 0,
+            'media_source_type': 'Unknown',
+            'tags': []
+        }
+
+    path_lower = version.get("Path", "").lower()
+    
+    # ★★★ 核心修复 1/2: 定义一个完整的、包含所有别名的“官方名称”映射表 ★★★
+    QUALITY_ALIASES = {
+        "remux": "remux",
+        "bluray": "blu-ray",
+        "blu-ray": "blu-ray",
+        "web-dl": "web-dl",
+        "webdl": "web-dl",
+        "webrip": "webrip",
+        "hdtv": "hdtv",
+        "dvdrip": "dvdrip"
+    }
+    # 定义优先级顺序
+    QUALITY_HIERARCHY = ["remux", "blu-ray", "web-dl", "webrip", "hdtv", "dvdrip"]
+    
+    quality = "unknown"
+    # ★★★ 核心修复 2/2: 遍历所有已知的别名进行匹配 ★★★
+    for alias, official_name in QUALITY_ALIASES.items():
+        # 使用和你推荐的函数一样的可靠逻辑
+        if (f".{alias}." in path_lower or
+            f" {alias} " in path_lower or
+            f"-{alias}-" in path_lower or
+            f"·{alias}·" in path_lower):
+            
+            # 检查当前找到的标签是否比已有的更优先
+            current_priority = QUALITY_HIERARCHY.index(quality) if quality in QUALITY_HIERARCHY else 999
+            new_priority = QUALITY_HIERARCHY.index(official_name)
+            
+            if new_priority < current_priority:
+                quality = official_name
+
+    # 提取分辨率标签 (逻辑不变)
+    resolution_tag = "unknown"
+    resolution_wh = version.get("resolution_wh", (0, 0))
+    width = resolution_wh[0]
+    if width >= 3840: resolution_tag = "2160p"
+    elif width >= 1920: resolution_tag = "1080p"
+    elif width >= 1280: resolution_tag = "720p"
+
+    return {
+        "id": version.get("id"),
+        "quality": quality,
+        "resolution": resolution_tag,
+        "filesize": version.get("size", 0)
+    }
+
+def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """【V4 - 标准化终极修复版】"""
+    
+    rules = db_handler.get_setting('media_cleanup_rules')
+    if not rules:
+        rules = [
+            {"id": "quality", "priority": ["remux", "blu-ray", "web-dl", "hdtv"]},
+            {"id": "resolution", "priority": ["2160p", "1080p", "720p"]},
+            {"id": "filesize", "priority": "desc"}
+        ]
+
+    # ★★★ 核心修复 1/2: 在比较前，先对规则本身进行“标准化”处理 ★★★
+    processed_rules = []
+    for rule in rules:
+        new_rule = rule.copy()
+        if rule.get("id") == "quality" and "priority" in new_rule and isinstance(new_rule["priority"], list):
+            normalized_priority = []
+            for p in new_rule["priority"]:
+                p_lower = str(p).lower()
+                if p_lower == "bluray": p_lower = "blu-ray"   # 将 bluray 标准化为 blu-ray
+                if p_lower == "webdl": p_lower = "web-dl"     # 将 webdl 标准化为 web-dl
+                normalized_priority.append(p_lower)
+            new_rule["priority"] = normalized_priority
+        processed_rules.append(new_rule)
+    
+    version_properties = [_get_version_properties(v) for v in versions if v is not None]
+
+    from functools import cmp_to_key
+    def compare_versions(item1_props, item2_props):
+        # ★★★ 核心修复 2/2: 使用标准化后的规则进行比较 ★★★
+        for rule in processed_rules:
+            if not rule.get("enabled", True): continue
+            
+            rule_id = rule.get("id")
+            val1 = item1_props.get(rule_id)
+            val2 = item2_props.get(rule_id)
+
+            if rule_id == "filesize":
+                if val1 > val2: return -1
+                if val1 < val2: return 1
+                continue
+
+            priority_list = rule.get("priority", [])
+            # 这里的 val1 和 val2 已经是标准化的小写了 (来自 _get_version_properties)
+            # 这里的 priority_list 也已经是标准化的小写了
+            try:
+                index1 = priority_list.index(val1) if val1 in priority_list else 999
+                index2 = priority_list.index(val2) if val2 in priority_list else 999
+                
+                if index1 < index2: return -1
+                if index1 > index2: return 1
+            except (ValueError, TypeError):
+                continue
+        return 0
+
+    sorted_versions = sorted(version_properties, key=cmp_to_key(compare_versions))
+    
+    best_version_id = sorted_versions[0]['id'] if sorted_versions else None
+    
+    return versions, best_version_id
+
+def task_scan_for_cleanup_issues(processor: MediaProcessor):
+    """
+    【V14 - 返璞归真终极版】
+    后台任务：只查找并报告“真·重复项”（拥有相同TMDb ID但不同Item ID的媒体项）。
+    """
+    task_name = "扫描媒体库重复项"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (返璞归真模式) ---")
+    task_manager.update_status_from_thread(0, "正在准备扫描媒体库...")
+
+    try:
+        libs_to_process_ids = processor.config.get("libraries_to_process", [])
+        if not libs_to_process_ids:
+            raise ValueError("未在配置中指定要处理的媒体库。")
+
+        task_manager.update_status_from_thread(5, f"正在从 {len(libs_to_process_ids)} 个媒体库获取项目...")
+        all_emby_items = emby_handler.get_emby_library_items(
+            base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
+            media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
+            fields="ProviderIds,Name,Type,MediaSources,Path,ProductionYear"
+        ) or []
+
+        if not all_emby_items:
+            task_manager.update_status_from_thread(100, "任务完成：在指定媒体库中未找到任何项目。")
+            return
+
+        task_manager.update_status_from_thread(30, f"已获取 {len(all_emby_items)} 个项目，正在分析...")
+        
+        # --- 步骤一：按 TMDB ID 对所有媒体项进行分组 ---
+        media_map = collections.defaultdict(list)
+        for item in all_emby_items:
+            tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
+            item_type = item.get("Type") # Get the item type
+            if tmdb_id and item_type: # Ensure both are present
+                media_map[(tmdb_id, item_type)].append(item)
+
+        # --- 步骤二：遍历分组，只找出真正的重复项 ---
+        duplicate_tasks = []
+        for (tmdb_id, item_type), items in media_map.items(): # Unpack the composite key
+            # 只有当分组内的 Item 数量大于1时，才可能是重复项
+            if len(items) > 1:
+                logger.info(f"  -> [发现重复] TMDB ID {tmdb_id} (类型: {item_type}) 关联了 {len(items)} 个独立的媒体项。")
+                versions_info = []
+                for item in items:
+                    source = item.get("MediaSources", [{}])[0]
+                    video_stream = next((s for s in source.get("MediaStreams", []) if s.get("Type") == "Video"), None)
+                    versions_info.append({
+                        "id": item.get("Id"), # ID 就是 Item ID
+                        "path": source.get("Path") or item.get("Path") or "", "size": source.get("Size", 0),
+                        "resolution_wh": (video_stream.get("Width", 0), video_stream.get("Height", 0)) if video_stream else (0, 0),
+                    })
+                
+                analyzed_versions, best_id = _determine_best_version_by_rules(versions_info)
+                best_item_name = next((item.get("Name") for item in items if item.get("Id") == best_id), items[0].get("Name"))
+                
+                duplicate_tasks.append({
+                    "task_type": "duplicate", # 类型永远是 duplicate
+                    "tmdb_id": tmdb_id,
+                    "item_type": item_type, # Add item_type to the duplicate_tasks
+                    "item_name": best_item_name,
+                    "versions_info_json": analyzed_versions, "best_version_id": best_id
+                })
+
+        # 3. 写入数据库
+        task_manager.update_status_from_thread(90, f"分析完成，正在将 {len(duplicate_tasks)} 组重复项写入数据库...")
+        db_handler.batch_insert_cleanup_tasks(duplicate_tasks)
+
+        final_message = f"扫描完成！共发现 {len(duplicate_tasks)} 组重复项，待清理。"
+        task_manager.update_status_from_thread(100, final_message)
+        logger.info(f"--- '{task_name}' 任务成功完成 ---")
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+
+def task_execute_cleanup(processor: MediaProcessor, task_ids: List[int], **kwargs):
+    """
+    后台任务：执行指定的一批媒体去重任务（删除多余文件）。
+    这是一个高危的写操作。
+    """
+    # ★★★ 核心修复：这个函数签名现在可以正确接收 processor 和 task_ids 两个位置参数，
+    # 同时用 **kwargs 忽略掉 task_manager 传来的其他所有参数。
+
+    if not task_ids or not isinstance(task_ids, list):
+        logger.error("执行媒体去重任务失败：缺少有效的 'task_ids' 参数。")
+        task_manager.update_status_from_thread(-1, "任务失败：缺少任务ID")
+        return
+
+    task_name = "执行媒体去重"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (任务ID: {task_ids}) ---")
+    
+    try:
+        tasks_to_execute = db_handler.get_cleanup_tasks_by_ids(task_ids)
+        total = len(tasks_to_execute)
+        if total == 0:
+            task_manager.update_status_from_thread(100, "任务完成：未找到指定的清理任务。")
+            return
+
+        deleted_count = 0
+        for i, task in enumerate(tasks_to_execute):
+            if processor.is_stop_requested():
+                logger.warning("任务被用户中止。")
+                break
+            
+            task_id = task['id']
+            item_name = task['item_name']
+            best_version_id = task['best_version_id']
+            versions = task['versions_info_json']
+
+            task_manager.update_status_from_thread(int((i / total) * 100), f"({i+1}/{total}) 正在清理: {item_name}")
+
+            for version in versions:
+                version_id_to_check = version.get('id')
+                if version_id_to_check != best_version_id:
+                    logger.warning(f"  -> 准备删除劣质版本: {version.get('path')}")
+                    
+                    id_to_delete = version_id_to_check
+                    
+                    success = emby_handler.delete_item(
+                        item_id=id_to_delete,
+                        emby_server_url=processor.emby_url,
+                        emby_api_key=processor.emby_api_key,
+                        user_id=processor.emby_user_id
+                    )
+                    if success:
+                        deleted_count += 1
+                        logger.info(f"    -> 成功删除 ID: {id_to_delete}")
+                    else:
+                        logger.error(f"    -> 删除 ID: {id_to_delete} 失败！")
+            
+            db_handler.batch_update_cleanup_task_status([task_id], 'processed')
+
+        final_message = f"清理完成！共处理 {total} 个任务，删除了 {deleted_count} 个多余版本/文件。"
+        task_manager.update_status_from_thread(100, final_message)
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")

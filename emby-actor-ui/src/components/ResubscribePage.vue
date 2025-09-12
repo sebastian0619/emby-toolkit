@@ -36,9 +36,14 @@
             </n-radio-group>
             <n-button @click="showSettingsModal = true">洗版规则设定</n-button>
             <n-button type="warning" @click="triggerResubscribeAll" :loading="isTaskRunning('全库媒体洗版')">一键洗版全部</n-button>
-            <n-button type="primary" @click="triggerRefreshStatus" :loading="isTaskRunning('刷新媒体洗版状态')" circle>
-              <template #icon><n-icon :component="SyncOutline" /></template>
-            </n-button>
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-button type="primary" @click="triggerRefreshStatus" :loading="isTaskRunning('刷新媒体洗版状态')" circle>
+                  <template #icon><n-icon :component="SyncOutline" /></template>
+                </n-button>
+              </template>
+              扫描媒体库
+            </n-tooltip>
           </n-space>
         </template>
       </n-page-header>
@@ -111,7 +116,7 @@
     </div>
 
     <n-modal v-model:show="showSettingsModal" preset="card" style="width: 90%; max-width: 800px;" title="洗版规则设定">
-      <ResubscribeSettingsPage @saved="showSettingsModal = false" />
+      <ResubscribeSettingsPage @saved="handleSettingsSaved" />
     </n-modal>
   </n-layout>
 </template>
@@ -119,13 +124,13 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, h, watch, nextTick } from 'vue';
 import axios from 'axios';
-import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTooltip, NText, NDropdown, useDialog } from 'naive-ui';
+import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTooltip, NText, NDropdown, useDialog, NCheckbox } from 'naive-ui';
 import { SyncOutline } from '@vicons/ionicons5';
 import { useConfig } from '../composables/useConfig.js';
 import ResubscribeSettingsPage from './settings/ResubscribeSettingsPage.vue';
 
-const EmbyIcon = () => h('svg', { xmlns: "http://www.w.org/2000/svg", viewBox: "0 0 48 48", width: "18", height: "18" }, [ h('path', { d: "M24,4.2c-11,0-19.8,8.9-19.8,19.8S13,43.8,24,43.8s19.8-8.9,19.8-19.8S35,4.2,24,4.2z M24,39.8c-8.7,0-15.8-7.1-15.8-15.8S15.3,8.2,24,8.2s15.8,7.1,15.8,15.8S32.7,39.8,24,39.8z", fill: "currentColor" }), h('polygon', { points: "22.2,16.4 22.2,22.2 16.4,22.2 16.4,25.8 22.2,25.8 22.2,31.6 25.8,31.6 25.8,25.8 31.6,31.6 31.6,22.2 25.8,22.2 25.8,16.4 ", fill: "currentColor" })]);
-const TMDbIcon = () => h('svg', { xmlns: "http://www.w.org/2000/svg", viewBox: "0 0 512 512", width: "18", height: "18" }, [ h('path', { d: "M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM133.2 176.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zM133.2 262.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8z", fill: "#01b4e4" })]);
+const EmbyIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 48 48", width: "18", height: "18" }, [ h('path', { d: "M24,4.2c-11,0-19.8,8.9-19.8,19.8S13,43.8,24,43.8s19.8-8.9,19.8-19.8S35,4.2,24,4.2z M24,39.8c-8.7,0-15.8-7.1-15.8-15.8S15.3,8.2,24,8.2s15.8,7.1,15.8,15.8S32.7,39.8,24,39.8z", fill: "currentColor" }), h('polygon', { points: "22.2,16.4 22.2,22.2 16.4,22.2 16.4,25.8 22.2,25.8 22.2,31.6 25.8,31.6 25.8,25.8 31.6,31.6 31.6,22.2 25.8,22.2 25.8,16.4 ", fill: "currentColor" })]);
+const TMDbIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 512 512", width: "18", height: "18" }, [ h('path', { d: "M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM133.2 176.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zM133.2 262.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8z", fill: "#01b4e4" })]);
 
 const { configModel } = useConfig();
 const message = useMessage();
@@ -215,12 +220,9 @@ const handleCardClick = (event, item, index) => {
     const end = Math.max(lastSelectedIndex.value, index);
     for (let i = start; i <= end; i++) {
       const idInRange = displayedItems.value[i].item_id;
-      // Shift 选区的逻辑是：全部变成和当前点击项“相反”的状态
-      // 但为了简单和直观，我们统一为“全部选中”
       selectedItems.value.add(idInRange);
     }
   } else {
-    // 普通点击，就是切换状态
     if (isSelected) {
       selectedItems.value.delete(itemId);
     } else {
@@ -235,48 +237,22 @@ const batchActions = computed(() => {
   const actions = [];
   const noSelection = selectedItems.value.size === 0;
 
-  // 1. 基础批量操作 (基于勾选)
   if (filter.value === 'ignored') {
-    actions.push({ 
-      label: '批量取消忽略', 
-      key: 'unignore', 
-      disabled: noSelection
-    });
+    actions.push({ label: '批量取消忽略', key: 'unignore', disabled: noSelection });
   } else {
-    actions.push({ 
-      label: '批量订阅', 
-      key: 'subscribe', 
-      disabled: noSelection
-    });
-    actions.push({ 
-      label: '批量忽略', 
-      key: 'ignore', 
-      disabled: noSelection
-    });
+    actions.push({ label: '批量订阅', key: 'subscribe', disabled: noSelection });
+    actions.push({ label: '批量忽略', key: 'ignore', disabled: noSelection });
   }
-  actions.push({ 
-    label: '批量删除', 
-    key: 'delete', 
-    props: { type: 'error' }, 
-    disabled: noSelection
-  });
-  
-  // 2. 分割线
+  actions.push({ label: '批量删除', key: 'delete', props: { type: 'error' }, disabled: noSelection });
   actions.push({ type: 'divider', key: 'd1' });
 
-  // 3. “一键”操作 (基于当前视图，且不冗余)
-  // ★★★ 核心修复：只保留“一键忽略”和“一键删除” ★★★
-  
   if (filter.value === 'needed') {
-    // 在“需洗版”视图，提供“一键忽略”
     actions.push({ label: '一键忽略当前页所有“需洗版”项', key: 'oneclick-ignore' });
   }
   if (filter.value === 'ignored') {
-    // 在“已忽略”视图，提供“一键取消忽略”
     actions.push({ label: '一键取消忽略当前页所有项', key: 'oneclick-unignore' });
   }
   
-  // 在“需洗版”和“已忽略”视图下，都提供“一键删除”
   if (filter.value === 'needed' || filter.value === 'ignored') {
       actions.push({ 
           label: `一键删除当前页所有“${filter.value === 'needed' ? '需洗版' : '已忽略'}”项`, 
@@ -304,18 +280,12 @@ const handleBatchAction = (key) => {
 };
 
 const sendBatchActionRequest = async (actionKey, ids, isOneClick) => {
-  const actionMap = {
-    subscribe: 'subscribe', ignore: 'ignore',
-    unignore: 'ok', delete: 'delete'
-  };
+  const actionMap = { subscribe: 'subscribe', ignore: 'ignore', unignore: 'ok', delete: 'delete' };
   const action = actionMap[actionKey];
 
   try {
     const response = await axios.post('/api/resubscribe/batch_action', {
-      item_ids: ids,
-      action: action,
-      is_one_click: isOneClick,
-      filter: filter.value
+      item_ids: ids, action: action, is_one_click: isOneClick, filter: filter.value
     });
     message.success(response.data.message);
     
@@ -340,7 +310,6 @@ const sendBatchActionRequest = async (actionKey, ids, isOneClick) => {
 };
 
 const executeBatchAction = async (actionKey, ids, isOneClick) => {
-  // 对于危险操作，显示确认框
   if (actionKey === 'delete' || actionKey === 'oneclick-delete') {
     const countText = isOneClick ? `当前视图下所有` : `${ids.length}`;
     dialog.warning({
@@ -348,37 +317,62 @@ const executeBatchAction = async (actionKey, ids, isOneClick) => {
       content: `确定要永久删除选中的 ${countText} 个媒体项吗？此操作会从 Emby 和硬盘中删除文件，且不可恢复！`,
       positiveText: '我确定，删除！',
       negativeText: '取消',
-      // ★★★ 核心修复：确认后，调用我们新建的“发货”函数 ★★★
-      onPositiveClick: () => {
-        sendBatchActionRequest(actionKey, ids, isOneClick);
-      }
+      onPositiveClick: () => { sendBatchActionRequest(actionKey, ids, isOneClick); }
     });
   } else {
-    // 对于安全操作，直接“发货”
     sendBatchActionRequest(actionKey, ids, isOneClick);
   }
 };
 
-// ★★★ 取消忽略逻辑 ★★★
 const unignoreItem = async (item) => {
   try {
-    await axios.post('/api/resubscribe/batch_action', {
-      item_ids: [item.item_id],
-      action: 'ok' // 后端需要支持 'ok' 动作
-    });
+    await axios.post('/api/resubscribe/batch_action', { item_ids: [item.item_id], action: 'ok' });
     message.success(`《${item.item_name}》已取消忽略。`);
-    item.status = 'ok'; // 乐观更新
+    item.status = 'ok';
   } catch (err) {
     message.error(err.response?.data?.error || '取消忽略失败。');
   }
 };
 
-const triggerRefreshStatus = async () => { try { await axios.post('/api/resubscribe/refresh_status'); message.success('刷新任务已提交，请稍后查看任务状态。'); } catch (err) { message.error(err.response?.data?.error || '提交刷新任务失败。'); }};
+const triggerRefreshStatus = async () => {
+  try {
+    await axios.post('/api/resubscribe/refresh_status');
+    message.success('刷新任务已提交，请稍后查看任务状态。');
+  } catch (err) {
+    message.error(err.response?.data?.error || '提交刷新任务失败。');
+  }
+};
 const triggerResubscribeAll = async () => { try { await axios.post('/api/resubscribe/resubscribe_all'); message.success('一键洗版任务已提交，请稍后查看任务状态。'); } catch (err) { message.error(err.response?.data?.error || '提交一键洗版任务失败。'); }};
 const resubscribeItem = async (item) => { subscribing.value[item.item_id] = true; try { const response = await axios.post('/api/resubscribe/resubscribe_item', { item_id: item.item_id, item_name: item.item_name, tmdb_id: item.tmdb_id, item_type: item.item_type, }); message.success(response.data.message); const itemInList = allItems.value.find(i => i.item_id === item.item_id); if (itemInList) { itemInList.status = 'subscribed'; } } catch (err) { message.error(err.response?.data?.error || '洗版订阅失败。'); } finally { subscribing.value[item.item_id] = false; }};
 const getPosterUrl = (itemId) => `/image_proxy/Items/${itemId}/Images/Primary?maxHeight=480&tag=1`;
 const openInEmby = (itemId) => { const embyServerUrl = configModel.value?.emby_server_url; const serverId = configModel.value?.emby_server_id; if (!embyServerUrl || !itemId) { message.error('Emby服务器地址未配置，无法跳转。'); return; } const baseUrl = embyServerUrl.endsWith('/') ? embyServerUrl.slice(0, -1) : embyServerUrl; let finalUrl = `${baseUrl}/web/index.html#!/item?id=${itemId}`; if (serverId) { finalUrl += `&serverId=${serverId}`; } window.open(finalUrl, '_blank'); };
-watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => { if (wasRunning && !isRunning) { const relevantActions = [ '刷新媒体洗版状态', '全库媒体洗版', ]; if (relevantActions.some(action => props.taskStatus.current_action.includes(action))) { message.info('相关后台任务已结束，正在刷新海报墙...'); fetchData(); } } });
+
+const handleSettingsSaved = (payload = {}) => {
+  showSettingsModal.value = false;
+  if (payload.needsRefresh) {
+    message.info('规则已删除，正在刷新媒体列表...');
+    fetchData();
+  } else {
+    message.info('洗版规则已更新。请在需要时手动扫描媒体库以应用更改。');
+  }
+};
+
+// ★★★ 核心修复：侦听整个 taskStatus 对象，而不是只侦听 is_running ★★★
+watch(() => props.taskStatus, (newStatus, oldStatus) => {
+  // 检查任务是否是从“运行中”变为“已结束”
+  if (oldStatus.is_running && !newStatus.is_running) {
+    const relevantActions = [
+      '刷新媒体洗版状态', // 扫描媒体库
+      '全库媒体洗版',   // 一键洗版
+    ];
+    
+    // 关键：检查【旧状态】的任务名称，因为新状态的任务名称可能已被清空
+    if (relevantActions.some(action => oldStatus.current_action.includes(action))) {
+      message.info('相关后台任务已结束，正在刷新海报墙...');
+      fetchData();
+    }
+  }
+}, { deep: true }); // 使用 deep: true 来侦听对象内部属性的变化
 </script>
 
 <style scoped>
@@ -393,13 +387,10 @@ watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => { if (wasRun
   --n-color-checked: var(--n-color-primary-hover);
   --n-border-radius: 50%;
   
-  /* 默认隐藏 */
   opacity: 0;
   visibility: hidden;
   transition: opacity 0.2s ease-in-out, visibility 0.2s ease-in-out;
 }
-
-/* 鼠标悬浮在卡片上时，或者卡片已被选中时，都显示复选框 */
 .series-card:hover .card-checkbox,
 .card-selected .card-checkbox {
   opacity: 1;
