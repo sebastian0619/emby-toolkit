@@ -311,6 +311,7 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
         if not actor_name or not str(actor_name).strip():
             continue
 
+        # 1. 准备一个基础的 person 对象
         person_obj: Dict[str, Any] = {
             "Name": str(actor_name).strip(),
             "Role": str(actor_entry.get("character", "")).strip(),
@@ -319,35 +320,21 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
 
         emby_person_id = actor_entry.get("emby_person_id")
 
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        # ★★★ 核心修复：预创建新演员，获取其ID ★★★
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        if not (emby_person_id and str(emby_person_id).strip()):
-            logger.info(f"  -> 检测到新演员 '{actor_name}'，将尝试在Emby中预创建...")
-            provider_ids = actor_entry.get("provider_ids")
-            sanitized_ids = {}
-            if isinstance(provider_ids, dict) and provider_ids:
-                sanitized_ids = {k: str(v) for k, v in provider_ids.items() if v is not None and str(v).strip()}
-            
-            # 调用新函数来创建演员
-            newly_created_id = create_emby_person(
-                name=person_obj["Name"],
-                provider_ids=sanitized_ids,
-                base_url=emby_server_url,
-                api_key=emby_api_key
-            )
-            
-            if newly_created_id:
-                emby_person_id = newly_created_id
-            else:
-                logger.warning(f"  -> 预创建演员 '{actor_name}' 失败，将作为无ID演员添加，可能导致黑户。")
-        
-        # 无论新旧，只要有ID就使用
+        # 2. 根据是“现有演员”还是“新演员”来决定如何构建
         if emby_person_id and str(emby_person_id).strip():
+            # 对于【现有演员】，我们只需要提供 Id
             person_obj["Id"] = str(emby_person_id).strip()
-            logger.trace(f"  -> 链接演员 '{person_obj['Name']}' (ID: {person_obj['Id']})")
+            logger.trace(f"  -> 链接现有演员 '{person_obj['Name']}' (ID: {person_obj['Id']})")
         else:
-            logger.trace(f"  -> 添加无ID的新演员 '{person_obj['Name']}' (创建失败或未提供ID)")
+            # 对于【新演员】，我们不提供 Id，而是提供 ProviderIds
+            logger.trace(f"  -> 添加新演员 '{person_obj['Name']}'")
+            provider_ids = actor_entry.get("provider_ids")
+            if isinstance(provider_ids, dict) and provider_ids:
+                # 清理掉值为 None 或空字符串的键
+                sanitized_ids = {k: str(v) for k, v in provider_ids.items() if v is not None and str(v).strip()}
+                if sanitized_ids:
+                    person_obj["ProviderIds"] = sanitized_ids
+                    logger.trace(f"    -> 为新演员 '{person_obj['Name']}' 设置初始 ProviderIds: {sanitized_ids}")
 
         formatted_people_for_emby.append(person_obj)
 
