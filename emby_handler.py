@@ -338,7 +338,13 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
 
         formatted_people_for_emby.append(person_obj)
 
-    item_to_update["People"] = formatted_people_for_emby
+    # 1. 从原始的 item_to_update 中筛选出所有非演员
+    other_people = [person for person in item_to_update.get("People", []) if person.get("Type") != "Actor"]
+    
+    # 2. 将处理好的演员列表与非演员列表合并
+    item_to_update["People"] = other_people + formatted_people_for_emby
+    
+    logger.debug(f"  -> 最终写回Emby的演职员列表包含 {len(other_people)} 位非演员和 {len(formatted_people_for_emby)} 位演员。")
 
     if "LockedFields" in item_to_update and "Cast" in item_to_update.get("LockedFields", []):
         current_locked_fields = set(item_to_update["LockedFields"])
