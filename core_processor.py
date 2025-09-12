@@ -725,12 +725,30 @@ class MediaProcessor:
                             all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
                             authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
 
-            # 如果强制刷新失败，或者没有强制刷新，则使用我们已经增强过的 Emby 列表作为权威数据源
-            if not authoritative_cast_source:
-                logger.info("  -> 保底策略: 未强制刷新或刷新失败，将使用 Emby 演员列表作为权威数据源。")
-                authoritative_cast_source = enriched_emby_cast
+            # 1. 创建一个以TMDb ID为键的权威演员地图，TMDb优先
+            authoritative_cast_map = {
+                str(actor.get("id")): actor for actor in authoritative_cast_source if actor.get("id")
+            }
+            
+            # 2. 遍历Emby演员列表，将TMDb中没有的演员补充进去
+            for emby_actor in enriched_emby_cast:
+                emby_tmdb_id = emby_actor.get("ProviderIds", {}).get("Tmdb")
+                if emby_tmdb_id and str(emby_tmdb_id) not in authoritative_cast_map:
+                    # 这是一个在Emby中存在，但在TMDb官方列表中不存在的演员（比如导演或豆瓣补充的）
+                    # 我们需要把它转换成TMDb格式，然后加入权威地图
+                    converted_actor = {
+                        "id": emby_tmdb_id,
+                        "name": emby_actor.get("Name"),
+                        "character": emby_actor.get("Role"),
+                        "order": 999 # 排在最后
+                    }
+                    authoritative_cast_map[str(emby_tmdb_id)] = converted_actor
+                    logger.info(f"  -> [混合源] 保留了Emby中存在但TMDb官方列表没有的演员: '{emby_actor.get('Name')}'")
 
-            logger.info(f"  -> 演员表采集阶段完成，最终选定 {len(authoritative_cast_source)} 位权威演员。")
+            # 3. 将最终的混合地图转换回列表，作为唯一的权威数据源
+            final_authoritative_cast = list(authoritative_cast_map.values())
+            
+            logger.info(f"  -> 演员表采集阶段完成，最终构建了 {len(final_authoritative_cast)} 人的混合权威演员列表。")
 
             # ======================================================================
             # 阶段 3: 豆瓣及后续处理
@@ -741,7 +759,7 @@ class MediaProcessor:
                 cursor = conn.cursor()
                 
                 final_processed_cast = self._process_cast_list_from_api(
-                    tmdb_cast_people=authoritative_cast_source,
+                    tmdb_cast_people=final_authoritative_cast,
                     emby_cast_people=enriched_emby_cast,
                     douban_cast_list=douban_cast_raw,
                     item_details_from_emby=item_details_from_emby,
