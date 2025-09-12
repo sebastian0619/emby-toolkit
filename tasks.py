@@ -2951,7 +2951,7 @@ def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[Li
             new_rule["priority"] = normalized_priority
         processed_rules.append(new_rule)
     
-    version_properties = [_get_version_properties(v) for v in versions]
+    version_properties = [_get_version_properties(v) for v in versions if v is not None]
 
     from functools import cmp_to_key
     def compare_versions(item1_props, item2_props):
