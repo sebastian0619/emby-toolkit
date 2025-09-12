@@ -549,6 +549,17 @@
           />
         </n-form-item>
 
+        <n-form-item label="排除类型 (可多选)" label-placement="left">
+          <n-select
+            v-model:value="discoverParams.without_genres"
+            multiple
+            filterable
+            placeholder="排除不想要的类型，例如：纪录片, 综艺"
+            :options="tmdbGenreOptions"
+            :loading="isLoadingTmdbGenres"
+          />
+        </n-form-item>
+
         <n-form-item v-if="discoverParams.type === 'tv'" label="单集时长 (分钟)" label-placement="left">
           <n-input-group>
             <n-input-number v-model:value="discoverParams.with_runtime_gte" placeholder="最短" :min="0" :show-button="false" clearable style="width: 50%;" />
@@ -730,6 +741,7 @@ const getInitialDiscoverParams = () => ({
   release_year_gte: null,
   release_year_lte: null,
   with_genres: [],
+  without_genres: [],
   with_runtime_gte: null, 
   with_runtime_lte: null,
   with_companies: [],
@@ -1484,6 +1496,7 @@ const generatedDiscoverUrl = computed(() => {
 
   // 各种ID类参数
   if (params.with_genres?.length) query.append('with_genres', params.with_genres.join(','));
+  if (params.without_genres?.length) query.append('without_genres', params.without_genres.join(','));
   if (params.with_companies?.length) query.append('with_companies', params.with_companies.join(','));
   if (params.with_cast?.length) query.append('with_cast', params.with_cast.join(','));
   if (params.with_crew?.length) query.append('with_crew', params.with_crew.join(','));

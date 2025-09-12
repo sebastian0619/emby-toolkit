@@ -21,6 +21,12 @@ custom_collections_bp = Blueprint('custom_collections', __name__, url_prefix='/a
 
 logger = logging.getLogger(__name__)
 
+GENRE_TRANSLATION_PATCH = {
+    "Sci-Fi & Fantasy": "科幻&奇幻",
+    "War & Politics": "战争&政治",
+    # 以后如果发现其他未翻译的，也可以加在这里
+}
+
 # 2. 定义API路由
 
 # --- 获取所有自定义合集定义 ---
@@ -468,7 +474,7 @@ def api_get_emby_libraries_for_filter():
 @custom_collections_bp.route('/config/tmdb_movie_genres', methods=['GET'])
 @login_required
 def api_get_tmdb_movie_genres():
-    """为 TMDb 探索助手提供电影类型列表。"""
+    """【V2 - 汉化补丁版】为 TMDb 探索助手提供电影类型列表。"""
     try:
         api_key = config_manager.APP_CONFIG.get('tmdb_api_key')
         if not api_key:
@@ -476,6 +482,10 @@ def api_get_tmdb_movie_genres():
         
         genres = get_movie_genres_tmdb(api_key)
         if genres is not None:
+            # ★★★ 在这里应用汉化补丁 ★★★
+            for genre in genres:
+                if genre['name'] in GENRE_TRANSLATION_PATCH:
+                    genre['name'] = GENRE_TRANSLATION_PATCH[genre['name']]
             return jsonify(genres)
         else:
             return jsonify({"error": "从 TMDb 获取电影类型失败"}), 500
@@ -487,7 +497,7 @@ def api_get_tmdb_movie_genres():
 @custom_collections_bp.route('/config/tmdb_tv_genres', methods=['GET'])
 @login_required
 def api_get_tmdb_tv_genres():
-    """为 TMDb 探索助手提供电视剧类型列表。"""
+    """【V2 - 汉化补丁版】为 TMDb 探索助手提供电视剧类型列表。"""
     try:
         api_key = config_manager.APP_CONFIG.get('tmdb_api_key')
         if not api_key:
@@ -495,6 +505,10 @@ def api_get_tmdb_tv_genres():
             
         genres = get_tv_genres_tmdb(api_key)
         if genres is not None:
+            # ★★★ 在这里也应用汉化补丁 ★★★
+            for genre in genres:
+                if genre['name'] in GENRE_TRANSLATION_PATCH:
+                    genre['name'] = GENRE_TRANSLATION_PATCH[genre['name']]
             return jsonify(genres)
         else:
             return jsonify({"error": "从 TMDb 获取电视剧类型失败"}), 500

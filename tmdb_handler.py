@@ -16,34 +16,36 @@ DEFAULT_LANGUAGE = "zh-CN"
 DEFAULT_REGION = "CN"
 
 
-def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] = None, use_default_language: bool = True) -> Optional[Dict[str, Any]]:
+    """【V2.1 - 最终驱魔版】增加了 use_default_language 开关，用于控制是否添加默认语言参数。"""
     if not api_key:
         logger.error("TMDb API Key 未提供，无法发起请求。")
         return None
 
     full_url = f"{TMDB_API_BASE_URL}{endpoint}"
-    base_params = {
-        "api_key": api_key,
-        "language": DEFAULT_LANGUAGE
-    }
+    base_params = {"api_key": api_key}
+    
+    # ★★★ 核心手术：只有在开关为 True 时，才添加默认语言 ★★★
+    if use_default_language:
+        base_params["language"] = DEFAULT_LANGUAGE
+
     if params:
         base_params.update(params)
 
     try:
         proxies = config_manager.get_proxies_for_requests()
-        # logger.debug(f"TMDb Request: URL={full_url}, Params={base_params}")
-        response = requests.get(full_url, params=base_params, timeout=15, proxies=proxies) # 增加超时
+        response = requests.get(full_url, params=base_params, timeout=15, proxies=proxies)
         response.raise_for_status()
         data = response.json()
         return data
     except requests.exceptions.HTTPError as e:
         error_details = ""
         try:
-            error_data = e.response.json() # type: ignore
+            error_data = e.response.json()
             error_details = error_data.get("status_message", str(e))
         except json.JSONDecodeError:
             error_details = str(e)
-        logger.error(f"TMDb API HTTP Error: {e.response.status_code} - {error_details}. URL: {full_url}", exc_info=False) # 减少日志冗余
+        logger.error(f"TMDb API HTTP Error: {e.response.status_code} - {error_details}. URL: {full_url}", exc_info=False)
         return None
     except requests.exceptions.RequestException as e:
         logger.error(f"TMDb API Request Error: {e}. URL: {full_url}", exc_info=False)
@@ -457,29 +459,23 @@ def get_list_details_tmdb(list_id: int, api_key: str, page: int = 1) -> Optional
 
 # --- 通过筛选条件发现电影 ---
 def discover_movie_tmdb(api_key: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """【最终确认版】使用TMDb的discover接口根据动态条件筛选电影。"""
+    """【V3.1 - 最终驱魔版】调用底层请求时，明确禁用默认语言。"""
     if not api_key:
         return None
-    
-    endpoint = "/discover/movie" # 确保是 movie
-    base_params = {"language": DEFAULT_LANGUAGE}
-    base_params.update(params)
-
-    logger.debug(f"TMDb: 发现电影 (条件: {base_params})") # 确保日志是“电影”
-    return _tmdb_request(endpoint, api_key, base_params)
+    endpoint = "/discover/movie"
+    logger.debug(f"TMDb: 发现电影 (无语言限制，条件: {params})")
+    # ★★★ 明确告诉快递员：这次别贴“中文”标签！ ★★★
+    return _tmdb_request(endpoint, api_key, params, use_default_language=False)
 
 # --- 通过筛选条件发现电视剧 ---
 def discover_tv_tmdb(api_key: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """【最终确认版】使用TMDb的discover接口根据动态条件筛选电视剧。"""
+    """【V3.1 - 最终驱魔版】调用底层请求时，明确禁用默认语言。"""
     if not api_key:
         return None
-    
-    endpoint = "/discover/tv" # 确保是 tv
-    base_params = {"language": DEFAULT_LANGUAGE}
-    base_params.update(params)
-
-    logger.debug(f"TMDb: 发现电视剧 (条件: {base_params})") # 确保日志是“电视剧”
-    return _tmdb_request(endpoint, api_key, base_params)
+    endpoint = "/discover/tv"
+    logger.debug(f"TMDb: 发现电视剧 (无语言限制，条件: {params})")
+    # ★★★ 明确告诉快递员：这次也别贴！ ★★★
+    return _tmdb_request(endpoint, api_key, params, use_default_language=False)
 
 def get_movie_genres_tmdb(api_key: str) -> Optional[List[Dict[str, Any]]]:
     """【新】获取TMDb所有电影类型的官方列表。"""
