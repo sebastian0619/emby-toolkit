@@ -228,6 +228,42 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
     except requests.exceptions.RequestException as e:
         logger.error(f"  -> 更新 Person (ID: {person_id}) 时发生错误: {e}")
         return False
+# --- 创建一个新演员 ---
+def create_emby_person(name: str, provider_ids: Dict[str, str], base_url: str, api_key: str) -> Optional[str]:
+    """
+    通过专门的API，显式地在Emby中创建一个新的Person（演员）项目。
+    这个接口能正确地保存ProviderIds。
+    """
+    if not all([name, base_url, api_key]):
+        logger.error("create_emby_person: 缺少必要的参数。")
+        return None
+
+    api_url = f"{base_url.rstrip('/')}/Persons"
+    params = {'api_key': api_key}
+    headers = {'Content-Type': 'application/json'}
+    
+    payload = {
+        "Name": name,
+        "ProviderIds": provider_ids
+    }
+    
+    logger.debug(f"  -> 准备显式创建新演员: '{name}' with ProviderIds: {provider_ids}")
+    
+    try:
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+        response = requests.post(api_url, json=payload, headers=headers, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        new_person_data = response.json()
+        new_person_id = new_person_data.get("Id")
+        if new_person_id:
+            logger.info(f"  -> ✅ 成功在Emby中创建新演员 '{name}' (ID: {new_person_id})。")
+            return new_person_id
+        else:
+            logger.error(f"创建演员 '{name}' 成功，但响应中未找到新ID。")
+            return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"通过API显式创建演员 '{name}' 时失败: {e}")
+        return None
 # ✨✨✨ 更新 Emby 媒体项目的演员列表 ✨✨✨
 def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str, Any]],
                           emby_server_url: str, emby_api_key: str, user_id: str,
@@ -283,17 +319,35 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
 
         emby_person_id = actor_entry.get("emby_person_id")
 
-        if emby_person_id and str(emby_person_id).strip():
-            person_obj["Id"] = str(emby_person_id).strip()
-            logger.trace(f"  -> 链接现有演员 '{person_obj['Name']}' (ID: {person_obj['Id']})")
-        else:
-            logger.trace(f"  -> 添加新演员 '{person_obj['Name']}'")
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # ★★★ 核心修复：预创建新演员，获取其ID ★★★
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        if not (emby_person_id and str(emby_person_id).strip()):
+            logger.info(f"  -> 检测到新演员 '{actor_name}'，将尝试在Emby中预创建...")
             provider_ids = actor_entry.get("provider_ids")
+            sanitized_ids = {}
             if isinstance(provider_ids, dict) and provider_ids:
                 sanitized_ids = {k: str(v) for k, v in provider_ids.items() if v is not None and str(v).strip()}
-                if sanitized_ids:
-                    person_obj["ProviderIds"] = sanitized_ids
-                    logger.trace(f"    -> 为新演员 '{person_obj['Name']}' 设置初始 ProviderIds: {sanitized_ids}")
+            
+            # 调用新函数来创建演员
+            newly_created_id = create_emby_person(
+                name=person_obj["Name"],
+                provider_ids=sanitized_ids,
+                base_url=emby_server_url,
+                api_key=emby_api_key
+            )
+            
+            if newly_created_id:
+                emby_person_id = newly_created_id
+            else:
+                logger.warning(f"  -> 预创建演员 '{actor_name}' 失败，将作为无ID演员添加，可能导致黑户。")
+        
+        # 无论新旧，只要有ID就使用
+        if emby_person_id and str(emby_person_id).strip():
+            person_obj["Id"] = str(emby_person_id).strip()
+            logger.trace(f"  -> 链接演员 '{person_obj['Name']}' (ID: {person_obj['Id']})")
+        else:
+            logger.trace(f"  -> 添加无ID的新演员 '{person_obj['Name']}' (创建失败或未提供ID)")
 
         formatted_people_for_emby.append(person_obj)
 
