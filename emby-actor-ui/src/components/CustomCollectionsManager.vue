@@ -451,7 +451,16 @@
               <n-gi v-for="media in missingMediaInModal" :key="media.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
                   <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" /></template>
-                  <div class="movie-info"><div class="movie-title">{{ media.title }}<br />({{ extractYear(media.release_date) || '未知年份' }})</div></div>
+                  <div class="movie-info">
+                    <div class="movie-title">{{ media.title }}</div>
+                    <div class="movie-meta">
+                      <span class="year">({{ extractYear(media.release_date) || '未知' }})</span>
+                      <!-- ★★★ 新增评分显示 ★★★ -->
+                      <span v-if="media.vote_average" class="rating">
+                        ⭐ {{ media.vote_average.toFixed(1) }}
+                      </span>
+                    </div>
+                  </div>
                   <template #action>
                     <n-button @click="subscribeMedia(media)" type="primary" size="small" block :loading="subscribing[media.tmdb_id]">
                       <template #icon><n-icon :component="CloudDownloadIcon" /></template>
@@ -469,7 +478,16 @@
               <n-gi v-for="media in inLibraryMediaInModal" :key="media.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
                   <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" /></template>
-                  <div class="movie-info"><div class="movie-title">{{ media.title }}<br />({{ extractYear(media.release_date) || '未知年份' }})</div></div>
+                  <div class="movie-info">
+                    <div class="movie-title">{{ media.title }}</div>
+                    <div class="movie-meta">
+                      <span class="year">({{ extractYear(media.release_date) || '未知' }})</span>
+                      <!-- ★★★ 新增评分显示 ★★★ -->
+                      <span v-if="media.vote_average" class="rating">
+                        ⭐ {{ media.vote_average.toFixed(1) }}
+                      </span>
+                    </div>
+                  </div>
                    <template #action>
                     <n-tag type="success" size="small" style="width: 100%; justify-content: center;">
                       <template #icon><n-icon :component="CheckmarkCircle" /></template>
@@ -499,7 +517,16 @@
               <n-gi v-for="media in subscribedMediaInModal" :key="media.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
                   <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" /></template>
-                  <div class="movie-info"><div class="movie-title">{{ media.title }}<br />({{ extractYear(media.release_date) || '未知年份' }})</div></div>
+                  <div class="movie-info">
+                    <div class="movie-title">{{ media.title }}</div>
+                    <div class="movie-meta">
+                      <span class="year">({{ extractYear(media.release_date) || '未知' }})</span>
+                      <!-- ★★★ 新增评分显示 ★★★ -->
+                      <span v-if="media.vote_average" class="rating">
+                        ⭐ {{ media.vote_average.toFixed(1) }}
+                      </span>
+                    </div>
+                  </div>
                   <template #action>
                     <n-button @click="updateMediaStatus(media, 'missing')" type="warning" size="small" block ghost>
                       <template #icon><n-icon :component="CloseCircleIcon" /></template>
@@ -1712,18 +1739,35 @@ onMounted(() => {
 .movie-info {
   padding: 8px;
   text-align: center;
+  height: 5.5em; /* 增加一点总高度以容纳两行 */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 .movie-title {
   font-size: 13px;
   line-height: 1.3;
-  height: 3.9em; /* 3 lines */
+  height: 2.6em; /* 限制为 2 行 */
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
-  line-clamp: 3;
-  -webkit-line-clamp: 3;
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
+
+.movie-meta {
+  font-size: 12px;
+  color: #aaa;
+  margin-top: 4px;
+  display: flex;
+  justify-content: center;
+  gap: 8px; /* 在年份和评分之间增加一点间距 */
+}
+.rating {
+  color: #fccf03; /* 金黄色评分 */
+}
+
 .center-container {
   display: flex;
   justify-content: center;
