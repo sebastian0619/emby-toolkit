@@ -1302,6 +1302,7 @@ class MediaProcessor:
                 "Imdb": actor.get("imdb_id"),
                 "Douban": actor.get("douban_id")
             }
+            # 增加一个日志，方便调试黑户问题
             if actor.get("emby_person_id"):
                 logger.trace(f"  演员 '{actor.get('name')}' 最终保留了 Emby Person ID: {actor.get('emby_person_id')}")
 
