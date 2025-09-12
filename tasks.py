@@ -1771,9 +1771,8 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★★★ 新增：轻量级的元数据缓存填充任务 ★★★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+# ★★★ 轻量级的元数据缓存填充任务 ★★★
 def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 50, force_full_update: bool = False):
     """
     【V4 - 增量与全量同步版】
@@ -2038,7 +2037,6 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
-        
 
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 # ★★★ 新增：立即生成所有媒体库封面的后台任务 ★★★

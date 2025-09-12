@@ -807,12 +807,35 @@ def emby_webhook():
     # --- 处理删除事件 (逻辑不变) ---
     if event_type == "library.deleted":
         try:
+            # 1. 从 webhook 负载中提取 TMDb ID
+            provider_ids = item_from_webhook.get("ProviderIds", {})
+            tmdb_id_to_delete = provider_ids.get("Tmdb")
+
+            # 2. 在同一个事务中执行所有数据库删除操作
             with get_central_db_connection() as conn:
-                log_manager = LogDBManager()
-                log_manager.remove_from_processed_log(conn.cursor(), original_item_id)
+                with conn.cursor() as cursor:
+                    # 2a. 从 processed_log 中删除
+                    log_manager = LogDBManager()
+                    log_manager.remove_from_processed_log(cursor, original_item_id)
+                    logger.info(f"Webhook: 已从 processed_log 中移除项目 {original_item_id}。")
+
+                    # 2b. 如果获取到了 TMDb ID，则从 media_metadata 中删除
+                    if tmdb_id_to_delete:
+                        cursor.execute("DELETE FROM media_metadata WHERE tmdb_id = %s", (tmdb_id_to_delete,))
+                        if cursor.rowcount > 0:
+                            logger.info(f"Webhook: 已从 media_metadata 缓存中移除 TMDb ID 为 {tmdb_id_to_delete} 的媒体项。")
+                        else:
+                            logger.debug(f"Webhook: 在 media_metadata 中未找到 TMDb ID {tmdb_id_to_delete}，无需删除。")
+                    else:
+                        logger.warning(f"Webhook: 无法从 media_metadata 中删除项目 {original_item_id}，因为在 webhook 负载中未找到 TMDb ID。")
+                
+                # 3. 提交事务
                 conn.commit()
-            return jsonify({"status": "processed_log_entry_removed", "item_id": original_item_id}), 200
+                
+            return jsonify({"status": "processed_log_and_metadata_entry_removed", "item_id": original_item_id}), 200
         except Exception as e:
+            # 发生异常时，数据库连接的上下文管理器会自动回滚事务
+            logger.error(f"处理删除事件 for item {original_item_id} 时发生错误: {e}", exc_info=True)
             return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
     
     # --- 处理新增/入库事件 (使用批量处理, 逻辑不变) ---
