@@ -750,7 +750,7 @@ class MediaProcessor:
                 # ======================================================================
                 # --- 步骤 4.1: 前置更新 - 直接更新演员(Person)自身的外部ID和名字 ---
                 logger.info("  -> 写回步骤 1/2: 检查并更新演员的元数据...")
-                
+
                 # ★★★ 核心修正：不再依赖于电影的原始演员列表进行比较 ★★★
                 for actor in final_processed_cast:
                     if self.is_stop_requested():
