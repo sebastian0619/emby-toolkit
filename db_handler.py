@@ -1094,15 +1094,14 @@ def clear_table(table_name: str) -> int:
 # --- 一键矫正自增序列 ---
 def correct_all_sequences() -> list:
     """
+    【V2 - 最终修正版】
     自动查找所有使用 SERIAL/IDENTITY 列的表，并校准它们的序列。
-    这可以修复因手动导入数据或 TRUNCATE 操作导致的“取号机”失准问题。
-    返回一个包含已校准表名的列表。
+    通过使用 setval 的第三个参数 (is_called=false)，完美处理空表的情况。
     """
     corrected_tables = []
     with get_db_connection() as conn:
         cursor = conn.cursor()
         try:
-            # 1. 查找所有使用了序列作为默认值的列 (即 SERIAL, BIGSERIAL 等)
             cursor.execute("""
                 SELECT
                     c.table_name,
@@ -1120,17 +1119,19 @@ def correct_all_sequences() -> list:
 
             logger.info(f"开始校准 {len(tables_with_sequences)} 个表的自增序列...")
 
-            # 2. 遍历每个表并校准其序列
             for row in tables_with_sequences:
                 table_name = row['table_name']
                 column_name = row['column_name']
                 
-                # 使用 setval 将序列的下一个值设置为当前表ID的最大值 + 1
-                # COALESCE(MAX(...), 0) 确保即使表是空的，也能正常工作
+                # ★★★ 核心修正：改变 setval 的用法 ★★★
+                # 1. 我们计算出 (最大ID + 1)，这代表下一个应该被发出的ID。
+                # 2. 我们将 setval 的第三个参数设为 false，
+                #    这告诉数据库：“我给你的这个值，是下一个要用的值，而不是已经被用掉的值。”
                 query = sql.SQL("""
                     SELECT setval(
                         pg_get_serial_sequence({table}, {column}),
-                        COALESCE((SELECT MAX({id_col}) FROM {table_ident}), 0)
+                        COALESCE((SELECT MAX({id_col}) FROM {table_ident}), 0) + 1,
+                        false
                     )
                 """).format(
                     table=sql.Literal(table_name),
