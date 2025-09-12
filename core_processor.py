@@ -750,7 +750,7 @@ class MediaProcessor:
                 # ======================================================================
                 # --- 步骤 4.1: 前置更新 - 直接更新演员(Person)自身的外部ID和名字 ---
                 logger.info("  -> 写回步骤 1/2: 检查并更新演员的元数据...")
-
+                
                 # ★★★ 核心修正：不再依赖于电影的原始演员列表进行比较 ★★★
                 for actor in final_processed_cast:
                     if self.is_stop_requested():
@@ -908,56 +908,65 @@ class MediaProcessor:
         # ======================================================================
         # 步骤 1: ★★★ 数据适配 ★★★
         # ======================================================================
-        logger.debug("  -> 开始演员数据适配...")
-        # 1. 创建一个基于当前电影演员的临时映射 (保持不变)
-        emby_tmdb_to_person_id_map = {
-            person.get("ProviderIds", {}).get("Tmdb"): person.get("Id")
-            for person in emby_cast_people if person.get("ProviderIds", {}).get("Tmdb")
-        }
-        local_cast_list = []
-        for person_data in tmdb_cast_people: # tmdb_cast_people 现在是 authoritative_cast_source
-            
-            tmdb_id = None
-            if "id" in person_data:
-                tmdb_id = str(person_data.get("id"))
-            elif "ProviderIds" in person_data and person_data.get("ProviderIds", {}).get("Tmdb"):
-                tmdb_id = str(person_data["ProviderIds"]["Tmdb"])
-            
-            if not tmdb_id or tmdb_id == 'None':
-                continue
-
-            new_actor_entry = person_data.copy()
-            
-            # 2. 优先从临时映射中获取 emby_person_id
-            emby_pid = emby_tmdb_to_person_id_map.get(tmdb_id)
-            
-            # 3. 如果临时映射中没有（说明这个演员不是当前电影的成员），则查询全局数据库
-            if not emby_pid:
-                db_entry_row = self._find_person_in_map_by_tmdb_id(tmdb_id, cursor)
-                # 2. 立即将其转换为标准的 dict 字典
-                db_entry = dict(db_entry_row) if db_entry_row else None
-                if db_entry and db_entry.get("emby_person_id"):
-                    emby_pid = db_entry["emby_person_id"]
-                    logger.trace(f"  -> 为演员 '{new_actor_entry.get('name')}' (TMDB ID: {tmdb_id}) 从全局数据库中找到了 Emby Person ID: {emby_pid}")
-
-            # 4. 将最终找到的ID（可能是None）注入
-            new_actor_entry["emby_person_id"] = emby_pid
-            
-            # 统一数据结构 (保持不变)
-            if "id" not in new_actor_entry: new_actor_entry["id"] = tmdb_id
-            if "name" not in new_actor_entry: new_actor_entry["name"] = new_actor_entry.get("Name")
-            if "character" not in new_actor_entry: new_actor_entry["character"] = new_actor_entry.get("Role")
-
-            local_cast_list.append(new_actor_entry)
+        logger.debug("  -> 开始演员数据适配 (权威源驱动模式)...")
         
-        logger.debug(f"  -> 数据适配完成，生成了 {len(local_cast_list)} 条基准演员数据。")
-        # ======================================================================
-        # 步骤 2: ★★★ “一对一匹配”逻辑 ★★★
-        # ======================================================================
+        # 1. 为Emby演员列表创建高效的查找地图
+        emby_actor_map_by_tmdb_id = {
+            p.get("ProviderIds", {}).get("Tmdb"): p 
+            for p in emby_cast_people if p.get("ProviderIds", {}).get("Tmdb")
+        }
+        emby_actor_map_by_name = {str(p.get("Name") or "").lower().strip(): p for p in emby_cast_people}
 
+        # 2. 遍历权威的TMDb列表，为每个TMDb演员寻找其在Emby中的对应实体
+        final_cast_list = []
+        for tmdb_actor in tmdb_cast_people:
+            tmdb_id = str(tmdb_actor.get("id"))
+            tmdb_name_en_lower = str(tmdb_actor.get("name") or "").lower().strip()
+            
+            emby_match = None
+
+            # 2.1 优先使用TMDb ID在Emby演员中查找
+            if tmdb_id in emby_actor_map_by_tmdb_id:
+                emby_match = emby_actor_map_by_tmdb_id[tmdb_id]
+                logger.trace(f"  -> [适配] TMDb演员 '{tmdb_actor.get('name')}' 通过ID精确匹配到Emby演员。")
+            
+            # 2.2 如果ID找不到，则尝试通过名字反查缓存来匹配
+            else:
+                # 尝试用TMDb的英文名直接匹配Emby的名字
+                if tmdb_name_en_lower in emby_actor_map_by_name:
+                    emby_match = emby_actor_map_by_name[tmdb_name_en_lower]
+                    logger.info(f"  -> [适配] TMDb演员 '{tmdb_actor.get('name')}' 通过【直接英文名】匹配到Emby黑户。")
+                else:
+                    # 如果直接匹配不上，再尝试通过翻译缓存匹配
+                    # 我们需要翻译TMDb的英文名，然后用中文名去Emby里找
+                    cache_entry = self.actor_db_manager.get_translation_from_db(cursor, tmdb_actor.get("name"))
+                    if cache_entry and cache_entry.get('translated_text'):
+                        translated_cn_name = str(cache_entry['translated_text']).lower().strip()
+                        if translated_cn_name in emby_actor_map_by_name:
+                            emby_match = emby_actor_map_by_name[translated_cn_name]
+                            logger.info(f"  -> [适配] TMDb演员 '{tmdb_actor.get('name')}' 通过【翻译缓存】(译名: '{translated_cn_name}') 匹配到Emby黑户。")
+
+            # 3. 组装最终演员条目
+            # 无论是否在Emby中找到匹配，我们都以TMDb演员为基准
+            final_actor_entry = tmdb_actor.copy()
+            if emby_match:
+                # 如果找到了匹配（无论是正常演员还是黑户），就继承它的Emby ID和角色名
+                final_actor_entry["emby_person_id"] = emby_match.get("Id")
+                final_actor_entry["character"] = emby_match.get("Role")
+            else:
+                # 如果完全找不到，说明这是一个需要全新创建的演员
+                final_actor_entry["emby_person_id"] = None
+                logger.info(f"  -> [适配] TMDb演员 '{tmdb_actor.get('name')}' 在Emby中未找到任何匹配，将被全新创建。")
+            
+            final_cast_list.append(final_actor_entry)
+
+        logger.debug(f"  -> 数据适配完成，生成了 {len(final_cast_list)} 条基准演员数据。")
+
+        # ======================================================================
+        # 步骤 2: ★★★ “一对一匹配”逻辑 ★★★ (现在输入的是 final_cast_list)
+        # ======================================================================
         douban_candidates = actor_utils.format_douban_cast(douban_cast_list)
-
-        unmatched_local_actors = list(local_cast_list)  # ★★★ 使用我们适配好的数据源 ★★★
+        unmatched_local_actors = list(final_cast_list)
         merged_actors = []
         unmatched_douban_actors = []
         #  遍历豆瓣演员，尝试在“未匹配”的本地演员中寻找配对
@@ -1302,7 +1311,6 @@ class MediaProcessor:
                 "Imdb": actor.get("imdb_id"),
                 "Douban": actor.get("douban_id")
             }
-            # 增加一个日志，方便调试黑户问题
             if actor.get("emby_person_id"):
                 logger.trace(f"  演员 '{actor.get('name')}' 最终保留了 Emby Person ID: {actor.get('emby_person_id')}")
 
