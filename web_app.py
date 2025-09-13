@@ -477,29 +477,6 @@ def init_db():
 
                 logger.info("  -> 数据库平滑升级检查完成。")
 
-                # --- 2.4 初始化默认的应用设置 ---
-                try:
-                    logger.info("    -> [数据库初始化] 正在检查并写入默认的应用设置...")
-                    # 检查媒体去重规则是否存在
-                    cursor.execute("SELECT 1 FROM app_settings WHERE setting_key = 'media_cleanup_rules'")
-                    if cursor.fetchone() is None:
-                        # 如果不存在，则写入一套推荐的默认规则
-                        default_cleanup_rules = [
-                            {"id": "quality", "enabled": True, "priority": ["Remux", "BluRay", "WEB-DL", "HDTV"]},
-                            {"id": "resolution", "enabled": True, "priority": ["2160p", "1080p", "720p"]},
-                            {"id": "effect", "enabled": True, "priority": ["dovi", "hdr10+", "hdr", "sdr"]},
-                            {"id": "filesize", "enabled": True, "priority": "desc"}
-                        ]
-                        cursor.execute(
-                            "INSERT INTO app_settings (setting_key, value_json) VALUES (%s, %s)",
-                            ('media_cleanup_rules', json.dumps(default_cleanup_rules))
-                        )
-                        logger.info("    -> 已成功写入默认的媒体去重规则。")
-                    else:
-                        logger.trace("    -> 媒体去重规则已存在，跳过。")
-                except Exception as e_settings:
-                    logger.error(f"    -> [数据库初始化] 写入默认设置时出错: {e_settings}", exc_info=True)
-
             conn.commit()
             logger.info("✅ PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")
 
