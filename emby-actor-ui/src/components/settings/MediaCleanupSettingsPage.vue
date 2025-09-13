@@ -67,7 +67,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, defineEmits } from 'vue'; // ★★★ 核心修改 1/3: 导入 defineEmits ★★★
 import axios from 'axios';
 import { 
   NCard, NSpace, NSwitch, NButton, useMessage, NSpin, NIcon, NModal, NTag, NText
@@ -78,6 +78,7 @@ import {
 } from '@vicons/ionicons5';
 
 const message = useMessage();
+const emit = defineEmits(['on-close']); // ★★★ 核心修改 2/3: 定义一个 on-close 事件 ★★★
 
 const loading = ref(true);
 const saving = ref(false);
@@ -86,41 +87,67 @@ const showEditModal = ref(false);
 const rules = ref([]);
 const currentEditingRule = ref({ priority: [] });
 
+// ... (RULE_METADATA, getRuleDisplayName, getRuleDescription, formatEffectPriority, fetchRules 这些函数都保持不变) ...
 const RULE_METADATA = {
-  quality: {
-    name: "按质量",
-    description: "比较文件名中的质量标签 (如 Remux, BluRay)。"
-  },
-  resolution: {
-    name: "按分辨率",
-    description: "比较视频的分辨率 (如 2160p, 1080p)。"
-  },
-  filesize: {
-    name: "按文件大小",
-    description: "如果以上规则都无法区分，则保留文件体积更大的版本。"
-  }
+  quality: { name: "按质量", description: "比较文件名中的质量标签 (如 Remux, BluRay)。" },
+  resolution: { name: "按分辨率", description: "比较视频的分辨率 (如 2160p, 1080p)。" },
+  effect: { name: "按特效", description: "比较视频的特效等级 (如 DoVi, HDR)。" },
+  filesize: { name: "按文件大小", description: "如果以上规则都无法区分，则保留文件体积更大的版本。" }
 };
-
 const getRuleDisplayName = (id) => RULE_METADATA[id]?.name || id;
 const getRuleDescription = (id) => RULE_METADATA[id]?.description || '未知规则';
-
+const formatEffectPriority = (priorityArray, to = 'upper') => {
+    return priorityArray.map(p => {
+        const p_lower = String(p).toLowerCase();
+        if (to === 'upper') {
+            if (p_lower === 'dovi') return 'DoVi';
+            if (p_lower === 'hdr10+') return 'HDR10+';
+            return p_lower.toUpperCase();
+        } else {
+            return p_lower;
+        }
+    });
+};
 const fetchRules = async () => {
   loading.value = true;
   try {
     const response = await axios.get('/api/cleanup/rules');
-    rules.value = response.data;
+    const loadedRules = response.data || [];
+    rules.value = loadedRules.map(rule => {
+        if (rule.id === 'effect' && Array.isArray(rule.priority)) {
+            return { ...rule, priority: formatEffectPriority(rule.priority, 'upper') };
+        }
+        return rule;
+    });
   } catch (error) {
-    message.error('加载清理规则失败！');
+    message.error('加载清理规则失败！将使用默认规则。');
+    rules.value = [
+        { id: 'quality', enabled: true, priority: ['Remux', 'BluRay', 'WEB-DL', 'HDTV'] },
+        { id: 'resolution', enabled: true, priority: ['2160p', '1080p', '720p'] },
+        { id: 'effect', enabled: true, priority: ['DoVi', 'HDR10+', 'HDR', 'SDR'] },
+        { id: 'filesize', enabled: true, priority: 'desc' },
+    ];
   } finally {
     loading.value = false;
   }
 };
 
+
 const saveRules = async () => {
   saving.value = true;
   try {
-    await axios.post('/api/cleanup/rules', rules.value);
+    const rulesToSave = rules.value.map(rule => {
+      if (rule.id === 'effect' && Array.isArray(rule.priority)) {
+        return { ...rule, priority: formatEffectPriority(rule.priority, 'lower') };
+      }
+      return rule;
+    });
+    await axios.post('/api/cleanup/rules', rulesToSave);
     message.success('清理规则已成功保存！');
+    
+    // ★★★ 核心修改 3/3: 保存成功后，触发 on-close 事件 ★★★
+    emit('on-close');
+
   } catch (error) {
     message.error('保存规则失败，请检查后端日志。');
   } finally {

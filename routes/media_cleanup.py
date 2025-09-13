@@ -6,6 +6,9 @@ import db_handler
 import task_manager
 import config_manager
 from tasks import task_execute_cleanup
+import logging
+
+logger = logging.getLogger(__name__)
 
 media_cleanup_bp = Blueprint('media_cleanup_bp', __name__)
 
@@ -66,18 +69,48 @@ def delete_cleanup_tasks():
     
 @media_cleanup_bp.route('/api/cleanup/rules', methods=['GET'])
 def get_cleanup_rules():
-    """获取当前的媒体去重规则。"""
+    """【V4 - 排序保持最终版】获取当前的媒体去重规则，并严格保持用户定义的顺序。"""
     try:
-        rules = db_handler.get_setting('media_cleanup_rules')
-        if not rules:
-            # 如果数据库中没有，返回一个安全的默认结构
-            rules = [
-                {"id": "quality", "enabled": True, "priority": ["Remux", "BluRay", "WEB-DL", "HDTV"]},
-                {"id": "resolution", "enabled": True, "priority": ["2160p", "1080p", "720p"]},
-                {"id": "filesize", "enabled": True, "priority": "desc"}
-            ]
-        return jsonify(rules)
+        # 1. 定义一套完整的默认规则作为基准
+        default_rules_map = {
+            "quality": {"id": "quality", "enabled": True, "priority": ["Remux", "BluRay", "WEB-DL", "HDTV"]},
+            "resolution": {"id": "resolution", "enabled": True, "priority": ["2160p", "1080p", "720p"]},
+            "effect": {"id": "effect", "enabled": True, "priority": ["dovi", "hdr10+", "hdr", "sdr"]},
+            "filesize": {"id": "filesize", "enabled": True, "priority": "desc"}
+        }
+        
+        # 2. 从数据库加载用户已保存的规则列表
+        saved_rules_list = db_handler.get_setting('media_cleanup_rules')
+        
+        # ★★★ 核心修改：如果数据库中没有保存任何规则，才使用完整的默认值 ★★★
+        if not saved_rules_list:
+            # 返回默认顺序的规则列表
+            return jsonify(list(default_rules_map.values()))
+
+        # --- 如果数据库中有规则，则执行智能合并 ---
+        final_rules = []
+        # 将用户保存的规则转为字典，方便快速查找
+        saved_rules_map = {rule['id']: rule for rule in saved_rules_list}
+        
+        # ★★★ 核心修改：以用户保存的顺序为准，遍历它 ★★★
+        for saved_rule in saved_rules_list:
+            rule_id = saved_rule['id']
+            # 将数据库中的规则与默认规则合并，确保 enabled 等字段存在
+            # 这样可以平滑地增加新功能（比如未来增加 'description' 字段）
+            merged_rule = {**default_rules_map.get(rule_id, {}), **saved_rule}
+            final_rules.append(merged_rule)
+
+        # ★★★ 核心修改：检查是否有新增的、用户尚未保存的规则（比如新版本增加了'effect'）★★★
+        saved_ids = set(saved_rules_map.keys())
+        for key, default_rule in default_rules_map.items():
+            if key not in saved_ids:
+                # 如果有新规则，把它追加到列表末尾
+                final_rules.append(default_rule)
+
+        return jsonify(final_rules)
+        
     except Exception as e:
+        logger.error(f"获取媒体去重规则时出错: {e}", exc_info=True)
         return jsonify({"error": f"获取清理规则失败: {e}"}), 500
 
 @media_cleanup_bp.route('/api/cleanup/rules', methods=['POST'])

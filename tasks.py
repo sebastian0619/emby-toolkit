@@ -2967,66 +2967,32 @@ def _extract_quality_tag_from_filename(filename_lower: str, video_stream: dict) 
 # ======================================================================
 
 def _get_version_properties(version: Optional[Dict]) -> Dict:
-    """【V2 - 安全加固版】从单个版本信息中提取并计算属性，能安全处理None输入。"""
-    
-    # ★★★ 在这里加上“安全气囊” ★★★
+    """【V3 - 特效支持版】从单个版本信息中提取并计算属性，增加特效标准化。"""
     if not version or not isinstance(version, dict):
-        # 如果 version 是 None 或者不是一个字典，返回一个安全的、空的默认值
-        # 这样可以保证后续的逻辑不会因为拿到 None 而崩溃
         return {
-            'id': 'unknown_or_invalid',
-            'path': '',
-
-            'resolution_rank': 0,
-            'video_range_rank': 0,
-            'audio_rank': 0,
-            'subtitle_rank': 0,
-            'source_rank': 0,
-            'tag_score': 0,
-            'final_score': 0,
-
-            'resolution': 'Unknown',
-            'video_range': 'SDR',
-            'audio_stream_count': 0,
-            'subtitle_stream_count': 0,
-            'size': 0,
-            'media_source_type': 'Unknown',
-            'tags': []
+            'id': 'unknown_or_invalid', 'path': '', 'quality': 'unknown',
+            'resolution': 'unknown', 'effect': 'sdr', 'filesize': 0
         }
 
     path_lower = version.get("Path", "").lower()
     
-    # ★★★ 核心修复 1/2: 定义一个完整的、包含所有别名的“官方名称”映射表 ★★★
+    # --- 质量标准化 (逻辑不变) ---
     QUALITY_ALIASES = {
-        "remux": "remux",
-        "bluray": "blu-ray",
-        "blu-ray": "blu-ray",
-        "web-dl": "web-dl",
-        "webdl": "web-dl",
-        "webrip": "webrip",
-        "hdtv": "hdtv",
-        "dvdrip": "dvdrip"
+        "remux": "remux", "bluray": "blu-ray", "blu-ray": "blu-ray",
+        "web-dl": "web-dl", "webdl": "web-dl", "webrip": "webrip",
+        "hdtv": "hdtv", "dvdrip": "dvdrip"
     }
-    # 定义优先级顺序
     QUALITY_HIERARCHY = ["remux", "blu-ray", "web-dl", "webrip", "hdtv", "dvdrip"]
-    
     quality = "unknown"
-    # ★★★ 核心修复 2/2: 遍历所有已知的别名进行匹配 ★★★
     for alias, official_name in QUALITY_ALIASES.items():
-        # 使用和你推荐的函数一样的可靠逻辑
-        if (f".{alias}." in path_lower or
-            f" {alias} " in path_lower or
-            f"-{alias}-" in path_lower or
-            f"·{alias}·" in path_lower):
-            
-            # 检查当前找到的标签是否比已有的更优先
+        if (f".{alias}." in path_lower or f" {alias} " in path_lower or
+            f"-{alias}-" in path_lower or f"·{alias}·" in path_lower):
             current_priority = QUALITY_HIERARCHY.index(quality) if quality in QUALITY_HIERARCHY else 999
             new_priority = QUALITY_HIERARCHY.index(official_name)
-            
             if new_priority < current_priority:
                 quality = official_name
 
-    # 提取分辨率标签 (逻辑不变)
+    # --- 分辨率标准化 (逻辑不变) ---
     resolution_tag = "unknown"
     resolution_wh = version.get("resolution_wh", (0, 0))
     width = resolution_wh[0]
@@ -3034,25 +3000,50 @@ def _get_version_properties(version: Optional[Dict]) -> Dict:
     elif width >= 1920: resolution_tag = "1080p"
     elif width >= 1280: resolution_tag = "720p"
 
+    # --- ★★★ 新增：特效标准化逻辑 ★★★ ---
+    effect_tag = "sdr" # 默认是SDR
+    video_stream = version.get("video_stream") # 假设我们在扫描时传入了video_stream
+    
+    # 1. 优先从文件名判断杜比视界，因为信息最准
+    if "dovi" in path_lower or "dolby vision" in path_lower or "dolbyvision" in path_lower:
+        effect_tag = "dovi"
+    # 2. 其次，从文件名判断HDR
+    elif "hdr10+" in path_lower or "hdr10plus" in path_lower:
+        effect_tag = "hdr10+"
+    elif "hdr" in path_lower:
+        effect_tag = "hdr"
+    # 3. 如果文件名没有信息，再从视频流信息判断
+    elif video_stream and isinstance(video_stream, dict):
+        video_range_type = str(video_stream.get("VideoRangeType", "")).lower()
+        if "dovi" in video_range_type or "dolby" in video_range_type:
+            effect_tag = "dovi"
+        elif "hdr10+" in video_range_type:
+            effect_tag = "hdr10+"
+        elif "hdr" in video_range_type:
+            effect_tag = "hdr"
+
     return {
         "id": version.get("id"),
         "quality": quality,
         "resolution": resolution_tag,
-        "filesize": version.get("size", 0)
+        "effect": effect_tag, # <-- 新增字段
+        "filesize": version.get("filesize", 0)
     }
 
+# ★★★ 核心修改 2/2: 更新 _determine_best_version_by_rules 函数 ★★★
 def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """【V4 - 标准化终极修复版】"""
+    """【V5 - 特效支持最终版】"""
     
     rules = db_handler.get_setting('media_cleanup_rules')
     if not rules:
+        # 更新默认规则，加入 effect
         rules = [
             {"id": "quality", "priority": ["remux", "blu-ray", "web-dl", "hdtv"]},
             {"id": "resolution", "priority": ["2160p", "1080p", "720p"]},
+            {"id": "effect", "priority": ["dovi", "hdr10+", "hdr", "sdr"]}, # <-- 新增默认特效规则
             {"id": "filesize", "priority": "desc"}
         ]
 
-    # ★★★ 核心修复 1/2: 在比较前，先对规则本身进行“标准化”处理 ★★★
     processed_rules = []
     for rule in rules:
         new_rule = rule.copy()
@@ -3060,17 +3051,20 @@ def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[Li
             normalized_priority = []
             for p in new_rule["priority"]:
                 p_lower = str(p).lower()
-                if p_lower == "bluray": p_lower = "blu-ray"   # 将 bluray 标准化为 blu-ray
-                if p_lower == "webdl": p_lower = "web-dl"     # 将 webdl 标准化为 web-dl
+                if p_lower == "bluray": p_lower = "blu-ray"
+                if p_lower == "webdl": p_lower = "web-dl"
                 normalized_priority.append(p_lower)
             new_rule["priority"] = normalized_priority
+        # ★★★ 新增：对特效规则也进行标准化处理 ★★★
+        elif rule.get("id") == "effect" and "priority" in new_rule and isinstance(new_rule["priority"], list):
+            new_rule["priority"] = [str(p).lower() for p in new_rule["priority"]]
+
         processed_rules.append(new_rule)
     
     version_properties = [_get_version_properties(v) for v in versions if v is not None]
 
     from functools import cmp_to_key
     def compare_versions(item1_props, item2_props):
-        # ★★★ 核心修复 2/2: 使用标准化后的规则进行比较 ★★★
         for rule in processed_rules:
             if not rule.get("enabled", True): continue
             
@@ -3084,8 +3078,6 @@ def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[Li
                 continue
 
             priority_list = rule.get("priority", [])
-            # 这里的 val1 和 val2 已经是标准化的小写了 (来自 _get_version_properties)
-            # 这里的 priority_list 也已经是标准化的小写了
             try:
                 index1 = priority_list.index(val1) if val1 in priority_list else 999
                 index2 = priority_list.index(val2) if val2 in priority_list else 999
@@ -3100,15 +3092,16 @@ def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[Li
     
     best_version_id = sorted_versions[0]['id'] if sorted_versions else None
     
+    # 返回原始版本信息和最佳ID
     return versions, best_version_id
 
 def task_scan_for_cleanup_issues(processor: MediaProcessor):
     """
-    【V14 - 返璞归真终极版】
-    后台任务：只查找并报告“真·重复项”（拥有相同TMDb ID但不同Item ID的媒体项）。
+    【V15 - 特效支持版】
+    在构造 versions_info 时，将 video_stream 传递下去。
     """
     task_name = "扫描媒体库重复项"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (返璞归真模式) ---")
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (特效支持模式) ---")
     task_manager.update_status_from_thread(0, "正在准备扫描媒体库...")
 
     try:
@@ -3120,7 +3113,8 @@ def task_scan_for_cleanup_issues(processor: MediaProcessor):
         all_emby_items = emby_handler.get_emby_library_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
-            fields="ProviderIds,Name,Type,MediaSources,Path,ProductionYear"
+            # 确保请求了 MediaStreams
+            fields="ProviderIds,Name,Type,MediaSources,Path,ProductionYear,MediaStreams"
         ) or []
 
         if not all_emby_items:
@@ -3129,18 +3123,15 @@ def task_scan_for_cleanup_issues(processor: MediaProcessor):
 
         task_manager.update_status_from_thread(30, f"已获取 {len(all_emby_items)} 个项目，正在分析...")
         
-        # --- 步骤一：按 TMDB ID 对所有媒体项进行分组 ---
         media_map = collections.defaultdict(list)
         for item in all_emby_items:
             tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
-            item_type = item.get("Type") # Get the item type
-            if tmdb_id and item_type: # Ensure both are present
+            item_type = item.get("Type")
+            if tmdb_id and item_type:
                 media_map[(tmdb_id, item_type)].append(item)
 
-        # --- 步骤二：遍历分组，只找出真正的重复项 ---
         duplicate_tasks = []
-        for (tmdb_id, item_type), items in media_map.items(): # Unpack the composite key
-            # 只有当分组内的 Item 数量大于1时，才可能是重复项
+        for (tmdb_id, item_type), items in media_map.items():
             if len(items) > 1:
                 logger.info(f"  -> [发现重复] TMDB ID {tmdb_id} (类型: {item_type}) 关联了 {len(items)} 个独立的媒体项。")
                 versions_info = []
@@ -3148,23 +3139,25 @@ def task_scan_for_cleanup_issues(processor: MediaProcessor):
                     source = item.get("MediaSources", [{}])[0]
                     video_stream = next((s for s in source.get("MediaStreams", []) if s.get("Type") == "Video"), None)
                     versions_info.append({
-                        "id": item.get("Id"), # ID 就是 Item ID
-                        "path": source.get("Path") or item.get("Path") or "", "size": source.get("Size", 0),
+                        "id": item.get("Id"),
+                        "path": source.get("Path") or item.get("Path") or "",
+                        "size": source.get("Size", 0),
                         "resolution_wh": (video_stream.get("Width", 0), video_stream.get("Height", 0)) if video_stream else (0, 0),
+                        # ★★★ 核心修改：把 video_stream 整个传下去 ★★★
+                        "video_stream": video_stream
                     })
                 
                 analyzed_versions, best_id = _determine_best_version_by_rules(versions_info)
                 best_item_name = next((item.get("Name") for item in items if item.get("Id") == best_id), items[0].get("Name"))
                 
                 duplicate_tasks.append({
-                    "task_type": "duplicate", # 类型永远是 duplicate
+                    "task_type": "duplicate",
                     "tmdb_id": tmdb_id,
-                    "item_type": item_type, # Add item_type to the duplicate_tasks
+                    "item_type": item_type,
                     "item_name": best_item_name,
                     "versions_info_json": analyzed_versions, "best_version_id": best_id
                 })
 
-        # 3. 写入数据库
         task_manager.update_status_from_thread(90, f"分析完成，正在将 {len(duplicate_tasks)} 组重复项写入数据库...")
         db_handler.batch_insert_cleanup_tasks(duplicate_tasks)
 

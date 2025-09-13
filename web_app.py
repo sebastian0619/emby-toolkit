@@ -487,6 +487,7 @@ def init_db():
                         default_cleanup_rules = [
                             {"id": "quality", "enabled": True, "priority": ["Remux", "BluRay", "WEB-DL", "HDTV"]},
                             {"id": "resolution", "enabled": True, "priority": ["2160p", "1080p", "720p"]},
+                            {"id": "effect", "enabled": True, "priority": ["dovi", "hdr10+", "hdr", "sdr"]},
                             {"id": "filesize", "enabled": True, "priority": "desc"}
                         ]
                         cursor.execute(
