@@ -351,13 +351,14 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 if movie_tmdb_ids:
                     movie_metadata = db_handler.get_media_metadata_by_tmdb_ids(movie_tmdb_ids, 'Movie')
                     for meta in movie_metadata:
-                        # 使用 "id-type" 作为唯一键
-                        timestamp_map[f"{meta['tmdb_id']}-Movie"] = meta.get('last_synced_at', default_timestamp)
+                        timestamp = meta.get('last_synced_at') or default_timestamp
+                        timestamp_map[f"{meta['tmdb_id']}-Movie"] = timestamp
                 
                 if series_tmdb_ids:
                     series_metadata = db_handler.get_media_metadata_by_tmdb_ids(series_tmdb_ids, 'Series')
                     for meta in series_metadata:
-                        timestamp_map[f"{meta['tmdb_id']}-Series"] = meta.get('last_synced_at', default_timestamp)
+                        timestamp = meta.get('last_synced_at') or default_timestamp
+                        timestamp_map[f"{meta['tmdb_id']}-Series"] = timestamp
 
                 # 3. 使用复合键进行安全排序
                 final_items.sort(
