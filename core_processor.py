@@ -1192,23 +1192,10 @@ class MediaProcessor:
         # 3. 无论是否执行了新增，都从 final_cast_map 中获取最终的演员列表
         current_cast_list = list(final_cast_map.values())
 
-        # 演员列表截断 (先截断！)
-        max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
-        try:
-            limit = int(max_actors)
-            if limit <= 0:
-                limit = 30
-        except (ValueError, TypeError):
-            limit = 30
-
-        original_count = len(current_cast_list)
-        if original_count > limit:
-            logger.info(f"  -> 演员列表总数 ({original_count}) 超过上限 ({limit})，将在翻译前进行截断。")
-            # 按 order 排序
-            current_cast_list.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
-            cast_to_process = current_cast_list[:limit]
-        else:
-            cast_to_process = current_cast_list
+        # 【修改后】不再截断最终列表，直接处理所有演员
+        cast_to_process = current_cast_list
+        # 按 order 排序，确保重要演员在前
+        cast_to_process.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
 
         logger.info(f"  -> 将对 {len(cast_to_process)} 位演员进行最终的翻译和格式化处理...")
 
