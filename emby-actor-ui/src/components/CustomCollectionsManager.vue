@@ -17,9 +17,13 @@
               </template>
               快速同步媒体元数据
             </n-tooltip>
+            <n-button type="default" @click="handleGenerateAllCovers" :loading="isGeneratingCovers">
+              <template #icon><n-icon :component="CoverIcon" /></template>
+              生成所有封面
+            </n-button>
             <n-button type="primary" ghost @click="handleSyncAll" :loading="isSyncingAll">
               <template #icon><n-icon :component="GenerateIcon" /></template>
-              一键生成所有
+              生成所有合集
             </n-button>
             <n-button type="primary" @click="handleCreateClick">
               <template #icon><n-icon :component="AddIcon" /></template>
@@ -683,7 +687,8 @@ import {
   CheckmarkCircleOutline as CheckmarkCircle,
   CloseCircleOutline as CloseCircleIcon,
   ReorderFourOutline as DragHandleIcon,
-  HelpCircleOutline as HelpIcon
+  HelpCircleOutline as HelpIcon,
+  ImageOutline as CoverIcon,
 } from '@vicons/ionicons5';
 import { format } from 'date-fns';
 
@@ -715,6 +720,7 @@ const isSearchingActors = ref(false);
 const isSavingOrder = ref(false);
 const embyLibraryOptions = ref([]);
 const isLoadingLibraries = ref(false);
+const isGeneratingCovers = ref(false);
 let sortableInstance = null;
 
 // --- TMDb 探索助手相关状态 ---
@@ -757,6 +763,19 @@ const discoverParams = ref(getInitialDiscoverParams());
 // ===================================================================
 // ▼▼▼ 确保所有函数和计算属性都在这里 ▼▼▼
 // ===================================================================
+
+// ★★★ 新增的封面生成处理函数 ★★★
+const handleGenerateAllCovers = async () => {
+  isGeneratingCovers.value = true;
+  try {
+    const response = await axios.post('/api/tasks/run', { task_name: 'generate-custom-collection-covers' });
+    message.success(response.data.message || '已提交一键生成自建合集封面任务！');
+  } catch (error) {
+    message.error(error.response?.data?.error || '提交任务失败。');
+  } finally {
+    isGeneratingCovers.value = false;
+  }
+};
 
 const builtInLists = [
   { label: '自定义RSS/URL源', value: 'custom' },

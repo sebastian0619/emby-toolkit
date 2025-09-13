@@ -1346,7 +1346,8 @@ def get_task_registry(context: str = 'all'):
         'auto-subscribe': (task_auto_subscribe, "智能订阅缺失", 'media', True),
         'sync-images-map': (task_full_image_sync, "覆盖缓存备份", 'media', True),
         'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', True),
-        'generate-all-covers': (task_generate_all_covers, "生成所有封面", 'media', True),
+        'generate-all-covers': (task_generate_all_covers, "生成原生封面", 'media', True),
+        'generate-custom-collection-covers': (task_generate_all_custom_collection_covers, "生成合集封面", 'media', True),
         
 
         # --- 不适合任务链的、需要特定参数的任务 ---
@@ -2038,9 +2039,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★★★ 新增：立即生成所有媒体库封面的后台任务 ★★★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★★★ 立即生成所有媒体库封面的后台任务 ★★★
 def task_generate_all_covers(processor: MediaProcessor):
     """
     后台任务：为所有（未被忽略的）媒体库生成封面。
@@ -2157,10 +2156,87 @@ def task_generate_all_covers(processor: MediaProcessor):
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★★★ 媒体洗版任务 (基于精确API模型重构) ★★★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
+# ★★★ 只为所有自建合集生成封面的后台任务 ★★★
+def task_generate_all_custom_collection_covers(processor: MediaProcessor):
+    """
+    后台任务：为所有已启用、且已在Emby中创建的自定义合集生成封面。
+    """
+    task_name = "一键生成所有自建合集封面"
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
+    
+    try:
+        # 1. 读取封面生成器的配置
+        cover_config = db_handler.get_setting('cover_generator_config') or {}
+        if not cover_config.get("enabled"):
+            task_manager.update_status_from_thread(100, "任务跳过：封面生成器未启用。")
+            return
+
+        # 2. 从数据库获取所有已启用的自定义合集
+        task_manager.update_status_from_thread(5, "正在获取所有已启用的自建合集...")
+        all_active_collections = db_handler.get_all_active_custom_collections()
+        
+        # 3. 筛选出那些已经在Emby中成功创建的合集
+        collections_to_process = [
+            c for c in all_active_collections if c.get('emby_collection_id')
+        ]
+        
+        total = len(collections_to_process)
+        if total == 0:
+            task_manager.update_status_from_thread(100, "任务完成：没有找到已在Emby中创建的自建合集。")
+            return
+            
+        logger.info(f"  -> 将为 {total} 个自建合集生成封面。")
+        
+        # 4. 实例化服务并循环处理
+        cover_service = CoverGeneratorService(config=cover_config)
+        
+        for i, collection_db_info in enumerate(collections_to_process):
+            if processor.is_stop_requested(): break
+            
+            collection_name = collection_db_info.get('name')
+            emby_collection_id = collection_db_info.get('emby_collection_id')
+            
+            progress = 10 + int((i / total) * 90)
+            task_manager.update_status_from_thread(progress, f"({i+1}/{total}) 正在处理: {collection_name}")
+            
+            try:
+                # a. 获取完整的Emby合集详情，这是封面生成器需要的
+                emby_collection_details = emby_handler.get_emby_item_details(
+                    emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
+                )
+                if not emby_collection_details:
+                    logger.warning(f"无法获取合集 '{collection_name}' (Emby ID: {emby_collection_id}) 的详情，跳过。")
+                    continue
+
+                # b. 准备封面生成器需要的参数
+                definition = collection_db_info.get('definition_json', {})
+                item_count_to_pass = collection_db_info.get('in_library_count', 0)
+                if collection_db_info.get('type') == 'list':
+                    item_count_to_pass = '榜单' # 榜单类型传递特殊标识
+                
+                content_types = definition.get('item_type', ['Movie'])
+
+                # c. 调用封面生成服务
+                cover_service.generate_for_library(
+                    emby_server_id='main_emby',
+                    library=emby_collection_details,
+                    item_count=item_count_to_pass,
+                    content_types=content_types
+                )
+            except Exception as e_gen:
+                logger.error(f"为自建合集 '{collection_name}' 生成封面时发生错误: {e_gen}", exc_info=True)
+                continue
+        
+        final_message = "所有自建合集封面已处理完毕！"
+        if processor.is_stop_requested(): final_message = "任务已中止。"
+        task_manager.update_status_from_thread(100, final_message)
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+
+# ★★★ 媒体洗版任务 (基于精确API模型重构) ★★★
 def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
     """
     根据媒体详情和匹配到的规则，构建发送给 MoviePilot 的最终 payload。
