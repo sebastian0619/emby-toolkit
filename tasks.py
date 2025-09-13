@@ -202,8 +202,9 @@ def task_process_actor_subscriptions(processor: ActorSubscriptionProcessor):
 # ★★★ 处理webhook、用于编排任务的函数 ★★★
 def webhook_processing_task(processor: MediaProcessor, item_id: str, force_reprocess: bool):
     """
-    【V4 - 规则库实时同步修复版】
-    - 在将新媒体添加到规则类合集后，同步更新数据库中的JSON缓存，确保虚拟库实时刷新。
+    【V5 - 媒体库限制修复版】
+    - 调整了代码顺序，确保在匹配自定义合集时，能将媒体项所属的库ID传递给筛选引擎。
+    - 修复了筛选类合集的媒体库限制在实时匹配时无效的BUG。
     """
     item_details = emby_handler.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
     if not item_details:
@@ -230,9 +231,21 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
             logger.warning(f"  -> 无法从本地缓存中找到TMDb ID为 {tmdb_id} 的元数据，无法匹配合集。")
             return
 
+        # ▼▼▼ 步骤 1: 将获取媒体库信息的逻辑提前 ▼▼▼
+        library_info = emby_handler.get_library_root_for_item(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+        if not library_info:
+            logger.warning(f"  -> 无法为项目 {item_id} 定位到其所属的媒体库根，将无法进行基于媒体库的合集匹配。")
+            # 注意：这里我们只记录警告，不中止任务，因为可能还有不限制媒体库的合集需要匹配
+            media_library_id = None
+        else:
+            media_library_id = library_info.get("Id")
+        # ▲▲▲ 步骤 1: 完成 ▲▲▲
+
         # --- 匹配 Filter (筛选) 类型的合集 ---
         engine = FilterEngine()
-        matching_filter_collections = engine.find_matching_collections(item_metadata)
+        
+        # 【关键修改】在这里将获取到的 media_library_id 传递给 find_matching_collections
+        matching_filter_collections = engine.find_matching_collections(item_metadata, media_library_id=media_library_id)
 
         if matching_filter_collections:
             logger.info(f"  -> 《{item_name}》匹配到 {len(matching_filter_collections)} 个筛选类合集，正在追加...")
@@ -256,6 +269,7 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
             logger.info(f"  -> 《{item_name}》没有匹配到任何筛选类合集。")
 
         # --- 匹配 List (榜单) 类型的合集 ---
+        # (这部分逻辑不变)
         updated_list_collections = db_handler.match_and_update_list_collections_on_item_add(
             new_item_tmdb_id=tmdb_id,
             new_item_emby_id=item_id,
@@ -285,13 +299,13 @@ def webhook_processing_task(processor: MediaProcessor, item_id: str, force_repro
         if cover_config.get("enabled") and cover_config.get("transfer_monitor"):
             logger.info(f"  -> 检测到 '{item_details.get('Name')}' 入库，将为其所属媒体库生成新封面...")
             
-            library_info = emby_handler.get_library_root_for_item(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-            
+            # ▼▼▼ 步骤 2: 复用已获取的 library_info，无需重复获取 ▼▼▼
             if not library_info:
-                logger.warning(f"  -> 无法为项目 {item_id} 定位到其所属的媒体库根，跳过封面生成。")
+                logger.warning(f"  -> (封面生成) 无法为项目 {item_id} 定位到其所属的媒体库根，跳过封面生成。")
                 return
+            # ▲▲▲ 步骤 2: 完成 ▲▲▲
 
-            library_id = library_info.get("Id")
+            library_id = library_info.get("Id") # library_id 变量在这里被重新赋值，但不影响上面的逻辑
             library_name = library_info.get("Name", library_id)
             
             if library_info.get('CollectionType') not in ['movies', 'tvshows', 'boxsets', 'mixed', 'music']:

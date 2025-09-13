@@ -875,7 +875,7 @@ class FilterEngine:
         logger.info(f"  -> 筛选完成！共找到 {len(unique_items)} 部匹配的媒体项目。")
         return unique_items
     
-    def find_matching_collections(self, item_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def find_matching_collections(self, item_metadata: Dict[str, Any], media_library_id: Optional[str] = None) -> List[Dict[str, Any]]:
         media_item_type = item_metadata.get('item_type')
         media_type_cn = "剧集" if media_item_type == "Series" else "影片"
         logger.info(f"  -> 正在为{media_type_cn}《{item_metadata.get('title')}》实时匹配自定义合集...")
@@ -890,6 +890,10 @@ class FilterEngine:
         for collection_def in all_filter_collections:
             try:
                 definition = collection_def['definition_json']
+                defined_library_ids = definition.get('library_ids')
+                if defined_library_ids and media_library_id and media_library_id not in defined_library_ids:
+                    logger.debug(f"  -> 跳过合集《{collection_def['name']}》，因为媒体库不匹配 (合集要求: {defined_library_ids}, 实际来自: '{media_library_id}')。")
+                    continue 
                 collection_item_types = definition.get('item_type', ['Movie'])
                 if isinstance(collection_item_types, str):
                     collection_item_types = [collection_item_types]
