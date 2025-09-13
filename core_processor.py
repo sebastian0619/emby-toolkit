@@ -103,13 +103,17 @@ def _save_metadata_to_cache(
             "release_date": release_date_str,
         }
         
-        # ★★★ 核心修复：使用 ON CONFLICT 语法 ★★★
         columns = list(metadata.keys())
-        columns_str = ', '.join(columns)
-        placeholders_str = ', '.join(['%s'] * len(columns))
+        # ▼▼▼ 核心修复 1/2：在列清单中手动加入 last_synced_at ▼▼▼
+        columns.append("last_synced_at")
         
-        # media_metadata 表的冲突键是 (tmdb_id, item_type)
-        update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns]
+        columns_str = ', '.join(columns)
+        # 占位符比 metadata 字典多一个，用于 NOW()
+        placeholders_str = ', '.join(['%s'] * len(metadata)) + ', NOW()'
+        
+        update_clauses = [f"{col} = EXCLUDED.{col}" for col in metadata.keys()]
+        # ▼▼▼ 核心修复 2/2：在 UPDATE 语句中也确保更新 last_synced_at ▼▼▼
+        update_clauses.append("last_synced_at = NOW()")
         update_str = ', '.join(update_clauses)
 
         sql = f"""
@@ -117,8 +121,10 @@ def _save_metadata_to_cache(
             VALUES ({placeholders_str})
             ON CONFLICT (tmdb_id, item_type) DO UPDATE SET {update_str}
         """
+        
+        # 执行时，值的元组不需要包含 NOW()，因为它已经在 SQL 字符串里了
         cursor.execute(sql, tuple(metadata.values()))
-        logger.debug(f"  -> 成功将《{metadata.get('title')}》的元数据缓存到数据库。")
+        logger.debug(f"  -> 成功将《{metadata.get('title')}》的元数据缓存到数据库（并更新了同步时间）。")
 
     except Exception as e:
         logger.error(f"保存元数据到缓存表时失败: {e}", exc_info=True)
