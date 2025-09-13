@@ -1333,7 +1333,7 @@ def get_task_registry(context: str = 'all'):
         'task-chain': (task_run_chain, "自动化任务链", 'media', False), # 任务链本身不能嵌套
 
         # --- 适合任务链的常规任务 ---
-        'sync-person-map': (task_sync_person_map, "同步演员映射", 'media', True),
+        'sync-person-map': (task_sync_person_map, "同步演员数据", 'media', True),
         'enrich-aliases': (task_enrich_aliases, "演员数据补充", 'media', True),
         'populate-metadata': (task_populate_metadata_cache, "同步媒体数据", 'media', True),
         'full-scan': (task_run_full_scan, "中文化角色名", 'media', True),
