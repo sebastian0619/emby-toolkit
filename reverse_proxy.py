@@ -222,7 +222,7 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     """
     # 检查当前请求的路径是否在我们定义的“不支持列表”中
     if any(path.endswith(endpoint) for endpoint in UNSUPPORTED_METADATA_ENDPOINTS):
-        logger.warning(f"检测到对虚拟库的不支持的元数据请求 '{path}'，将直接返回空列表以避免后端错误。")
+        logger.trace(f"检测到对虚拟库的不支持的元数据请求 '{path}'，将直接返回空列表以避免后端错误。")
         # 直接返回一个空的JSON数组，客户端会优雅地处理它（不显示相关筛选器）
         return Response(json.dumps([]), mimetype='application/json')
 
