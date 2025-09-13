@@ -230,27 +230,24 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
         return False
 
 # ★★★ 高效更新 Person 的 ProviderIds 的辅助函数 ★★★
-def update_person_provider_ids(person_id: str, provider_ids_from_db: Dict[str, Any], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
+def update_person_provider_ids(person_id: str, provider_ids_from_db: Dict[str, Any], emby_server_url: str, emby_api_key: str, user_id: str) -> str:
     """
-    【V3 - 类型标准化比较最终版】
-    - 在比较前，将两边的数据都进行严格的类型和格式标准化，确保比较的绝对准确性。
+    【V4 - 精确状态返回最终版】
+    返回一个明确的状态字符串，告知调用者具体执行了什么操作。
     """
     if not all([person_id, provider_ids_from_db, emby_server_url, emby_api_key, user_id]):
-        return False
+        return "ERROR"
 
     try:
         person_details = get_emby_item_details(person_id, emby_server_url, emby_api_key, user_id, fields="ProviderIds,Name")
         if not person_details:
             logger.warning(f"无法获取 Emby 演员 {person_id} 的详情，跳过反向同步。")
-            return False
+            return "SKIPPED"
 
         person_name = person_details.get("Name", f"ID:{person_id}")
 
-        # ★★★ 核心修复 1/2: 标准化 Emby 端的数据 ★★★
-        # 将所有值转为字符串，并移除空值
         current_provider_ids_emby = {k: str(v) for k, v in person_details.get("ProviderIds", {}).items() if v}
 
-        # ★★★ 核心修复 2/2: 标准化数据库端的数据 ★★★
         db_ids_cleaned = {
             "Tmdb": str(provider_ids_from_db['tmdb_person_id']) if provider_ids_from_db.get('tmdb_person_id') else None,
             "Imdb": provider_ids_from_db.get('imdb_id'),
@@ -258,28 +255,23 @@ def update_person_provider_ids(person_id: str, provider_ids_from_db: Dict[str, A
         }
         final_db_ids = {k: str(v) for k, v in db_ids_cleaned.items() if v}
 
-        # --- 使用标准化后的数据进行比较 ---
-        # 只有当两边的字典内容完全不一致时，才认为需要更新
         if final_db_ids != current_provider_ids_emby:
-            # 进一步判断，只有当数据库的信息比Emby更丰富时才更新
-            # （即，Emby中的所有ID，数据库里都有）
             if all(item in final_db_ids.items() for item in current_provider_ids_emby.items()):
                 logger.info(f"  -> 检测到演员 '{person_name}' (ID: {person_id}) 的外部ID需要更新。")
                 logger.debug(f"     Emby 当前: {current_provider_ids_emby}")
                 logger.debug(f"     DB 更新为: {final_db_ids}")
                 
-                # 注意：传递给 update_person_details 的值不需要是字符串，handler内部会处理
-                return update_person_details(person_id, {"ProviderIds": final_db_ids}, emby_server_url, emby_api_key, user_id)
+                success = update_person_details(person_id, {"ProviderIds": final_db_ids}, emby_server_url, emby_api_key, user_id)
+                return "UPDATED" if success else "ERROR"
             else:
                 logger.debug(f"  -> 演员 '{person_name}' (ID: {person_id}) 的 Emby 端信息更丰富或不兼容，跳过反向同步。")
-                return True # 视为成功，因为不需要操作
+                return "SKIPPED"
         else:
-            # 如果完全一致，则无需操作
-            return True
+            return "UNCHANGED"
 
     except Exception as e:
         logger.error(f"反向同步演员 {person_id} 的 ProviderIds 时发生错误: {e}", exc_info=True)
-        return False
+        return "ERROR"
 
 # ✨✨✨ 更新 Emby 媒体项目的演员列表 ✨✨✨
 def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str, Any]],
