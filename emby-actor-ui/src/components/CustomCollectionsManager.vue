@@ -1355,21 +1355,19 @@ const columns = [
       let label = '未知';
       let tagType = 'default';
       if (row.type === 'list') {
-        let url = '';
-        try {
-          const def = JSON.parse(row.definition_json);
-          url = def.url || '';
-        } catch(e) {}
+        let url = row.definition?.url || '';
         
-        const matchedOption = builtInLists.find(opt => opt.value === url);
-        if (matchedOption) {
-            label = matchedOption.label;
-        } else if (url) {
-            label = '榜单导入 (URL)';
+        // ★★★ 核心修改：在这里增加判断逻辑 ★★★
+        if (url.startsWith('maoyan://')) {
+            label = '猫眼榜单';
+            tagType = 'error'; // 用红色区分
+        } else if (url.includes('themoviedb.org/discover/')) {
+            label = '探索助手';
+            tagType = 'warning'; // 用黄色区分
         } else {
             label = '榜单导入';
+            tagType = 'info';
         }
-        tagType = 'info';
 
       } else if (row.type === 'filter') {
         label = '筛选生成';
@@ -1381,18 +1379,9 @@ const columns = [
   {
     title: '内容', key: 'item_type', width: 120,
     render: (row) => {
-        let itemTypes = [];
-        try {
-            if (row.definition_json) {
-                const definition = JSON.parse(row.definition_json);
-                itemTypes = definition.item_type || ['Movie'];
-            } else if (row.item_type) {
-                itemTypes = JSON.parse(row.item_type);
-            }
-        } catch (e) {
-            itemTypes = ['Movie'];
-        }
+        let itemTypes = row.definition?.item_type || ['Movie'];
         if (!Array.isArray(itemTypes)) itemTypes = [itemTypes];
+        
         let label = '电影';
         const hasMovie = itemTypes.includes('Movie');
         const hasSeries = itemTypes.includes('Series');
@@ -1421,7 +1410,7 @@ const columns = [
   },
   { 
     title: '上次同步', key: 'last_synced_at', width: 180,
-    render: (row) => row.last_synced_at ? format(new Date(row.last_synced_at), 'yyyy-MM-dd HH:mm') : '从未'
+    render: (row) => row.last_synced_at || '从未'
   },
   {
     title: '操作', key: 'actions', fixed: 'right', width: 220,

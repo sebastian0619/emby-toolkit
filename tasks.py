@@ -1373,18 +1373,16 @@ def get_task_registry(context: str = 'all'):
         for key, info in full_registry.items()
     }
 
-# ★★★ 一键生成所有合集的后台任务，核心优化在于只获取一次Emby媒体库 ★★★
+# ★★★ 一键生成所有合集的后台任务 ★★★
 def task_process_all_custom_collections(processor: MediaProcessor):
     """
-    【V6 - Emby ID 内嵌 & 排序保持最终版】
-    - 在循环外一次性获取全库媒体数据，提高效率。
-    - 严格确保榜单的原始排序被存入数据库并同步到Emby。
-    - 将媒体项的 Emby ID 一并存入 generated_media_info_json。
+    【V7 - 榜单类型识别 & 精确封面参数】
     """
     task_name = "生成所有自建合集"
     logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
 
     try:
+        # ... (前面的代码都不变，直到 for 循环) ...
         task_manager.update_status_from_thread(0, "正在获取所有启用的合集定义...")
         active_collections = db_handler.get_all_active_custom_collections()
         if not active_collections:
@@ -1419,6 +1417,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
         except Exception as e_cover_init:
             logger.error(f"初始化封面生成器时失败: {e_cover_init}", exc_info=True)
 
+
         for i, collection in enumerate(active_collections):
             if processor.is_stop_requested():
                 logger.warning("任务被用户中止。")
@@ -1435,18 +1434,23 @@ def task_process_all_custom_collections(processor: MediaProcessor):
             try:
                 item_types_for_collection = definition.get('item_type', ['Movie'])
                 tmdb_items = []
-                if collection_type == 'list' and definition.get('url', '').startswith('maoyan://'):
-                    importer = ListImporter(processor.tmdb_api_key)
-                    greenlet = gevent.spawn(importer._execute_maoyan_fetch, definition)
-                    tmdb_items = greenlet.get()
-                else:
-                    if collection_type == 'list':
+                source_type = 'filter' # 默认
+
+                if collection_type == 'list':
+                    url = definition.get('url', '')
+                    if url.startswith('maoyan://'):
+                        source_type = 'list_maoyan'
                         importer = ListImporter(processor.tmdb_api_key)
-                        tmdb_items = importer.process(definition)
-                    elif collection_type == 'filter':
-                        engine = FilterEngine()
-                        tmdb_items = engine.execute_filter(definition)
+                        greenlet = gevent.spawn(importer._execute_maoyan_fetch, definition)
+                        tmdb_items = greenlet.get()
+                    else:
+                        importer = ListImporter(processor.tmdb_api_key)
+                        tmdb_items, source_type = importer.process(definition)
+                elif collection_type == 'filter':
+                    engine = FilterEngine()
+                    tmdb_items = engine.execute_filter(definition)
                 
+                # ... (后续代码直到封面生成部分) ...
                 if not tmdb_items:
                     logger.warning(f"合集 '{collection_name}' 未能生成任何媒体ID，跳过。")
                     db_handler.update_custom_collection_after_sync(collection_id, {"emby_collection_id": None, "generated_media_info_json": "[]", "generated_emby_ids_json": "[]"})
@@ -1469,7 +1473,6 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                         user_id=processor.emby_user_id,
                         prefetched_collection_map=prefetched_collection_map
                     )
-                    # 检查只在尝试创建时才有意义
                     if not emby_collection_id:
                         raise RuntimeError("在Emby中创建或更新合集失败，请检查Emby日志。")
                 
@@ -1480,6 +1483,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                 }
 
                 if collection_type == 'list':
+                    # ... (这部分健康度检查逻辑不变) ...
                     previous_media_map = {}
                     try:
                         previous_media_list = collection.get('generated_media_info_json') or []
@@ -1544,8 +1548,6 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                         "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag and emby_collection_id else None
                     })
                 else: 
-                    # ★★★ 核心修复 1: 为规则筛选类合集生成精简版JSON ★★★
-                    logger.debug(f"  -> 为规则筛选合集 '{collection_name}' 生成精简版媒体信息JSON...")
                     all_media_with_status = [
                         {
                             'tmdb_id': item['id'],
@@ -1568,10 +1570,15 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                     logger.info(f"  -> 正在为合集 '{collection_name}' 生成封面...")
                     library_info = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                     if library_info:
+                        # ★★★ 核心修改：根据 source_type 决定封面参数 ★★★
                         item_count_to_pass = update_data.get('in_library_count', 0)
-                        if collection_type == 'list': item_count_to_pass = '榜单'
+                        if source_type == 'list_maoyan':
+                            item_count_to_pass = '猫眼'
+                        elif source_type == 'list_discover':
+                            item_count_to_pass = '探索'
+                        elif source_type.startswith('list_'):
+                            item_count_to_pass = '榜单'
                         
-                        # ★★★ 核心修复 2: 调用封面生成器时，传入内容类型 ★★★
                         cover_service.generate_for_library(
                             emby_server_id='main_emby',
                             library=library_info,
@@ -1592,16 +1599,17 @@ def task_process_all_custom_collections(processor: MediaProcessor):
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
+
 # --- 处理单个自定义合集的核心任务 ---
 def task_process_custom_collection(processor: MediaProcessor, custom_collection_id: int):
     """
-    【V11.1 - 变量未定义修复版】
-    - 修复了因缺少封面配置加载逻辑导致的 "cover_config" 未定义错误。
+    【V12 - 榜单类型识别 & 精确封面参数】
     """
     task_name = f"处理自定义合集 (ID: {custom_collection_id})"
     logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
+        # ... (前面的代码都不变，直到 tmdb_items = [] ) ...
         task_manager.update_status_from_thread(0, "正在读取合集定义...")
         collection = db_handler.get_custom_collection_by_id(custom_collection_id)
         if not collection: raise ValueError(f"未找到ID为 {custom_collection_id} 的自定义合集。")
@@ -1613,20 +1621,25 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         item_types_for_collection = definition.get('item_type', ['Movie'])
         
         tmdb_items = []
-        if collection_type == 'list' and definition.get('url', '').startswith('maoyan://'):
-            logger.info(f"检测到猫眼榜单 '{collection_name}'，将启动异步后台任务...")
-            task_manager.update_status_from_thread(10, f"正在后台获取猫眼榜单: {collection_name}...")
-            importer = ListImporter(processor.tmdb_api_key)
-            greenlet = gevent.spawn(importer._execute_maoyan_fetch, definition)
-            tmdb_items = greenlet.get()
-        else:
-            if collection_type == 'list':
+        source_type = 'filter' # 默认
+
+        if collection_type == 'list':
+            url = definition.get('url', '')
+            if url.startswith('maoyan://'):
+                source_type = 'list_maoyan'
+                logger.info(f"检测到猫眼榜单 '{collection_name}'，将启动异步后台任务...")
+                task_manager.update_status_from_thread(10, f"正在后台获取猫眼榜单: {collection_name}...")
                 importer = ListImporter(processor.tmdb_api_key)
-                tmdb_items = importer.process(definition)
-            elif collection_type == 'filter':
-                engine = FilterEngine()
-                tmdb_items = engine.execute_filter(definition)
+                greenlet = gevent.spawn(importer._execute_maoyan_fetch, definition)
+                tmdb_items = greenlet.get()
+            else:
+                importer = ListImporter(processor.tmdb_api_key)
+                tmdb_items, source_type = importer.process(definition)
+        elif collection_type == 'filter':
+            engine = FilterEngine()
+            tmdb_items = engine.execute_filter(definition)
         
+        # ... (后续代码直到封面生成部分) ...
         if not tmdb_items:
             logger.warning(f"合集 '{collection_name}' 未能生成任何媒体ID，任务结束。")
             db_handler.update_custom_collection_after_sync(custom_collection_id, {"emby_collection_id": None, "generated_media_info_json": "[]"})
@@ -1642,10 +1655,8 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
 
         if not ordered_emby_ids_in_library:
             logger.warning(f"榜单 '{collection_name}' 解析成功，但在您的媒体库中未找到任何匹配项目。将只更新数据库，不创建Emby合集。")
-            # 此时，我们仍然需要执行后面的健康度分析和数据库更新，但要跳过Emby创建
             emby_collection_id = None 
         else:
-            # 只有在库里有匹配项时，才去创建或更新Emby合集
             emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
                 collection_name=collection_name, 
                 emby_ids_in_library=ordered_emby_ids_in_library, 
@@ -1653,7 +1664,6 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 api_key=processor.emby_api_key, 
                 user_id=processor.emby_user_id
             )
-
             if not emby_collection_id:
                 raise RuntimeError("在Emby中创建或更新合集失败。")
         
@@ -1664,6 +1674,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         }
 
         if collection_type == 'list':
+            # ... (这部分健康度检查逻辑不变) ...
             task_manager.update_status_from_thread(90, "榜单合集已同步，正在并行获取详情...")
             
             previous_media_map = {}
@@ -1743,7 +1754,6 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         db_handler.update_custom_collection_after_sync(custom_collection_id, update_data)
         logger.info(f"  -> 已更新自定义合集 '{collection_name}' (ID: {custom_collection_id}) 的同步状态和健康信息。")
 
-        # ★★★ 核心修复：在这里添加缺失的封面配置加载逻辑 ★★★
         try:
             cover_config = db_handler.get_setting('cover_generator_config') or {}
 
@@ -1752,10 +1762,15 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 cover_service = CoverGeneratorService(config=cover_config)
                 library_info = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                 if library_info:
-                    in_library_count = update_data.get('in_library_count', 0)
-                    item_count_to_pass = in_library_count
-                    if collection_type == 'list':
+                    # ★★★ 核心修改：根据 source_type 决定封面参数 ★★★
+                    item_count_to_pass = update_data.get('in_library_count', 0)
+                    if source_type == 'list_maoyan':
+                        item_count_to_pass = '猫眼'
+                    elif source_type == 'list_discover':
+                        item_count_to_pass = '探索'
+                    elif source_type.startswith('list_'):
                         item_count_to_pass = '榜单'
+                        
                     cover_service.generate_for_library(
                         emby_server_id='main_emby',
                         library=library_info,

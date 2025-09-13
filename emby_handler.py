@@ -228,42 +228,59 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
     except requests.exceptions.RequestException as e:
         logger.error(f"  -> 更新 Person (ID: {person_id}) 时发生错误: {e}")
         return False
-# --- 创建一个新演员 ---
-def create_emby_person(name: str, provider_ids: Dict[str, str], base_url: str, api_key: str) -> Optional[str]:
-    """
-    通过专门的API，显式地在Emby中创建一个新的Person（演员）项目。
-    这个接口能正确地保存ProviderIds。
-    """
-    if not all([name, base_url, api_key]):
-        logger.error("create_emby_person: 缺少必要的参数。")
-        return None
 
-    api_url = f"{base_url.rstrip('/')}/Persons"
-    params = {'api_key': api_key}
-    headers = {'Content-Type': 'application/json'}
-    
-    payload = {
-        "Name": name,
-        "ProviderIds": provider_ids
-    }
-    
-    logger.debug(f"  -> 准备显式创建新演员: '{name}' with ProviderIds: {provider_ids}")
-    
+# ★★★ 高效更新 Person 的 ProviderIds 的辅助函数 ★★★
+def update_person_provider_ids(person_id: str, provider_ids_from_db: Dict[str, Any], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
+    """
+    【V3 - 类型标准化比较最终版】
+    - 在比较前，将两边的数据都进行严格的类型和格式标准化，确保比较的绝对准确性。
+    """
+    if not all([person_id, provider_ids_from_db, emby_server_url, emby_api_key, user_id]):
+        return False
+
     try:
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.post(api_url, json=payload, headers=headers, params=params, timeout=api_timeout)
-        response.raise_for_status()
-        new_person_data = response.json()
-        new_person_id = new_person_data.get("Id")
-        if new_person_id:
-            logger.info(f"  -> ✅ 成功在Emby中创建新演员 '{name}' (ID: {new_person_id})。")
-            return new_person_id
+        person_details = get_emby_item_details(person_id, emby_server_url, emby_api_key, user_id, fields="ProviderIds,Name")
+        if not person_details:
+            logger.warning(f"无法获取 Emby 演员 {person_id} 的详情，跳过反向同步。")
+            return False
+
+        person_name = person_details.get("Name", f"ID:{person_id}")
+
+        # ★★★ 核心修复 1/2: 标准化 Emby 端的数据 ★★★
+        # 将所有值转为字符串，并移除空值
+        current_provider_ids_emby = {k: str(v) for k, v in person_details.get("ProviderIds", {}).items() if v}
+
+        # ★★★ 核心修复 2/2: 标准化数据库端的数据 ★★★
+        db_ids_cleaned = {
+            "Tmdb": str(provider_ids_from_db['tmdb_person_id']) if provider_ids_from_db.get('tmdb_person_id') else None,
+            "Imdb": provider_ids_from_db.get('imdb_id'),
+            "Douban": provider_ids_from_db.get('douban_celebrity_id')
+        }
+        final_db_ids = {k: str(v) for k, v in db_ids_cleaned.items() if v}
+
+        # --- 使用标准化后的数据进行比较 ---
+        # 只有当两边的字典内容完全不一致时，才认为需要更新
+        if final_db_ids != current_provider_ids_emby:
+            # 进一步判断，只有当数据库的信息比Emby更丰富时才更新
+            # （即，Emby中的所有ID，数据库里都有）
+            if all(item in final_db_ids.items() for item in current_provider_ids_emby.items()):
+                logger.info(f"  -> 检测到演员 '{person_name}' (ID: {person_id}) 的外部ID需要更新。")
+                logger.debug(f"     Emby 当前: {current_provider_ids_emby}")
+                logger.debug(f"     DB 更新为: {final_db_ids}")
+                
+                # 注意：传递给 update_person_details 的值不需要是字符串，handler内部会处理
+                return update_person_details(person_id, {"ProviderIds": final_db_ids}, emby_server_url, emby_api_key, user_id)
+            else:
+                logger.debug(f"  -> 演员 '{person_name}' (ID: {person_id}) 的 Emby 端信息更丰富或不兼容，跳过反向同步。")
+                return True # 视为成功，因为不需要操作
         else:
-            logger.error(f"创建演员 '{name}' 成功，但响应中未找到新ID。")
-            return None
-    except requests.exceptions.RequestException as e:
-        logger.error(f"通过API显式创建演员 '{name}' 时失败: {e}")
-        return None
+            # 如果完全一致，则无需操作
+            return True
+
+    except Exception as e:
+        logger.error(f"反向同步演员 {person_id} 的 ProviderIds 时发生错误: {e}", exc_info=True)
+        return False
+
 # ✨✨✨ 更新 Emby 媒体项目的演员列表 ✨✨✨
 def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str, Any]],
                           emby_server_url: str, emby_api_key: str, user_id: str,

@@ -138,114 +138,96 @@ class ActorDBManager:
         return None
 
     def upsert_person(
-    self, 
-    cursor: psycopg2.extensions.cursor, 
-    person_data: Dict[str, Any],
-    # ✨ 新增参数，用于实时清理Emby
-    emby_config: Dict[str, str] 
-) -> Tuple[int, str]:
+        self, 
+        cursor: psycopg2.extensions.cursor, 
+        person_data: Dict[str, Any],
+        emby_config: Dict[str, str] 
+    ) -> Tuple[int, str]:
         """
-        【V3 - 冲突根除版】
-        以 emby_person_id 为主进行更新或插入。
-        一旦检测到外部ID冲突，会立即清除所有相关方（数据库和Emby）的该冲突ID。
+        【V4.1 - 类型安全修复版】
+        - 修复了当 tmdb_id 为 'None' 字符串时导致的 int() 转换错误。
         """
-        # 定义数据库字段名与Emby ProviderIds键的映射关系
         id_field_map = {
             "tmdb_person_id": "Tmdb",
             "imdb_id": "Imdb",
             "douban_celebrity_id": "Douban"
         }
 
+        cursor.execute("SAVEPOINT actor_upsert")
+
         try:
-            # 1. 标准化输入数据 (逻辑不变)
+            # ★★★ 核心修复：更安全地处理 tmdb_id ★★★
+            tmdb_id_raw = person_data.get("tmdb_id")
+            tmdb_id_int = None
+            if tmdb_id_raw and str(tmdb_id_raw).isdigit():
+                try:
+                    tmdb_id_int = int(tmdb_id_raw)
+                except (ValueError, TypeError):
+                    pass # 如果转换失败，保持为 None
+            
             new_data = {
                 "primary_name": str(person_data.get("name") or '').strip(),
                 "emby_person_id": str(person_data.get("emby_id") or '').strip() or None,
-                "tmdb_person_id": int(person_data.get("tmdb_id")) if person_data.get("tmdb_id") else None,
+                "tmdb_person_id": tmdb_id_int,
                 "imdb_id": str(person_data.get("imdb_id") or '').strip() or None,
                 "douban_celebrity_id": str(person_data.get("douban_id") or '').strip() or None,
             }
 
             if not new_data["emby_person_id"]:
                 logger.warning("缺失 emby_person_id，无法执行 upsert")
+                cursor.execute("RELEASE SAVEPOINT actor_upsert")
                 return -1, "SKIPPED"
 
-            cursor.execute("SAVEPOINT actor_upsert")
-
-            # ======================================================================
-            # ✨ 核心修改：在处理前，主动检查并解决所有传入ID的冲突 ✨
-            # ======================================================================
+            # --- 冲突检查 (逻辑不变) ---
+            conflict_detected = False
             for db_column, emby_provider_key in id_field_map.items():
                 id_value = new_data.get(db_column)
                 if id_value is None:
                     continue
 
-                # 查找所有使用此ID的记录
                 cursor.execute(
                     f"SELECT emby_person_id FROM person_identity_map WHERE {db_column} = %s",
                     (id_value,)
                 )
                 conflicting_records = cursor.fetchall()
                 
-                # 如果发现超过一个记录（或一个不是当前记录的记录）使用此ID，则判定为冲突
-                # 为了简化逻辑，只要发现任何已存在的记录，就触发清理，确保ID的绝对唯一性
                 if conflicting_records:
                     conflicting_emby_pids = [rec['emby_person_id'] for rec in conflicting_records]
-                    
-                    # 检查当前处理的 emby_person_id 是否在冲突列表中，如果不在，也把它加进去
-                    # 这样可以确保新旧数据都被纳入清理范围
                     if new_data["emby_person_id"] not in conflicting_emby_pids:
                         conflicting_emby_pids.append(new_data["emby_person_id"])
                     
-                    # 只有当冲突涉及多个PID时，才执行清理
                     if len(conflicting_emby_pids) > 1:
+                        conflict_detected = True
                         logger.warning(
                             f"检测到ID冲突: {db_column} = '{id_value}' 被多个Emby PID共享: {conflicting_emby_pids}。"
                             "将执行彻底清理..."
                         )
-
-                        # 1. 在更新父表之前，先安全地删除子表中的依赖记录
                         if db_column == "tmdb_person_id":
-                            logger.info(f"  -> 正在从 'actor_metadata' 表中删除对 TMDB ID '{id_value}' 的依赖...")
-                            cursor.execute(
-                                "DELETE FROM actor_metadata WHERE tmdb_id = %s",
-                                (id_value,)
-                            )
-
-                        # 2. 清理数据库
-                        logger.info(f"  -> 正在从数据库中清除所有 '{id_value}'...")
+                            cursor.execute("DELETE FROM actor_metadata WHERE tmdb_id = %s", (id_value,))
                         cursor.execute(
                             f"UPDATE person_identity_map SET {db_column} = NULL, last_updated_at = NOW() WHERE {db_column} = %s",
                             (id_value,)
                         )
-
-                        # 3. 清理 Emby
-                        logger.info(f"  -> 正在从Emby中清除所有关联演员的 '{emby_provider_key}' ID...")
                         for pid in conflicting_emby_pids:
                             emby_handler.clear_emby_person_provider_id(
-                                person_id=pid,
-                                provider_key_to_clear=emby_provider_key,
-                                emby_server_url=emby_config['url'],
-                                emby_api_key=emby_config['api_key'],
-                                user_id=emby_config['user_id']
+                                person_id=pid, provider_key_to_clear=emby_provider_key,
+                                emby_server_url=emby_config['url'], api_key=emby_config['api_key'], user_id=emby_config['user_id']
                             )
-                        
-                        # 清理后，将当前新数据中的这个ID也置空，因为它是“有争议”的
                         new_data[db_column] = None
                         logger.info(f"ID '{id_value}' 已被彻底清理，本次同步将不会使用它。")
 
+            if conflict_detected:
+                cursor.execute("RELEASE SAVEPOINT actor_upsert")
+                return -1, "SKIPPED"
 
-            # --- 后续的 upsert 逻辑基本保持不变，但现在处理的是已经“干净”的数据 ---
-
+            # --- Upsert 逻辑 (逻辑不变) ---
             cursor.execute("SELECT * FROM person_identity_map WHERE emby_person_id = %s", (new_data["emby_person_id"],))
             existing_record = cursor.fetchone()
 
             if existing_record:
-                # 更新逻辑...
                 existing_record = dict(existing_record)
                 update_fields = {}
                 
-                # 只更新那些在新数据中仍然有效（未被清理）且在旧记录中缺失的字段
                 id_fields = id_field_map.keys()
                 for f in id_fields:
                     new_val = new_data.get(f)
@@ -268,9 +250,8 @@ class ActorDBManager:
                     cursor.execute("RELEASE SAVEPOINT actor_upsert")
                     return existing_record["map_id"], "UNCHANGED"
             else:
-                # 插入逻辑...
                 insert_fields = [k for k, v in new_data.items() if v is not None]
-                if not insert_fields: # 如果所有字段都无效了
+                if not insert_fields:
                     cursor.execute("RELEASE SAVEPOINT actor_upsert")
                     return -1, "SKIPPED"
 
@@ -287,13 +268,10 @@ class ActorDBManager:
                 cursor.execute("RELEASE SAVEPOINT actor_upsert")
                 return (result["map_id"], "INSERTED") if result else (-1, "ERROR")
 
-        except psycopg2.Error as e:
-            cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
-            logger.error(f"upsert_person 数据库异常，emby_person_id={person_data.get('emby_id')}: {e}", exc_info=True)
-            return -1, "ERROR"
         except Exception as e:
             cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
-            logger.error(f"upsert_person 未知异常，emby_person_id={person_data.get('emby_id')}: {e}", exc_info=True)
+            logger.error(f"upsert_person 发生异常，emby_person_id={person_data.get('emby_id')}: {e}", exc_info=True)
+            cursor.execute("RELEASE SAVEPOINT actor_upsert")
             return -1, "ERROR"
 
 # --- 演员映射表清理 ---
