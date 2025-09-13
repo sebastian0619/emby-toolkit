@@ -1588,6 +1588,8 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                         item_count_to_pass = update_data.get('in_library_count', 0)
                         if source_type == 'list_maoyan':
                             item_count_to_pass = '猫眼'
+                        elif source_type == 'list_douban':
+                            item_count_to_pass = '豆列'
                         elif source_type == 'list_discover':
                             item_count_to_pass = '探索'
                         elif source_type.startswith('list_'):
@@ -1780,6 +1782,8 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                     item_count_to_pass = update_data.get('in_library_count', 0)
                     if source_type == 'list_maoyan':
                         item_count_to_pass = '猫眼'
+                    elif source_type == 'list_douban':
+                        item_count_to_pass = '豆列'
                     elif source_type == 'list_discover':
                         item_count_to_pass = '探索'
                     elif source_type.startswith('list_'):
@@ -2238,11 +2242,23 @@ def task_generate_all_custom_collection_covers(processor: MediaProcessor):
                     logger.warning(f"无法获取合集 '{collection_name}' (Emby ID: {emby_collection_id}) 的详情，跳过。")
                     continue
 
-                # b. 准备封面生成器需要的参数
+                # b. ★★★ 核心修复：准备封面生成器需要的参数 ★★★
                 definition = collection_db_info.get('definition_json', {})
+                collection_type = collection_db_info.get('type')
+                
                 item_count_to_pass = collection_db_info.get('in_library_count', 0)
-                if collection_db_info.get('type') == 'list':
-                    item_count_to_pass = '榜单' # 榜单类型传递特殊标识
+                
+                # 只有榜单类型才需要特殊处理
+                if collection_type == 'list':
+                    url = definition.get('url', '')
+                    if url.startswith('maoyan://'):
+                        item_count_to_pass = '猫眼'
+                    elif 'douban.com/doulist' in url:
+                        item_count_to_pass = '豆列'
+                    elif 'themoviedb.org/discover/' in url:
+                        item_count_to_pass = '探索'
+                    else:
+                        item_count_to_pass = '榜单'
                 
                 content_types = definition.get('item_type', ['Movie'])
 

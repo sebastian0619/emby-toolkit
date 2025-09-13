@@ -1360,10 +1360,13 @@ const columns = [
         // ★★★ 核心修改：在这里增加判断逻辑 ★★★
         if (url.startsWith('maoyan://')) {
             label = '猫眼榜单';
-            tagType = 'error'; // 用红色区分
+            tagType = 'error';
+        } else if (url.includes('douban.com/doulist')) {
+            label = '豆瓣豆列';
+            tagType = 'success'; // 用绿色区分
         } else if (url.includes('themoviedb.org/discover/')) {
             label = '探索助手';
-            tagType = 'warning'; // 用黄色区分
+            tagType = 'warning';
         } else {
             label = '榜单导入';
             tagType = 'info';
