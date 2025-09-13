@@ -211,7 +211,7 @@ class ActorDBManager:
                         for pid in conflicting_emby_pids:
                             emby_handler.clear_emby_person_provider_id(
                                 person_id=pid, provider_key_to_clear=emby_provider_key,
-                                emby_server_url=emby_config['url'], api_key=emby_config['api_key'], user_id=emby_config['user_id']
+                                emby_server_url=emby_config['url'], emby_api_key=emby_config['api_key'], user_id=emby_config['user_id']
                             )
                         new_data[db_column] = None
                         logger.info(f"ID '{id_value}' 已被彻底清理，本次同步将不会使用它。")
