@@ -8,7 +8,7 @@ from flask import Flask, request, Response
 from urllib.parse import urlparse, urlunparse
 import time
 import uuid 
-from datetime import datetime
+from datetime import datetime, timezone
 from gevent import spawn
 from geventwebsocket.websocket import WebSocket
 from websocket import create_connection
@@ -345,7 +345,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 logger.trace(f"  -> 分离出 {len(movie_tmdb_ids)} 个电影和 {len(series_tmdb_ids)} 个剧集的TMDb ID用于查询时间戳。")
 
                 timestamp_map = {}
-                default_timestamp = datetime.min
+                default_timestamp = datetime.min.replace(tzinfo=timezone.utc)
                 
                 # 2. 分别查询电影和剧集的时间戳
                 if movie_tmdb_ids:
