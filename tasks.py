@@ -3313,12 +3313,10 @@ def task_purge_ghost_actors(processor: MediaProcessor):
             progress = 60 + int((i / total_to_delete) * 40)
             task_manager.update_status_from_thread(progress, f"({i+1}/{total_to_delete}) 正在删除: {person_name}")
 
-            success = emby_handler.delete_person_with_fallback(
+            success = emby_handler.delete_person_custom_api(
                 base_url=processor.emby_url,
                 api_key=processor.emby_api_key,
-                user_id=processor.emby_user_id,
-                person_id=person_id,
-                person_name=person_name
+                person_id=person_id
             )
             
             if success:
