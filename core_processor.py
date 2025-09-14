@@ -648,7 +648,27 @@ class MediaProcessor:
             return False
 
         # 3. 获取Emby详情，这是后续所有操作的基础
-        item_details = emby_handler.get_emby_item_details(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+        item_details_precheck = emby_handler.get_emby_item_details(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields="Type")
+        if not item_details_precheck:
+            logger.error(f"process_single_item: 无法获取 Emby 项目 {emby_item_id} 的基础详情。")
+            return False
+
+        item_type = item_details_precheck.get("Type")
+        item_details = None
+
+        if item_type == "Series":
+            # 如果是剧集，调用我们新的聚合函数
+            item_details = emby_handler.get_emby_series_details_with_full_cast(
+                series_id=emby_item_id,
+                emby_server_url=self.emby_url,
+                emby_api_key=self.emby_api_key,
+                user_id=self.emby_user_id
+            )
+        else:
+            # 如果是电影或其他类型，使用原来的函数
+            item_details = emby_handler.get_emby_item_details(
+                emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id
+            )
         if not item_details:
             logger.error(f"process_single_item: 无法获取 Emby 项目 {emby_item_id} 的详情。")
             return False
