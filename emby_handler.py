@@ -307,50 +307,6 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
         logger.error(f"  -> 更新 Person (ID: {person_id}) 时发生错误: {e}")
         return False
 
-# ★★★ 高效更新 Person 的 ProviderIds 的辅助函数 ★★★
-def update_person_provider_ids(person_id: str, provider_ids_from_db: Dict[str, Any], emby_server_url: str, emby_api_key: str, user_id: str) -> str:
-    """
-    【V4 - 精确状态返回最终版】
-    返回一个明确的状态字符串，告知调用者具体执行了什么操作。
-    """
-    if not all([person_id, provider_ids_from_db, emby_server_url, emby_api_key, user_id]):
-        return "ERROR"
-
-    try:
-        person_details = get_emby_item_details(person_id, emby_server_url, emby_api_key, user_id, fields="ProviderIds,Name")
-        if not person_details:
-            logger.warning(f"无法获取 Emby 演员 {person_id} 的详情，跳过反向同步。")
-            return "SKIPPED"
-
-        person_name = person_details.get("Name", f"ID:{person_id}")
-
-        current_provider_ids_emby = {k: str(v) for k, v in person_details.get("ProviderIds", {}).items() if v}
-
-        db_ids_cleaned = {
-            "Tmdb": str(provider_ids_from_db['tmdb_person_id']) if provider_ids_from_db.get('tmdb_person_id') else None,
-            "Imdb": provider_ids_from_db.get('imdb_id'),
-            "Douban": provider_ids_from_db.get('douban_celebrity_id')
-        }
-        final_db_ids = {k: str(v) for k, v in db_ids_cleaned.items() if v}
-
-        if final_db_ids != current_provider_ids_emby:
-            if all(item in final_db_ids.items() for item in current_provider_ids_emby.items()):
-                logger.info(f"  -> 检测到演员 '{person_name}' (ID: {person_id}) 的外部ID需要更新。")
-                logger.debug(f"     Emby 当前: {current_provider_ids_emby}")
-                logger.debug(f"     DB 更新为: {final_db_ids}")
-                
-                success = update_person_details(person_id, {"ProviderIds": final_db_ids}, emby_server_url, emby_api_key, user_id)
-                return "UPDATED" if success else "ERROR"
-            else:
-                logger.debug(f"  -> 演员 '{person_name}' (ID: {person_id}) 的 Emby 端信息更丰富或不兼容，跳过反向同步。")
-                return "SKIPPED"
-        else:
-            return "UNCHANGED"
-
-    except Exception as e:
-        logger.error(f"反向同步演员 {person_id} 的 ProviderIds 时发生错误: {e}", exc_info=True)
-        return "ERROR"
-
 # ✨✨✨ 更新 Emby 媒体项目的演员列表 ✨✨✨
 def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str, Any]],
                           emby_server_url: str, emby_api_key: str, user_id: str,

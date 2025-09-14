@@ -137,6 +137,25 @@ class ActorDBManager:
                 logger.error(f"查询 person_identity_map 时出错 ({column}={value}): {e}")
         return None
 
+    def find_person_by_any_id(self, cursor: psycopg2.extensions.cursor, **kwargs) -> Optional[dict]:
+        search_criteria = [
+            ("tmdb_person_id", kwargs.get("tmdb_id")),
+            ("emby_person_id", kwargs.get("emby_id")),
+            ("imdb_id", kwargs.get("imdb_id")),
+            ("douban_celebrity_id", kwargs.get("douban_id")),
+        ]
+        for column, value in search_criteria:
+            if not value: continue
+            try:
+                cursor.execute(f"SELECT * FROM person_identity_map WHERE {column} = %s", (value,))
+                result = cursor.fetchone()
+                if result:
+                    logger.debug(f"通过 {column}='{value}' 找到了演员记录 (map_id: {result['map_id']})。")
+                    return result
+            except psycopg2.Error as e:
+                logger.error(f"查询 person_identity_map 时出错 ({column}={value}): {e}")
+        return None
+
     def upsert_person(
         self, 
         cursor: psycopg2.extensions.cursor, 
