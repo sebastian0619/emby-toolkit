@@ -912,40 +912,37 @@ def create_emby_person(
     person_name: str,
     provider_ids: Dict[str, str],
     emby_server_url: str,
-    emby_api_key: str
+    emby_api_key: str,
+    # ★ 需要一个 user_id 来确定操作上下文
+    user_id: str
 ) -> Optional[str]:
     """
-    在 Emby 中显式创建一个新的 Person 条目。
-
-    Args:
-        person_name: 演员的名字.
-        provider_ids: 包含外部ID的字典 (例如 {"Tmdb": "12345"}).
-        emby_server_url: Emby 服务器 URL.
-        emby_api_key: Emby API Key.
-
-    Returns:
-        成功则返回新创建的 Person 的 Emby Item ID，失败则返回 None.
+    【兼容稳定版】在 Emby 中显式创建一个新的 Person 条目。
+    使用通用的 /Items 接口，这在 4.8.x 稳定版中是受支持的标准操作。
     """
-    if not all([person_name, provider_ids, emby_server_url, emby_api_key]):
-        logger.error("create_emby_person: 参数不足。")
+    if not all([person_name, provider_ids, emby_server_url, emby_api_key, user_id]):
+        logger.error("create_emby_person: 参数不足 (需要 user_id)。")
         return None
 
-    # 创建 Person 的 API 端点是 /Persons
-    api_url = f"{emby_server_url.rstrip('/')}/Persons"
+    # 使用 4.8.x 稳定版支持的通用 /Items 接口
+    api_url = f"{emby_server_url.rstrip('/')}/Items"
     params = {"api_key": emby_api_key}
     headers = {'Content-Type': 'application/json'}
 
-    # 构建要发送的 payload
+    # 构建要发送的 payload，关键是明确指定 Type: "Person"
     payload = {
         "Name": person_name,
-        "ProviderIds": provider_ids
+        "ProviderIds": provider_ids,
+        "Type": "Person" # ★ 明确告知 Emby 我们要创建的是 Person 类型的 Item
     }
 
-    logger.info(f"  -> [两步走-步骤1] 正在为 '{person_name}' 创建新的 Emby Person 条目...")
+    logger.info(f"  -> [稳定版兼容模式] 正在为 '{person_name}' 创建新的 Emby Person 条目...")
+    logger.debug(f"     -> URL: {api_url}")
     logger.debug(f"     -> Payload: {payload}")
 
     try:
         api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+        # 通过 POST 到 /Items 来创建新条目
         response = requests.post(api_url, json=payload, headers=headers, params=params, timeout=api_timeout)
         response.raise_for_status()
         
@@ -962,7 +959,12 @@ def create_emby_person(
     except requests.exceptions.RequestException as e:
         logger.error(f"  -> ❌ 创建 Person '{person_name}' 时发生 API 错误: {e}")
         if e.response is not None:
-            logger.error(f"     -> 响应: {e.response.status_code} - {e.response.text[:200]}")
+            # 增加对中文乱码的友好处理
+            try:
+                error_text = e.response.text.encode('latin1').decode('utf-8')
+            except:
+                error_text = e.response.text[:200]
+            logger.error(f"     -> 响应: {e.response.status_code} - {error_text}")
         return None
 # --- 定时翻译演员 ---
 def prepare_actor_translation_data(

@@ -827,7 +827,8 @@ class MediaProcessor:
                             person_name=actor.get("name"),
                             provider_ids=actor.get("provider_ids", {}),
                             emby_server_url=self.emby_url,
-                            emby_api_key=self.emby_api_key
+                            emby_api_key=self.emby_api_key,
+                            user_id=self.emby_user_id
                         )
                         
                         # 如果注册成功，将 Emby 返回的“身份证号”回填到我们的演员列表中
