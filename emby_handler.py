@@ -907,63 +907,6 @@ def download_emby_image(
     except Exception as e:
         logger.error(f"保存图片到 '{save_path}' 时发生未知错误: {e}")
         return False
-# ✨✨✨ 【新增】专门用于创建新的 Person 条目的函数 ✨✨✨
-def create_emby_person(
-    person_name: str,
-    provider_ids: Dict[str, str],
-    emby_server_url: str,
-    emby_api_key: str,
-    user_id: str
-) -> Optional[str]:
-    """
-    【最终修正版】在 Emby 中显式创建一个新的 Person 条目。
-    使用正确的、在用户上下文下的 /Users/{UserId}/Items 接口。
-    """
-    if not all([person_name, provider_ids, emby_server_url, emby_api_key, user_id]):
-        logger.error("create_emby_person: 参数不足 (需要 user_id)。")
-        return None
-
-    # ★★★ 核心修正：使用在用户上下文中的正确 API 端点 ★★★
-    api_url = f"{emby_server_url.rstrip('/')}/Users/{user_id}/Items"
-    
-    params = {"api_key": emby_api_key}
-    headers = {'Content-Type': 'application/json'}
-
-    # Payload 保持不变，依然是指定 Type: "Person"
-    payload = {
-        "Name": person_name,
-        "ProviderIds": provider_ids,
-        "Type": "Person"
-    }
-
-    logger.info(f"  -> [最终修正模式] 正在为 '{person_name}' 创建新的 Emby Person 条目...")
-    logger.debug(f"     -> URL: {api_url}")
-    logger.debug(f"     -> Payload: {payload}")
-
-    try:
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.post(api_url, json=payload, headers=headers, params=params, timeout=api_timeout)
-        response.raise_for_status()
-        
-        new_person_data = response.json()
-        new_person_id = new_person_data.get("Id")
-
-        if new_person_id:
-            logger.info(f"  -> ✅ 成功创建 Person '{person_name}'，获得新 Emby ID: {new_person_id}")
-            return new_person_id
-        else:
-            logger.error(f"  -> ❌ 创建 Person '{person_name}' 成功，但响应中未找到 ID。")
-            return None
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"  -> ❌ 创建 Person '{person_name}' 时发生 API 错误: {e}")
-        if e.response is not None:
-            try:
-                error_text = e.response.text.encode('latin1').decode('utf-8')
-            except:
-                error_text = e.response.text[:200]
-            logger.error(f"     -> 响应: {e.response.status_code} - {error_text}")
-        return None
 # --- 定时翻译演员 ---
 def prepare_actor_translation_data(
     emby_url: str,
