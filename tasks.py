@@ -3202,41 +3202,106 @@ def task_scan_for_cleanup_issues(processor: MediaProcessor):
 
 def task_purge_ghost_actors(processor: MediaProcessor):
     """
-    【高危】后台任务：遍历所有演员，并删除所有没有TMDb ID的“幽灵”演员。
-    使用非标准的 /DeletePerson 接口。
+    【高危 V4 - 增强日志版】
+    - 增加了更详细的统计日志，明确报告每一步处理了多少演员，以及最终筛选出多少幽灵演员。
+    - 修复了在没有发现幽灵演员时日志过于简单的问题。
     """
-    task_name = "清除所有无TMDbID的演员"
+    task_name = "清理幽灵演员"
     logger.warning(f"--- !!! 开始执行高危任务: '{task_name}' !!! ---")
-    time.sleep(5)
     
-    task_manager.update_status_from_thread(0, "正在获取所有演员列表...")
+    task_manager.update_status_from_thread(0, "正在读取媒体库配置...")
 
     try:
-        # 1. 获取 Emby 中的所有人物
-        all_people = emby_handler.get_all_people_from_emby(
-            base_url=processor.emby_url,
-            api_key=processor.emby_api_key,
-            user_id=processor.emby_user_id
-        )
-        if not all_people:
-            task_manager.update_status_from_thread(100, "任务完成：未能获取到任何演员信息。")
+        # 1. 读取并验证媒体库配置
+        config = processor.config
+        library_ids_to_process = config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
+
+        if not library_ids_to_process:
+            logger.error("任务中止：未在设置中选择任何要处理的媒体库。")
+            task_manager.update_status_from_thread(-1, "任务失败：未选择媒体库")
             return
 
-        # 2. 筛选出所有没有 TMDb ID 的“幽灵”
+        logger.info(f"将只扫描 {len(library_ids_to_process)} 个选定媒体库中的演员...")
+        task_manager.update_status_from_thread(10, f"正在从 {len(library_ids_to_process)} 个媒体库中获取所有媒体...")
+
+        # 2. 获取指定媒体库中的所有电影和剧集
+        all_media_items = emby_handler.get_emby_library_items(
+            base_url=processor.emby_url,
+            api_key=processor.emby_api_key,
+            user_id=processor.emby_user_id,
+            library_ids=library_ids_to_process,
+            media_type_filter="Movie,Series",
+            fields="People"
+        )
+        if not all_media_items:
+            task_manager.update_status_from_thread(100, "任务完成：在选定的媒体库中未找到任何媒体项。")
+            return
+
+        # 3. 从媒体项中提取所有唯一的演员ID
+        task_manager.update_status_from_thread(30, "正在从媒体项中提取唯一的演员ID...")
+        unique_person_ids = set()
+        for item in all_media_items:
+            for person in item.get("People", []):
+                if person_id := person.get("Id"):
+                    unique_person_ids.add(person_id)
+        
+        person_ids_to_fetch = list(unique_person_ids)
+        logger.info(f"在选定媒体库中，共识别出 {len(person_ids_to_fetch)} 位独立演员。")
+
+        if not person_ids_to_fetch:
+            task_manager.update_status_from_thread(100, "任务完成：未在媒体项中找到任何演员。")
+            return
+
+        # 4. 分批获取这些演员的完整详情
+        task_manager.update_status_from_thread(50, f"正在分批获取 {len(person_ids_to_fetch)} 位演员的完整详情...")
+        all_people_in_scope_details = []
+        batch_size = 500
+        for i in range(0, len(person_ids_to_fetch), batch_size):
+            if processor.is_stop_requested():
+                logger.info("在分批获取演员详情阶段，任务被中止。")
+                break
+            
+            batch_ids = person_ids_to_fetch[i:i + batch_size]
+            logger.debug(f"  -> 正在获取批次 {i//batch_size + 1} 的演员详情 ({len(batch_ids)} 个)...")
+
+            person_details_batch = emby_handler.get_emby_items_by_id(
+                base_url=processor.emby_url,
+                api_key=processor.emby_api_key,
+                user_id=processor.emby_user_id,
+                item_ids=batch_ids,
+                fields="ProviderIds,Name"
+            )
+            if person_details_batch:
+                all_people_in_scope_details.extend(person_details_batch)
+
+        if processor.is_stop_requested():
+            logger.warning("任务已中止。")
+            task_manager.update_status_from_thread(100, "任务已中止。")
+            return
+        
+        # ★★★ 新增：详细的获取结果统计日志 ★★★
+        logger.info(f"详情获取完成：成功获取到 {len(all_people_in_scope_details)} 位演员的完整详情。")
+
+        # 5. 基于完整的详情，筛选出真正的“幽灵”演员
         ghosts_to_delete = [
-            p for p in all_people 
+            p for p in all_people_in_scope_details 
             if not p.get("ProviderIds", {}).get("Tmdb")
         ]
-
         total_to_delete = len(ghosts_to_delete)
+
+        # ★★★ 新增：核心的筛选结果统计日志 ★★★
+        logger.info(f"筛选完成：在 {len(all_people_in_scope_details)} 位演员中，发现 {total_to_delete} 个没有TMDb ID的幽灵演员。")
+
         if total_to_delete == 0:
+            # ★★★ 优化：更清晰的完成日志 ★★★
+            logger.info("扫描完成，在选定媒体库中未发现需要清理的幽灵演员。")
             task_manager.update_status_from_thread(100, "扫描完成，未发现无TMDb ID的演员。")
             return
         
-        logger.warning(f"共发现 {total_to_delete} 个无TMDb ID的演员，即将开始删除...")
+        logger.warning(f"共发现 {total_to_delete} 个幽灵演员，即将开始删除...")
         deleted_count = 0
 
-        # 3. 循环删除
+        # 6. 执行删除
         for i, person in enumerate(ghosts_to_delete):
             if processor.is_stop_requested():
                 logger.warning("任务被用户中止。")
@@ -3245,22 +3310,22 @@ def task_purge_ghost_actors(processor: MediaProcessor):
             person_id = person.get("Id")
             person_name = person.get("Name")
             
-            progress = int((i / total_to_delete) * 100)
+            progress = 60 + int((i / total_to_delete) * 40)
             task_manager.update_status_from_thread(progress, f"({i+1}/{total_to_delete}) 正在删除: {person_name}")
 
-            # 调用我们新的专用删除函数
-            success = emby_handler.delete_person_custom_api(
+            success = emby_handler.delete_person_with_fallback(
                 base_url=processor.emby_url,
                 api_key=processor.emby_api_key,
-                person_id=person_id
+                user_id=processor.emby_user_id,
+                person_id=person_id,
+                person_name=person_name
             )
             
             if success:
                 deleted_count += 1
             
-            time.sleep(0.2) # 避免API调用过快
+            time.sleep(0.2)
 
-        # 4. 最终统计
         final_message = f"清理完成！共找到 {total_to_delete} 个目标，成功删除了 {deleted_count} 个。"
         if processor.is_stop_requested():
             final_message = f"任务已中止。共删除了 {deleted_count} 个演员。"

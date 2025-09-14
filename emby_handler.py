@@ -1431,6 +1431,49 @@ def get_all_people_from_emby(base_url: str, api_key: str, user_id: str) -> Optio
         logger.error(f"从Emby获取所有人物列表时失败: {e}")
         return None
 
+def delete_person_with_fallback(base_url: str, api_key: str, user_id: str, person_id: str, person_name: str) -> bool:
+    """
+    智能删除演员，结合了两种删除策略以实现最大成功率。
+    1. 优先尝试使用神医Pro插件的专用接口，这是最推荐的方式。
+    2. 如果专用接口因服务器内部错误 (HTTP 500) 而失败（通常意味着演员条目已损坏），
+       则自动回退到使用模拟管理员登录的通用删除接口，尝试强行移除。
+    """
+    logger.debug(f"  -> 准备删除演员 '{person_name}' (ID: {person_id})，将首先尝试专用接口...")
+    
+    # --- 策略一：尝试神医专用接口 ---
+    api_url = f"{base_url.rstrip('/')}/Items/{person_id}/DeletePerson"
+    params = {'api_key': api_key}
+    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+    
+    try:
+        response = requests.post(api_url, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        logger.info(f"  -> ✅ [专用接口] 成功删除演员 ID: {person_id}。")
+        return True
+    except requests.exceptions.HTTPError as e:
+        # 如果是 500 错误，说明插件崩溃了，我们将尝试回退方案
+        if e.response.status_code == 500:
+            logger.warning(f"  -> [专用接口] 删除演员 {person_id} 时服务器崩溃 (HTTP 500)。这可能是一个损坏的条目。")
+            logger.warning("  -> 正在尝试启动 [回退方案]...")
+            # 直接在这里调用回退函数
+            return delete_item(
+                item_id=person_id,
+                emby_server_url=base_url,
+                emby_api_key=api_key,
+                user_id=user_id
+            )
+        # 如果是 404，说明没有安装神医Pro或版本不对
+        elif e.response.status_code == 404:
+            logger.error(f"删除演员 {person_id} 失败：需神医Pro版本才支持此功能 (接口未找到)。")
+            return False
+        # 其他HTTP错误
+        else:
+            logger.error(f"使用专用接口删除演员 {person_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"使用专用接口删除演员 {person_id} 时发生未知错误: {e}")
+        return False
+
 def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> bool:
     """
     【专用】调用非标准的 /Items/{Id}/DeletePerson POST 接口来删除演员。
