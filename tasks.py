@@ -1362,6 +1362,7 @@ def get_task_registry(context: str = 'all'):
         'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', True),
         'generate-all-covers': (task_generate_all_covers, "生成原生封面", 'media', True),
         'generate-custom-collection-covers': (task_generate_all_custom_collection_covers, "生成合集封面", 'media', True),
+        'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', True),
         
 
         # --- 不适合任务链的、需要特定参数的任务 ---
@@ -3194,6 +3195,78 @@ def task_scan_for_cleanup_issues(processor: MediaProcessor):
         final_message = f"扫描完成！共发现 {len(duplicate_tasks)} 组重复项，待清理。"
         task_manager.update_status_from_thread(100, final_message)
         logger.info(f"--- '{task_name}' 任务成功完成 ---")
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+
+def task_purge_ghost_actors(processor: MediaProcessor):
+    """
+    【高危】后台任务：遍历所有演员，并删除所有没有TMDb ID的“幽灵”演员。
+    使用非标准的 /DeletePerson 接口。
+    """
+    task_name = "清除所有无TMDbID的演员"
+    logger.warning(f"--- !!! 开始执行高危任务: '{task_name}' !!! ---")
+    time.sleep(5)
+    
+    task_manager.update_status_from_thread(0, "正在获取所有演员列表...")
+
+    try:
+        # 1. 获取 Emby 中的所有人物
+        all_people = emby_handler.get_all_people_from_emby(
+            base_url=processor.emby_url,
+            api_key=processor.emby_api_key,
+            user_id=processor.emby_user_id
+        )
+        if not all_people:
+            task_manager.update_status_from_thread(100, "任务完成：未能获取到任何演员信息。")
+            return
+
+        # 2. 筛选出所有没有 TMDb ID 的“幽灵”
+        ghosts_to_delete = [
+            p for p in all_people 
+            if not p.get("ProviderIds", {}).get("Tmdb")
+        ]
+
+        total_to_delete = len(ghosts_to_delete)
+        if total_to_delete == 0:
+            task_manager.update_status_from_thread(100, "扫描完成，未发现无TMDb ID的演员。")
+            return
+        
+        logger.warning(f"共发现 {total_to_delete} 个无TMDb ID的演员，即将开始删除...")
+        deleted_count = 0
+
+        # 3. 循环删除
+        for i, person in enumerate(ghosts_to_delete):
+            if processor.is_stop_requested():
+                logger.warning("任务被用户中止。")
+                break
+            
+            person_id = person.get("Id")
+            person_name = person.get("Name")
+            
+            progress = int((i / total_to_delete) * 100)
+            task_manager.update_status_from_thread(progress, f"({i+1}/{total_to_delete}) 正在删除: {person_name}")
+
+            # 调用我们新的专用删除函数
+            success = emby_handler.delete_person_custom_api(
+                base_url=processor.emby_url,
+                api_key=processor.emby_api_key,
+                person_id=person_id
+            )
+            
+            if success:
+                deleted_count += 1
+            
+            time.sleep(0.2) # 避免API调用过快
+
+        # 4. 最终统计
+        final_message = f"清理完成！共找到 {total_to_delete} 个目标，成功删除了 {deleted_count} 个。"
+        if processor.is_stop_requested():
+            final_message = f"任务已中止。共删除了 {deleted_count} 个演员。"
+        
+        logger.info(final_message)
+        task_manager.update_status_from_thread(100, final_message)
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)

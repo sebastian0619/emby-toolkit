@@ -1456,3 +1456,47 @@ def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: 
     except Exception as e:
         logger.error(f"使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生未知错误: {e}")
         return False
+    
+# --- 清理幽灵演员 ---
+def get_all_people_from_emby(base_url: str, api_key: str, user_id: str) -> Optional[List[Dict[str, Any]]]:
+    """获取Emby媒体库中的所有人物。"""
+    url = f"{base_url}/Persons"
+    params = {
+        "api_key": api_key,
+        "userId": user_id,
+        "Recursive": "true",
+        "Fields": "ProviderIds"
+    }
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        return response.json().get("Items", [])
+    except requests.exceptions.RequestException as e:
+        logger.error(f"从Emby获取所有人物列表时失败: {e}")
+        return None
+
+def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> bool:
+    """
+    【专用】调用非标准的 /Items/{Id}/DeletePerson POST 接口来删除演员。
+    这个接口只在神医Pro版插件中存在。
+    """
+    api_url = f"{base_url.rstrip('/')}/Items/{person_id}/DeletePerson"
+    params = {'api_key': api_key}
+    
+    try:
+        # 这个接口是 POST 请求
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+        response = requests.post(api_url, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        logger.info(f"  -> ✅ 成功删除演员 ID: {person_id}。")
+        return True
+    except requests.exceptions.HTTPError as e:
+        # 404 Not Found 意味着这个专用接口在您的服务器上不存在
+        if e.response.status_code == 404:
+            logger.error(f"删除演员 {person_id} 失败：需神医Pro版本才支持此功能。")
+        else:
+            logger.error(f"使用专用接口删除演员 {person_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
+        return False
+    except Exception as e:
+        logger.error(f"使用专用接口删除演员 {person_id} 时发生未知错误: {e}")
+        return False
