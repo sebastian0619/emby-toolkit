@@ -704,15 +704,25 @@ class MediaProcessor:
             logger.info(f"  -> 开始处理 '{item_name_for_log}' (TMDb ID: {tmdb_id})")
         
             all_emby_people = item_details_from_emby.get("People", [])
-            non_actor_types = {"Director", "Writer", "Producer"} # 定义非演员的类型
+            
+            # ▼▼▼ 终极解决方案：智能筛选演员 ▼▼▼
+            # 定义一个我们确切知道不是演员的类型黑名单
+            non_actor_types = {"Director", "Writer", "Producer"}
+            
+            # 筛选规则：
+            # 1. 类型明确是 'Actor' 的，保留。
+            # 2. 或者，类型不是黑名单中的任何一个，并且有角色名(Role)的，也保留。
+            #    (这个规则可以精准捕获从分集来的、没有Type字段的客串演员)
             current_emby_cast_raw = [
-                person for person in all_emby_people 
-                if person.get("Type") not in non_actor_types
+                person for person in all_emby_people
+                if person.get("Type") == "Actor" or 
+                   (person.get("Type") not in non_actor_types and person.get("Role"))
             ]
             
+            # 记录日志，显示我们筛选了多少人
             if len(all_emby_people) != len(current_emby_cast_raw):
-                logger.info(f"  -> [预处理] 已从Emby的 {len(all_emby_people)} 位演职员中，筛选出 {len(current_emby_cast_raw)} 位演员进行处理。")
-                
+                logger.info(f"  -> [预处理] 已从Emby的 {len(all_emby_people)} 位演职员中，智能筛选出 {len(current_emby_cast_raw)} 位演员进行处理。")
+
             enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
             original_emby_actor_count = len(enriched_emby_cast)
             logger.info(f"  -> 从 Emby 获取后，得到 {original_emby_actor_count} 位现有演员用于后续所有操作。")
