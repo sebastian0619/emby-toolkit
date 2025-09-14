@@ -907,6 +907,63 @@ def download_emby_image(
     except Exception as e:
         logger.error(f"保存图片到 '{save_path}' 时发生未知错误: {e}")
         return False
+# ✨✨✨ 【新增】专门用于创建新的 Person 条目的函数 ✨✨✨
+def create_emby_person(
+    person_name: str,
+    provider_ids: Dict[str, str],
+    emby_server_url: str,
+    emby_api_key: str
+) -> Optional[str]:
+    """
+    在 Emby 中显式创建一个新的 Person 条目。
+
+    Args:
+        person_name: 演员的名字.
+        provider_ids: 包含外部ID的字典 (例如 {"Tmdb": "12345"}).
+        emby_server_url: Emby 服务器 URL.
+        emby_api_key: Emby API Key.
+
+    Returns:
+        成功则返回新创建的 Person 的 Emby Item ID，失败则返回 None.
+    """
+    if not all([person_name, provider_ids, emby_server_url, emby_api_key]):
+        logger.error("create_emby_person: 参数不足。")
+        return None
+
+    # 创建 Person 的 API 端点是 /Persons
+    api_url = f"{emby_server_url.rstrip('/')}/Persons"
+    params = {"api_key": emby_api_key}
+    headers = {'Content-Type': 'application/json'}
+
+    # 构建要发送的 payload
+    payload = {
+        "Name": person_name,
+        "ProviderIds": provider_ids
+    }
+
+    logger.info(f"  -> [两步走-步骤1] 正在为 '{person_name}' 创建新的 Emby Person 条目...")
+    logger.debug(f"     -> Payload: {payload}")
+
+    try:
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+        response = requests.post(api_url, json=payload, headers=headers, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        
+        new_person_data = response.json()
+        new_person_id = new_person_data.get("Id")
+
+        if new_person_id:
+            logger.info(f"  -> ✅ 成功创建 Person '{person_name}'，获得新 Emby ID: {new_person_id}")
+            return new_person_id
+        else:
+            logger.error(f"  -> ❌ 创建 Person '{person_name}' 成功，但响应中未找到 ID。")
+            return None
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"  -> ❌ 创建 Person '{person_name}' 时发生 API 错误: {e}")
+        if e.response is not None:
+            logger.error(f"     -> 响应: {e.response.status_code} - {e.response.text[:200]}")
+        return None
 # --- 定时翻译演员 ---
 def prepare_actor_translation_data(
     emby_url: str,
