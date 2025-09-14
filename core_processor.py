@@ -1235,27 +1235,57 @@ class MediaProcessor:
                 else:
                     actor['character'] = ''
 
-        tmdb_to_emby_id_map = {
-            str(actor.get('id')): actor.get('emby_person_id')
-            for actor in cast_to_process if actor.get('id') and actor.get('emby_person_id')
-        }
+        # ★★★ 修复逻辑：步骤 1 - 健壮备份 ★★★
+        # 使用翻译后的 name 作为 Key，备份所有关键 ID。
+        # 假设 actor_utils 函数会保留 name 字段。
+        robust_id_backup_map = {}
+        for actor in cast_to_process:
+            actor_name = actor.get('name')
+            if actor_name: # 使用翻译后的名字作为键
+                robust_id_backup_map[actor_name] = {
+                    "id": actor.get("id"), # 备份 TMDb ID
+                    "emby_person_id": actor.get("emby_person_id"), # 备份 Emby ID
+                    "imdb_id": actor.get("imdb_id"),
+                    "douban_id": actor.get("douban_id")
+                }
+
+        # 步骤 2: 调用“黑盒”函数 (保持不变)
         genres = item_details_from_emby.get("Genres", [])
         is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
         final_cast_perfect = actor_utils.format_and_complete_cast_list(
             cast_to_process, is_animation, self.config, mode='auto'
         )
+
+        # ★★★ 修复逻辑：步骤 3 - 健壮恢复 ★★★
+        # 循环黑盒返回的列表，使用 name 键来恢复所有丢失的 ID
         for actor in final_cast_perfect:
-            tmdb_id_str = str(actor.get("id"))
-            if tmdb_id_str in tmdb_to_emby_id_map:
-                actor["emby_person_id"] = tmdb_to_emby_id_map[tmdb_id_str]
+            actor_name = actor.get('name')
+            backup_data = robust_id_backup_map.get(actor_name)
+            
+            if backup_data:
+                # 重新注入所有关键 ID
+                actor["id"] = backup_data["id"]
+                actor["emby_person_id"] = backup_data["emby_person_id"]
+                actor["imdb_id"] = backup_data["imdb_id"]
+                actor["douban_id"] = backup_data["douban_id"]
+            else:
+                # 如果连名字都匹配不上了（比如黑盒函数修改了名字），记录一个警告
+                logger.warning(f"无法为演员 '{actor_name}' 恢复ID，可能在 actor_utils 中被修改或过滤。")
+
+        # ★★★ 修复逻辑：步骤 4 - 格式化 Provider IDs ★★★
+        # 现在的 provider_ids 将基于恢复后的、正确的 ID 来构建
         for actor in final_cast_perfect:
             actor["provider_ids"] = {
                 "Tmdb": str(actor.get("id")),
                 "Imdb": actor.get("imdb_id"),
                 "Douban": actor.get("douban_id")
             }
+            # 过滤掉值为 None 或 "None" 的键，确保 provider_ids 干净
+            actor["provider_ids"] = {k: v for k, v in actor["provider_ids"].items() if v and v != "None"}
+
 
         return final_cast_perfect
+
 
     # --- 核心处理器 (备用代码，等4.9正式版恢复)---
     # def _process_cast_list_from_api(self, tmdb_cast_people: List[Dict[str, Any]],
