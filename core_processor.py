@@ -814,31 +814,6 @@ class MediaProcessor:
                 # ======================================================================
                 # 阶段 4: 数据写回 (Data Write-back)
                 # ======================================================================
-                # --- ✨✨✨ “两步走”策略 - 新增演员预处理 ✨✨✨ ---
-                logger.info("  -> [两步走] 开始预处理新增演员...")
-                for actor in final_processed_cast:
-                    # 如果演员没有 emby_person_id，说明是需要新增的
-                    if not actor.get("emby_person_id"):
-                        if self.is_stop_requested():
-                            raise InterruptedError("任务在创建新演员阶段被中止。")
-
-                        # 调用我们新的“演员注册”函数
-                        new_emby_id = emby_handler.create_emby_person(
-                            person_name=actor.get("name"),
-                            provider_ids=actor.get("provider_ids", {}),
-                            emby_server_url=self.emby_url,
-                            emby_api_key=self.emby_api_key,
-                            user_id=self.emby_user_id
-                        )
-                        
-                        # 如果注册成功，将 Emby 返回的“身份证号”回填到我们的演员列表中
-                        if new_emby_id:
-                            actor["emby_person_id"] = new_emby_id
-                        else:
-                            logger.warning(f"未能为演员 '{actor.get('name')}' 创建 Emby 条目，该演员可能不会被添加到媒体中。")
-                
-                logger.info("  -> [两步走] 新增演员预处理完成。")
-                # --- ✨✨✨ 修改结束 ✨✨✨ ---
                 # --- 步骤 4.1: 前置更新 - 直接更新演员(Person)自身的外部ID和名字 ---
                 logger.info("  -> 写回步骤 1/2: 检查并更新演员的元数据...")
                 
