@@ -665,7 +665,6 @@ class MediaProcessor:
     # ---核心处理流程 ---
     def _process_item_core_logic_api_version(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool, force_fetch_from_tmdb: bool = False):
         """
-        【V-Final Clarity - 清晰最终版】
         确保数据流清晰、单向，并从根源上解决所有已知问题。
         """
         item_id = item_details_from_emby.get("Id")
@@ -698,38 +697,42 @@ class MediaProcessor:
             # 阶段 2: 权威数据源采集
             # ======================================================================
             authoritative_cast_source = []
+            tmdb_details_for_extra = None # 用于缓存补充数据
 
-            # ★★★★★★★★★★★★★★★ 核心改造：确保总是获取 TMDB 详情 ★★★★★★★★★★★★★★★
-            # 无论是什么策略，我们都尝试获取一次 TMDB 详情，以便后续缓存
+            # 无论是什么策略，我们都总是尝试获取 TMDB 详情
             if self.tmdb_api_key:
-                logger.trace("  -> 实时缓存：正在为补充数据（导演/国家）获取 TMDB 详情...")
-                if item_type == "Movie":
-                    tmdb_details_for_cache = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
-                elif item_type == "Series":
-                    tmdb_details_for_cache = tmdb_handler.get_tv_details_tmdb(tmdb_id, self.tmdb_api_key)
-
-            # 现在才开始根据策略决定 authoritative_cast_source
-            if force_fetch_from_tmdb and tmdb_details_for_cache:
-                logger.trace("  -> 策略: 强制刷新，使用刚从 TMDB 获取的数据作为权威数据源。")
+                logger.info("  -> 策略: 总是使用 TMDB API 获取的数据作为权威数据源。")
+                
                 # --- 电影处理逻辑 ---
                 if item_type == "Movie":
-                    if force_fetch_from_tmdb and self.tmdb_api_key:
-                        logger.info("  -> 电影策略: 强制从 TMDB API 获取元数据...")
-                        movie_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
-                        if movie_details:
-                            credits_data = movie_details.get("credits") or movie_details.get("casts")
-                            if credits_data: authoritative_cast_source = credits_data.get("cast", [])
-                
+                    logger.info("  -> 电影策略: 正在从 TMDB API 获取元数据...")
+                    movie_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
+                    if movie_details:
+                        tmdb_details_for_extra = movie_details # 保存下来用于缓存
+                        credits_data = movie_details.get("credits") or movie_details.get("casts")
+                        if credits_data:
+                            authoritative_cast_source = credits_data.get("cast", [])
+                        else:
+                            logger.warning(f"  -> 未能在 TMDB 详情中找到 '{item_name_for_log}' 的 'credits' 或 'casts' 数据。")
+                    else:
+                        logger.warning(f"  -> 未能从 TMDB 获取 '{item_name_for_log}' 的电影详情。")
+
                 # --- 剧集处理逻辑 ---
                 elif item_type == "Series":
-                    if force_fetch_from_tmdb and self.tmdb_api_key:
-                        logger.info("  -> 剧集策略: 强制从 TMDB API 并发聚合...")
-                        aggregated_tmdb_data = tmdb_handler.aggregate_full_series_data_from_tmdb(
-                            tv_id=int(tmdb_id), api_key=self.tmdb_api_key, max_workers=5
+                    logger.info("  -> 剧集策略: 正在从 TMDB API 并发聚合所有分集的演员...")
+                    aggregated_tmdb_data = tmdb_handler.aggregate_full_series_data_from_tmdb(
+                        tv_id=int(tmdb_id), api_key=self.tmdb_api_key, max_workers=5
+                    )
+                    if aggregated_tmdb_data:
+                        tmdb_details_for_extra = aggregated_tmdb_data.get("series_details") # 保存主剧集详情用于缓存
+                        all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
+                        authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(
+                            aggregated_tmdb_data["series_details"], all_episodes
                         )
-                        if aggregated_tmdb_data:
-                            all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
-                            authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
+                    else:
+                        logger.warning(f"  -> 未能从 TMDB 聚合 '{item_name_for_log}' 的剧集数据。")
+            else:
+                logger.warning("  -> 跳过权威数据源采集，因为未配置 TMDB API Key。")
 
             # 1. 创建一个以TMDb ID为键的权威演员地图，TMDb优先
             authoritative_cast_map = {
@@ -870,7 +873,7 @@ class MediaProcessor:
                     logger.info(f"  -> 没有启用自动刷新，跳过刷新和锁定步骤。")
 
                 # ======================================================================
-                # 阶段 6: 实时元数据缓存 (现在总是能执行了)
+                # 阶段 6: 实时元数据缓存 
                 # ======================================================================
                 logger.trace(f"  -> 实时缓存：准备将 '{item_name_for_log}' 的元数据写入本地数据库...")
                 _save_metadata_to_cache(
@@ -879,7 +882,7 @@ class MediaProcessor:
                     item_type=item_type,
                     item_details_from_emby=item_details_from_emby,
                     final_processed_cast=final_processed_cast,
-                    tmdb_details_for_extra=tmdb_details_for_cache # ★ 把我们获取到的补充数据传进去
+                    tmdb_details_for_extra=tmdb_details_for_extra 
                 )
 
                 # ======================================================================
