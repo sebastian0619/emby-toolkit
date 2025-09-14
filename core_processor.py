@@ -704,11 +704,15 @@ class MediaProcessor:
             logger.info(f"  -> 开始处理 '{item_name_for_log}' (TMDb ID: {tmdb_id})")
         
             all_emby_people = item_details_from_emby.get("People", [])
-            current_emby_cast_raw = [person for person in all_emby_people if person.get("Type") == "Actor"]
+            non_actor_types = {"Director", "Writer", "Producer"} # 定义非演员的类型
+            current_emby_cast_raw = [
+                person for person in all_emby_people 
+                if person.get("Type") not in non_actor_types
+            ]
             
             if len(all_emby_people) != len(current_emby_cast_raw):
-                logger.info(f"  -> [预处理] 已从Emby的 {len(all_emby_people)} 位演职员中，筛选出 {len(current_emby_cast_raw)} 位演员进行处理，非演员角色（如导演）将被保留。")
-
+                logger.info(f"  -> [预处理] 已从Emby的 {len(all_emby_people)} 位演职员中，筛选出 {len(current_emby_cast_raw)} 位演员进行处理。")
+                
             enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
             original_emby_actor_count = len(enriched_emby_cast)
             logger.info(f"  -> 从 Emby 获取后，得到 {original_emby_actor_count} 位现有演员用于后续所有操作。")
