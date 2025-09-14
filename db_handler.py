@@ -82,7 +82,7 @@ class ActorDBManager:
             
             if translated_text and not contains_chinese(translated_text):
                 original_text_key = row['original_text']
-                logger.warning(f"发现无效的历史翻译缓存: '{original_text_key}' -> '{translated_text}'。将自动销毁此记录。")
+                logger.warning(f"  -> 发现无效的历史翻译缓存: '{original_text_key}' -> '{translated_text}'。将自动销毁此记录。")
                 try:
                     cursor.execute("DELETE FROM translation_cache WHERE original_text = %s", (original_text_key,))
                 except Exception as e_delete:
