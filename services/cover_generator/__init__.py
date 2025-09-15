@@ -138,9 +138,12 @@ class CoverGeneratorService:
 
     def __get_valid_items_from_library(self, server_id: str, library: Dict[str, Any], limit: int, content_types: Optional[List[str]] = None) -> List[Dict]:
         """
-        【V2 - 封面生成最终修复版】
-        - 优先使用外部传入的 content_types 来确定要获取的媒体类型。
-        - 解决了无法获取合集(BoxSet)内部媒体项的问题。
+        【V4 - 性能与兼容性最终修复版】
+        - 调用专用的 emby_handler.get_items_for_cover_generator 函数。
+        - 将排序和数量限制的工作完全交给Emby服务器，彻底解决混合库超时问题。
+        - 强制使用用户API端点，解决音乐库等特殊类型无法获取图片的问题。
+        - 增加对 'audiobooks' 类型的支持。
+        - 移除了客户端的所有冗余排序逻辑，代码更简洁高效。
         """
         library_id = library.get("Id") or library.get("ItemId")
         library_name = library.get("Name")
@@ -149,19 +152,16 @@ class CoverGeneratorService:
         api_key = config_manager.APP_CONFIG.get('emby_api_key')
         user_id = config_manager.APP_CONFIG.get('emby_user_id')
 
-        # --- ★★★ 核心修复：重新设计媒体类型确定逻辑 ★★★ ---
+        # --- 媒体类型确定逻辑 (保持不变，并优化) ---
         item_types_to_fetch = None
-        
-        # 1. 优先使用调用者传入的精确内容类型
         if content_types:
             item_types_to_fetch = ",".join(content_types)
-            logger.trace(f"  -> 使用调用者提供的精确内容类型: '{item_types_to_fetch}'")
         else:
-            # 2. 如果没有传入，再回退到基于媒体库类型的猜测
+            # ★ 优化：增加对有声读物的支持
             TYPE_MAP = {
                 'movies': 'Movie', 'tvshows': 'Series', 'music': 'MusicAlbum',
-                'boxsets': 'Movie,Series', # ★ 关键修正：合集里装的是电影和剧集
-                'mixed': 'Movie,Series', 'audiobooks': 'AudioBook'
+                'boxsets': 'Movie,Series', 'mixed': 'Movie,Series', 
+                'audiobooks': 'AudioBook'
             }
             collection_type = library.get('CollectionType')
             if collection_type:
@@ -173,33 +173,41 @@ class CoverGeneratorService:
             logger.warning(f"无法为媒体库 '{library_name}' 确定媒体类型，将使用默认值 'Movie,Series' 尝试。")
             item_types_to_fetch = 'Movie,Series'
             
-        logger.trace(f"  -> 正在为媒体库 '{library_name}' 获取类型为 '{item_types_to_fetch}' 的项目...")
+        # --- ★★★ 核心修改 1: 准备调用新函数所需的参数 ★★★ ---
+        sort_by_param_for_api = None
+        # 为了确保能筛选出足够数量带图片的媒体项，我们请求一个比最终需要数量稍大的缓冲值
+        api_limit = limit * 5 if limit < 10 else limit * 2 
+        
+        if self._sort_by == "Latest":
+            sort_by_param_for_api = "DateCreated"
+        elif self._sort_by == "Random":
+            sort_by_param_for_api = "Random"
 
-        all_items = emby_handler.get_emby_library_items(
+        # --- ★★★ 核心修改 2: 调用新增的专用函数 ★★★
+        all_items = emby_handler.get_items_for_cover_generator(
             base_url=base_url,
             api_key=api_key,
             user_id=user_id,
-            library_ids=[library_id],
-            media_type_filter=item_types_to_fetch,
-            fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated",
-            force_user_endpoint=True
+            library_id=library_id,
+            item_types=item_types_to_fetch,
+            sort_by=sort_by_param_for_api,
+            limit=api_limit
         )
         
         if not all_items:
             return []
             
+        # 现在 all_items 已经是经过服务器优化的、数量有限的小列表
+        # 我们只需在本地进行最后的图片有效性过滤即可
         valid_items = [item for item in all_items if self.__get_image_url(item)]
         
         if not valid_items:
             return []
 
-        if self._sort_by == "Latest":
-            logger.debug(f"  -> 正在对 {len(valid_items)} 个有效项目按'最新添加'进行排序...")
-            valid_items.sort(key=lambda x: x.get('DateCreated', '1970-01-01T00:00:00.000Z'), reverse=True)
-        elif self._sort_by == "Random":
-            logger.debug(f"  -> 正在对 {len(valid_items)} 个有效项目进行'随机'排序...")
-            random.shuffle(valid_items)
+        # --- ★★★ 核心修改 3: 移除客户端的排序/随机逻辑，因为服务器已完成 ★★★ ---
+        # (原有的 random.shuffle 和 .sort() 已被删除)
 
+        # 返回最终需要数量的项目
         return valid_items[:limit]
 
     def __generate_image_from_path(self, library_name: str, title: Tuple[str, str], image_paths: List[str], item_count: Optional[int] = None) -> bytes:

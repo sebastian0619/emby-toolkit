@@ -1493,3 +1493,58 @@ def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> boo
     except Exception as e:
         logger.error(f"使用临时令牌删除演员 {person_id} 时发生未知错误: {e}")
         return False
+    
+def get_items_for_cover_generator(
+    base_url: str,
+    api_key: str,
+    user_id: str,
+    library_id: str,
+    item_types: str,
+    sort_by: Optional[str],
+    limit: int
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    一个专门为封面生成器设计的、高性能的媒体项获取函数。
+    - 强制使用用户API端点 (`/Users/{UserID}/Items`)，以确保对音乐等类型的兼容性。
+    - 直接在API请求中加入排序和数量限制，将负载交给Emby服务器，极大提升效率。
+    """
+    if not all([base_url, api_key, user_id, library_id, item_types]):
+        logger.error("get_items_for_cover_generator: 缺少必要的参数。")
+        return None
+
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    
+    params = {
+        "api_key": api_key,
+        "ParentId": library_id,
+        "IncludeItemTypes": item_types,
+        "Recursive": "true",
+        "Fields": "Id,Name,Type,ImageTags,BackdropImageTags,DateCreated",
+        "Limit": limit
+    }
+
+    # 根据传入的排序要求，构建API参数
+    if sort_by:
+        params["SortBy"] = sort_by
+        # 只有按日期排序时，才需要指定降序
+        if sort_by == "DateCreated":
+            params["SortOrder"] = "Descending"
+
+    try:
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+        
+        logger.trace(f"  -> [封面专用] 正在从库 {library_id} 获取 {limit} 个 '{item_types}' 项目 (排序: {sort_by})...")
+        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        
+        data = response.json()
+        items = data.get("Items", [])
+        logger.trace(f"  -> [封面专用] 成功获取到 {len(items)} 个项目。")
+        return items
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"[封面专用] 从媒体库 {library_id} 获取项目时发生网络错误: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"[封面专用] 处理来自媒体库 {library_id} 的项目时发生未知错误: {e}", exc_info=True)
+        return None
