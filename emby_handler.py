@@ -1205,27 +1205,50 @@ def get_emby_items_by_id(
     item_ids: List[str],
     fields: Optional[str] = None
 ) -> List[Dict[str, Any]]:
+    """
+    【V2 - 批量安全版】
+    根据ID列表批量获取Emby项目，并自动分批处理超长ID列表以避免414错误。
+    """
     if not all([base_url, api_key, user_id]) or not item_ids:
         return []
 
+    all_items = []
+    # 定义一个安全的分批大小，比如每次请求150个ID
+    BATCH_SIZE = 150
+
+    # 将长列表切分成多个小批次
+    id_chunks = [item_ids[i:i + BATCH_SIZE] for i in range(0, len(item_ids), BATCH_SIZE)]
+    
+    logger.debug(f"ID列表总数({len(item_ids)})过长，已切分为 {len(id_chunks)} 个批次进行请求。")
+
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
     
-    params = {
-        "api_key": api_key,
-        "Ids": ",".join(item_ids),
-        "Fields": fields or "ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
-    }
+    # ★★★ 核心修改: 循环处理每个批次 ★★★
+    for i, batch_ids in enumerate(id_chunks):
+        params = {
+            "api_key": api_key,
+            "Ids": ",".join(batch_ids), # 只使用当前批次的ID
+            "Fields": fields or "ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
+        }
 
-    try:
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(api_url, params=params, timeout=api_timeout)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("Items", [])
-    except requests.exceptions.RequestException as e:
-        logger.error(f"根据ID列表批量获取Emby项目时失败: {e}")
-        return []
+        try:
+            api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+            
+            logger.trace(f"  -> 正在请求批次 {i+1}/{len(id_chunks)} (包含 {len(batch_ids)} 个ID)...")
+            response = requests.get(api_url, params=params, timeout=api_timeout)
+            response.raise_for_status()
+            
+            data = response.json()
+            batch_items = data.get("Items", [])
+            all_items.extend(batch_items) # 将获取到的结果合并到总列表中
+            
+        except requests.exceptions.RequestException as e:
+            # 记录当前批次的错误，但继续处理下一批
+            logger.error(f"根据ID列表批量获取Emby项目时，处理批次 {i+1} 失败: {e}")
+            continue
+
+    logger.debug(f"所有批次请求完成，共获取到 {len(all_items)} 个媒体项。")
+    return all_items
     
 def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: str, api_key: str, user_id: str) -> bool:
     logger.trace(f"准备将项目 {item_emby_id} 追加到合集 {collection_id}...")
