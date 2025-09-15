@@ -39,6 +39,11 @@ server {
     location ~* (\.strm$|\.(mkv|mp4|ts|avi|iso|mov|webm|flv)$|/videos/.*stream) {
         proxy_pass http://redirect_service;
     }
+
+    # ★★★ 新增规则：捕获 /d/ 开头的直接播放链接 ★★★
+    location /d/ {
+        proxy_pass http://redirect_service;
+    }
     {% endif %}
 
     # --- 以下是虚拟库路由规则 ---
