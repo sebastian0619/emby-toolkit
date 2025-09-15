@@ -1388,6 +1388,36 @@ def get_task_registry(context: str = 'all'):
         for key, info in full_registry.items()
     }
 
+# ★★★ 用于统一处理自定义合集的角标逻辑 ★★★
+def _get_cover_badge_text_for_collection(collection_db_info: Dict[str, Any]) -> Any:
+    """
+    根据自定义合集的数据库信息，智能判断并返回用于封面角标的参数。
+    - 如果是特定类型的榜单，返回对应的中文字符串。
+    - 否则，返回该合集在媒体库中实际包含的项目数量。
+    """
+    # 默认情况下，角标就是媒体库中的项目数量
+    item_count_to_pass = collection_db_info.get('in_library_count', 0)
+    
+    collection_type = collection_db_info.get('type')
+    definition = collection_db_info.get('definition_json', {})
+
+    # 只有榜单(list)类型才需要特殊处理角标文字
+    if collection_type == 'list':
+        url = definition.get('url', '')
+        # 根据URL或其他特征判断榜单来源
+        if url.startswith('maoyan://'):
+            return '猫眼'
+        elif 'douban.com/doulist' in url:
+            return '豆列'
+        elif 'themoviedb.org/discover/' in url:
+            return '探索'
+        else:
+            # 对于其他所有榜单类型，统一显示为'榜单'
+            return '榜单'
+            
+    # 如果不是榜单类型，或者榜单类型不匹配任何特殊规则，则返回数字角标
+    return item_count_to_pass
+
 # ★★★ 一键生成所有合集的后台任务 ★★★
 def task_process_all_custom_collections(processor: MediaProcessor):
     """
@@ -1583,23 +1613,22 @@ def task_process_all_custom_collections(processor: MediaProcessor):
 
                 if cover_service and emby_collection_id:
                     logger.info(f"  -> 正在为合集 '{collection_name}' 生成封面...")
+                    # 1. 获取最新的 Emby 合集详情
                     library_info = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                     if library_info:
-                        # ★★★ 核心修改：根据 source_type 决定封面参数 ★★★
-                        item_count_to_pass = update_data.get('in_library_count', 0)
-                        if source_type == 'list_maoyan':
-                            item_count_to_pass = '猫眼'
-                        elif source_type == 'list_douban':
-                            item_count_to_pass = '豆列'
-                        elif source_type == 'list_discover':
-                            item_count_to_pass = '探索'
-                        elif source_type.startswith('list_'):
-                            item_count_to_pass = '榜单'
+                        # 2. 准备封面生成器需要的其他参数
+                        item_types_for_collection = definition.get('item_type', ['Movie'])
                         
+                        # 3. 将数据库中最新的合集信息（包含in_library_count）传递给辅助函数
+                        #    我们使用 db_handler 重新获取一次，确保拿到的是刚刚更新过的最新数据
+                        latest_collection_info = db_handler.get_custom_collection_by_id(collection_id)
+                        item_count_to_pass = _get_cover_badge_text_for_collection(latest_collection_info)
+                        
+                        # 4. 调用封面生成服务
                         cover_service.generate_for_library(
                             emby_server_id='main_emby',
                             library=library_info,
-                            item_count=item_count_to_pass,
+                            item_count=item_count_to_pass, # <-- 使用计算好的角标参数
                             content_types=item_types_for_collection
                         )
             except Exception as e_coll:
@@ -1779,21 +1808,18 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 cover_service = CoverGeneratorService(config=cover_config)
                 library_info = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                 if library_info:
-                    # ★★★ 核心修改：根据 source_type 决定封面参数 ★★★
-                    item_count_to_pass = update_data.get('in_library_count', 0)
-                    if source_type == 'list_maoyan':
-                        item_count_to_pass = '猫眼'
-                    elif source_type == 'list_douban':
-                        item_count_to_pass = '豆列'
-                    elif source_type == 'list_discover':
-                        item_count_to_pass = '探索'
-                    elif source_type.startswith('list_'):
-                        item_count_to_pass = '榜单'
+                    # ▼▼▼ 核心修改点 ▼▼▼
+                    # 1. 获取最新的合集信息
+                    latest_collection_info = db_handler.get_custom_collection_by_id(custom_collection_id)
+                    
+                    # 2. 调用辅助函数获取正确的角标参数
+                    item_count_to_pass = _get_cover_badge_text_for_collection(latest_collection_info)
                         
+                    # 3. 调用封面生成服务
                     cover_service.generate_for_library(
                         emby_server_id='main_emby',
                         library=library_info,
-                        item_count=item_count_to_pass,
+                        item_count=item_count_to_pass, # <-- 使用计算好的角标参数
                         content_types=item_types_for_collection
                     )
                 else:
@@ -2243,31 +2269,18 @@ def task_generate_all_custom_collection_covers(processor: MediaProcessor):
                     logger.warning(f"无法获取合集 '{collection_name}' (Emby ID: {emby_collection_id}) 的详情，跳过。")
                     continue
 
-                # b. ★★★ 核心修复：准备封面生成器需要的参数 ★★★
+                # 1. 从数据库记录中获取合集定义
                 definition = collection_db_info.get('definition_json', {})
-                collection_type = collection_db_info.get('type')
-                
-                item_count_to_pass = collection_db_info.get('in_library_count', 0)
-                
-                # 只有榜单类型才需要特殊处理
-                if collection_type == 'list':
-                    url = definition.get('url', '')
-                    if url.startswith('maoyan://'):
-                        item_count_to_pass = '猫眼'
-                    elif 'douban.com/doulist' in url:
-                        item_count_to_pass = '豆列'
-                    elif 'themoviedb.org/discover/' in url:
-                        item_count_to_pass = '探索'
-                    else:
-                        item_count_to_pass = '榜单'
-                
                 content_types = definition.get('item_type', ['Movie'])
 
-                # c. 调用封面生成服务
+                # 2. 直接将当前循环中的合集信息传递给辅助函数
+                item_count_to_pass = _get_cover_badge_text_for_collection(collection_db_info)
+
+                # 3. 调用封面生成服务
                 cover_service.generate_for_library(
                     emby_server_id='main_emby',
                     library=emby_collection_details,
-                    item_count=item_count_to_pass,
+                    item_count=item_count_to_pass, # <-- 使用计算好的角标参数
                     content_types=content_types
                 )
             except Exception as e_gen:
