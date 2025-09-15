@@ -1573,3 +1573,52 @@ def get_items_for_cover_generator(
     except requests.exceptions.RequestException as e:
         logger.error(f"[封面专用 V2] 从媒体库 {library_id} 获取项目时发生网络错误: {e}")
         return None
+    
+def get_random_items_from_collection_for_cover(
+    base_url: str,
+    api_key: str,
+    user_id: str,
+    collection_id: str,
+    item_types: str,
+    limit: int
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    一个为封面生成器深度优化的函数，专门用于从合集(BoxSet)中高效获取随机项目。
+    - 强制使用对合集查询最高效的 /Users/{UserID}/Items API 端点。
+    - 直接在 API 请求中加入 SortBy=Random 和 Limit，将性能压力完全交给 Emby 服务器。
+    """
+    if not all([base_url, api_key, user_id, collection_id, item_types]):
+        logger.error("get_random_items_from_collection_for_cover: 缺少必要的参数。")
+        return None
+
+    # 这是对合集查询最高效的 API 端点
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    
+    params = {
+        "api_key": api_key,
+        "ParentId": collection_id,
+        "IncludeItemTypes": item_types,
+        "Recursive": "true",
+        "Fields": "Id,Name,Type,ImageTags,BackdropImageTags,DateCreated",
+        "SortBy": "Random",  # 直接让服务器进行随机排序
+        "Limit": limit       # 只请求我们需要数量的项目
+    }
+
+    try:
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+        
+        logger.trace(f"  -> [封面专用-合集模式] 正在从合集 {collection_id} 中随机获取 {limit} 个 '{item_types}' 项目...")
+        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        
+        data = response.json()
+        items = data.get("Items", [])
+        logger.trace(f"  -> [封面专用-合集模式] 成功获取到 {len(items)} 个项目。")
+        return items
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"[封面专用-合集模式] 从合集 {collection_id} 获取项目时发生网络错误: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"[封面专用-合集模式] 处理来自合集 {collection_id} 的项目时发生未知错误: {e}", exc_info=True)
+        return None
