@@ -1494,6 +1494,9 @@ def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> boo
         logger.error(f"使用临时令牌删除演员 {person_id} 时发生未知错误: {e}")
         return False
     
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★ 新增函数 V2：专门为封面生成器优化的、高性能的媒体项获取器 ★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def get_items_for_cover_generator(
     base_url: str,
     api_key: str,
@@ -1504,47 +1507,69 @@ def get_items_for_cover_generator(
     limit: int
 ) -> Optional[List[Dict[str, Any]]]:
     """
-    一个专门为封面生成器设计的、高性能的媒体项获取函数。
-    - 强制使用用户API端点 (`/Users/{UserID}/Items`)，以确保对音乐等类型的兼容性。
-    - 直接在API请求中加入排序和数量限制，将负载交给Emby服务器，极大提升效率。
+    【V2 - 智能随机版】一个为封面生成器深度优化的函数。
+    - 强制使用用户API端点，确保对音乐、合集等类型的最大兼容性。
+    - 当需要随机排序时，采用“获取总数->计算随机起始点->获取切片”的两步法，
+      完美规避 Emby API 对大型媒体库进行 `SortBy=Random` 时的性能陷阱。
     """
     if not all([base_url, api_key, user_id, library_id, item_types]):
         logger.error("get_items_for_cover_generator: 缺少必要的参数。")
         return None
 
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
     
-    params = {
+    base_params = {
         "api_key": api_key,
         "ParentId": library_id,
         "IncludeItemTypes": item_types,
         "Recursive": "true",
         "Fields": "Id,Name,Type,ImageTags,BackdropImageTags,DateCreated",
-        "Limit": limit
     }
 
-    # 根据传入的排序要求，构建API参数
-    if sort_by:
-        params["SortBy"] = sort_by
-        # 只有按日期排序时，才需要指定降序
-        if sort_by == "DateCreated":
-            params["SortOrder"] = "Descending"
+    # --- 智能排序逻辑 ---
+    final_params = base_params.copy()
 
+    if sort_by == "Random":
+        try:
+            # 步骤 1: 快速获取总数
+            count_params = base_params.copy()
+            count_params["Limit"] = 0
+            count_response = requests.get(api_url, params=count_params, timeout=15) # 短超时即可
+            count_response.raise_for_status()
+            total_records = count_response.json().get("TotalRecordCount", 0)
+
+            # 步骤 2: 计算随机起始点
+            if total_records > limit:
+                import random
+                start_index = random.randint(0, total_records - limit)
+                final_params["StartIndex"] = start_index
+            
+            final_params["Limit"] = limit
+
+        except Exception as e:
+            logger.warning(f"[封面专用] 智能随机的第一步（获取总数）失败: {e}。将回退到基础随机模式。")
+            final_params["SortBy"] = "Random"
+            final_params["Limit"] = limit
+    
+    elif sort_by == "DateCreated":
+        final_params["SortBy"] = "DateCreated"
+        final_params["SortOrder"] = "Descending"
+        final_params["Limit"] = limit
+    else:
+        final_params["Limit"] = limit
+
+    # --- 最终执行获取 ---
     try:
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        
-        logger.trace(f"  -> [封面专用] 正在从库 {library_id} 获取 {limit} 个 '{item_types}' 项目 (排序: {sort_by})...")
-        response = requests.get(api_url, params=params, timeout=api_timeout)
+        logger.trace(f"  -> [封面专用 V2] 正在执行最终获取，参数: {final_params}")
+        response = requests.get(api_url, params=final_params, timeout=api_timeout)
         response.raise_for_status()
         
         data = response.json()
         items = data.get("Items", [])
-        logger.trace(f"  -> [封面专用] 成功获取到 {len(items)} 个项目。")
+        logger.trace(f"  -> [封面专用 V2] 成功获取到 {len(items)} 个项目。")
         return items
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"[封面专用] 从媒体库 {library_id} 获取项目时发生网络错误: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"[封面专用] 处理来自媒体库 {library_id} 的项目时发生未知错误: {e}", exc_info=True)
+        logger.error(f"[封面专用 V2] 从媒体库 {library_id} 获取项目时发生网络错误: {e}")
         return None
