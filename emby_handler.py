@@ -442,66 +442,57 @@ def get_emby_library_items(
     api_key: str,
     user_id: str,
     library_ids: List[str],
-    media_type_filter: Optional[str] = None,
+    media_type_filter: str,  # <--- 恢复为必需参数
     fields: Optional[str] = None,
     force_user_endpoint: bool = False,
-    # --- ★★★ 新增的、可选的性能优化参数 ★★★ ---
+    # --- 新增的、可选的性能优化参数 ---
     sort_by: Optional[str] = None,
     sort_order: Optional[str] = None,
     limit: Optional[int] = None
 ) -> List[Dict[str, Any]]:
     """
-    获取指定媒体库中的项目，支持高级过滤、排序和限制。
+    【V3 - 向后兼容终极修复版】
+    获取指定媒体库中的项目。
+    - 恢复了 media_type_filter 作为必需参数，确保所有调用都能正确筛选媒体类型。
+    - 安全地集成了可选的排序和限制功能。
     """
     if not all([base_url, api_key, user_id]) or not library_ids:
         return []
 
-    all_items = []
-    
-    # ★★★ 核心修改：将新参数添加到API请求中 ★★★
+    # ★★★ 核心修复：无条件包含核心参数 ★★★
     params = {
         "api_key": api_key,
         "ParentId": ",".join(library_ids),
         "Recursive": "true",
-        "Fields": fields or "Id,Name,Type,ImageTags,BackdropImageTags,DateCreated",
+        "IncludeItemTypes": media_type_filter, # <--- 直接使用，不再做if判断
+        "Fields": fields or "Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,ProviderIds,ChildCount,_SourceLibraryId",
     }
     
-    # 动态添加可选参数
-    if media_type_filter:
-        params["IncludeItemTypes"] = media_type_filter
+    # 动态添加真正可选的性能参数
     if sort_by:
         params["SortBy"] = sort_by
     if sort_order:
         params["SortOrder"] = sort_order
-    if limit is not None: # 使用 is not None 来允许 limit=0 的情况
+    if limit is not None:
         params["Limit"] = limit
 
-    # 根据 force_user_endpoint 决定使用哪个API端点
+    # API端点选择逻辑 (保持不变)
     if force_user_endpoint:
-        # 这个端点通常用于获取特定用户的数据，如播放状态
         api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
     else:
-        # 这个端点通常用于获取通用的库项目
         api_url = f"{base_url.rstrip('/')}/Items"
-        # 当不使用用户端点时，ParentId 通常就足够了，但有些服务器行为可能不同
-        # 为了保险起见，我们仍然可以传递UserId，Emby通常会智能处理
         params['UserId'] = user_id
 
     try:
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
         logger.debug(f"正在向Emby请求项目: URL='{api_url}', Params='{params}'")
-        response = requests.get(api_url, params=params, timeout=api_timeout) # 保持一个合理的超时
+        response = requests.get(api_url, params=params, timeout=60)
         response.raise_for_status()
         data = response.json()
-        
-        # Emby的Items接口返回的是一个字典，我们需要提取 "Items" 键
-        items_list = data.get("Items", [])
-        all_items.extend(items_list)
+        return data.get("Items", [])
         
     except requests.exceptions.RequestException as e:
         logger.error(f"请求库 '{','.join(library_ids)}' 中的项目失败: {e}")
-
-    return all_items
+        return []
 # ✨✨✨ 刷新Emby元数据 ✨✨✨
 def refresh_emby_item_metadata(item_emby_id: str,
                                emby_server_url: str,
