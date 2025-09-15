@@ -2292,7 +2292,7 @@ def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> s
     """
     
     # 1. 优先从文件名判断 (逻辑增强)
-    if any(s in path_lower for s in ["dovi p8", "dovi.p8", "dv.p8", "profile 8", "profile8"]):
+    if ("dovi" in path_lower or "dolbyvision" in path_lower or "dv" in path_lower) and "hdr" in path_lower:
         return "dovi_p8"
     if any(s in path_lower for s in ["dovi p7", "dovi.p7", "dv.p7", "profile 7", "profile7"]):
         return "dovi_p7"
@@ -2332,10 +2332,10 @@ def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> s
 # ★★★ 媒体洗版任务 (基于精确API模型重构) ★★★
 def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
     """
-    【V2 - 杜比Profile细分版】
-    根据媒体详情和匹配到的规则，构建发送给 MoviePilot 的最终 payload。
-    - 所有洗版请求都带 best_version: 1，自定义参数作为额外过滤器。
-    - 新增对杜比视界 Profile 8/7/5 的精确订阅支持。
+    【V4 - 实战命名·最终版】
+    - 根据PT站点的实际命名约定，优化了杜比视界Profile 8的正则表达式。
+    - 现在，当订阅 Profile 8 时，会生成一个匹配 "dovi" 和 "hdr" 两个关键词同时存在的正则，
+      这完美符合了现实世界中的文件命名习惯。
     """
     item_name = item_details.get('Name') or item_details.get('item_name')
     tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb") or item_details.get('tmdb_id')
@@ -2366,7 +2366,6 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
         target_resolution = None
         if threshold == 3840: target_resolution = "4k"
         elif threshold == 1920: target_resolution = "1080p"
-        elif threshold == 1280: target_resolution = "720p"
         if target_resolution:
             payload['resolution'] = target_resolution
             logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 分辨率: {target_resolution}")
@@ -2376,25 +2375,24 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
             payload['quality'] = ",".join(quality_list)
             logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 质量: {payload['quality']}")
     
-    # ★★★ 核心修改：特效订阅逻辑 ★★★
+    # --- 特效订阅逻辑 (实战优化) ---
     if rule.get("resubscribe_effect_enabled"):
         effect_list = rule.get("resubscribe_effect_include", [])
         if isinstance(effect_list, list) and effect_list:
             simple_effects_for_payload = set()
             
-            # 定义特效的优先级和对应的订阅参数
             EFFECT_HIERARCHY = ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"]
-            EFFECT_REGEX_MAP = {
-                "dovi_p8": ("(?=.*(dovi|dolby))(?=.*(p8|profile.?8))", "dovi"),
-                "dovi_p7": ("(?=.*(dovi|dolby))(?=.*(p7|profile.?7))", "dovi"),
-                "dovi_p5": ("(?=.*(dovi|dolby))(?=.*(p5|profile.?5))", "dovi"),
-                "dovi_other": ("(?=.*(dovi|dolby))", "dovi"),
+            # ★★★ 核心修改：将 "dv" 加入正则 ★★★
+            EFFECT_PARAM_MAP = {
+                "dovi_p8": ("(?=.*(dovi|dolby|dv))(?=.*hdr)", "dovi"),
+                "dovi_p7": ("(?=.*(dovi|dolby|dv))(?=.*(p7|profile.?7))", "dovi"),
+                "dovi_p5": ("(?=.*(dovi|dolby|dv))", "dovi"),
+                "dovi_other": ("(?=.*(dovi|dolby|dv))", "dovi"),
                 "hdr10+": ("(?=.*(hdr10\+|hdr10plus))", "hdr10+"),
                 "hdr": ("(?=.*hdr)", "hdr")
             }
             OLD_EFFECT_MAP = {"杜比视界": "dovi_other", "HDR": "hdr"}
 
-            # 1. 从用户选择中，找到优先级最高的那个作为订阅目标
             highest_req_priority = 999
             best_effect_choice = None
             for choice in effect_list:
@@ -2404,12 +2402,10 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
                     if priority < highest_req_priority:
                         highest_req_priority = priority
                         best_effect_choice = normalized_choice
-                except ValueError:
-                    continue
+                except ValueError: continue
             
-            # 2. 根据最高优先级的目标，生成 payload
             if best_effect_choice:
-                regex_pattern, simple_effect = EFFECT_REGEX_MAP.get(best_effect_choice, (None, None))
+                regex_pattern, simple_effect = EFFECT_PARAM_MAP.get(best_effect_choice, (None, None))
                 if regex_pattern:
                     final_include_lookaheads.append(regex_pattern)
                 if simple_effect:
@@ -2417,18 +2413,15 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
 
             if simple_effects_for_payload:
                  payload['effect'] = ",".join(simple_effects_for_payload)
-                 logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 特效: {payload['effect']}")
 
-    # --- 音轨处理 (逻辑不变) ---
+    # --- 音轨、字幕处理 (逻辑不变) ---
     if rule.get("resubscribe_audio_enabled"):
         audio_langs = rule.get("resubscribe_audio_missing_languages", [])
         if isinstance(audio_langs, list) and audio_langs:
             audio_keywords = [k for lang in audio_langs for k in AUDIO_SUBTITLE_KEYWORD_MAP.get(lang, [])]
             if audio_keywords:
-                audio_or_regex = f"({'|'.join(sorted(list(set(audio_keywords)), key=len, reverse=True))})"
-                final_include_lookaheads.append(f"(?=.*{audio_or_regex})")
+                final_include_lookaheads.append(f"(?=.*({'|'.join(sorted(list(set(audio_keywords)), key=len, reverse=True))}))")
 
-    # --- 字幕处理 (逻辑不变) ---
     if rule.get("resubscribe_subtitle_effect_only"):
         final_include_lookaheads.append("(?=.*特效)")
     elif rule.get("resubscribe_subtitle_enabled"):
@@ -2436,12 +2429,11 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
         if isinstance(subtitle_langs, list) and subtitle_langs:
             subtitle_keywords = [k for lang in subtitle_langs for k in AUDIO_SUBTITLE_KEYWORD_MAP.get(f"sub_{lang}", [])]
             if subtitle_keywords:
-                subtitle_or_regex = f"({'|'.join(sorted(list(set(subtitle_keywords)), key=len, reverse=True))})"
-                final_include_lookaheads.append(f"(?=.*{subtitle_or_regex})")
+                final_include_lookaheads.append(f"(?=.*({'|'.join(sorted(list(set(subtitle_keywords)), key=len, reverse=True))}))")
 
     if final_include_lookaheads:
         payload['include'] = "".join(final_include_lookaheads)
-        logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 生成的 AND 正则过滤器: {payload['include']}")
+        logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 生成的 AND 正则过滤器(精筛): {payload['include']}")
 
     return payload
 
@@ -2927,7 +2919,11 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
                 task_manager.update_status_from_thread(progress, f"({processed_count}/{total}) 正在分析: {future_to_item[future].get('Name')}")
 
         if cache_update_batch:
+            logger.info(f"分析完成，正在将 {len(cache_update_batch)} 条记录写入缓存表...")
             db_handler.upsert_resubscribe_cache_batch(cache_update_batch)
+            
+            task_manager.update_status_from_thread(99, "缓存写入完成，即将刷新...")
+            time.sleep(1) # 给前端一点反应时间，确保信号被接收
 
         final_message = "媒体洗版状态刷新完成！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
