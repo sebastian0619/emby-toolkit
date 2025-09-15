@@ -329,22 +329,31 @@ class CoverGeneratorService:
 
     def __get_image_url(self, item: Dict[str, Any]) -> str:
         """
-        【V2 - 健壮版】获取项目的首选图片URL。
-        - 优先检查主图 (Primary)，这对音乐专辑等类型至关重要。
-        - 如果主图不存在，再回退到背景图 (Backdrop)。
+        【V4 - 开关功能完美修复版】
+        - 严格遵循前端“优先使用海报图”开关的逻辑。
+        - 无论开关状态如何，都能为音乐库找到正确的封面图。
+        - 彻底解决了音乐库封面问题，同时恢复了开关对电影/剧集库的控制功能。
         """
         item_id = item.get("Id")
         
-        # 1. 优先使用主图 (Primary Image)
-        if item.get("ImageTags", {}).get("Primary"):
-            return f'/emby/Items/{item_id}/Images/Primary?tag={item["ImageTags"]["Primary"]}'
-            
-        # 2. 如果没有主图，再尝试使用背景图 (Backdrop)
-        if item.get("BackdropImageTags"):
-            return f'/emby/Items/{item_id}/Images/Backdrop/0?tag={item["BackdropImageTags"][0]}'
-            
-        # 3. 如果都没有，则返回 None
-        return None
+        # 预先获取主图和背景图的URL，没有则为None
+        primary_tag = item.get("ImageTags", {}).get("Primary")
+        primary_url = f'/emby/Items/{item_id}/Images/Primary?tag={primary_tag}' if primary_tag else None
+        
+        # 使用更安全的方式获取背景图标签
+        backdrop_tags = item.get("BackdropImageTags")
+        backdrop_tag = backdrop_tags[0] if backdrop_tags else None
+        backdrop_url = f'/emby/Items/{item_id}/Images/Backdrop/0?tag={backdrop_tag}' if backdrop_tag else None
+
+        # ★★★ 核心修复：根据前端开关，实现正确的“A or B”或“B or A”逻辑 ★★★
+        
+        # self._single_use_primary 对应前端的“优先使用海报图”开关
+        if self._cover_style.startswith('single') and self._single_use_primary:
+            # 开关开启: 优先返回主图(海报图)，如果主图不存在，则返回背景图
+            return primary_url or backdrop_url
+        else:
+            # 开关关闭 (或非单图模式): 优先返回背景图，如果背景图不存在，则返回主图
+            return backdrop_url or primary_url
 
     def __download_image(self, server_id: str, api_path: str, library_name: str, count: int) -> Path:
         subdir = self.covers_path / library_name
