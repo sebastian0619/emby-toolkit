@@ -316,26 +316,43 @@ class CoverGeneratorService:
 
     def __get_image_url(self, item: Dict[str, Any]) -> str:
         """
-        【V2 - 音乐封面修复版】
-        获取项目的可用图片URL，优化了对音乐专辑等只有主图的媒体类型的处理逻辑。
+        【V3 - 终极健壮版】
+        获取项目的可用图片URL。
+        实现了“首选/备用”逻辑，确保在首选图片类型（如背景图）不存在时，
+        能自动回退使用备用图片类型（如主图），适用于所有媒体库。
         """
         item_id = item.get("Id")
-        item_type = item.get("Type")
 
-        # 优先获取主图 (封面)
-        if item.get("ImageTags", {}).get("Primary"):
-            # 如果是单图风格，且用户明确配置了“不使用主图”，并且项目类型不是音乐专辑，才跳过主图
-            if self._cover_style.startswith('single') and not self._single_use_primary and item_type != 'MusicAlbum':
-                pass # 跳过，继续向下寻找背景图
-            else:
-                # 对于所有其他情况（多图模式、单图模式使用主图、或者项目是音乐专辑），都优先返回主图
-                return f'/emby/Items/{item_id}/Images/Primary?tag={item["ImageTags"]["Primary"]}'
+        # 1. 首先检查项目本身有哪些可用的图片类型
+        has_primary = item.get("ImageTags", {}).get("Primary")
+        has_backdrop = item.get("BackdropImageTags")
 
-        # 如果没有主图，或者在特定配置下跳过了主图，则尝试获取背景图作为备用
-        if item.get("BackdropImageTags"):
-            return f'/emby/Items/{item_id}/Images/Backdrop/0?tag={item["BackdropImageTags"][0]}'
-            
-        # 如果都没有，则返回None
+        # 2. 根据用户配置，决定“首选”哪种图片
+        #    - 对于多图风格，我们总是优先用主图（海报）。
+        #    - 对于单图风格，才尊重用户的 single_use_primary 配置。
+        prefer_backdrop = self._cover_style.startswith('single') and not self._single_use_primary
+
+        # 3. 执行“首选/备用”逻辑
+        if prefer_backdrop:
+            # --- 用户的首选是背景图 ---
+            if has_backdrop:
+                # 首选存在，直接返回
+                return f'/emby/Items/{item_id}/Images/Backdrop/0?tag={item["BackdropImageTags"][0]}'
+            if has_primary:
+                # 首选不存在，但备用（主图）存在，返回备用
+                logger.trace(f"项目 '{item.get('Name')}' (ID: {item_id}) 缺少背景图，已智能回退使用主图。")
+                return f'/emby/Items/{item_id}/Images/Primary?tag={has_primary}'
+        else:
+            # --- 用户的首选是主图 (或默认情况) ---
+            if has_primary:
+                # 首选存在，直接返回
+                return f'/emby/Items/{item_id}/Images/Primary?tag={has_primary}'
+            if has_backdrop:
+                # 首选不存在，但备用（背景图）存在，返回备用
+                logger.trace(f"项目 '{item.get('Name')}' (ID: {item_id}) 缺少主图，已智能回退使用背景图。")
+                return f'/emby/Items/{item_id}/Images/Backdrop/0?tag={item["BackdropImageTags"][0]}'
+
+        # 4. 如果首选和备用都不存在，才最终放弃
         return None
 
     def __download_image(self, server_id: str, api_path: str, library_name: str, count: int) -> Path:
