@@ -840,14 +840,6 @@ const sortFieldOptions = computed(() => {
     { label: '社区评分', value: 'CommunityRating' },
     { label: '制作年份', value: 'ProductionYear' },
   ];
-
-  const itemTypes = currentCollection.value.definition?.item_type || [];
-  if (Array.isArray(itemTypes) && itemTypes.includes('Series')) {
-    // ▼▼▼ 核心修改：更新标签和值 ▼▼▼
-    options.splice(4, 0, { label: '最后一集更新时间', value: 'last_synced_at' });
-    // ▲▲▲ 修改结束 ▲▲▲
-  }
-
   if (currentCollection.value.type === 'list') {
     options.splice(1, 0, { label: '榜单原始顺序', value: 'original' });
   }
