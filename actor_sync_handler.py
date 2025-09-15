@@ -21,12 +21,12 @@ class UnifiedSyncHandler:
         
     def sync_emby_person_map_to_db(self, update_status_callback: Optional[callable] = None, stop_event: Optional[threading.Event] = None):
         """
-        【V9 - 单次处理高效版】
-        - 将正向同步 (Emby->DB) 与反向同步 (DB->Emby) 合并到一个循环中。
-        - 在 upsert 一个演员到数据库后，立即回头检查并按需更新 Emby，实现精准、高效的双向同步。
-        - 彻底移除了低效的、遍历全库的“阶段三”反向同步。
+        【单向同步版】
+        - 仅将 Emby 演员数据同步到本地数据库 (Emby -> DB)。
+        - 移除了所有反向同步 (DB -> Emby) 的逻辑。
+        - 保留了对本地数据库中多余条目的清理操作。
         """
-        logger.info("--- 开始执行演员数据同步任务 ---")
+        logger.info("--- 开始执行演员数据单向同步任务 (Emby -> 本地数据库) ---")
         
         # 阶段一：从 Emby 读取数据 (逻辑不变)
         if update_status_callback: update_status_callback(0, "阶段 1/2: 从 Emby 读取所有演员...")
@@ -55,11 +55,11 @@ class UnifiedSyncHandler:
                 if update_status_callback: update_status_callback(-1, "安全检查失败")
                 return
 
-        # ▼▼▼ 阶段二：单次循环处理，完成所有同步与清理 ▼▼▼
+        # ▼▼▼ 阶段二：单向同步与清理 ▼▼▼
         stats = { "total": total_from_emby, "processed": 0, "db_inserted": 0, "db_updated": 0, 
-                  "reverse_updated": 0, "unchanged": 0, "skipped": 0, "errors": 0, "deleted": 0 }
+                  "unchanged": 0, "skipped": 0, "errors": 0, "deleted": 0 }
         
-        if update_status_callback: update_status_callback(30, "阶段 2/2: 正在双向同步数据...")
+        if update_status_callback: update_status_callback(30, "阶段 2/2: 正在同步数据到本地数据库...")
         
         try:
             pids_in_db_before_sync = get_all_emby_person_ids_from_map()
@@ -75,7 +75,7 @@ class UnifiedSyncHandler:
                     stats["processed"] += 1
                     if i % 50 == 0 and update_status_callback:
                         progress = 30 + int((i / total_from_emby) * 70)
-                        update_status_callback(progress, f"双向同步中 ({i}/{total_from_emby})...")
+                        update_status_callback(progress, f"同步中 ({i}/{total_from_emby})...")
 
                     emby_pid = str(person_emby.get("Id", "")).strip()
                     person_name = str(person_emby.get("Name", "")).strip()
@@ -95,36 +95,9 @@ class UnifiedSyncHandler:
                     except Exception as e_upsert:
                         stats['errors'] += 1
                         logger.error(f"处理演员 {person_name} (ID: {emby_pid}) 的 upsert 时失败: {e_upsert}")
-                        continue # 如果upsert失败，跳过后续的反向同步
+                        continue
 
-                    # 2. ★★★ 精准反向同步 (DB -> Emby) ★★★
-                    # 在 upsert 之后，数据库中的记录就是最完整的“真理”
-                    final_db_record = self.actor_db_manager.find_person_by_any_id(cursor, emby_id=emby_pid)
-                    if not final_db_record: continue
-
-                    # 从“真理”构建目标 ProviderIds
-                    target_provider_ids = {
-                        "Tmdb": str(v) for k, v in final_db_record.items() if k == 'tmdb_person_id' and v}
-                    if final_db_record.get('imdb_id'): target_provider_ids['Imdb'] = final_db_record['imdb_id']
-                    if final_db_record.get('douban_celebrity_id'): target_provider_ids['Douban'] = final_db_record['douban_celebrity_id']
-                    
-                    # 获取 Emby 当前的 ProviderIds
-                    current_emby_ids = {k: str(v) for k, v in provider_ids.items() if v}
-
-                    # 如果不一致，则用数据库的“真理”覆盖 Emby
-                    if target_provider_ids != current_emby_ids:
-                        logger.info(f"  -> [反向同步] 检测到演员 '{person_name}' (ID: {emby_pid}) 的外部ID需要更新。")
-                        logger.debug(f"     Emby 当前: {current_emby_ids}")
-                        logger.debug(f"     DB 更新为: {target_provider_ids}")
-                        success = emby_handler.update_person_details(
-                            person_id=emby_pid,
-                            new_data={"ProviderIds": target_provider_ids},
-                            emby_server_url=self.emby_url,
-                            emby_api_key=self.emby_api_key,
-                            user_id=self.emby_user_id
-                        )
-                        if success:
-                            stats['reverse_updated'] += 1
+                    # 2. ★★★ 反向同步逻辑已被移除 ★★★
                 
                 conn.commit()
 
@@ -144,12 +117,11 @@ class UnifiedSyncHandler:
             return
 
         # 最终统计
-        logger.info("--- 同步演员数据完成 ---")
+        logger.info("--- 单向同步演员数据完成 ---")
         logger.info(f"📊 Emby->DB: 新增 {stats['db_inserted']}, 更新 {stats['db_updated']}, 清理 {stats['deleted']}")
-        logger.info(f"🔄 DB->Emby: 成功更新 {stats['reverse_updated']} 条 (在 {total_from_emby} 次检查中)")
         logger.info("--------------------------")
 
         if update_status_callback:
-            final_message = f"同步完成！Emby->DB (新增{stats['db_inserted']}, 更新{stats['db_updated']}) | DB->Emby (更新{stats['reverse_updated']})。"
+            final_message = f"同步完成！新增 {stats['db_inserted']} 条, 更新 {stats['db_updated']} 条。"
             update_status_callback(100, final_message)
 
