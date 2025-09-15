@@ -138,11 +138,9 @@ class CoverGeneratorService:
 
     def __get_valid_items_from_library(self, server_id: str, library: Dict[str, Any], limit: int, content_types: Optional[List[str]] = None) -> List[Dict]:
         """
-        【V6 - 合集/媒体库智能分流最终版】
-        - 增加判断逻辑，识别传入的是常规媒体库还是“合集式”媒体库 (BoxSet/Mixed)。
-        - 如果是合集，则调用全新的、为其深度优化的 get_random_items_from_collection_for_cover 函数。
-        - 如果是常规媒体库，则保持原有的高效获取逻辑。
-        - 彻底解决合集查询超时的问题，同时保持对常规库的兼容性。
+        【V7 - 合集查询简化最终版】
+        - 严格执行新策略：当目标是合集时，为避免超时，仅使用其支持的第一个媒体类型进行查询。
+        - 保持对常规媒体库的正常处理逻辑。
         """
         library_id = library.get("Id") or library.get("ItemId")
         library_name = library.get("Name")
@@ -171,31 +169,32 @@ class CoverGeneratorService:
             logger.warning(f"无法为媒体库 '{library_name}' 确定媒体类型，将使用默认值 'Movie,Series' 尝试。")
             item_types_to_fetch = 'Movie,Series'
             
-        # --- ★★★ 核心修复：智能分流逻辑 ★★★ ---
+        # --- 智能分流逻辑 ---
         all_items = None
-        # 请求一个比最终需要数量稍大的缓冲值，以防部分项目没有图片
         api_limit = limit * 5 if limit < 10 else limit * 2 
 
-        # 判断这是一个合集 (BoxSet) 还是一个常规的媒体库文件夹
-        # 自建合集和混合库在Emby里通常是 'BoxSet' 类型
         if library.get('Type') == 'BoxSet' or library.get('CollectionType') in ['boxsets', 'mixed']:
             logger.info(f"  -> 检测到 '{library_name}' 是一个合集，将使用合集专用模式获取封面源。")
-            # 调用我们为合集新增的、最高效的函数
+            
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # ★ 核心修复：严格执行您的“只用第一个类型”策略 ★
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            query_item_type = item_types_to_fetch.split(',')[0]
+            logger.info(f"  -> 为提升合集查询性能，将仅使用第一个媒体类型 '{query_item_type}' 进行封面源获取。")
+
             all_items = emby_handler.get_random_items_from_collection_for_cover(
                 base_url=base_url,
                 api_key=api_key,
                 user_id=user_id,
                 collection_id=library_id,
-                item_types=item_types_to_fetch,
+                item_types=query_item_type, # <--- 使用简化后的单一类型
                 limit=api_limit
             )
         else:
-            # 对于电影、电视剧、音乐等常规媒体库，继续使用之前的优化方案
+            # 对于常规媒体库，逻辑保持不变
             logger.info(f"  -> 检测到 '{library_name}' 是常规媒体库，将使用标准模式获取封面源。")
             sort_by_param = "Random" if self._sort_by == "Random" else "DateCreated"
             
-            # 注意：这里我们调用的是您上一次添加的 get_items_for_cover_generator 函数
-            # 如果您上次没有添加，请确保该函数存在于 emby_handler.py 中
             all_items = emby_handler.get_items_for_cover_generator(
                 base_url=base_url,
                 api_key=api_key,
@@ -209,13 +208,11 @@ class CoverGeneratorService:
         if not all_items:
             return []
             
-        # 在本地进行最后的图片有效性过滤 (这部分逻辑不变)
         valid_items = [item for item in all_items if self.__get_image_url(item)]
         
         if not valid_items:
             return []
 
-        # 返回最终需要数量的项目
         return valid_items[:limit]
 
     def __generate_image_from_path(self, library_name: str, title: Tuple[str, str], image_paths: List[str], item_count: Optional[int] = None) -> bytes:
