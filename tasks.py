@@ -2285,49 +2285,46 @@ def task_generate_all_custom_collection_covers(processor: MediaProcessor):
 # --- 从文件名和视频流信息中提取并标准化特效标签，支持杜比视界Profile ---
 def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> str:
     """
-    从文件名和视频流信息中提取并标准化特效标签，支持杜比视界Profile。
-    - Profile 8.1, 7.6 等会被正确识别为 p8, p7。
+    【V9 - 全局·智能文件名识别增强版】
+    - 这是一个全局函数，可被项目中所有需要特效识别的地方共享调用。
+    - 增强了文件名识别逻辑：当文件名同时包含 "dovi" 和 "hdr" 时，智能判断为 davi_p8。
+    - 调整了判断顺序，确保更精确的规则优先执行。
     """
     
-    # 1. 优先从文件名判断，信息最准
-    # Profile 8 (e.g., P8.1)
+    # 1. 优先从文件名判断 (逻辑增强)
     if any(s in path_lower for s in ["dovi p8", "dovi.p8", "dv.p8", "profile 8", "profile8"]):
         return "dovi_p8"
-    # Profile 7 (e.g., P7.6)
     if any(s in path_lower for s in ["dovi p7", "dovi.p7", "dv.p7", "profile 7", "profile7"]):
         return "dovi_p7"
-    # Profile 5
     if any(s in path_lower for s in ["dovi p5", "dovi.p5", "dv.p5", "profile 5", "profile5"]):
         return "dovi_p5"
-    # Generic DoVi
-    if any(s in path_lower for s in ["dovi", "dolby vision", "dolbyvision"]):
-        return "dovi_other" # 如果只能从文件名判断是杜比，但无法确定Profile
-        
-    # HDR variants
+    if ("dovi" in path_lower or "dolbyvision" in path_lower) and "hdr" in path_lower:
+        return "dovi_p8"
+    if "dovi" in path_lower or "dolbyvision" in path_lower:
+        return "dovi_other"
     if "hdr10+" in path_lower or "hdr10plus" in path_lower:
         return "hdr10+"
     if "hdr" in path_lower:
         return "hdr"
 
-    # 2. 如果文件名没有信息，再从视频流信息判断
+    # 2. 如果文件名没有信息，再对视频流进行精确分析
     if video_stream and isinstance(video_stream, dict):
-        # 优先检查 Profile 字符串 (e.g., "dvhe.08.06")
-        profile_str = str(video_stream.get("Profile", "")).lower()
-        if "dvhe.08" in profile_str or "dvh1.08" in profile_str:
-            return "dovi_p8"
-        if "dvhe.07" in profile_str or "dvh1.07" in profile_str:
-            return "dovi_p7"
-        if "dvhe.05" in profile_str or "dvh1.05" in profile_str:
-            return "dovi_p5"
+        all_stream_info = []
+        for key, value in video_stream.items():
+            all_stream_info.append(str(key).lower())
+            if isinstance(value, str):
+                all_stream_info.append(value.lower())
+        combined_info = " ".join(all_stream_info)
 
-        # 备用方案：检查 VideoRangeType
-        video_range_type = str(video_stream.get("VideoRangeType", "")).lower()
-        if "dovi" in video_range_type or "dolby" in video_range_type:
-            return "dovi_other" # 无法从 VideoRangeType 判断Profile
-        if "hdr10+" in video_range_type:
-            return "hdr10+"
-        if "hdr" in video_range_type:
-            return "hdr"
+        if "doviprofile81" in combined_info: return "dovi_p8"
+        if "doviprofile76" in combined_info: return "dovi_p7"
+        if "doviprofile5" in combined_info: return "dovi_p5"
+        if any(s in combined_info for s in ["dvhe.08", "dvh1.08"]): return "dovi_p8"
+        if any(s in combined_info for s in ["dvhe.07", "dvh1.07"]): return "dovi_p7"
+        if any(s in combined_info for s in ["dvhe.05", "dvh1.05"]): return "dovi_p5"
+        if "dovi" in combined_info or "dolby" in combined_info or "dolbyvision" in combined_info: return "dovi_other"
+        if "hdr10+" in combined_info or "hdr10plus" in combined_info: return "hdr10+"
+        if "hdr" in combined_info: return "hdr"
 
     # 3. 默认是SDR
     return "sdr"
@@ -2450,9 +2447,9 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
 
 def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Optional[dict] = None) -> tuple[bool, str]:
     """
-    【V10 - 杜比Profile细分版】
-    - 升级了特效检查逻辑，能够精确识别杜比视界 Profile 8/7/5。
-    - 如果当前文件的特效等级低于规则要求的最高等级，则触发洗版。
+    【V12 - 功能完整·最终版】
+    - 恢复了所有检查逻辑，包括：分辨率、质量、特效、音轨和字幕。
+    - 此版本调用全局的、最新的 _get_standardized_effect 函数来做决策。
     """
     item_name = item_details.get('Name', '未知项目')
     logger.trace(f"  -> 开始为《{item_name}》检查洗版需求 ---")
@@ -2467,7 +2464,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
     CHINESE_LANG_CODES = {'chi', 'zho', 'chs', 'cht', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn', 'yue'}
     CHINESE_SPEAKING_REGIONS = {'中国', '中国大陆', '香港', '中国香港', '台湾', '中国台湾', '新加坡'}
 
-    # 1. 分辨率检查 (逻辑不变)
+    # 1. 分辨率检查
     try:
         if config.get("resubscribe_resolution_enabled"):
             if not video_stream:
@@ -2481,7 +2478,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
     except (ValueError, TypeError) as e:
         logger.warning(f"  -> [分辨率检查] 处理时发生类型错误: {e}")
 
-    # 2. 质量检查 (逻辑不变)
+    # 2. 质量检查
     try:
         if config.get("resubscribe_quality_enabled"):
             required_list = config.get("resubscribe_quality_include", [])
@@ -2492,16 +2489,13 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
     except Exception as e:
         logger.warning(f"  -> [质量检查] 处理时发生未知错误: {e}")
 
-    # 3. 特效检查 (核心修改)
+    # 3. 特效检查 (调用最新的全局函数)
     try:
         if config.get("resubscribe_effect_enabled"):
             user_choices = config.get("resubscribe_effect_include", [])
             if isinstance(user_choices, list) and user_choices:
-                # 定义特效的优先级
                 EFFECT_HIERARCHY = ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"]
                 OLD_EFFECT_MAP = {"杜比视界": "dovi_other", "HDR": "hdr"}
-
-                # a. 从用户选择中，找到优先级最高的那个作为判断基准
                 highest_req_priority = 999
                 for choice in user_choices:
                     normalized_choice = OLD_EFFECT_MAP.get(choice, choice)
@@ -2512,19 +2506,15 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
                     except ValueError:
                         continue
                 
-                # b. 如果找到了有效的基准，则进行比较
                 if highest_req_priority < 999:
-                    # 获取当前文件的特效等级及其优先级
                     current_effect = _get_standardized_effect(file_name_lower, video_stream)
                     current_priority = EFFECT_HIERARCHY.index(current_effect)
-
-                    # c. 比较：如果当前文件的优先级更差（索引值更大），则需要洗版
                     if current_priority > highest_req_priority:
                         reasons.append("特效不达标")
     except Exception as e:
         logger.warning(f"  -> [特效检查] 处理时发生未知错误: {e}")
 
-    # 4. & 5. 音轨和字幕检查 (逻辑不变)
+    # 4. & 5. 音轨和字幕检查
     def _is_exempted_from_chinese_check() -> bool:
         present_audio_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
         if not present_audio_langs.isdisjoint(CHINESE_LANG_CODES):
@@ -2796,15 +2786,13 @@ def task_delete_batch(processor: MediaProcessor, item_ids: List[str]):
 
 def task_update_resubscribe_cache(processor: MediaProcessor):
     """
-    【V-Final Simple - 简化最终版】
-    - 回归最简单的逻辑：只扫描规则指定的媒体库，并更新或添加缓存。
-    - 不再执行任何自动清理或差异同步操作。
+    【V-Final Pro - 架构恢复最终版】
+    - 恢复了简洁的函数结构，所有业务逻辑都通过调用正确的全局辅助函数完成。
     """
-    task_name = "刷新洗版状态 (简化模式)"
+    task_name = "刷新洗版状态 (架构恢复最终版)"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
-        # 1. 确定扫描范围
         task_manager.update_status_from_thread(0, "正在加载规则并确定扫描范围...")
         all_enabled_rules = [rule for rule in db_handler.get_all_resubscribe_rules() if rule.get('enabled')]
         library_ids_to_scan = set()
@@ -2818,7 +2806,6 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
             task_manager.update_status_from_thread(100, "任务跳过：没有规则指定媒体库")
             return
         
-        # 2. 从 Emby 获取目标库的所有项目
         task_manager.update_status_from_thread(10, f"正在从 {len(libs_to_process_ids)} 个目标库中获取项目...")
         all_items_base_info = emby_handler.get_emby_library_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
@@ -2826,7 +2813,6 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
             fields="ProviderIds,Name,Type,ChildCount,_SourceLibraryId"
         ) or []
         
-        # 3. 后续的并发处理逻辑完全不变
         current_db_status_map = {item['item_id']: item['status'] for item in db_handler.get_all_resubscribe_cache()}
         total = len(all_items_base_info)
         if total == 0:
@@ -2848,112 +2834,83 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
             item_name = item_base_info.get('Name')
             source_lib_id = item_base_info.get('_SourceLibraryId')
 
-            old_status = current_db_status_map.get(item_id)
-            if old_status == 'ignored':
-                logger.trace(f"  -> 项目《{item_name}》已被用户忽略，本次刷新跳过。")
-                return None
+            if current_db_status_map.get(item_id) == 'ignored': return None
         
             try:
                 applicable_rule = library_to_rule_map.get(source_lib_id)
                 if not applicable_rule:
-                    return {
-                        "item_id": item_id, "item_name": item_name,
-                        "tmdb_id": item_base_info.get("ProviderIds", {}).get("Tmdb"),
-                        "item_type": item_base_info.get('Type'), "status": 'ok', "reason": "无匹配规则",
-                        "matched_rule_id": None, "matched_rule_name": None, "source_library_id": source_lib_id
-                    }
-                item_details = emby_handler.get_emby_item_details(
-                    item_id=item_id, emby_server_url=processor.emby_url,
-                    emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
-                )
+                    return { "item_id": item_id, "status": 'ok', "reason": "无匹配规则" }
+                
+                item_details = emby_handler.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                 if not item_details: return None
+                
                 tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
                 media_metadata = db_handler.get_media_metadata_by_tmdb_id(tmdb_id) if tmdb_id else None
                 item_type = item_details.get('Type')
                 if item_type == 'Series' and item_details.get('ChildCount', 0) > 0:
-                    first_episode_list = emby_handler.get_series_children(
-                        series_id=item_id, base_url=processor.emby_url,
-                        api_key=processor.emby_api_key, user_id=processor.emby_user_id,
-                        include_item_types="Episode", fields="MediaStreams,Path"
-                    )
+                    first_episode_list = emby_handler.get_series_children(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id, "Episode", "MediaStreams,Path")
                     if first_episode_list:
-                        first_episode = first_episode_list[0]
-                        item_details['MediaStreams'] = first_episode.get('MediaStreams', item_details.get('MediaStreams', []))
-                        item_details['Path'] = first_episode.get('Path', item_details.get('Path', ''))
+                        item_details['MediaStreams'] = first_episode_list[0].get('MediaStreams', [])
+                        item_details['Path'] = first_episode_list[0].get('Path', '')
+                
                 needs_resubscribe, reason = _item_needs_resubscribe(item_details, applicable_rule, media_metadata)
                 old_status = current_db_status_map.get(item_id)
                 new_status = 'ok' if not needs_resubscribe else ('subscribed' if old_status == 'subscribed' else 'needed')
                 
-                # --- 分辨率、质量、特效 (逻辑不变) ---
                 media_streams = item_details.get('MediaStreams', [])
                 video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
+                file_name_lower = os.path.basename(item_details.get('Path', '')).lower()
+                
+                raw_effect_tag = _get_standardized_effect(file_name_lower, video_stream)
+                
+                EFFECT_DISPLAY_MAP = {'dovi_p8': 'DoVi P8', 'dovi_p7': 'DoVi P7', 'dovi_p5': 'DoVi P5', 'dovi_other': 'DoVi (Other)', 'hdr10+': 'HDR10+', 'hdr': 'HDR', 'sdr': 'SDR'}
+                effect_str = EFFECT_DISPLAY_MAP.get(raw_effect_tag, raw_effect_tag.upper())
+
                 resolution_str = "未知"
                 if video_stream and video_stream.get('Width'):
                     width = video_stream.get('Width')
                     if width >= 3840: resolution_str = "4K"
                     elif width >= 1920: resolution_str = "1080p"
-                    elif width >= 1280: resolution_str = "720p"
                     else: resolution_str = f"{width}p"
-                file_name_lower = os.path.basename(item_details.get('Path', '')).lower()
                 quality_str = _extract_quality_tag_from_filename(file_name_lower, video_stream)
-                effect_str = (video_stream.get('VideoRangeType') or video_stream.get('VideoRange', '未知') if video_stream else '未知').upper()
                 
-                # ★★★ 核心修复：在这里加入音轨和字幕的智能精简逻辑 ★★★
-                
-                # --- 音轨处理 ---
                 AUDIO_LANG_MAP = {'chi': '国语', 'zho': '国语', 'yue': '粤语', 'eng': '英语'}
                 CHINESE_AUDIO_CODES = {'chi', 'zho', 'yue'}
-                
                 audio_langs_raw = list(set(s.get('Language') for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')))
-                
                 display_audio_langs = []
                 has_other_audio = False
                 for lang in audio_langs_raw:
-                    if lang in CHINESE_AUDIO_CODES:
-                        display_audio_langs.append(AUDIO_LANG_MAP.get(lang, lang))
-                    elif lang == 'eng': # 也保留英语
+                    if lang in CHINESE_AUDIO_CODES or lang == 'eng':
                         display_audio_langs.append(AUDIO_LANG_MAP.get(lang, lang))
                     else:
                         has_other_audio = True
-                
                 display_audio_langs = sorted(list(set(display_audio_langs)))
-                if has_other_audio:
-                    display_audio_langs.append('...')
-                
+                if has_other_audio: display_audio_langs.append('...')
                 audio_str = ', '.join(display_audio_langs) or '无'
 
-                # --- 字幕处理 ---
                 SUBTITLE_LANG_MAP = {'chi': '中字', 'zho': '中字', 'eng': '英文'}
                 CHINESE_SUB_CODES = {'chi', 'zho', 'chs', 'cht', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn'}
-
                 subtitle_langs_raw = list(set(s.get('Language') for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')))
-                
                 display_subtitle_langs = []
                 has_other_subtitle = False
                 for lang in subtitle_langs_raw:
                     lang_lower = str(lang).lower()
                     if lang_lower in CHINESE_SUB_CODES:
-                        display_subtitle_langs.append(SUBTITLE_LANG_MAP.get('chi')) # 统一显示为中字
-                    elif lang_lower == 'eng': # 也保留英文
+                        display_subtitle_langs.append(SUBTITLE_LANG_MAP.get('chi'))
+                    elif lang_lower == 'eng':
                         display_subtitle_langs.append(SUBTITLE_LANG_MAP.get('eng'))
                     else:
                         has_other_subtitle = True
-                
                 display_subtitle_langs = sorted(list(set(display_subtitle_langs)))
-                if has_other_subtitle:
-                    display_subtitle_langs.append('...')
-
+                if has_other_subtitle: display_subtitle_langs.append('...')
                 subtitle_str = ', '.join(display_subtitle_langs) or '无'
                 
                 return {
-                    "item_id": item_id, "item_name": item_details.get('Name'),
-                    "tmdb_id": tmdb_id, "item_type": item_type, "status": new_status, 
-                    "reason": reason if needs_resubscribe else "", "resolution_display": resolution_str, 
-                    "quality_display": quality_str, "effect_display": effect_str, 
-                    "audio_display": audio_str, "subtitle_display": subtitle_str, 
+                    "item_id": item_id, "item_name": item_details.get('Name'), "tmdb_id": tmdb_id, "item_type": item_type, "status": new_status, 
+                    "reason": reason, "resolution_display": resolution_str, "quality_display": quality_str, "effect_display": effect_str,
+                    "audio_display": audio_str, "subtitle_display": subtitle_str,
                     "audio_languages_raw": audio_langs_raw, "subtitle_languages_raw": subtitle_langs_raw,
-                    "matched_rule_id": applicable_rule.get('id'), "matched_rule_name": applicable_rule.get('name'),
-                    "source_library_id": source_lib_id
+                    "matched_rule_id": applicable_rule.get('id'), "matched_rule_name": applicable_rule.get('name'), "source_library_id": source_lib_id
                 }
             except Exception as e:
                 logger.error(f"处理项目 '{item_name}' (ID: {item_id}) 时线程内发生错误: {e}", exc_info=True)
@@ -2970,7 +2927,6 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
                 task_manager.update_status_from_thread(progress, f"({processed_count}/{total}) 正在分析: {future_to_item[future].get('Name')}")
 
         if cache_update_batch:
-            logger.info(f"分析完成，正在将 {len(cache_update_batch)} 条记录写入缓存表...")
             db_handler.upsert_resubscribe_cache_batch(cache_update_batch)
 
         final_message = "媒体洗版状态刷新完成！"
