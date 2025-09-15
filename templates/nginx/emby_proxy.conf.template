@@ -42,6 +42,7 @@ server {
 
     # ★★★ 新增规则：捕获 /d/ 开头的直接播放链接 ★★★
     location /d/ {
+        add_header X-Nginx-Rule-Matched "Rule-for-d-path" always;
         proxy_pass http://redirect_service;
     }
     {% endif %}
@@ -87,6 +88,7 @@ server {
 
     # 兜底规则：转发所有其他请求到真实 Emby
     location / {
+        add_header X-Nginx-Rule-Matched "Catch-All-Rule" always;
         proxy_pass http://emby_server;
     }
 }
