@@ -138,8 +138,9 @@ class CoverGeneratorService:
 
     def __get_valid_items_from_library(self, server_id: str, library: Dict[str, Any], limit: int, content_types: Optional[List[str]] = None) -> List[Dict]:
         """
-        【V3 - 超时问题终极修复版】
-        - 优化了数据获取逻辑，将排序和限制工作交由Emby服务器处理，彻底解决大数据量下的超时问题。
+        【V2 - 封面生成最终修复版】
+        - 优先使用外部传入的 content_types 来确定要获取的媒体类型。
+        - 解决了无法获取合集(BoxSet)内部媒体项的问题。
         """
         library_id = library.get("Id") or library.get("ItemId")
         library_name = library.get("Name")
@@ -148,38 +149,32 @@ class CoverGeneratorService:
         api_key = config_manager.APP_CONFIG.get('emby_api_key')
         user_id = config_manager.APP_CONFIG.get('emby_user_id')
 
-        # --- 媒体类型确定逻辑 (保持不变) ---
+        # --- ★★★ 核心修复：重新设计媒体类型确定逻辑 ★★★ ---
         item_types_to_fetch = None
+        
+        # 1. 优先使用调用者传入的精确内容类型
         if content_types:
             item_types_to_fetch = ",".join(content_types)
+            logger.trace(f"  -> 使用调用者提供的精确内容类型: '{item_types_to_fetch}'")
         else:
-            TYPE_MAP = {'movies': 'Movie', 'tvshows': 'Series', 'music': 'MusicAlbum', 'boxsets': 'Movie,Series', 'mixed': 'Movie,Series', 'audiobooks': 'AudioBook'}
+            # 2. 如果没有传入，再回退到基于媒体库类型的猜测
+            TYPE_MAP = {
+                'movies': 'Movie', 'tvshows': 'Series', 'music': 'MusicAlbum',
+                'boxsets': 'Movie,Series', # ★ 关键修正：合集里装的是电影和剧集
+                'mixed': 'Movie,Series', 'audiobooks': 'AudioBook'
+            }
             collection_type = library.get('CollectionType')
             if collection_type:
                 item_types_to_fetch = TYPE_MAP.get(collection_type)
             elif library.get('Type') == 'CollectionFolder':
                 item_types_to_fetch = 'Movie,Series'
+
         if not item_types_to_fetch:
+            logger.warning(f"无法为媒体库 '{library_name}' 确定媒体类型，将使用默认值 'Movie,Series' 尝试。")
             item_types_to_fetch = 'Movie,Series'
             
         logger.trace(f"  -> 正在为媒体库 '{library_name}' 获取类型为 '{item_types_to_fetch}' 的项目...")
 
-        # --- ★★★ 核心优化：构建智能化的API参数 ★★★ ---
-        sort_by_param = None
-        sort_order_param = None
-        
-        if self._sort_by == "Latest":
-            sort_by_param = "DateCreated"
-            sort_order_param = "Descending"
-        elif self._sort_by == "Random":
-            sort_by_param = "Random"
-            
-        # 我们需要的项目数量是 limit，但为了过滤掉没有图片的，可以稍微多取一点
-        # 比如多取5倍，但最多不超过100个，防止即使是随机排序也超时
-        fetch_limit = min(limit * 5, 100)
-
-        # 调用一个“增强版”的获取函数，这个函数需要支持SortBy, SortOrder, Limit参数
-        # 我们假设 emby_handler.get_emby_library_items 支持这些参数
         all_items = emby_handler.get_emby_library_items(
             base_url=base_url,
             api_key=api_key,
@@ -187,19 +182,24 @@ class CoverGeneratorService:
             library_ids=[library_id],
             media_type_filter=item_types_to_fetch,
             fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated",
-            force_user_endpoint=True,
-            
-            # --- 新增的性能优化参数 ---
-            sort_by=sort_by_param,
-            sort_order=sort_order_param,
-            limit=fetch_limit
+            force_user_endpoint=True
         )
         
         if not all_items:
             return []
             
-        # 在获取到的少量项目中，过滤掉没有图片的
         valid_items = [item for item in all_items if self.__get_image_url(item)]
+        
+        if not valid_items:
+            return []
+
+        if self._sort_by == "Latest":
+            logger.debug(f"  -> 正在对 {len(valid_items)} 个有效项目按'最新添加'进行排序...")
+            valid_items.sort(key=lambda x: x.get('DateCreated', '1970-01-01T00:00:00.000Z'), reverse=True)
+        elif self._sort_by == "Random":
+            logger.debug(f"  -> 正在对 {len(valid_items)} 个有效项目进行'随机'排序...")
+            random.shuffle(valid_items)
+
         return valid_items[:limit]
 
     def __generate_image_from_path(self, library_name: str, title: Tuple[str, str], image_paths: List[str], item_count: Optional[int] = None) -> bytes:
@@ -315,45 +315,14 @@ class CoverGeneratorService:
         return zh_title, en_title
 
     def __get_image_url(self, item: Dict[str, Any]) -> str:
-        """
-        【V4 - 最终混合版】
-        获取项目的可用图片URL。
-        - 为音乐专辑创建了专属的、不可动摇的规则，永远只获取主图。
-        - 为所有其他媒体类型保留了健壮的“首选/备用”回退逻辑。
-        """
         item_id = item.get("Id")
-        item_type = item.get("Type")
-        
-        # --- ★★★ 核心修正：为音乐专辑开辟专属通道 ★★★ ---
-        if item_type == 'MusicAlbum':
-            # 对于音乐专辑，我们忽略所有其他设置，永远只寻找它的主图（专辑封面）
-            if item.get("ImageTags", {}).get("Primary"):
-                return f'/emby/Items/{item_id}/Images/Primary?tag={item["ImageTags"]["Primary"]}'
-            else:
-                # 如果一个音乐专辑连封面都没有，那它就是无效的
-                return None
-
-        # --- 对于所有非音乐类型的媒体，执行我们之前的智能回退逻辑 ---
-        has_primary = item.get("ImageTags", {}).get("Primary")
-        has_backdrop = item.get("BackdropImageTags")
-
-        prefer_backdrop = self._cover_style.startswith('single') and not self._single_use_primary
-
-        if prefer_backdrop:
-            # 用户的首选是背景图
-            if has_backdrop:
+        if self._cover_style.startswith('single') and not self._single_use_primary:
+            if item.get("BackdropImageTags"):
                 return f'/emby/Items/{item_id}/Images/Backdrop/0?tag={item["BackdropImageTags"][0]}'
-            if has_primary:
-                logger.trace(f"项目 '{item.get('Name')}' (ID: {item_id}) 缺少背景图，已智能回退使用主图。")
-                return f'/emby/Items/{item_id}/Images/Primary?tag={has_primary}'
-        else:
-            # 用户的首选是主图
-            if has_primary:
-                return f'/emby/Items/{item_id}/Images/Primary?tag={has_primary}'
-            if has_backdrop:
-                logger.trace(f"项目 '{item.get('Name')}' (ID: {item_id}) 缺少主图，已智能回退使用背景图。")
-                return f'/emby/Items/{item_id}/Images/Backdrop/0?tag={item["BackdropImageTags"][0]}'
-
+        if item.get("ImageTags", {}).get("Primary"):
+            return f'/emby/Items/{item_id}/Images/Primary?tag={item["ImageTags"]["Primary"]}'
+        if item.get("BackdropImageTags"):
+            return f'/emby/Items/{item_id}/Images/Backdrop/0?tag={item["BackdropImageTags"][0]}'
         return None
 
     def __download_image(self, server_id: str, api_path: str, library_name: str, count: int) -> Path:

@@ -440,59 +440,99 @@ def get_emby_libraries(emby_server_url, emby_api_key, user_id):
 def get_emby_library_items(
     base_url: str,
     api_key: str,
-    user_id: str,
-    library_ids: List[str],
-    media_type_filter: str,  # <--- 恢复为必需参数
+    media_type_filter: Optional[str] = None,
+    user_id: Optional[str] = None,
+    library_ids: Optional[List[str]] = None,
+    search_term: Optional[str] = None,
+    library_name_map: Optional[Dict[str, str]] = None,
     fields: Optional[str] = None,
-    force_user_endpoint: bool = False,
-    # --- 新增的、可选的性能优化参数 ---
-    sort_by: Optional[str] = None,
-    sort_order: Optional[str] = None,
-    limit: Optional[int] = None
-) -> List[Dict[str, Any]]:
-    """
-    【V3 - 向后兼容终极修复版】
-    获取指定媒体库中的项目。
-    - 恢复了 media_type_filter 作为必需参数，确保所有调用都能正确筛选媒体类型。
-    - 安全地集成了可选的排序和限制功能。
-    """
-    if not all([base_url, api_key, user_id]) or not library_ids:
-        return []
+    force_user_endpoint: bool = False
+) -> Optional[List[Dict[str, Any]]]:
+    if not base_url or not api_key:
+        logger.error("get_emby_library_items: base_url 或 api_key 未提供。")
+        return None
 
-    # ★★★ 核心修复：无条件包含核心参数 ★★★
-    params = {
-        "api_key": api_key,
-        "ParentId": ",".join(library_ids),
-        "Recursive": "true",
-        "IncludeItemTypes": media_type_filter, # <--- 直接使用，不再做if判断
-        "Fields": fields or "Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,ProviderIds,ChildCount,_SourceLibraryId",
-    }
-    
-    # 动态添加真正可选的性能参数
-    if sort_by:
-        params["SortBy"] = sort_by
-    if sort_order:
-        params["SortOrder"] = sort_order
-    if limit is not None:
-        params["Limit"] = limit
+    # ★★★ 核心修改: 在函数开头一次性获取超时时间 ★★★
+    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
 
-    # API端点选择逻辑 (保持不变)
-    if force_user_endpoint:
+    if search_term and search_term.strip():
+        logger.info(f"进入搜索模式，关键词: '{search_term}'")
         api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
-    else:
-        api_url = f"{base_url.rstrip('/')}/Items"
-        params['UserId'] = user_id
+        params = {
+            "api_key": api_key,
+            "SearchTerm": search_term.strip(),
+            "IncludeItemTypes": media_type_filter or "Movie,Series",
+            "Recursive": "true",
+            "Fields": "Id,Name,Type,ProductionYear,ProviderIds,Path",
+            "Limit": 100
+        }
+        try:
+            response = requests.get(api_url, params=params, timeout=api_timeout)
+            response.raise_for_status()
+            items = response.json().get("Items", [])
+            logger.info(f"搜索到 {len(items)} 个匹配项。")
+            return items
+        except requests.exceptions.RequestException as e:
+            logger.error(f"搜索 Emby 时发生网络错误: {e}")
+            return None
 
-    try:
-        logger.debug(f"正在向Emby请求项目: URL='{api_url}', Params='{params}'")
-        response = requests.get(api_url, params=params, timeout=60)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("Items", [])
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"请求库 '{','.join(library_ids)}' 中的项目失败: {e}")
+    if not library_ids:
         return []
+
+    all_items_from_selected_libraries: List[Dict[str, Any]] = []
+    for lib_id in library_ids:
+        if not lib_id or not lib_id.strip():
+            continue
+        
+        library_name = library_name_map.get(lib_id, lib_id) if library_name_map else lib_id
+        
+        try:
+            fields_to_request = fields if fields else "ProviderIds,Name,Type,MediaStreams,ChildCount,Path,OriginalTitle"
+
+            params = {
+                "api_key": api_key, "Recursive": "true", "ParentId": lib_id,
+                "Fields": fields_to_request,
+            }
+            if media_type_filter:
+                params["IncludeItemTypes"] = media_type_filter
+            else:
+                params["IncludeItemTypes"] = "Movie,Series,Video"
+
+            if force_user_endpoint and user_id:
+                api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+            else:
+                api_url = f"{base_url.rstrip('/')}/Items"
+                if user_id:
+                    params["UserId"] = user_id
+
+            logger.trace(f"Requesting items from library '{library_name}' (ID: {lib_id}) using URL: {api_url}.")
+            
+            response = requests.get(api_url, params=params, timeout=api_timeout)
+            response.raise_for_status()
+            items_in_lib = response.json().get("Items", [])
+            
+            if items_in_lib:
+                for item in items_in_lib:
+                    item['_SourceLibraryId'] = lib_id
+                all_items_from_selected_libraries.extend(items_in_lib)
+        
+        except Exception as e:
+            logger.error(f"请求库 '{library_name}' 中的项目失败: {e}", exc_info=True)
+            continue
+
+    type_to_chinese = {"Movie": "电影", "Series": "电视剧", "Video": "视频", "MusicAlbum": "音乐专辑"}
+    media_type_in_chinese = ""
+
+    if media_type_filter:
+        types = media_type_filter.split(',')
+        translated_types = [type_to_chinese.get(t, t) for t in types]
+        media_type_in_chinese = "、".join(translated_types)
+    else:
+        media_type_in_chinese = '所有'
+
+    logger.debug(f"  -> 总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
+    
+    return all_items_from_selected_libraries
 # ✨✨✨ 刷新Emby元数据 ✨✨✨
 def refresh_emby_item_metadata(item_emby_id: str,
                                emby_server_url: str,
