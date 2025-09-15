@@ -46,6 +46,15 @@ server {
         add_header X-Nginx-Rule-Matched "Rule-for-d-path" always;
         proxy_pass http://redirect_service;
     }
+
+    location ~ /emby/Items/(\d+)/PlaybackInfo {
+        # 添加一个调试头，方便我们确认它是否被成功匹配
+        add_header X-Nginx-Rule-Matched "PlaybackInfo-Intercepted" always;
+        
+        # 将请求转发给您的重定向服务
+        proxy_pass http://redirect_service;
+    }
+
     {% endif %}
 
     # --- 以下是虚拟库路由规则 ---
