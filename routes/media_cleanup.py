@@ -69,42 +69,63 @@ def delete_cleanup_tasks():
     
 @media_cleanup_bp.route('/api/cleanup/rules', methods=['GET'])
 def get_cleanup_rules():
-    """【V4 - 排序保持最终版】获取当前的媒体去重规则，并严格保持用户定义的顺序。"""
+    """【V5 - 智能升级最终版】获取去重规则，并能将新选项智能合并到旧的已存规则中。"""
     try:
-        # 1. 定义一套完整的默认规则作为基准
+        # 1. 定义一套完整的、包含所有最新选项的默认规则
         default_rules_map = {
             "quality": {"id": "quality", "enabled": True, "priority": ["Remux", "BluRay", "WEB-DL", "HDTV"]},
             "resolution": {"id": "resolution", "enabled": True, "priority": ["2160p", "1080p", "720p"]},
-            "effect": {"id": "effect", "enabled": True, "priority": ["dovi", "hdr10+", "hdr", "sdr"]},
+            "effect": {
+                "id": "effect", 
+                "enabled": True, 
+                "priority": ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"]
+            },
             "filesize": {"id": "filesize", "enabled": True, "priority": "desc"}
         }
         
         # 2. 从数据库加载用户已保存的规则列表
         saved_rules_list = db_handler.get_setting('media_cleanup_rules')
         
-        # ★★★ 核心修改：如果数据库中没有保存任何规则，才使用完整的默认值 ★★★
         if not saved_rules_list:
-            # 返回默认顺序的规则列表
+            # 如果数据库为空，直接返回最新的默认规则
             return jsonify(list(default_rules_map.values()))
 
         # --- 如果数据库中有规则，则执行智能合并 ---
         final_rules = []
-        # 将用户保存的规则转为字典，方便快速查找
         saved_rules_map = {rule['id']: rule for rule in saved_rules_list}
         
-        # ★★★ 核心修改：以用户保存的顺序为准，遍历它 ★★★
+        # 3. 以用户保存的顺序为准进行遍历
         for saved_rule in saved_rules_list:
             rule_id = saved_rule['id']
-            # 将数据库中的规则与默认规则合并，确保 enabled 等字段存在
-            # 这样可以平滑地增加新功能（比如未来增加 'description' 字段）
+            # 将数据库中的规则与默认规则合并，确保 enabled 等基础字段存在
             merged_rule = {**default_rules_map.get(rule_id, {}), **saved_rule}
+
+            # ★★★ 核心修改：对 "effect" 规则进行特殊处理，智能升级选项列表 ★★★
+            if rule_id == 'effect' and 'priority' in merged_rule and isinstance(merged_rule['priority'], list):
+                # 获取用户保存的旧优先级 (例如: ['dovi', 'hdr'])
+                saved_priority = merged_rule['priority']
+                # 获取代码中定义的最新的完整优先级
+                default_priority = default_rules_map['effect']['priority']
+
+                # 创建一个最终的优先级列表，先放入用户已经保存并排序好的项
+                final_priority = list(saved_priority)
+                # 创建一个集合用于快速判断是否存在，忽略大小写
+                saved_priority_set = set(p.lower() for p in saved_priority)
+
+                # 遍历最新的默认列表，将用户没有的“新”选项追加到末尾
+                for new_item in default_priority:
+                    if new_item.lower() not in saved_priority_set:
+                        final_priority.append(new_item)
+                
+                # 用升级后的完整列表替换掉旧的列表
+                merged_rule['priority'] = final_priority
+            
             final_rules.append(merged_rule)
 
-        # ★★★ 核心修改：检查是否有新增的、用户尚未保存的规则（比如新版本增加了'effect'）★★★
+        # 4. 检查是否有在代码中新增的、但用户从未保存过的规则（例如未来新增一个 "codec" 规则）
         saved_ids = set(saved_rules_map.keys())
         for key, default_rule in default_rules_map.items():
             if key not in saved_ids:
-                # 如果有新规则，把它追加到列表末尾
                 final_rules.append(default_rule)
 
         return jsonify(final_rules)

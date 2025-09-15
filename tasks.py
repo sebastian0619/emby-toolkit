@@ -2282,12 +2282,63 @@ def task_generate_all_custom_collection_covers(processor: MediaProcessor):
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
+# --- 从文件名和视频流信息中提取并标准化特效标签，支持杜比视界Profile ---
+def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> str:
+    """
+    从文件名和视频流信息中提取并标准化特效标签，支持杜比视界Profile。
+    - Profile 8.1, 7.6 等会被正确识别为 p8, p7。
+    """
+    
+    # 1. 优先从文件名判断，信息最准
+    # Profile 8 (e.g., P8.1)
+    if any(s in path_lower for s in ["dovi p8", "dovi.p8", "dv.p8", "profile 8", "profile8"]):
+        return "dovi_p8"
+    # Profile 7 (e.g., P7.6)
+    if any(s in path_lower for s in ["dovi p7", "dovi.p7", "dv.p7", "profile 7", "profile7"]):
+        return "dovi_p7"
+    # Profile 5
+    if any(s in path_lower for s in ["dovi p5", "dovi.p5", "dv.p5", "profile 5", "profile5"]):
+        return "dovi_p5"
+    # Generic DoVi
+    if any(s in path_lower for s in ["dovi", "dolby vision", "dolbyvision"]):
+        return "dovi_other" # 如果只能从文件名判断是杜比，但无法确定Profile
+        
+    # HDR variants
+    if "hdr10+" in path_lower or "hdr10plus" in path_lower:
+        return "hdr10+"
+    if "hdr" in path_lower:
+        return "hdr"
+
+    # 2. 如果文件名没有信息，再从视频流信息判断
+    if video_stream and isinstance(video_stream, dict):
+        # 优先检查 Profile 字符串 (e.g., "dvhe.08.06")
+        profile_str = str(video_stream.get("Profile", "")).lower()
+        if "dvhe.08" in profile_str or "dvh1.08" in profile_str:
+            return "dovi_p8"
+        if "dvhe.07" in profile_str or "dvh1.07" in profile_str:
+            return "dovi_p7"
+        if "dvhe.05" in profile_str or "dvh1.05" in profile_str:
+            return "dovi_p5"
+
+        # 备用方案：检查 VideoRangeType
+        video_range_type = str(video_stream.get("VideoRangeType", "")).lower()
+        if "dovi" in video_range_type or "dolby" in video_range_type:
+            return "dovi_other" # 无法从 VideoRangeType 判断Profile
+        if "hdr10+" in video_range_type:
+            return "hdr10+"
+        if "hdr" in video_range_type:
+            return "hdr"
+
+    # 3. 默认是SDR
+    return "sdr"
+
 # ★★★ 媒体洗版任务 (基于精确API模型重构) ★★★
 def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
     """
+    【V2 - 杜比Profile细分版】
     根据媒体详情和匹配到的规则，构建发送给 MoviePilot 的最终 payload。
-    - 核心修复：使用正向零宽断言 (?=.*REGEX) 来构建 AND 关系的正则表达式。
     - 所有洗版请求都带 best_version: 1，自定义参数作为额外过滤器。
+    - 新增对杜比视界 Profile 8/7/5 的精确订阅支持。
     """
     item_name = item_details.get('Name') or item_details.get('item_name')
     tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb") or item_details.get('tmdb_id')
@@ -2312,7 +2363,7 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
     rule_name = rule.get('name', '未知规则')
     final_include_lookaheads = []
 
-    # --- 分辨率、质量、特效 (独立字段，逻辑不变) ---
+    # --- 分辨率、质量 (逻辑不变) ---
     if rule.get("resubscribe_resolution_enabled"):
         threshold = rule.get("resubscribe_resolution_threshold")
         target_resolution = None
@@ -2327,36 +2378,62 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
         if isinstance(quality_list, list) and quality_list:
             payload['quality'] = ",".join(quality_list)
             logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 质量: {payload['quality']}")
-    if rule.get("resubscribe_effect_enabled"):
-        effect_list = rule.get("resubscribe_effect_include")
-        if isinstance(effect_list, list) and effect_list:
-            payload['effect'] = ",".join(effect_list)
-            logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 特效: {payload['effect']}")
-
-    # ★★★ 核心修改：构建 Lookahead 正则表达式列表 ★★★
     
-    # --- 音轨处理 ---
+    # ★★★ 核心修改：特效订阅逻辑 ★★★
+    if rule.get("resubscribe_effect_enabled"):
+        effect_list = rule.get("resubscribe_effect_include", [])
+        if isinstance(effect_list, list) and effect_list:
+            simple_effects_for_payload = set()
+            
+            # 定义特效的优先级和对应的订阅参数
+            EFFECT_HIERARCHY = ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"]
+            EFFECT_REGEX_MAP = {
+                "dovi_p8": ("(?=.*(dovi|dolby))(?=.*(p8|profile.?8))", "dovi"),
+                "dovi_p7": ("(?=.*(dovi|dolby))(?=.*(p7|profile.?7))", "dovi"),
+                "dovi_p5": ("(?=.*(dovi|dolby))(?=.*(p5|profile.?5))", "dovi"),
+                "dovi_other": ("(?=.*(dovi|dolby))", "dovi"),
+                "hdr10+": ("(?=.*(hdr10\+|hdr10plus))", "hdr10+"),
+                "hdr": ("(?=.*hdr)", "hdr")
+            }
+            OLD_EFFECT_MAP = {"杜比视界": "dovi_other", "HDR": "hdr"}
+
+            # 1. 从用户选择中，找到优先级最高的那个作为订阅目标
+            highest_req_priority = 999
+            best_effect_choice = None
+            for choice in effect_list:
+                normalized_choice = OLD_EFFECT_MAP.get(choice, choice)
+                try:
+                    priority = EFFECT_HIERARCHY.index(normalized_choice)
+                    if priority < highest_req_priority:
+                        highest_req_priority = priority
+                        best_effect_choice = normalized_choice
+                except ValueError:
+                    continue
+            
+            # 2. 根据最高优先级的目标，生成 payload
+            if best_effect_choice:
+                regex_pattern, simple_effect = EFFECT_REGEX_MAP.get(best_effect_choice, (None, None))
+                if regex_pattern:
+                    final_include_lookaheads.append(regex_pattern)
+                if simple_effect:
+                    simple_effects_for_payload.add(simple_effect)
+
+            if simple_effects_for_payload:
+                 payload['effect'] = ",".join(simple_effects_for_payload)
+                 logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 特效: {payload['effect']}")
+
+    # --- 音轨处理 (逻辑不变) ---
     if rule.get("resubscribe_audio_enabled"):
         audio_langs = rule.get("resubscribe_audio_missing_languages", [])
         if isinstance(audio_langs, list) and audio_langs:
-            audio_keywords = []
-            for lang_code in audio_langs:
-                keywords = AUDIO_SUBTITLE_KEYWORD_MAP.get(lang_code)
-                if keywords: audio_keywords.extend(keywords)
+            audio_keywords = [k for lang in audio_langs for k in AUDIO_SUBTITLE_KEYWORD_MAP.get(lang, [])]
             if audio_keywords:
-                unique_keywords = sorted(list(set(audio_keywords)), key=len, reverse=True)
-                # 构建音轨部分的 OR 正则
-                audio_or_regex = f"({'|'.join(unique_keywords)})"
-                # 将其包装成一个 lookahead
+                audio_or_regex = f"({'|'.join(sorted(list(set(audio_keywords)), key=len, reverse=True))})"
                 final_include_lookaheads.append(f"(?=.*{audio_or_regex})")
 
-    # --- 字幕处理 ---
-     # 1. 优先检查“特效字幕优先”开关，无论总开关是否开启
+    # --- 字幕处理 (逻辑不变) ---
     if rule.get("resubscribe_subtitle_effect_only"):
-        logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 应用了“特效字幕”优先订阅。")
         final_include_lookaheads.append("(?=.*特效)")
-    
-    # 2. 否则，再检查“按字幕洗版”总开关是否开启，并按语言订阅
     elif rule.get("resubscribe_subtitle_enabled"):
         subtitle_langs = rule.get("resubscribe_subtitle_missing_languages", [])
         if isinstance(subtitle_langs, list) and subtitle_langs:
@@ -2373,8 +2450,9 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
 
 def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Optional[dict] = None) -> tuple[bool, str]:
     """
-    【V9 - 中文识别升级版】
-    - 升级了字幕和音轨的中文识别逻辑，使其能够识别 zh-cn, zh-hans 等多种中文代码。
+    【V10 - 杜比Profile细分版】
+    - 升级了特效检查逻辑，能够精确识别杜比视界 Profile 8/7/5。
+    - 如果当前文件的特效等级低于规则要求的最高等级，则触发洗版。
     """
     item_name = item_details.get('Name', '未知项目')
     logger.trace(f"  -> 开始为《{item_name}》检查洗版需求 ---")
@@ -2386,13 +2464,10 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
     reasons = []
     video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
 
-    # --- ★★★ 核心改造 1/3: 定义一个更全面的中文代码集合 ★★★ ---
     CHINESE_LANG_CODES = {'chi', 'zho', 'chs', 'cht', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn', 'yue'}
-    CHINESE_SUB_CODES = CHINESE_LANG_CODES
-    CHINESE_AUDIO_CODES = CHINESE_LANG_CODES
     CHINESE_SPEAKING_REGIONS = {'中国', '中国大陆', '香港', '中国香港', '台湾', '中国台湾', '新加坡'}
 
-    # 1. 分辨率检查
+    # 1. 分辨率检查 (逻辑不变)
     try:
         if config.get("resubscribe_resolution_enabled"):
             if not video_stream:
@@ -2400,151 +2475,90 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
             else:
                 threshold = int(config.get("resubscribe_resolution_threshold") or 1920)
                 current_width = int(video_stream.get('Width') or 0)
-                logger.trace(f"  -> [分辨率检查] 阈值: {threshold}px, 当前宽度: {current_width}px")
                 if 0 < current_width < threshold:
-                    threshold_name = "未知分辨率"
-                    if threshold == 3840: threshold_name = "4K"
-                    elif threshold == 1920: threshold_name = "1080p"
-                    elif threshold == 1280: threshold_name = "720p"
+                    threshold_name = {3840: "4K", 1920: "1080p", 1280: "720p"}.get(threshold, "未知")
                     reasons.append(f"分辨率低于{threshold_name}")
     except (ValueError, TypeError) as e:
         logger.warning(f"  -> [分辨率检查] 处理时发生类型错误: {e}")
 
-    # 2. 质量检查
+    # 2. 质量检查 (逻辑不变)
     try:
         if config.get("resubscribe_quality_enabled"):
-            required_list_raw = config.get("resubscribe_quality_include", [])
-            if isinstance(required_list_raw, list) and required_list_raw:
-                required_list = [str(q).lower() for q in required_list_raw]
-                logger.trace(f"  -> [质量检查] 要求: {required_list}")
-
-                quality_met = False
-
-                # 优先从文件名匹配
-                if any(required_term in file_name_lower for required_term in required_list):
-                    quality_met = True
-                    logger.trace(f"  -> [质量检查] 文件名匹配成功。")
-                else:
-                    # 文件名匹配不到，从 MediaStreams 匹配
-                    if video_stream:
-                        # Combine relevant video stream properties into a searchable string
-                        video_stream_info = f"{video_stream.get('Codec', '')} {video_stream.get('Profile', '')} {video_stream.get('VideoRange', '')} {video_stream.get('VideoRangeType', '')} {video_stream.get('DisplayTitle', '')}".lower()
-                        logger.trace(f"  -> [质量检查] MediaStream信息: '{video_stream_info}'")
-                        if any(required_term in video_stream_info for required_term in required_list):
-                            quality_met = True
-                            logger.trace(f"  -> [质量检查] MediaStream匹配成功。")
-
-                if not quality_met:
+            required_list = config.get("resubscribe_quality_include", [])
+            if isinstance(required_list, list) and required_list:
+                required_list_lower = [str(q).lower() for q in required_list]
+                if not any(term in file_name_lower for term in required_list_lower):
                     reasons.append("质量不达标")
-            elif not isinstance(required_list_raw, list):
-                logger.warning(f"  -> [质量检查] 配置中的 'resubscribe_quality_include' 不是列表，已跳过。")
     except Exception as e:
         logger.warning(f"  -> [质量检查] 处理时发生未知错误: {e}")
 
-    # 3. 特效检查
+    # 3. 特效检查 (核心修改)
     try:
         if config.get("resubscribe_effect_enabled"):
             user_choices = config.get("resubscribe_effect_include", [])
             if isinstance(user_choices, list) and user_choices:
-                expanded_keywords_for_file_check = []
+                # 定义特效的优先级
+                EFFECT_HIERARCHY = ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"]
+                OLD_EFFECT_MAP = {"杜比视界": "dovi_other", "HDR": "hdr"}
+
+                # a. 从用户选择中，找到优先级最高的那个作为判断基准
+                highest_req_priority = 999
                 for choice in user_choices:
-                    file_keywords = EFFECT_KEYWORD_MAP.get(choice)
-                    if file_keywords:
-                        expanded_keywords_for_file_check.extend(file_keywords)
+                    normalized_choice = OLD_EFFECT_MAP.get(choice, choice)
+                    try:
+                        priority = EFFECT_HIERARCHY.index(normalized_choice)
+                        if priority < highest_req_priority:
+                            highest_req_priority = priority
+                    except ValueError:
+                        continue
                 
-                logger.trace(f"  -> [特效检查] 用户选择: {user_choices}, 扩展后用于匹配的关键词: {expanded_keywords_for_file_check}")
+                # b. 如果找到了有效的基准，则进行比较
+                if highest_req_priority < 999:
+                    # 获取当前文件的特效等级及其优先级
+                    current_effect = _get_standardized_effect(file_name_lower, video_stream)
+                    current_priority = EFFECT_HIERARCHY.index(current_effect)
 
-                effect_met = False
-                if expanded_keywords_for_file_check:
-                    # 步骤 1: 优先检查文件名
-                    if any(required_term in file_name_lower for required_term in expanded_keywords_for_file_check):
-                        effect_met = True
-                        logger.trace(f"  -> [特效检查] 文件名匹配成功。")
-                    # 步骤 2: 如果文件名匹配失败，则检查 MediaStreams
-                    else:
-                        if video_stream:
-                            video_stream_info = f"{video_stream.get('VideoRange', '')} {video_stream.get('VideoRangeType', '')} {video_stream.get('DisplayTitle', '')}".lower()
-                            logger.trace(f"  -> [特效检查] 文件名匹配失败，正在检查 MediaStream 信息: '{video_stream_info}'")
-                            if any(required_term in video_stream_info for required_term in expanded_keywords_for_file_check):
-                                effect_met = True
-                                logger.trace(f"  -> [特效检查] MediaStream 匹配成功。")
-
-                if not effect_met:
-                    reasons.append("特效不达标")
-            elif not isinstance(user_choices, list):
-                logger.warning(f"  -> [特效检查] 配置中的 'resubscribe_effect_include' 不是列表，已跳过。")
+                    # c. 比较：如果当前文件的优先级更差（索引值更大），则需要洗版
+                    if current_priority > highest_req_priority:
+                        reasons.append("特效不达标")
     except Exception as e:
         logger.warning(f"  -> [特效检查] 处理时发生未知错误: {e}")
 
-    # ★★★ 核心修改：将豁免逻辑提取成一个独立的辅助函数 ★★★
+    # 4. & 5. 音轨和字幕检查 (逻辑不变)
     def _is_exempted_from_chinese_check() -> bool:
-        """
-        判断当前媒体是否应该被豁免“必须包含中文音轨/字幕”的检查。
-        豁免条件：
-        1. 媒体本身已经有一条中文音轨。
-        2. 或者，媒体的音轨语言未知(und)，但其制片国家是华语地区。
-        """
-        # Plan A: 检查是否已有中文音轨
         present_audio_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
-        if not present_audio_langs.isdisjoint(CHINESE_AUDIO_CODES):
+        if not present_audio_langs.isdisjoint(CHINESE_LANG_CODES):
             return True
-        
-        # Plan B: 如果音轨信息无效 (und 或空)，则检查制片国
         if 'und' in present_audio_langs or not present_audio_langs:
             if media_metadata and media_metadata.get('countries_json'):
-                countries = set(media_metadata['countries_json'])
-                if not countries.isdisjoint(CHINESE_SPEAKING_REGIONS):
-                    logger.trace(f"  -> [豁免检查] 媒体音轨语言未知，但制片国家为华语地区 ({countries})，已豁免中文音轨/字幕检查。")
+                if not set(media_metadata['countries_json']).isdisjoint(CHINESE_SPEAKING_REGIONS):
                     return True
         return False
 
-    # 4. 音轨检查 (应用豁免逻辑)
+    is_exempted = _is_exempted_from_chinese_check()
+    
     try:
-        if config.get("resubscribe_audio_enabled"):
-            required_langs_raw = config.get("resubscribe_audio_missing_languages", [])
-            if isinstance(required_langs_raw, list) and required_langs_raw:
-                required_langs = set(str(lang).lower() for lang in required_langs_raw)
-                
-                requires_chinese = not required_langs.isdisjoint(CHINESE_LANG_CODES)
-                
-                if requires_chinese and not _is_exempted_from_chinese_check():
-                    present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
-                    if present_langs.isdisjoint(CHINESE_AUDIO_CODES):
-                         reasons.append("缺中文音轨")
-                
-                other_required_langs = required_langs - CHINESE_LANG_CODES
-                if other_required_langs:
-                    present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
-                    if not other_required_langs.issubset(present_langs):
-                        reasons.append("缺其他音轨")
+        if config.get("resubscribe_audio_enabled") and not is_exempted:
+            required_langs = set(config.get("resubscribe_audio_missing_languages", []))
+            if 'chi' in required_langs or 'yue' in required_langs:
+                present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
+                if present_langs.isdisjoint(CHINESE_LANG_CODES):
+                    reasons.append("缺中文音轨")
     except Exception as e:
         logger.warning(f"  -> [音轨检查] 处理时发生未知错误: {e}")
 
-    # 5. 字幕检查 (应用豁免逻辑)
     try:
-        if config.get("resubscribe_subtitle_enabled"):
-            required_langs_raw = config.get("resubscribe_subtitle_missing_languages", [])
-            if isinstance(required_langs_raw, list) and required_langs_raw:
-                required_langs = set(str(lang).lower() for lang in required_langs_raw)
-                
-                needs_chinese_sub = not required_langs.isdisjoint(CHINESE_SUB_CODES)
-                if needs_chinese_sub and not _is_exempted_from_chinese_check():
-                    present_sub_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
-                    if present_sub_langs.isdisjoint(CHINESE_SUB_CODES):
-                        reasons.append("缺中文字幕")
-                
-                other_required_subs = required_langs - CHINESE_SUB_CODES
-                if other_required_subs:
-                    present_sub_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
-                    if not other_required_subs.issubset(present_sub_langs):
-                        reasons.append("缺其他字幕")
-
+        if config.get("resubscribe_subtitle_enabled") and not is_exempted:
+            required_langs = set(config.get("resubscribe_subtitle_missing_languages", []))
+            if 'chi' in required_langs:
+                present_sub_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
+                if present_sub_langs.isdisjoint(CHINESE_LANG_CODES):
+                    reasons.append("缺中文字幕")
     except Exception as e:
         logger.warning(f"  -> [字幕检查] 处理时发生未知错误: {e}")
                  
     if reasons:
-        unique_reasons = sorted(list(set(reasons)))
-        final_reason = "; ".join(unique_reasons)
+        final_reason = "; ".join(sorted(list(set(reasons))))
         logger.info(f"  -> 《{item_name}》需要洗版。原因: {final_reason}")
         return True, final_reason
     else:
@@ -2998,7 +3012,7 @@ def _extract_quality_tag_from_filename(filename_lower: str, video_stream: dict) 
 # ======================================================================
 
 def _get_version_properties(version: Optional[Dict]) -> Dict:
-    """【V3 - 特效支持版】从单个版本信息中提取并计算属性，增加特效标准化。"""
+    """【V4 - 杜比Profile细分版】从单个版本信息中提取并计算属性，增加特效标准化。"""
     if not version or not isinstance(version, dict):
         return {
             'id': 'unknown_or_invalid', 'path': '', 'quality': 'unknown',
@@ -3031,35 +3045,82 @@ def _get_version_properties(version: Optional[Dict]) -> Dict:
     elif width >= 1920: resolution_tag = "1080p"
     elif width >= 1280: resolution_tag = "720p"
 
-    # --- ★★★ 新增：特效标准化逻辑 ★★★ ---
-    effect_tag = "sdr" # 默认是SDR
-    video_stream = version.get("video_stream") # 假设我们在扫描时传入了video_stream
-    
-    # 1. 优先从文件名判断杜比视界，因为信息最准
-    if "dovi" in path_lower or "dolby vision" in path_lower or "dolbyvision" in path_lower:
-        effect_tag = "dovi"
-    # 2. 其次，从文件名判断HDR
-    elif "hdr10+" in path_lower or "hdr10plus" in path_lower:
-        effect_tag = "hdr10+"
-    elif "hdr" in path_lower:
-        effect_tag = "hdr"
-    # 3. 如果文件名没有信息，再从视频流信息判断
-    elif video_stream and isinstance(video_stream, dict):
-        video_range_type = str(video_stream.get("VideoRangeType", "")).lower()
-        if "dovi" in video_range_type or "dolby" in video_range_type:
-            effect_tag = "dovi"
-        elif "hdr10+" in video_range_type:
-            effect_tag = "hdr10+"
-        elif "hdr" in video_range_type:
-            effect_tag = "hdr"
+    # --- ★★★ 核心修改：调用新的辅助函数来标准化特效 ★★★ ---
+    video_stream = version.get("video_stream")
+    effect_tag = _get_standardized_effect(path_lower, video_stream)
 
     return {
         "id": version.get("id"),
         "quality": quality,
         "resolution": resolution_tag,
-        "effect": effect_tag, # <-- 新增字段
+        "effect": effect_tag, # <-- 使用新字段
         "filesize": version.get("filesize", 0)
     }
+
+def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """【V6 - 杜比Profile细分版】"""
+    
+    rules = db_handler.get_setting('media_cleanup_rules')
+    if not rules:
+        # 更新默认规则，加入 effect
+        rules = [
+            {"id": "quality", "priority": ["remux", "blu-ray", "web-dl", "hdtv"]},
+            {"id": "resolution", "priority": ["2160p", "1080p", "720p"]},
+            # ★★★ 核心修改：更新默认特效规则，细化杜比视界 ★★★
+            {"id": "effect", "priority": ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"]},
+            {"id": "filesize", "priority": "desc"}
+        ]
+
+    processed_rules = []
+    for rule in rules:
+        new_rule = rule.copy()
+        if rule.get("id") == "quality" and "priority" in new_rule and isinstance(new_rule["priority"], list):
+            normalized_priority = []
+            for p in new_rule["priority"]:
+                p_lower = str(p).lower()
+                if p_lower == "bluray": p_lower = "blu-ray"
+                if p_lower == "webdl": p_lower = "web-dl"
+                normalized_priority.append(p_lower)
+            new_rule["priority"] = normalized_priority
+        # ★★★ 新增：对特效规则也进行标准化处理 ★★★
+        elif rule.get("id") == "effect" and "priority" in new_rule and isinstance(new_rule["priority"], list):
+            new_rule["priority"] = [str(p).lower().replace(" ", "_") for p in new_rule["priority"]]
+
+        processed_rules.append(new_rule)
+    
+    version_properties = [_get_version_properties(v) for v in versions if v is not None]
+
+    from functools import cmp_to_key
+    def compare_versions(item1_props, item2_props):
+        for rule in processed_rules:
+            if not rule.get("enabled", True): continue
+            
+            rule_id = rule.get("id")
+            val1 = item1_props.get(rule_id)
+            val2 = item2_props.get(rule_id)
+
+            if rule_id == "filesize":
+                if val1 > val2: return -1
+                if val1 < val2: return 1
+                continue
+
+            priority_list = rule.get("priority", [])
+            try:
+                index1 = priority_list.index(val1) if val1 in priority_list else 999
+                index2 = priority_list.index(val2) if val2 in priority_list else 999
+                
+                if index1 < index2: return -1
+                if index1 > index2: return 1
+            except (ValueError, TypeError):
+                continue
+        return 0
+
+    sorted_versions = sorted(version_properties, key=cmp_to_key(compare_versions))
+    
+    best_version_id = sorted_versions[0]['id'] if sorted_versions else None
+    
+    # 返回原始版本信息和最佳ID
+    return versions, best_version_id
 
 # ★★★ 核心修改 2/2: 更新 _determine_best_version_by_rules 函数 ★★★
 def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Optional[str]]:

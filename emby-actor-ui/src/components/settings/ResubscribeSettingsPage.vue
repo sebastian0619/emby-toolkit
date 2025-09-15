@@ -1,4 +1,3 @@
-<!-- src/components/settings/ResubscribeSettingsPage.vue (多规则改造最终版 - 选项优化) -->
 <template>
   <n-spin :show="loading">
     <n-space vertical :size="24">
@@ -140,10 +139,11 @@
                <template #header-extra>
                 <n-switch v-model:value="currentRule.resubscribe_effect_enabled" @click.stop />
               </template>
-              <n-form-item label="当文件名【不包含】以下任一关键词时洗版" label-placement="top">
+              <!-- ★★★ 核心修改 1/3: 更新提示文本 ★★★ -->
+              <n-form-item label="当媒体特效【低于】所选最高等级时洗版" label-placement="top">
                 <n-select
                   v-model:value="currentRule.resubscribe_effect_include"
-                  multiple tag filterable placeholder="可选择或自由输入"
+                  multiple tag filterable placeholder="选择期望的特效等级"
                   :options="effectOptions"
                   :disabled="!currentRule.resubscribe_effect_enabled"
                 />
@@ -234,16 +234,19 @@ const resolutionOptions = ref([
 
 const qualityOptions = ref([
   { label: 'Remux', value: 'Remux' },
-  { label: '蓝光原盘 (ISO/BDMV)', value: '蓝光原盘' },
-  { label: 'BluRay (BDRip)', value: 'BluRay' },
+  { label: 'BluRay', value: 'BluRay' },
   { label: 'WEB-DL', value: 'WEB-DL' },
-  { label: 'UHD', value: 'UHD' },
   { label: 'HDTV', value: 'HDTV' },
 ]);
 
+// ★★★ 核心修改 2/3: 更新特效选项列表 ★★★
 const effectOptions = ref([
-  { label: '杜比视界 (Dolby Vision)', value: '杜比视界' },
-  { label: 'HDR (包含 HDR10/HDR10+/HLG)', value: 'HDR' },
+  { label: 'DoVi Profile 8 (HDR10 兼容)', value: 'dovi_p8' },
+  { label: 'DoVi Profile 7 (蓝光标准)', value: 'dovi_p7' },
+  { label: 'DoVi Profile 5 (SDR 兼容)', value: 'dovi_p5' },
+  { label: 'DoVi (其他)', value: 'dovi_other' },
+  { label: 'HDR10+', value: 'hdr10+' },
+  { label: 'HDR', value: 'hdr' },
 ]);
 
 const languageOptions = ref([
@@ -311,6 +314,14 @@ const openRuleModal = async (rule = null) => {
     };
   }
 
+  // ★★★ 核心修改 3/3: 兼容旧的 '杜比视界' 和 'HDR' 值 ★★★
+  if (currentRule.value.resubscribe_effect_include) {
+    const legacyMap = { '杜比视界': 'dovi_other', 'HDR': 'hdr' };
+    currentRule.value.resubscribe_effect_include = currentRule.value.resubscribe_effect_include.map(
+      val => legacyMap[val] || val
+    );
+  }
+
   showModal.value = true;
 };
 
@@ -333,6 +344,7 @@ const saveRule = async () => {
     if (!errors) {
       saving.value = true;
       try {
+        // 保存时数据已经是 'dovi_p8' 格式，无需转换
         if (isEditing.value) {
           await axios.put(`/api/resubscribe/rules/${currentRule.value.id}`, currentRule.value);
           message.success('规则已更新！');
@@ -342,7 +354,6 @@ const saveRule = async () => {
         }
         showModal.value = false;
         loadData();
-        // ★★★ 修改点: 新增/修改规则后，不刷新主页面 ★★★
         emit('saved', { needsRefresh: false });
       } catch (error) {
         message.error(error.response?.data?.error || '保存失败，请检查后端日志。');
@@ -358,7 +369,6 @@ const deleteRule = async (ruleId) => {
     await axios.delete(`/api/resubscribe/rules/${ruleId}`);
     message.success('规则已删除！');
     loadData();
-    // ★★★ 修改点: 删除规则后，需要刷新主页面 ★★★
     emit('saved', { needsRefresh: true });
   } catch (error) {
     message.error('删除失败，请检查后端日志。');
@@ -369,7 +379,6 @@ const toggleRuleStatus = async (rule) => {
   try {
     await axios.put(`/api/resubscribe/rules/${rule.id}`, { enabled: rule.enabled });
     message.success(`规则 “${rule.name}” 已${rule.enabled ? '启用' : '禁用'}`);
-    // ★★★ 修改点: 切换状态后，不刷新主页面 ★★★
     emit('saved', { needsRefresh: false });
   } catch (error) {
     message.error('状态更新失败');
@@ -382,7 +391,6 @@ const onDragEnd = async () => {
   try {
     await axios.post('/api/resubscribe/rules/order', orderedIds);
     message.success('规则优先级已更新！');
-    // ★★★ 修改点: 调整顺序后，不刷新主页面 ★★★
     emit('saved', { needsRefresh: false });
   } catch (error) {
     message.error('顺序保存失败，将刷新列表。');

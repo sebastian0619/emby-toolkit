@@ -1,4 +1,3 @@
-<!-- src/components/MediaCleanupPage.vue (模态框集成版) -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="cleanup-page">
@@ -28,7 +27,6 @@
               </n-button>
             </n-dropdown>
             
-            <!-- ★★★ 核心修改 1/2: 这个按钮现在只负责打开新的弹窗 ★★★ -->
             <n-button @click="showSettingsModal = true">
               <template #icon><n-icon :component="SettingsIcon" /></template>
               清理规则
@@ -37,7 +35,7 @@
             <n-button 
               type="primary" 
               @click="triggerScan" 
-              :loading="isTaskRunning('扫描媒体去重项')"
+              :loading="isTaskRunning('扫描媒体库重复项')"
             >
               <template #icon><n-icon :component="ScanIcon" /></template>
               扫描媒体库
@@ -62,7 +60,6 @@
         <n-empty description="太棒了！没有发现任何需要清理的项目。" size="huge" />
       </div>
 
-      <!-- ★★★ 核心修改 2/2: 使用新的、干净的 Modal 来包裹我们的独立组件 ★★★ -->
       <n-modal 
         v-model:show="showSettingsModal" 
         preset="card" 
@@ -70,7 +67,6 @@
         title="媒体去重决策规则"
         :on-after-leave="fetchData" 
       >
-        <!-- ★★★ 核心修改：监听子组件的 on-close 事件 ★★★ -->
         <MediaCleanupSettingsPage @on-close="showSettingsModal = false" />
       </n-modal>
 
@@ -211,21 +207,21 @@ const formatBytes = (bytes, decimals = 2) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 };
 
-// ★★★ 核心修改 1/3: 实现全选/取消全选的逻辑 ★★★
-const handleSelectAll = (checked) => {
-  if (checked) {
-    selectedTasks.value = new Set(allTasks.value.map(task => task.id));
-  } else {
-    selectedTasks.value.clear();
-  }
+// ★★★ 核心修改 1/3: 新增一个特效标签的“翻译”函数 ★★★
+const formatEffectTagForDisplay = (tag) => {
+  if (!tag) return 'SDR';
+  const tag_lower = String(tag).toLowerCase();
+  if (tag_lower === 'dovi_p8') return 'DoVi P8';
+  if (tag_lower === 'dovi_p7') return 'DoVi P7';
+  if (tag_lower === 'dovi_p5') return 'DoVi P5';
+  if (tag_lower === 'dovi_other') return 'DoVi (Other)';
+  if (tag_lower === 'hdr10+') return 'HDR10+';
+  return tag_lower.toUpperCase();
 };
 
 const columns = computed(() => [
   { 
     type: 'selection',
-    // ★★★ 核心修改 2/3: 绑定全选逻辑到表头 ★★★
-    onUpdateChecked: handleSelectAll,
-    checked: selectedTasks.value.size === allTasks.value.length && allTasks.value.length > 0
   },
   { 
     title: '媒体项', 
@@ -240,41 +236,25 @@ const columns = computed(() => [
     key: 'versions_info_json',
     render(row) {
       const versions = row.versions_info_json || [];
+      
+      // ★★★ 核心修改 2/3: 简化 getVersionDisplayInfo 函数 ★★★
       const getVersionDisplayInfo = (v) => {
-        const path_lower = (v.path || "").toLowerCase();
-        const width = v.resolution_wh ? v.resolution_wh[0] : 0;
-        let resolution = "Unknown";
-        if (width >= 3840) resolution = "2160p";
-        else if (width >= 1920) resolution = "1080p";
-        else if (width >= 1280) resolution = "720p";
-        const QUALITY_HIERARCHY = ["remux", "bluray", "blu-ray", "web-dl", "webdl", "webrip", "hdtv", "dvdrip"];
-        let quality = "Unknown";
-        for (const tag of QUALITY_HIERARCHY) {
-            if (path_lower.includes(tag)) {
-                quality = tag.replace('-', '').toUpperCase();
-                break;
-            }
-        }
-        let effect = "SDR";
-        if (path_lower.includes("dovi") || path_lower.includes("dolby vision")) {
-            effect = "DoVi";
-        } else if (path_lower.includes("hdr10+")) {
-            effect = "HDR10+";
-        } else if (path_lower.includes("hdr")) {
-            effect = "HDR";
-        } else if (v.video_stream) {
-            const range = (v.video_stream.VideoRangeType || "").toLowerCase();
-            if (range.includes("dovi")) effect = "DoVi";
-            else if (range.includes("hdr10+")) effect = "HDR10+";
-            else if (range.includes("hdr")) effect = "HDR";
-        }
-        return { resolution, quality, effect };
+        // 后端已经计算好了所有标准化属性，前端只负责展示
+        return {
+          resolution: v.resolution || 'Unknown',
+          quality: (v.quality || 'Unknown').toUpperCase(),
+          // 调用新的翻译函数来显示特效
+          effect: formatEffectTagForDisplay(v.effect),
+          size: formatBytes(v.filesize || 0)
+        };
       };
+
       const sortedVersions = [...versions].sort((a, b) => {
         if (a.id === row.best_version_id) return -1;
         if (b.id === row.best_version_id) return 1;
         return 0;
       });
+
       return h(NSpace, { vertical: true, size: 'small' }, {
         default: () => sortedVersions.map(v => {
           const isBest = v.id === row.best_version_id;
@@ -282,15 +262,17 @@ const columns = computed(() => [
           const iconColor = isBest ? 'var(--n-success-color)' : 'var(--n-error-color)';
           const tooltipText = isBest ? '保留此版本' : '删除此版本';
           const displayInfo = getVersionDisplayInfo(v);
+          
           return h(NTooltip, null, {
             trigger: () => h('div', { style: 'display: flex; align-items: center; gap: 8px;' }, [
               h(NIcon, { component: icon, color: iconColor, size: 16 }),
               h(NSpace, { size: 'small' }, {
                 default: () => [
+                  // ★★★ 核心修改 3/3: 直接使用 displayInfo 中的值 ★★★
                   h(NTag, { size: 'small', bordered: false }, { default: () => displayInfo.resolution }),
                   h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => displayInfo.quality }),
                   h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => displayInfo.effect }),
-                  h(NTag, { size: 'small', bordered: false, type: 'success' }, { default: () => formatBytes(v.size) }),
+                  h(NTag, { size: 'small', bordered: false, type: 'success' }, { default: () => displayInfo.size }),
                 ]
               }),
               h(NText, { style: `font-weight: ${isBest ? 'bold' : 'normal'}; margin-left: 8px;` }, { 
@@ -305,7 +287,6 @@ const columns = computed(() => [
   }
 ]);
 
-// ★★★ 核心修改 3/3: 将 pagination 变成一个动态计算属性 ★★★
 const pagination = computed(() => {
   if (allTasks.value.length > 20) {
     return {
@@ -314,7 +295,6 @@ const pagination = computed(() => {
       showSizePicker: true,
     };
   }
-  // 如果总数小于等于20，就不显示分页器
   return false;
 });
 

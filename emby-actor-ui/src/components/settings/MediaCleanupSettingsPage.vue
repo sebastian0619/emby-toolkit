@@ -1,4 +1,3 @@
-<!-- src/components/settings/MediaCleanupSettingsPage.vue (新文件) -->
 <template>
   <n-spin :show="loading">
     <n-space vertical :size="24">
@@ -67,7 +66,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, defineEmits } from 'vue'; // ★★★ 核心修改 1/3: 导入 defineEmits ★★★
+import { ref, onMounted, defineEmits } from 'vue';
 import axios from 'axios';
 import { 
   NCard, NSpace, NSwitch, NButton, useMessage, NSpin, NIcon, NModal, NTag, NText
@@ -78,7 +77,7 @@ import {
 } from '@vicons/ionicons5';
 
 const message = useMessage();
-const emit = defineEmits(['on-close']); // ★★★ 核心修改 2/3: 定义一个 on-close 事件 ★★★
+const emit = defineEmits(['on-close']);
 
 const loading = ref(true);
 const saving = ref(false);
@@ -87,44 +86,55 @@ const showEditModal = ref(false);
 const rules = ref([]);
 const currentEditingRule = ref({ priority: [] });
 
-// ... (RULE_METADATA, getRuleDisplayName, getRuleDescription, formatEffectPriority, fetchRules 这些函数都保持不变) ...
+// ★★★ 核心修改 1/3: 更新元数据描述，使其更精确 ★★★
 const RULE_METADATA = {
   quality: { name: "按质量", description: "比较文件名中的质量标签 (如 Remux, BluRay)。" },
   resolution: { name: "按分辨率", description: "比较视频的分辨率 (如 2160p, 1080p)。" },
-  effect: { name: "按特效", description: "比较视频的特效等级 (如 DoVi, HDR)。" },
+  effect: { name: "按特效", description: "比较视频的特效等级 (如 DoVi Profile 8, HDR)。" },
   filesize: { name: "按文件大小", description: "如果以上规则都无法区分，则保留文件体积更大的版本。" }
 };
+
 const getRuleDisplayName = (id) => RULE_METADATA[id]?.name || id;
 const getRuleDescription = (id) => RULE_METADATA[id]?.description || '未知规则';
-const formatEffectPriority = (priorityArray, to = 'upper') => {
+
+// ★★★ 核心修改 2/3: 彻底重写特效标签的“翻译”函数 ★★★
+const formatEffectPriority = (priorityArray, to = 'display') => {
     return priorityArray.map(p => {
-        const p_lower = String(p).toLowerCase();
-        if (to === 'upper') {
-            if (p_lower === 'dovi') return 'DoVi';
+        const p_lower = String(p).toLowerCase().replace(/\s/g, '_'); // 标准化输入
+        
+        if (to === 'display') { // 转换为用户友好的显示文本
+            if (p_lower === 'dovi_p8') return 'DoVi P8';
+            if (p_lower === 'dovi_p7') return 'DoVi P7';
+            if (p_lower === 'dovi_p5') return 'DoVi P5';
+            if (p_lower === 'dovi_other') return 'DoVi (Other)';
             if (p_lower === 'hdr10+') return 'HDR10+';
             return p_lower.toUpperCase();
-        } else {
+        } else { // (to === 'save') 转换为后端需要的存储格式
             return p_lower;
         }
     });
 };
+
 const fetchRules = async () => {
   loading.value = true;
   try {
     const response = await axios.get('/api/cleanup/rules');
     const loadedRules = response.data || [];
+    
     rules.value = loadedRules.map(rule => {
         if (rule.id === 'effect' && Array.isArray(rule.priority)) {
-            return { ...rule, priority: formatEffectPriority(rule.priority, 'upper') };
+            // 使用新的翻译函数，将 'dovi_p8' 格式化为 'DoVi P8'
+            return { ...rule, priority: formatEffectPriority(rule.priority, 'display') };
         }
         return rule;
     });
   } catch (error) {
     message.error('加载清理规则失败！将使用默认规则。');
+    // ★★★ 核心修改 3/3: 更新默认规则，以匹配新的显示格式 ★★★
     rules.value = [
         { id: 'quality', enabled: true, priority: ['Remux', 'BluRay', 'WEB-DL', 'HDTV'] },
         { id: 'resolution', enabled: true, priority: ['2160p', '1080p', '720p'] },
-        { id: 'effect', enabled: true, priority: ['DoVi', 'HDR10+', 'HDR', 'SDR'] },
+        { id: 'effect', enabled: true, priority: ['DoVi P8', 'DoVi P7', 'DoVi P5', 'DoVi (Other)', 'HDR10+', 'HDR', 'SDR'] },
         { id: 'filesize', enabled: true, priority: 'desc' },
     ];
   } finally {
@@ -138,14 +148,14 @@ const saveRules = async () => {
   try {
     const rulesToSave = rules.value.map(rule => {
       if (rule.id === 'effect' && Array.isArray(rule.priority)) {
-        return { ...rule, priority: formatEffectPriority(rule.priority, 'lower') };
+        // 保存时，使用翻译函数将 'DoVi P8' 转换回 'dovi_p8'
+        return { ...rule, priority: formatEffectPriority(rule.priority, 'save') };
       }
       return rule;
     });
     await axios.post('/api/cleanup/rules', rulesToSave);
     message.success('清理规则已成功保存！');
     
-    // ★★★ 核心修改 3/3: 保存成功后，触发 on-close 事件 ★★★
     emit('on-close');
 
   } catch (error) {
