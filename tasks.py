@@ -2174,10 +2174,13 @@ def task_generate_all_covers(processor: MediaProcessor):
                         item_type=item_type_to_query
                     ) or 0
 
+                content_types_to_pass = [item_type_to_query] if item_type_to_query else None
+
                 cover_service.generate_for_library(
                     emby_server_id='main_emby', # 这里的 server_id 只是一个占位符，不影响忽略逻辑
                     library=library,
-                    item_count=item_count
+                    item_count=item_count,
+                    content_types=content_types_to_pass
                 )
             except Exception as e_gen:
                 logger.error(f"为媒体库 '{library.get('Name')}' 生成封面时发生错误: {e_gen}", exc_info=True)
