@@ -1414,45 +1414,59 @@ def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: 
         return False
     
 # --- 清理幽灵演员 ---
-def get_all_people_from_emby(base_url: str, api_key: str, user_id: str) -> Optional[List[Dict[str, Any]]]:
-    """获取Emby媒体库中的所有人物。"""
-    url = f"{base_url}/Persons"
-    params = {
-        "api_key": api_key,
-        "userId": user_id,
-        "Recursive": "true",
-        "Fields": "ProviderIds"
-    }
-    try:
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-        return response.json().get("Items", [])
-    except requests.exceptions.RequestException as e:
-        logger.error(f"从Emby获取所有人物列表时失败: {e}")
-        return None
-
 def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> bool:
     """
-    【专用】调用非标准的 /Items/{Id}/DeletePerson POST 接口来删除演员。
+    【V-Final Frontier 终极版 - 同样使用账密获取令牌】
+    通过模拟管理员登录获取临时 AccessToken 来删除演员。
     这个接口只在神医Pro版插件中存在。
     """
+    logger.warning(f"检测到删除演员请求，将尝试使用 [自动登录模式] 执行...")
+
+    # 从全局配置中获取管理员登录凭证
+    cfg = config_manager.APP_CONFIG
+    admin_user = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_USER)
+    admin_pass = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_PASS)
+
+    if not all([admin_user, admin_pass]):
+        logger.error("删除演员操作失败：未在设置中配置 [Emby 管理员用户名] 和 [Emby 管理员密码]。")
+        return False
+
+    # 1. 登录获取临时令牌
+    access_token, logged_in_user_id = _get_emby_access_token(base_url, admin_user, admin_pass)
+    
+    if not access_token:
+        logger.error("无法获取临时 AccessToken，删除演员操作中止。请检查管理员账号密码是否正确。")
+        return False
+
+    # 2. 使用临时令牌执行删除
+    # 调用非标准的 /Items/{Id}/DeletePerson POST 接口
     api_url = f"{base_url.rstrip('/')}/Items/{person_id}/DeletePerson"
-    params = {'api_key': api_key}
+    
+    headers = {
+        'X-Emby-Token': access_token  # ★ 使用临时的 AccessToken
+    }
+    
+    # 注意：神医的这个接口可能不需要 UserId，但为了统一和以防万一，可以加上
+    # 如果确认不需要，可以移除 params
+    params = {
+        'UserId': logged_in_user_id # ★ 使用登录后返回的 UserId
+    }
+    
+    api_timeout = cfg.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
     
     try:
         # 这个接口是 POST 请求
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.post(api_url, params=params, timeout=api_timeout)
+        response = requests.post(api_url, headers=headers, params=params, timeout=api_timeout)
         response.raise_for_status()
-        logger.info(f"  -> ✅ 成功删除演员 ID: {person_id}。")
+        logger.info(f"  -> ✅ 成功使用临时令牌删除演员 ID: {person_id}。")
         return True
     except requests.exceptions.HTTPError as e:
         # 404 Not Found 意味着这个专用接口在您的服务器上不存在
         if e.response.status_code == 404:
             logger.error(f"删除演员 {person_id} 失败：需神医Pro版本才支持此功能。")
         else:
-            logger.error(f"使用专用接口删除演员 {person_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
+            logger.error(f"使用临时令牌删除演员 {person_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
         return False
     except Exception as e:
-        logger.error(f"使用专用接口删除演员 {person_id} 时发生未知错误: {e}")
+        logger.error(f"使用临时令牌删除演员 {person_id} 时发生未知错误: {e}")
         return False
