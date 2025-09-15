@@ -48,11 +48,13 @@ server {
     }
 
     location ~ /emby/Items/(\d+)/PlaybackInfo {
-        # 添加一个调试头，方便我们确认它是否被成功匹配
-        add_header X-Nginx-Rule-Matched "PlaybackInfo-Intercepted" always;
+        # 添加调试头，确认规则匹配
+        add_header X-Nginx-Rule-Matched "PlaybackInfo-Redirected-To-Service" always;
         
-        # 将请求转发给您的重定向服务
-        proxy_pass http://redirect_service;
+        # 关键：使用 return 302 指令！
+        # 它会捕获媒体ID (例如 20465) 存入变量 $1
+        # 然后构造一个新的URL http://redirect_service/redirect/20465 并让浏览器跳转过去
+        return 302 http://redirect_service/redirect/$1;
     }
 
     {% endif %}
