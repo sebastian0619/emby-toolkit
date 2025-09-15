@@ -37,8 +37,8 @@ server {
     # 它会捕获所有主流视频格式、转码流和 .strm 文件，并因为位置靠前而被优先匹配。
     {% if REDIRECT_UPSTREAM %}
     location ~* (?i)(/videos/.*(stream|master\.m3u8)|(\.strm|\.mkv|\.mp4|\.ts|\.avi|\.iso|\.mov|\.webm|\.flv|\.m3u8)$) {
-        # 调试日志：可以临时打开，查看哪些请求被这个规则捕获了
-        # add_header X-Rule-Matched "Rule-1-VideoStream" always;
+        # 调试时可以取消注释下面这行，在浏览器F12网络面板中查看响应头
+        add_header X-Rule-Matched "Rule-1-VideoStream-Redirect" always;
         proxy_pass http://redirect_service;
     }
     {% endif %}
@@ -83,14 +83,6 @@ server {
     }
 
     # 兜底规则：转发所有其他请求到真实 Emby
-    location ^~ /emby/ {
-        proxy_pass http://emby_server;
-    }
-    location ^~ /embywebsocket {
-        proxy_pass http://emby_server;
-    }
-
-    # 最后的兜底，理论上大部分请求应该在上面被处理了
     location / {
         proxy_pass http://emby_server;
     }
