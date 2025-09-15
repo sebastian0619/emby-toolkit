@@ -15,8 +15,7 @@ upstream redirect_service {
 {% endif %}
 
 server {
-    listen {{ NGINX_LISTEN_PORT }} default_server;
-    error_log /var/log/nginx/error.log debug;
+    listen {{ NGINX_LISTEN_PORT }};
     server_name your.domain.com;
 
     # --- 基础代理参数 ---
@@ -40,23 +39,6 @@ server {
     location ~* (\.strm$|\.(mkv|mp4|ts|avi|iso|mov|webm|flv)$|/videos/.*stream) {
         proxy_pass http://redirect_service;
     }
-
-    # ★★★ 新增规则：捕获 /d/ 开头的直接播放链接 ★★★
-    location /d/ {
-        add_header X-Nginx-Rule-Matched "Rule-for-d-path" always;
-        proxy_pass http://redirect_service;
-    }
-
-    location ~ /emby/Items/(\d+)/PlaybackInfo {
-        # 添加调试头，确认规则匹配
-        add_header X-Nginx-Rule-Matched "PlaybackInfo-Redirected-To-Service" always;
-        
-        # 关键：使用 return 302 指令！
-        # 它会捕获媒体ID (例如 20465) 存入变量 $1
-        # 然后构造一个新的URL http://redirect_service/redirect/20465 并让浏览器跳转过去
-        return 302 http://redirect_service/redirect/$1;
-    }
-
     {% endif %}
 
     # --- 以下是虚拟库路由规则 ---
@@ -100,7 +82,6 @@ server {
 
     # 兜底规则：转发所有其他请求到真实 Emby
     location / {
-        add_header X-Nginx-Rule-Matched "Catch-All-Rule" always;
         proxy_pass http://emby_server;
     }
 }
