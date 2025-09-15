@@ -7,7 +7,8 @@ import json
 from flask import Flask, request, Response
 from urllib.parse import urlparse, urlunparse
 import time
-import uuid # <-- 确保导入
+import uuid 
+from datetime import datetime, timezone
 from gevent import spawn
 from geventwebsocket.websocket import WebSocket
 from websocket import create_connection
@@ -204,12 +205,27 @@ def handle_get_mimicked_library_image(path):
     except Exception as e:
         return "Internal Proxy Error", 500
 
+UNSUPPORTED_METADATA_ENDPOINTS = [
+        '/Items/Prefixes', # A-Z 首字母索引
+        '/Genres',         # 类型筛选
+        '/Studios',        # 工作室筛选
+        '/Tags',           # 标签筛选
+        '/OfficialRatings',# 官方评级筛选
+        '/Years'           # 年份筛选
+    ]
+
 # --- ★★★ 核心修复 #1：用下面这个通用的“万能翻译”函数，替换掉旧的 a_prefixes 函数 ★★★ ---
 def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     """
     【V3 - URL修正版】
     智能处理所有针对虚拟库的元数据类请求。
     """
+    # 检查当前请求的路径是否在我们定义的“不支持列表”中
+    if any(path.endswith(endpoint) for endpoint in UNSUPPORTED_METADATA_ENDPOINTS):
+        logger.trace(f"检测到对虚拟库的不支持的元数据请求 '{path}'，将直接返回空列表以避免后端错误。")
+        # 直接返回一个空的JSON数组，客户端会优雅地处理它（不显示相关筛选器）
+        return Response(json.dumps([]), mimetype='application/json')
+
     try:
         real_db_id = from_mimicked_id(mimicked_id)
         collection_info = db_handler.get_custom_collection_by_id(real_db_id)
@@ -304,23 +320,72 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         # --- 阶段四：处理最终排序 ---
         sort_by_field = definition.get('default_sort_by')
         
+        # ▼▼▼ 2. 替换整个排序逻辑块 ▼▼▼
         if sort_by_field and sort_by_field not in ['original', 'none']:
             sort_order = definition.get('default_sort_order', 'Ascending')
             is_descending = (sort_order == 'Descending')
             logger.trace(f"执行虚拟库排序劫持: '{sort_by_field}' ({sort_order})")
             
-            default_sort_value = 0 if sort_by_field in ['CommunityRating', 'ProductionYear'] else "0"
-            try:
+            # ★★★ 新增：处理“最后更新”排序 (类型安全版) ★★★
+            if sort_by_field == 'last_synced_at':
+                movie_tmdb_ids = []
+                series_tmdb_ids = []
+                
+                # 1. 按类型分离TMDb ID
+                for item in final_items:
+                    tmdb_id = item.get('ProviderIds', {}).get('Tmdb')
+                    if not tmdb_id: continue
+                    
+                    item_type = item.get('Type')
+                    if item_type == 'Movie':
+                        movie_tmdb_ids.append(tmdb_id)
+                    elif item_type == 'Series':
+                        series_tmdb_ids.append(tmdb_id)
+                
+                logger.trace(f"  -> 分离出 {len(movie_tmdb_ids)} 个电影和 {len(series_tmdb_ids)} 个剧集的TMDb ID用于查询时间戳。")
+
+                timestamp_map = {}
+                default_timestamp = datetime.min.replace(tzinfo=timezone.utc)
+                
+                # 2. 分别查询电影和剧集的时间戳
+                if movie_tmdb_ids:
+                    movie_metadata = db_handler.get_media_metadata_by_tmdb_ids(movie_tmdb_ids, 'Movie')
+                    for meta in movie_metadata:
+                        # 1. 优先用 last_synced_at
+                        # 2. 如果没有，则用 date_added
+                        # 3. 如果连 date_added 都没有，用我们最终的 default_timestamp
+                        timestamp = meta.get('last_synced_at') or meta.get('date_added') or default_timestamp
+                        timestamp_map[f"{meta['tmdb_id']}-Movie"] = timestamp
+                
+                if series_tmdb_ids:
+                    series_metadata = db_handler.get_media_metadata_by_tmdb_ids(series_tmdb_ids, 'Series')
+                    for meta in series_metadata:
+                        timestamp = meta.get('last_synced_at') or meta.get('date_added') or default_timestamp
+                        timestamp_map[f"{meta['tmdb_id']}-Series"] = timestamp
+
+                # 3. 使用复合键进行安全排序
                 final_items.sort(
-                    key=lambda item: item.get(sort_by_field, default_sort_value),
+                    key=lambda item: timestamp_map.get(
+                        f"{item.get('ProviderIds', {}).get('Tmdb')}-{item.get('Type')}", 
+                        default_timestamp
+                    ),
                     reverse=is_descending
                 )
-            except TypeError:
-                final_items.sort(key=lambda item: item.get('SortName', ''))
+            # ★★★ 原有排序逻辑 ★★★
+            else:
+                default_sort_value = 0 if sort_by_field in ['CommunityRating', 'ProductionYear'] else "0"
+                try:
+                    final_items.sort(
+                        key=lambda item: item.get(sort_by_field, default_sort_value),
+                        reverse=is_descending
+                    )
+                except TypeError:
+                    final_items.sort(key=lambda item: item.get('SortName', ''))
         elif sort_by_field == 'original':
              logger.trace("已应用 'original' (榜单原始顺序) 排序。")
         else:
             logger.trace("未设置或禁用虚拟库排序，将保持榜单原始顺序。")
+        # ▲▲▲ 替换结束 ▲▲▲
 
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')
