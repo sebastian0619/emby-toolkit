@@ -136,74 +136,55 @@ class CoverGeneratorService:
             
             return self.__generate_image_from_path(library['Name'], title, image_paths, item_count)
 
-    def __get_valid_items_from_library(self, server_id: str, library: Dict[str, Any], limit: int, content_types: Optional[List[str]] = None) -> List[Dict]:
+    def __get_valid_items_from_library(self, server_id: str, library: Dict[str, Any], limit: int) -> List[Dict]:
         """
-        【V7 - 合集查询简化最终版】
-        - 严格执行新策略：当目标是合集时，为避免超时，仅使用其支持的第一个媒体类型进行查询。
-        - 保持对常规媒体库的正常处理逻辑。
+        【V8 - 动态类型最终修复版】
+        - 恢复了根据媒体库类型动态确定要获取的媒体类型的正确逻辑。
+        - 彻底解决了因 media_type_filter 硬编码而导致的音乐库无法找到任何项目的问题。
+        - 同时也提升了对其他类型媒体库查询的效率。
         """
         library_id = library.get("Id") or library.get("ItemId")
-        library_name = library.get("Name")
+        library_name = library.get("Name") # 用于日志
         
         base_url = config_manager.APP_CONFIG.get('emby_server_url')
         api_key = config_manager.APP_CONFIG.get('emby_api_key')
         user_id = config_manager.APP_CONFIG.get('emby_user_id')
 
-        # --- 媒体类型确定逻辑 (保持不变) ---
-        item_types_to_fetch = None
-        if content_types:
-            item_types_to_fetch = ",".join(content_types)
-        else:
-            TYPE_MAP = {
-                'movies': 'Movie', 'tvshows': 'Series', 'music': 'MusicAlbum',
-                'boxsets': 'Movie,Series', 'mixed': 'Movie,Series', 
-                'audiobooks': 'AudioBook'
-            }
-            collection_type = library.get('CollectionType')
-            if collection_type:
-                item_types_to_fetch = TYPE_MAP.get(collection_type)
-            elif library.get('Type') == 'CollectionFolder':
-                item_types_to_fetch = 'Movie,Series'
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # ★ 核心修复：根据媒体库的 CollectionType 动态决定要请求的媒体类型 ★
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        
+        # 1. 定义一个从 Emby 库类型到 API 请求类型的映射
+        TYPE_MAP = {
+            'movies': 'Movie',
+            'tvshows': 'Series',
+            'music': 'MusicAlbum',
+            'boxsets': 'Movie,Series', # 电影合集
+            'mixed': 'Movie,Series',   # 混合内容库
+            'audiobooks': 'AudioBook'  # 增加对有声读物的支持
+        }
 
-        if not item_types_to_fetch:
-            logger.warning(f"无法为媒体库 '{library_name}' 确定媒体类型，将使用默认值 'Movie,Series' 尝试。")
-            item_types_to_fetch = 'Movie,Series'
-            
-        # --- 智能分流逻辑 ---
-        all_items = None
-        api_limit = limit * 5 if limit < 10 else limit * 2 
+        # 2. 从传入的 library 对象中获取其类型
+        collection_type = library.get('CollectionType')
+        
+        # 3. 根据库类型查找对应的 API 媒体类型
+        media_type_to_fetch = TYPE_MAP.get(collection_type)
 
-        if library.get('Type') == 'BoxSet' or library.get('CollectionType') in ['boxsets', 'mixed']:
-            logger.info(f"  -> 检测到 '{library_name}' 是一个合集，将使用合集专用模式获取封面源。")
-            
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★ 核心修复：严格执行您的“只用第一个类型”策略 ★
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            query_item_type = item_types_to_fetch.split(',')[0]
-            logger.info(f"  -> 为提升合集查询性能，将仅使用第一个媒体类型 '{query_item_type}' 进行封面源获取。")
+        # 4. 如果找不到，提供一个安全的回退，并记录日志
+        if not media_type_to_fetch:
+            logger.warning(f"无法为媒体库 '{library_name}' (类型: {collection_type}) 确定精确的媒体类型，将回退到查询电影和剧集。")
+            media_type_to_fetch = 'Movie,Series'
+        
+        logger.debug(f"  -> 正在为 '{library_name}' (类型: {collection_type}) 获取媒体类型为 '{media_type_to_fetch}' 的项目...")
 
-            all_items = emby_handler.get_random_items_from_collection_for_cover(
-                base_url=base_url,
-                api_key=api_key,
-                user_id=user_id,
-                collection_id=library_id,
-                item_types=query_item_type, # <--- 使用简化后的单一类型
-                limit=api_limit
-            )
-        else:
-            # 对于常规媒体库，逻辑保持不变
-            logger.info(f"  -> 检测到 '{library_name}' 是常规媒体库，将使用标准模式获取封面源。")
-            sort_by_param = "Random" if self._sort_by == "Random" else "DateCreated"
-            
-            all_items = emby_handler.get_items_for_cover_generator(
-                base_url=base_url,
-                api_key=api_key,
-                user_id=user_id,
-                library_id=library_id,
-                item_types=item_types_to_fetch,
-                sort_by=sort_by_param,
-                limit=api_limit
-            )
+        all_items = emby_handler.get_emby_library_items(
+            base_url=base_url,
+            api_key=api_key,
+            user_id=user_id,
+            library_ids=[library_id],
+            media_type_filter=media_type_to_fetch, # <--- 使用我们动态生成的类型
+            fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated"
+        )
         
         if not all_items:
             return []
@@ -212,6 +193,14 @@ class CoverGeneratorService:
         
         if not valid_items:
             return []
+
+        # 排序逻辑保持不变，它本身是正确的
+        if self._sort_by == "Latest":
+            logger.debug(f"正在对 {len(valid_items)} 个有效项目按'最新添加'进行排序...")
+            valid_items.sort(key=lambda x: x.get('DateCreated', '1970-01-01T00:00:00.000Z'), reverse=True)
+        elif self._sort_by == "Random":
+            logger.debug(f"正在对 {len(valid_items)} 个有效项目进行'随机'排序...")
+            random.shuffle(valid_items)
 
         return valid_items[:limit]
 
