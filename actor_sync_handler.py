@@ -118,7 +118,7 @@ class UnifiedSyncHandler:
 
         # 最终统计
         logger.info("--- 单向同步演员数据完成 ---")
-        logger.info(f"📊 Emby->DB: 新增 {stats['db_inserted']}, 更新 {stats['db_updated']}, 清理 {stats['deleted']}")
+        logger.info(f"📊 : 新增 {stats['db_inserted']}, 更新 {stats['db_updated']}, 清理 {stats['deleted']}")
         logger.info("--------------------------")
 
         if update_status_callback:

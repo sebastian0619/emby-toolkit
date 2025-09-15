@@ -321,7 +321,7 @@ def delete_persons_by_emby_ids(emby_ids: list) -> int:
             cursor.execute(sql, (emby_ids,))
             deleted_count = cursor.rowcount
             conn.commit()
-            logger.info(f"DB: 成功从演员映射表中删除了 {deleted_count} 条陈旧记录。")
+            logger.info(f"  -> 从演员映射表中删除了 {deleted_count} 条陈旧记录。")
             return deleted_count
     except Exception as e:
         logger.error(f"DB: 批量删除陈旧演员映射时失败: {e}", exc_info=True)
