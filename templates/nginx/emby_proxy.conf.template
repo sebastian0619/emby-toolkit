@@ -15,7 +15,8 @@ upstream redirect_service {
 {% endif %}
 
 server {
-    listen {{ NGINX_LISTEN_PORT }};
+    listen {{ NGINX_LISTEN_PORT }} default_server;
+    error_log /var/log/nginx/error.log debug;
     server_name your.domain.com;
 
     # --- 基础代理参数 ---
