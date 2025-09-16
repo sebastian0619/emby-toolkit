@@ -603,68 +603,101 @@ def task_reprocess_single_item(processor: MediaProcessor, item_id: str, item_nam
 # --- 翻译演员任务 ---
 def task_actor_translation_cleanup(processor):
     """
-    【最终修正版】执行演员名翻译的查漏补缺工作，并使用正确的全局状态更新函数。
+    【V2 - 流式处理版】
+    - 逐批从Emby获取演员，翻译一批，写回一批。
+    - 确保任务可以随时被安全中止，并保留已完成的进度。
     """
+    task_name = "演员名中文化 (流式处理)"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    
     try:
-        # ✨✨✨ 修正：直接调用全局函数，而不是processor的方法 ✨✨✨
-        task_manager.update_status_from_thread(5, "正在准备需要翻译的演员数据...")
+        task_manager.update_status_from_thread(0, "正在从 Emby 逐批获取演员...")
         
-        # 1. 调用数据准备函数
-        translation_map, name_to_persons_map = emby_handler.prepare_actor_translation_data(
-            emby_url=processor.emby_url,
-            emby_api_key=processor.emby_api_key,
+        # 1. 获取一个批次生成器，而不是一次性获取所有演员
+        person_generator = emby_handler.get_all_persons_from_emby(
+            base_url=processor.emby_url,
+            api_key=processor.emby_api_key,
             user_id=processor.emby_user_id,
-            ai_translator=processor.ai_translator,
             stop_event=processor.get_stop_event()
         )
 
-        if not translation_map:
-            task_manager.update_status_from_thread(100, "任务完成，没有需要翻译的演员。")
-            return
+        total_processed_actors = 0
+        total_updated_actors = 0
+        batch_num = 0
 
-        total_to_update = len(translation_map)
-        task_manager.update_status_from_thread(50, f"数据准备完毕，开始更新 {total_to_update} 个演员名...")
-        
-        update_count = 0
-        processed_count = 0
-
-        # 2. 主循环
-        for original_name, translated_name in translation_map.items():
-            processed_count += 1
+        # 2. 循环处理每一个批次
+        for person_batch in person_generator:
+            batch_num += 1
             if processor.is_stop_requested():
                 logger.info("演员翻译任务被用户中断。")
                 break
+
+            # 3. 在当前批次内筛选需要翻译的演员
+            names_to_translate = set()
+            name_to_persons_map = {}
+            for person in person_batch:
+                name = person.get("Name")
+                if name and not utils.contains_chinese(name):
+                    names_to_translate.add(name)
+                    if name not in name_to_persons_map:
+                        name_to_persons_map[name] = []
+                    name_to_persons_map[name].append(person)
             
-            if not translated_name or original_name == translated_name:
+            total_processed_actors += len(person_batch)
+
+            if not names_to_translate:
+                logger.debug(f"批次 {batch_num} 中没有需要翻译的演员，跳过。")
                 continue
 
-            persons_to_update = name_to_persons_map.get(original_name, [])
-            for person in persons_to_update:
-                # 3. 更新单个条目
-                success = emby_handler.update_person_details(
-                    person_id=person.get("Id"),
-                    new_data={"Name": translated_name},
-                    emby_server_url=processor.emby_url,
-                    emby_api_key=processor.emby_api_key,
-                    user_id=processor.emby_user_id
+            # 4. 只翻译当前批次的名字
+            logger.info(f"  -> 批次 {batch_num}: 发现 {len(names_to_translate)} 个外文名，正在调用AI翻译...")
+            task_manager.update_status_from_thread(
+                5, f"已处理 {total_processed_actors} 名演员，正在翻译批次 {batch_num}..."
+            )
+            
+            try:
+                translation_map = processor.ai_translator.batch_translate(
+                    texts=list(names_to_translate), mode="fast"
                 )
-                if success:
-                    update_count += 1
-                    time.sleep(0.2)
+            except Exception as e_trans:
+                logger.error(f"批次 {batch_num} 翻译时发生错误: {e_trans}，将跳过此批次。")
+                continue
 
-            # 4. 更新进度
-            progress = int(50 + (processed_count / total_to_update) * 50)
-            task_manager.update_status_from_thread(progress, f"({processed_count}/{total_to_update}) 正在更新: {original_name} -> {translated_name}")
+            if not translation_map:
+                logger.warning(f"批次 {batch_num} 翻译引擎未能返回任何结果。")
+                continue
 
-        # 任务结束时，也直接调用全局函数
-        final_message = f"任务完成！共更新了 {update_count} 个演员名。"
+            # 5. 立即将当前批次的翻译结果写回 Emby
+            for original_name, translated_name in translation_map.items():
+                if processor.is_stop_requested(): break
+                if not translated_name or original_name == translated_name: continue
+
+                persons_to_update = name_to_persons_map.get(original_name, [])
+                for person in persons_to_update:
+                    success = emby_handler.update_person_details(
+                        person_id=person.get("Id"),
+                        new_data={"Name": translated_name},
+                        emby_server_url=processor.emby_url,
+                        emby_api_key=processor.emby_api_key,
+                        user_id=processor.emby_user_id
+                    )
+                    if success:
+                        total_updated_actors += 1
+                        task_manager.update_status_from_thread(
+                            50, f"已处理 {total_processed_actors} 名演员，成功更新 {total_updated_actors} 个..."
+                        )
+                        time.sleep(0.2)
+        
+        # 6. 任务结束
+        final_message = f"任务完成！共处理 {total_processed_actors} 名演员，成功更新了 {total_updated_actors} 个名字。"
         if processor.is_stop_requested():
-            final_message = "任务已中断。"
+            final_message = f"任务已中断。共处理 {total_processed_actors} 名演员，成功更新了 {total_updated_actors} 个名字。"
+        
+        logger.info(final_message)
         task_manager.update_status_from_thread(100, final_message)
 
     except Exception as e:
-        logger.error(f"执行演员翻译任务时出错: {e}", exc_info=True)
-        # 在异常处理中也直接调用全局函数
+        logger.error(f"执行演员翻译任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 # ★★★ 重新处理所有待复核项 ★★★
 def task_reprocess_all_review_items(processor: MediaProcessor):

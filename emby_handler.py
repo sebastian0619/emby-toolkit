@@ -659,7 +659,7 @@ def get_all_persons_from_emby(
             "Fields": "ProviderIds,Name",
         }
         start_index = 0
-        batch_size = 5000
+        batch_size = 500
         api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
 
         while True:
@@ -877,72 +877,6 @@ def download_emby_image(
     except Exception as e:
         logger.error(f"保存图片到 '{save_path}' 时发生未知错误: {e}")
         return False
-# --- 定时翻译演员 ---
-def prepare_actor_translation_data(
-    emby_url: str,
-    emby_api_key: str,
-    user_id: str,
-    ai_translator,
-    stop_event: threading.Event = None
-) -> Tuple[Dict[str, str], Dict[str, List[Dict[str, Any]]]]:
-    logger.info("  -> 正在从Emby获取所有演员列表...")
-    all_persons = []
-    try:
-        person_generator = get_all_persons_from_emby(
-            base_url=emby_url,
-            api_key=emby_api_key,
-            user_id=user_id,
-            stop_event=stop_event
-        )
-        
-        for person_batch in person_generator:
-            if stop_event and stop_event.is_set():
-                logger.info("  -> 在获取演员阶段任务被中止。")
-                return {}, {}
-
-            all_persons.extend(person_batch)
-
-    except Exception as e:
-        logger.error(f"【演员数据准备】从Emby获取演员列表时发生错误: {e}", exc_info=True)
-        return {}, {}
-
-    logger.info(f"  -> 已获取 {len(all_persons)} 位演员，正在筛选需要翻译的名字...")
-    names_to_translate: Set[str] = set()
-    name_to_persons_map: Dict[str, List[Dict[str, Any]]] = {}
-    
-    for person in all_persons:
-        name = person.get("Name")
-        person_id = person.get("Id")
-        if name and person_id and not utils.contains_chinese(name):
-            names_to_translate.add(name)
-            if name not in name_to_persons_map:
-                name_to_persons_map[name] = []
-            name_to_persons_map[name].append(person)
-
-    if not names_to_translate:
-        logger.info("  -> 任务完成，没有发现需要翻译的演员名。")
-        return {}, {}
-
-    logger.info(f"  -> 筛选出 {len(names_to_translate)} 个外文名需要翻译。")
-
-    logger.info(f"  -> 正在调用AI批量翻译 {len(names_to_translate)} 个名字...")
-    translation_map: Dict[str, str] = {}
-    try:
-        translation_map = ai_translator.batch_translate(
-            texts=list(names_to_translate),
-            mode="fast"
-        )
-        if not translation_map:
-            logger.warning("【演员数据准备】翻译引擎未能返回任何有效结果。")
-            return {}, name_to_persons_map
-
-    except Exception as e:
-        logger.error(f"【演员数据准备】批量翻译时发生错误: {e}", exc_info=True)
-        return {}, name_to_persons_map
-
-    logger.info("  -> 所有演员名翻译完毕，正在写回Emby数据库...")
-    
-    return translation_map, name_to_persons_map
 # --- 获取所有合集 ---
 def get_all_collections_from_emby_generic(base_url: str, api_key: str, user_id: str) -> Optional[List[Dict[str, Any]]]:
     if not all([base_url, api_key, user_id]):
