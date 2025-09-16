@@ -608,7 +608,7 @@ def task_actor_translation_cleanup(processor):
     2.  第二阶段：将聚合好的列表按固定大小（50个）分批，依次进行“翻译 -> 并发写回”操作。
     -   使用 ThreadPoolExecutor 并发更新 Emby 演员信息，大幅提升写回速度。
     """
-    task_name = "演员名中文化 (并发写入版)"
+    task_name = "中文化演员名"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
