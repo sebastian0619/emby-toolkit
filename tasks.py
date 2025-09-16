@@ -603,13 +603,12 @@ def task_reprocess_single_item(processor: MediaProcessor, item_id: str, item_nam
 # --- 翻译演员任务 ---
 def task_actor_translation_cleanup(processor):
     """
-    【V3.1 - 增加批次日志】
+    【V3.2 - 并发写入版】
     1.  第一阶段：完整扫描一次Emby，将所有需要翻译的演员名和信息聚合到内存中。
-    2.  第二阶段：将聚合好的列表按固定大小（50个）分批，依次进行“翻译 -> 写回”操作。
-    -   确保了AI翻译效率最大化，并且任务可以随时安全中断和恢复。
-    -   新增了每个批次写回完成后的确认日志。
+    2.  第二阶段：将聚合好的列表按固定大小（50个）分批，依次进行“翻译 -> 并发写回”操作。
+    -   使用 ThreadPoolExecutor 并发更新 Emby 演员信息，大幅提升写回速度。
     """
-    task_name = "演员名中文化 (聚合分批版)"
+    task_name = "演员名中文化 (并发写入版)"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
@@ -655,7 +654,7 @@ def task_actor_translation_cleanup(processor):
         logger.info(f"扫描完成！共发现 {len(names_to_translate)} 个外文名需要翻译。")
 
         # ======================================================================
-        # 阶段 2: 将聚合列表分批，依次进行“翻译 -> 写回”
+        # 阶段 2: 将聚合列表分批，依次进行“翻译 -> 并发写回”
         # ======================================================================
         all_names_list = list(names_to_translate)
         TRANSLATION_BATCH_SIZE = 50
@@ -690,29 +689,54 @@ def task_actor_translation_cleanup(processor):
                 logger.warning(f"翻译批次 {batch_num} 未能返回任何结果。")
                 continue
 
-            # ★★★ 核心修改：为当前批次增加一个计数器 ★★★
+            # ★★★ 核心修改：使用线程池并发写回当前批次的结果 ★★★
             batch_updated_count = 0
+            
+            # 1. 准备好所有需要更新的任务
+            update_tasks = []
             for original_name, translated_name in translation_map.items():
-                if processor.is_stop_requested(): break
                 if not translated_name or original_name == translated_name: continue
-
                 persons_to_update = name_to_persons_map.get(original_name, [])
                 for person in persons_to_update:
-                    success = emby_handler.update_person_details(
-                        person_id=person.get("Id"),
-                        new_data={"Name": translated_name},
+                    update_tasks.append((person.get("Id"), translated_name))
+
+            if not update_tasks:
+                continue
+
+            logger.info(f"  -> 批次 {batch_num}/{total_batches}: 翻译完成，准备并发写入 {len(update_tasks)} 个更新...")
+            
+            # 2. 使用 ThreadPoolExecutor 执行并发更新
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                # 提交所有更新任务
+                future_to_task = {
+                    executor.submit(
+                        emby_handler.update_person_details,
+                        person_id=task[0],
+                        new_data={"Name": task[1]},
                         emby_server_url=processor.emby_url,
                         emby_api_key=processor.emby_api_key,
                         user_id=processor.emby_user_id
-                    )
-                    if success:
-                        total_updated_count += 1
-                        batch_updated_count += 1 # 批次计数器增加
-                        time.sleep(0.2)
+                    ): task for task in update_tasks
+                }
+
+                # 收集结果
+                for future in as_completed(future_to_task):
+                    if processor.is_stop_requested():
+                        # 如果任务被中止，我们可以尝试取消未完成的 future，但最简单的是直接跳出
+                        break
+                    
+                    try:
+                        success = future.result()
+                        if success:
+                            batch_updated_count += 1
+                    except Exception as exc:
+                        task_info = future_to_task[future]
+                        logger.error(f"并发更新演员 (ID: {task_info[0]}) 时线程内发生错误: {exc}")
+
+            total_updated_count += batch_updated_count
             
-            # ★★★ 核心修改：在批次写回完成后，打印日志 ★★★
             if batch_updated_count > 0:
-                logger.info(f"  -> 批次 {batch_num}/{total_batches} 写回完成，成功更新 {batch_updated_count} 个演员名。")
+                logger.info(f"  -> ✅ 批次 {batch_num}/{total_batches} 并发写回完成，成功更新 {batch_updated_count} 个演员名。")
         
         # ======================================================================
         # 阶段 3: 任务结束 (此部分逻辑不变)
