@@ -796,6 +796,8 @@ class MediaProcessor:
             # ======================================================================
             # 阶段 3: 豆瓣及后续处理
             # ======================================================================
+            if self.is_stop_requested():
+                raise InterruptedError("任务在数据采集后被中止。")
             douban_cast_raw, douban_rating = self._get_douban_data_with_local_cache(item_details_from_emby)
 
             with get_central_db_connection() as conn:
@@ -814,6 +816,8 @@ class MediaProcessor:
                 # ======================================================================
                 # 阶段 4: 数据写回 (Data Write-back)
                 # ======================================================================
+                if self.is_stop_requested():
+                    raise InterruptedError("任务在演员列表处理后被中止。")
                 # --- 步骤 4.1: 前置更新 - 直接更新演员(Person)自身的外部ID和名字 ---
                 logger.info("  -> 写回步骤 1/2: 检查并更新演员的元数据...")
                 
@@ -1756,7 +1760,9 @@ class MediaProcessor:
 
         # --- 现有媒体项处理循环 ---
         for i, item in enumerate(all_items):
-            if self.is_stop_requested(): break
+            if self.is_stop_requested():
+                logger.warning("全库扫描任务已被用户中止。")
+                break # 使用 break 优雅地退出循环
             
             item_id = item.get('Id')
             item_name = item.get('Name', f"ID:{item_id}")
