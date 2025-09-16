@@ -10,6 +10,7 @@ from psycopg2 import sql
 from psycopg2.extras import execute_values, Json
 import logging
 from typing import Dict, Any, Tuple, List
+import threading
 from datetime import datetime, date, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed 
 import concurrent.futures
@@ -1270,70 +1271,93 @@ def task_add_all_series_to_watchlist(processor: MediaProcessor):
 # --- 任务链 ---
 def task_run_chain(processor: MediaProcessor, task_sequence: list):
     """
-    【V3 - 精确调度最终版】自动化任务链。
-    - 修复了因任务注册表升级为三元组而导致的解包错误。
-    - 现在能为链中的每一个子任务，精确地选择并传递正确的处理器。
+    【V5 - 及时刹车版】
+    - 使用一个独立的计时器线程来触发全局停止信号，实现对耗时子任务的及时中断。
     """
     task_name = "自动化任务链"
     total_tasks = len(task_sequence)
     logger.info(f"--- '{task_name}' 已启动，共包含 {total_tasks} 个子任务 ---")
     task_manager.update_status_from_thread(0, f"任务链启动，共 {total_tasks} 个任务。")
 
-    # ★★★ 核心修复 1/3：获取完整的、包含处理器类型的注册表 ★★★
-    registry = get_task_registry()
+    # --- 准备计时器和停止信号 ---
+    max_runtime_minutes = processor.config.get(constants.CONFIG_OPTION_TASK_CHAIN_MAX_RUNTIME_MINUTES, 0)
+    timeout_seconds = max_runtime_minutes * 60 if max_runtime_minutes > 0 else None
     
-    # ★★★ 核心修复 2/3：创建一个处理器查找表，用于动态选择 ★★★
-    processor_map = {
-        'media': extensions.media_processor_instance,
-        'watchlist': extensions.watchlist_processor_instance,
-        'actor': extensions.actor_subscription_processor_instance
-    }
-    
-    for i, task_key in enumerate(task_sequence):
-        if processor.is_stop_requested():
-            logger.warning(f"'{task_name}' 被用户中止。")
-            break
+    processor.clear_stop_signal()
+    timeout_triggered = threading.Event()
 
-        task_info = registry.get(task_key)
-        if not task_info:
-            logger.error(f"任务链警告：在注册表中未找到任务 '{task_key}'，已跳过。")
-            continue
+    def timeout_watcher():
+        if timeout_seconds:
+            logger.info(f"任务链运行时长限制为 {max_runtime_minutes} 分钟，计时器已启动。")
+            time.sleep(timeout_seconds)
+            
+            if not processor.is_stop_requested():
+                logger.warning(f"任务链达到 {max_runtime_minutes} 分钟的运行时长限制，将发送停止信号...")
+                timeout_triggered.set()
+                processor.signal_stop()
 
-        # ★★★ 核心修复 3/3：正确解包三元组，并动态选择处理器 ★★★
-        try:
-            task_function, task_description, processor_type = task_info
-        except ValueError:
-            logger.error(f"任务链错误：任务 '{task_key}' 的注册信息格式不正确，已跳过。")
-            continue
+    # 启动计时器线程
+    timer_thread = threading.Thread(target=timeout_watcher, daemon=True)
+    timer_thread.start()
 
-        progress = int((i / total_tasks) * 100)
-        status_message = f"({i+1}/{total_tasks}) 正在执行: {task_description}"
-        logger.info(f"--- {status_message} ---")
-        task_manager.update_status_from_thread(progress, status_message)
+    try:
+        # --- 主任务循环 ---
+        registry = get_task_registry()
+        for i, task_key in enumerate(task_sequence):
+            if processor.is_stop_requested():
+                if not timeout_triggered.is_set():
+                    logger.warning(f"'{task_name}' 被用户手动中止。")
+                break
 
-        try:
-            actual_processor_to_use = processor_map.get(processor_type)
-            if not actual_processor_to_use:
-                logger.error(f"任务链中的子任务 '{task_description}' 无法执行：类型为 '{processor_type}' 的处理器未初始化，已跳过。")
+            task_info = registry.get(task_key)
+            if not task_info:
+                logger.error(f"任务链警告：在注册表中未找到任务 '{task_key}'，已跳过。")
                 continue
 
-            # 使用我们为这个子任务精确选择的处理器来执行它
-            task_function(actual_processor_to_use)
-            time.sleep(1)
+            try:
+                # ▼▼▼ 核心修复 1/2：我们不再需要 processor_type 了 ▼▼▼
+                task_function, task_description, _ = task_info
+            except ValueError:
+                logger.error(f"任务链错误：任务 '{task_key}' 的注册信息格式不正确，已跳过。")
+                continue
 
-        except Exception as e:
-            error_message = f"任务链中的子任务 '{task_description}' 执行失败: {e}"
-            logger.error(error_message, exc_info=True)
-            task_manager.update_status_from_thread(progress, f"子任务'{task_description}'失败，继续...")
-            time.sleep(3)
-            continue
+            progress = int((i / total_tasks) * 100)
+            status_message = f"({i+1}/{total_tasks}) 正在执行: {task_description}"
+            logger.info(f"--- {status_message} ---")
+            task_manager.update_status_from_thread(progress, status_message)
 
-    final_message = f"'{task_name}' 执行完毕。"
-    if processor.is_stop_requested():
-        final_message = f"'{task_name}' 已中止。"
-    
-    logger.info(f"--- {final_message} ---")
-    task_manager.update_status_from_thread(100, "任务链已全部执行完毕。")
+            try:
+                # ▼▼▼ 核心修复 2/2：直接将 task_run_chain 收到的 processor 实例传递给子任务函数 ▼▼▼
+                # 所有子任务函数（如 task_run_full_scan）的第一个参数都是 processor
+                task_function(processor)
+                time.sleep(1)
+
+            except Exception as e:
+                # 检查异常是否是由于我们的“刹车”引起的
+                if isinstance(e, InterruptedError):
+                    logger.info(f"子任务 '{task_description}' 响应停止信号，已中断。")
+                    # 不需要再做什么，外层循环会处理
+                else:
+                    error_message = f"任务链中的子任务 '{task_description}' 执行失败: {e}"
+                    logger.error(error_message, exc_info=True)
+                    task_manager.update_status_from_thread(progress, f"子任务'{task_description}'失败，继续...")
+                    time.sleep(3)
+                continue
+
+    finally:
+        # --- 任务结束后的清理和状态报告 ---
+        final_message = f"'{task_name}' 执行完毕。"
+        if processor.is_stop_requested():
+            if timeout_triggered.is_set():
+                final_message = f"'{task_name}' 已达最长运行时限，自动结束。"
+            else:
+                final_message = f"'{task_name}' 已被用户手动中止。"
+        
+        logger.info(f"--- {final_message} ---")
+        task_manager.update_status_from_thread(100, final_message)
+        
+        # 确保在任务链结束后，清除停止信号，以免影响下一个手动任务
+        processor.clear_stop_signal()
 # --- 任务注册表 ---
 def get_task_registry(context: str = 'all'):
     """

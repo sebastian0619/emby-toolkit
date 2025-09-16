@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "3.9.44"  # 更新版本号
+APP_VERSION = "3.9.45"  # 更新版本号
 GITHUB_REPO_OWNER = "hbq0405"  # 您的 GitHub 用户名
 GITHUB_REPO_NAME = "emby-toolkit" # 您的 GitHub 仓库名
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
@@ -119,7 +119,7 @@ CONFIG_SECTION_SCHEDULER = "Scheduler"
 CONFIG_OPTION_TASK_CHAIN_ENABLED = "task_chain_enabled"
 CONFIG_OPTION_TASK_CHAIN_CRON = "task_chain_cron"
 CONFIG_OPTION_TASK_CHAIN_SEQUENCE = "task_chain_sequence"
-
+CONFIG_OPTION_TASK_CHAIN_MAX_RUNTIME_MINUTES = "task_chain_max_runtime_minutes"
 
 
 # --- 演员前缀 ---

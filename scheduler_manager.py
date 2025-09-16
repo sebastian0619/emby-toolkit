@@ -185,6 +185,7 @@ class SchedulerManager:
         is_enabled = config.get('task_chain_enabled', False)
         cron_str = config.get('task_chain_cron')
         task_sequence = config.get('task_chain_sequence', [])
+        chain_max_runtime_minutes = config.get(constants.CONFIG_OPTION_TASK_CHAIN_MAX_RUNTIME_MINUTES, 0)
 
         # 3. 如果启用且配置有效，则添加新的作业
         if is_enabled and cron_str and task_sequence:
@@ -209,7 +210,20 @@ class SchedulerManager:
                 )
                 # 调用辅助函数来生成友好的日志
                 friendly_cron_str = _get_next_run_time_str(cron_str)
-                logger.info(f"已成功设置自动化任务链，执行计划: {friendly_cron_str}，包含 {len(task_sequence)} 个任务。")
+                log_message = (
+                    f"已成功设置自动化任务链，执行计划: {friendly_cron_str}，"
+                    f"包含 {len(task_sequence)} 个任务。"
+                )
+                
+                if chain_max_runtime_minutes > 0:
+                    # 如果设置了时长，就追加时长信息
+                    log_message += f" 最大运行时长: {chain_max_runtime_minutes} 分钟。"
+                else:
+                    # 如果未设置，可以明确告知用户
+                    log_message += " (无时长限制)。"
+                
+                # ▼▼▼ 3. 使用新的日志字符串打印日志 ▼▼▼
+                logger.info(log_message)
             except ValueError as e:
                 logger.error(f"设置任务链失败：CRON表达式 '{cron_str}' 无效。错误: {e}")
             except Exception as e:

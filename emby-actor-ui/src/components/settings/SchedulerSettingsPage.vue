@@ -28,6 +28,21 @@
                 <n-form-item label="定时执行 (CRON)">
                   <n-input v-model:value="configModel.task_chain_cron" :disabled="!configModel.task_chain_enabled" placeholder="例如: 0 2 * * *" />
                 </n-form-item>
+                <n-form-item label="最大运行时长 (分钟)">
+                  <n-input-number 
+                    v-model:value="configModel.task_chain_max_runtime_minutes" 
+                    :min="0" 
+                    :step="10" 
+                    :disabled="!configModel.task_chain_enabled"
+                    placeholder="0 代表不限制"
+                    style="width: 100%;"
+                  />
+                  <template #feedback>
+                    <n-text depth="3" style="font-size:0.8em;">
+                      设置任务链的最长运行时间。到达时限后，会自动停止当前任务以及后续任务，填 0 表示不限制。
+                    </n-text>
+                  </template>
+                </n-form-item>
                 <n-form-item label="任务序列">
                   <n-button-group>
                     <n-button type="default" @click="showChainConfigModal = true" :disabled="!configModel.task_chain_enabled">
