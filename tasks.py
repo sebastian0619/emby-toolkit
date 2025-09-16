@@ -603,30 +603,30 @@ def task_reprocess_single_item(processor: MediaProcessor, item_id: str, item_nam
 # --- 翻译演员任务 ---
 def task_actor_translation_cleanup(processor):
     """
-    【V3 - 终极方案：先聚合再分批】
+    【V3.1 - 增加批次日志】
     1.  第一阶段：完整扫描一次Emby，将所有需要翻译的演员名和信息聚合到内存中。
     2.  第二阶段：将聚合好的列表按固定大小（50个）分批，依次进行“翻译 -> 写回”操作。
     -   确保了AI翻译效率最大化，并且任务可以随时安全中断和恢复。
+    -   新增了每个批次写回完成后的确认日志。
     """
     task_name = "演员名中文化 (聚合分批版)"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
         # ======================================================================
-        # 阶段 1: 扫描并聚合所有需要翻译的演员
+        # 阶段 1: 扫描并聚合所有需要翻译的演员 (此部分逻辑不变)
         # ======================================================================
         task_manager.update_status_from_thread(0, "阶段 1/2: 正在扫描 Emby，收集所有待翻译演员...")
         
         names_to_translate = set()
         name_to_persons_map = {}
         
-        # ★★★ 核心修改：为翻译任务指定一个更小的批次，以提高中止任务的响应速度 ★★★
         person_generator = emby_handler.get_all_persons_from_emby(
             base_url=processor.emby_url,
             api_key=processor.emby_api_key,
             user_id=processor.emby_user_id,
             stop_event=processor.get_stop_event(),
-            batch_size=500  # <-- 在这里传入小批次参数！
+            batch_size=500
         )
 
         total_scanned = 0
@@ -655,7 +655,7 @@ def task_actor_translation_cleanup(processor):
         logger.info(f"扫描完成！共发现 {len(names_to_translate)} 个外文名需要翻译。")
 
         # ======================================================================
-        # 阶段 2: 将聚合列表分批，依次进行“翻译 -> 写回” (此部分逻辑不变)
+        # 阶段 2: 将聚合列表分批，依次进行“翻译 -> 写回”
         # ======================================================================
         all_names_list = list(names_to_translate)
         TRANSLATION_BATCH_SIZE = 50
@@ -690,6 +690,8 @@ def task_actor_translation_cleanup(processor):
                 logger.warning(f"翻译批次 {batch_num} 未能返回任何结果。")
                 continue
 
+            # ★★★ 核心修改：为当前批次增加一个计数器 ★★★
+            batch_updated_count = 0
             for original_name, translated_name in translation_map.items():
                 if processor.is_stop_requested(): break
                 if not translated_name or original_name == translated_name: continue
@@ -705,7 +707,12 @@ def task_actor_translation_cleanup(processor):
                     )
                     if success:
                         total_updated_count += 1
+                        batch_updated_count += 1 # 批次计数器增加
                         time.sleep(0.2)
+            
+            # ★★★ 核心修改：在批次写回完成后，打印日志 ★★★
+            if batch_updated_count > 0:
+                logger.info(f"  -> 批次 {batch_num}/{total_batches} 写回完成，成功更新 {batch_updated_count} 个演员名。")
         
         # ======================================================================
         # 阶段 3: 任务结束 (此部分逻辑不变)
