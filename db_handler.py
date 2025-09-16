@@ -216,24 +216,48 @@ class ActorDBManager:
                         conflicting_emby_pids.append(new_data["emby_person_id"])
                     
                     if len(conflicting_emby_pids) > 1:
-                        conflict_detected = True
                         logger.warning(
                             f"检测到ID冲突: {db_column} = '{id_value}' 被多个Emby PID共享: {conflicting_emby_pids}。"
-                            "将执行彻底清理..."
+                            "将执行智能合并..."
                         )
-                        if db_column == "tmdb_person_id":
-                            cursor.execute("DELETE FROM actor_metadata WHERE tmdb_id = %s", (id_value,))
-                        cursor.execute(
-                            f"UPDATE person_identity_map SET {db_column} = NULL, last_updated_at = NOW() WHERE {db_column} = %s",
-                            (id_value,)
-                        )
-                        for pid in conflicting_emby_pids:
-                            emby_handler.clear_emby_person_provider_id(
-                                person_id=pid, provider_key_to_clear=emby_provider_key,
-                                emby_server_url=emby_config['url'], emby_api_key=emby_config['api_key'], user_id=emby_config['user_id']
-                            )
-                        new_data[db_column] = None
-                        logger.info(f"ID '{id_value}' 已被彻底清理，本次同步将不会使用它。")
+                        
+                        # 1. 找到目标记录 (通常是列表中第一个，或者最完善的那个)
+                        # 我们以第一个找到的记录作为合并的目标
+                        target_emby_pid = conflicting_emby_pids[0]
+                        cursor.execute("SELECT * FROM person_identity_map WHERE emby_person_id = %s", (target_emby_pid,))
+                        target_actor = cursor.fetchone()
+                        
+                        if not target_actor:
+                            logger.error(f"合并失败：无法找到目标演员记录 (Emby PID: {target_emby_pid})。")
+                            continue # 继续检查下一个ID字段
+
+                        target_map_id = target_actor['map_id']
+                        
+                        # 2. 遍历所有其他的冲突记录，将它们的信息合并到目标记录中，然后删除它们
+                        for source_emby_pid in conflicting_emby_pids[1:]:
+                            cursor.execute("SELECT * FROM person_identity_map WHERE emby_person_id = %s", (source_emby_pid,))
+                            source_actor = cursor.fetchone()
+                            
+                            if not source_actor or source_actor['map_id'] == target_map_id:
+                                continue # 如果源记录不存在或就是目标记录本身，则跳过
+
+                            source_map_id = source_actor['map_id']
+                            logger.info(f"  -> 正在将源记录 (Emby PID: {source_emby_pid}, map_id: {source_map_id}) 合并到目标记录 (Emby PID: {target_emby_pid}, map_id: {target_map_id})")
+
+                            # 核心合并逻辑：如果目标记录的某个ID字段为空，就用源记录的来填充
+                            if source_actor.get('tmdb_person_id') and not target_actor.get('tmdb_person_id'):
+                                cursor.execute("UPDATE person_identity_map SET tmdb_person_id = %s WHERE map_id = %s", (source_actor['tmdb_person_id'], target_map_id))
+                            if source_actor.get('imdb_id') and not target_actor.get('imdb_id'):
+                                cursor.execute("UPDATE person_identity_map SET imdb_id = %s WHERE map_id = %s", (source_actor['imdb_id'], target_map_id))
+                            if source_actor.get('douban_celebrity_id') and not target_actor.get('douban_celebrity_id'):
+                                cursor.execute("UPDATE person_identity_map SET douban_celebrity_id = %s WHERE map_id = %s", (source_actor['douban_celebrity_id'], target_map_id))
+
+                            # 3. 删除现在已经多余的源记录
+                            cursor.execute("DELETE FROM person_identity_map WHERE map_id = %s", (source_map_id,))
+                            logger.info(f"  -> 合并完成，已删除多余的源记录 (map_id: {source_map_id})。")
+
+                        # 4. 在本次 upsert 操作中，确保 new_data 使用的是合并后的目标ID
+                        new_data["emby_person_id"] = target_emby_pid
 
             if conflict_detected:
                 cursor.execute("RELEASE SAVEPOINT actor_upsert")
