@@ -56,95 +56,103 @@ def _get_real_emby_url_and_key():
 
 def handle_get_views():
     """
-    【V3 - 空库优雅隐藏版】
-    - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
-    - 新增逻辑：在生成虚拟库列表时，会检查其 in_library_count 字段，如果为0则自动隐藏该库。
+    【V8 - 实时权限隐藏最终版】
+    - 终极解决方案：在返回虚拟库列表时，为每个库和当前用户执行一次“快速权限探测”。
+    - 调用一个新的、超快速的API检查，判断当前用户是否能在该虚拟库中看到至少一个媒体项。
+    - 只有用户有权看到内容时，虚拟库才会在主页显示，完美解决了管理员和受限用户视野不一致的问题。
     """
     real_server_id = extensions.EMBY_SERVER_ID
     if not real_server_id:
         return "Proxy is not ready", 503
 
     try:
+        user_id_match = re.search(r'/emby/Users/([^/]+)/Views', request.path)
+        if not user_id_match:
+            return "Could not determine user from request path", 400
+        user_id = user_id_match.group(1)
+
+        # 获取用户可见的原生库，这个后续会用到
+        user_visible_native_libs = emby_handler.get_emby_libraries(
+            config_manager.APP_CONFIG.get("emby_server_url", ""),
+            config_manager.APP_CONFIG.get("emby_api_key", ""),
+            user_id
+        )
+        if user_visible_native_libs is None: user_visible_native_libs = []
+
         collections = db_handler.get_all_active_custom_collections()
         fake_views_items = []
         for coll in collections:
+            # 1. 物理检查 (依然保留)
             real_emby_collection_id = coll.get('emby_collection_id')
-            in_library_count = coll.get('in_library_count', 0)
-
-            # ★★★ 核心修改：增加对库内项目数量的判断 ★★★
-            # 只有当虚拟库在Emby中真实存在，并且库内至少有1个项目时，才显示它
-            if not real_emby_collection_id or in_library_count == 0:
-                logger.debug(f"  -> 虚拟库 '{coll['name']}' (ID: {coll['id']}) 被隐藏，原因: " +
-                             ("无对应Emby实体" if not real_emby_collection_id else "库内无项目"))
+            if not real_emby_collection_id:
+                logger.debug(f"  -> 虚拟库 '{coll['name']}' 被隐藏，原因: 无对应Emby实体")
                 continue
 
+            # ★★★ 核心修复：执行实时、动态的权限检查 ★★★
+            # a. 从数据库获取这个库包含的所有Emby ID
+            db_media_list = coll.get('generated_media_info_json') or []
+            ordered_emby_ids = [item.get('emby_id') for item in db_media_list if item.get('emby_id')]
+
+            if not ordered_emby_ids:
+                logger.debug(f"  -> 虚拟库 '{coll['name']}' 被隐藏，原因: 库内无项目 (物理)")
+                continue
+
+            # b. 调用我们的新式武器进行“快速权限探测”
+            user_can_see_content = emby_handler.check_user_has_visible_items_in_id_list(
+                user_id=user_id,
+                item_ids=ordered_emby_ids,
+                base_url=config_manager.APP_CONFIG.get("emby_server_url", ""),
+                api_key=config_manager.APP_CONFIG.get("emby_api_key", "")
+            )
+
+            if not user_can_see_content:
+                logger.debug(f"  -> 虚拟库 '{coll['name']}' 被隐藏，原因: 库内无【用户可见】项目 (权限)")
+                continue
+            
+            # --- 所有检查通过，生成虚拟库 ---
             db_id = coll['id']
             mimicked_id = to_mimicked_id(db_id)
             image_tags = {"Primary": f"{real_emby_collection_id}?timestamp={int(time.time())}"}
-
             definition = coll.get('definition_json') or {}
             
             merged_libraries = definition.get('merged_libraries', [])
             name_suffix = f" (合并库: {len(merged_libraries)}个)" if merged_libraries else ""
             
             item_type_from_db = definition.get('item_type', 'Movie')
-            if isinstance(item_type_from_db, list) and len(item_type_from_db) > 1:
-                collection_type = "mixed"
-            else:
-                authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
-                collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
+            collection_type = "mixed"
+            if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
+                 authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
+                 collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
             fake_view = {
-                "Name": coll['name'] + name_suffix, 
-                "ServerId": real_server_id, 
-                "Id": mimicked_id,
-                "Guid": str(uuid.uuid4()),
-                "Etag": f"{db_id}{int(time.time())}",
-                "DateCreated": "2025-01-01T00:00:00.0000000Z", 
-                "CanDelete": False, 
-                "CanDownload": False,
-                "SortName": coll['name'], 
-                "ExternalUrls": [], 
-                "ProviderIds": {}, 
-                "IsFolder": True,
-                "ParentId": "2", 
-                "Type": "CollectionFolder",
-                "PresentationUniqueKey": str(uuid.uuid4()),
-                "DisplayPreferencesId": f"custom-{db_id}",
-                "ForcedSortName": coll['name'],
-                "Taglines": [],
-                "RemoteTrailers": [],
+                "Name": coll['name'] + name_suffix, "ServerId": real_server_id, "Id": mimicked_id,
+                "Guid": str(uuid.uuid4()), "Etag": f"{db_id}{int(time.time())}",
+                "DateCreated": "2025-01-01T00:00:00.0000000Z", "CanDelete": False, "CanDownload": False,
+                "SortName": coll['name'], "ExternalUrls": [], "ProviderIds": {}, "IsFolder": True,
+                "ParentId": "2", "Type": "CollectionFolder", "PresentationUniqueKey": str(uuid.uuid4()),
+                "DisplayPreferencesId": f"custom-{db_id}", "ForcedSortName": coll['name'],
+                "Taglines": [], "RemoteTrailers": [],
                 "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
-                "ChildCount": in_library_count, # ★★★ 优化：直接使用准确的计数值 ★★★
+                "ChildCount": len(ordered_emby_ids), # 使用更准确的计数
                 "PrimaryImageAspectRatio": 1.7777777777777777, 
-                "CollectionType": collection_type,
-                "ImageTags": image_tags, 
-                "BackdropImageTags": [], 
-                "LockedFields": [], 
-                "LockData": False
+                "CollectionType": collection_type, "ImageTags": image_tags, "BackdropImageTags": [], 
+                "LockedFields": [], "LockData": False
             }
             fake_views_items.append(fake_view)
         
-        logger.debug(f"已生成 {len(fake_views_items)} 个可见的虚拟库。")
+        logger.debug(f"已为用户 {user_id} 生成 {len(fake_views_items)} 个可见的虚拟库。")
 
+        # --- 原生库合并逻辑 (保持不变) ---
         native_views_items = []
         should_merge_native = config_manager.APP_CONFIG.get('proxy_merge_native_libraries', True)
         if should_merge_native:
-            user_id_match = re.search(r'/emby/Users/([^/]+)/Views', request.path)
-            if user_id_match:
-                user_id = user_id_match.group(1)
-                all_native_views = emby_handler.get_emby_libraries(
-                    config_manager.APP_CONFIG.get("emby_server_url", ""),
-                    config_manager.APP_CONFIG.get("emby_api_key", ""),
-                    user_id
-                )
-                if all_native_views is None: all_native_views = []
-                raw_selection = config_manager.APP_CONFIG.get('proxy_native_view_selection', '')
-                selected_native_view_ids = [x.strip() for x in raw_selection.split(',') if x.strip()] if isinstance(raw_selection, str) else raw_selection
-                if not selected_native_view_ids:
-                    native_views_items = all_native_views
-                else:
-                    native_views_items = [view for view in all_native_views if view.get("Id") in selected_native_view_ids]
+            all_native_views = user_visible_native_libs
+            raw_selection = config_manager.APP_CONFIG.get('proxy_native_view_selection', '')
+            selected_native_view_ids = [x.strip() for x in raw_selection.split(',') if x.strip()] if isinstance(raw_selection, str) else raw_selection
+            if not selected_native_view_ids:
+                native_views_items = all_native_views
+            else:
+                native_views_items = [view for view in all_native_views if view.get("Id") in selected_native_view_ids]
         
         final_items = []
         native_order = config_manager.APP_CONFIG.get('proxy_native_view_order', 'before')

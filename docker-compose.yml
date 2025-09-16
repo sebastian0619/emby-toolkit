@@ -20,7 +20,7 @@ services:
       - DB_NAME=embytoolkit         # <-- ★★★ 请修改为你自己的数据库名
     ports:
       - "5257:5257"
-      - "8097:8097"
+      - "8096:8096"
     networks:
       - emby-net
     depends_on:

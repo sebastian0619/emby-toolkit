@@ -413,6 +413,22 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         },
         'watchlist': {'next_episode_to_air_json', 'missing_info_json'},
         'collections_info': {'missing_movies_json'},
+        'resubscribe_rules': { # Add resubscribe_rules as it has JSONB fields
+            'target_library_ids', 'resubscribe_audio_missing_languages',
+            'resubscribe_subtitle_missing_languages', 'resubscribe_quality_include',
+            'resubscribe_effect_include'
+        },
+        'media_cleanup_tasks': { # Add media_cleanup_tasks as it has JSONB fields
+            'versions_info_json'
+        },
+        'app_settings': { # Add app_settings as it has JSONB fields
+            'value_json'
+        }
+    }
+
+    # Add specific non-JSONB columns that might be lists and need string conversion
+    LIST_TO_STRING_COLUMNS = {
+        'actor_subscriptions': {'config_media_types'}
     }
 
     if not table_data:
@@ -421,6 +437,7 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
     columns = list(table_data[0].keys())
     # 使用小写表名来匹配规则
     table_json_rules = JSONB_COLUMNS.get(table_name.lower(), set())
+    table_list_to_string_rules = LIST_TO_STRING_COLUMNS.get(table_name.lower(), set())
     
     prepared_rows = []
     for row_dict in table_data:
@@ -432,6 +449,9 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
             if col_name in table_json_rules and value is not None:
                 # Json() 会告诉 psycopg2: "请将这个 Python 对象作为 JSON 处理"
                 value = Json(value)
+            elif col_name in table_list_to_string_rules and isinstance(value, list):
+                # 如果是需要转换为字符串的列表，则进行转换
+                value = ','.join(map(str, value))
             
             row_values.append(value)
         prepared_rows.append(tuple(row_values))

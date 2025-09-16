@@ -1418,3 +1418,43 @@ def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> boo
     except Exception as e:
         logger.error(f"使用临时令牌删除演员 {person_id} 时发生未知错误: {e}")
         return False
+def check_user_has_visible_items_in_id_list(
+    user_id: str,
+    item_ids: List[str],
+    base_url: str,
+    api_key: str
+) -> bool:
+    """
+    【V1 - 快速权限探测】
+    以特定用户的身份，检查一个ID列表中是否至少有一个项目是该用户可见的。
+    使用 Limit=1 进行超快速查询。
+    """
+    if not all([user_id, item_ids, base_url, api_key]):
+        return False
+
+    # 为了防止URL过长，我们只取前200个ID进行探测，这对于判断“是否为空”已经足够准确
+    ids_to_check = item_ids[:200]
+
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    params = {
+        'api_key': api_key,
+        'Ids': ",".join(ids_to_check),
+        'Limit': 1, # ★★★ 核心：我们只需要知道有没有，不需要知道有多少
+        'Fields': 'Id' # ★★★ 核心：我们只需要ID，其他信息都不要，追求最快速度
+    }
+
+    try:
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 15)
+        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        data = response.json()
+        
+        # 如果返回的 Items 列表不为空，就证明用户至少能看到一个
+        if data.get("Items"):
+            return True
+        else:
+            return False
+    except Exception as e:
+        logger.error(f"快速权限探测失败 (用户: {user_id}): {e}")
+        # 在不确定的情况下，为安全起见，我们默认用户看不到
+        return False
