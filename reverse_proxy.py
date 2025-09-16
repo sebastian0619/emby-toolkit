@@ -56,8 +56,9 @@ def _get_real_emby_url_and_key():
 
 def handle_get_views():
     """
-    【V2 - PG JSON 兼容版】
+    【V3 - 空库优雅隐藏版】
     - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
+    - 新增逻辑：在生成虚拟库列表时，会检查其 in_library_count 字段，如果为0则自动隐藏该库。
     """
     real_server_id = extensions.EMBY_SERVER_ID
     if not real_server_id:
@@ -68,15 +69,19 @@ def handle_get_views():
         fake_views_items = []
         for coll in collections:
             real_emby_collection_id = coll.get('emby_collection_id')
-            if not real_emby_collection_id:
-                logger.debug(f"  -> 虚拟库 '{coll['name']}' (ID: {coll['id']}) 因无对应的真实Emby合集而被隐藏。")
+            in_library_count = coll.get('in_library_count', 0)
+
+            # ★★★ 核心修改：增加对库内项目数量的判断 ★★★
+            # 只有当虚拟库在Emby中真实存在，并且库内至少有1个项目时，才显示它
+            if not real_emby_collection_id or in_library_count == 0:
+                logger.debug(f"  -> 虚拟库 '{coll['name']}' (ID: {coll['id']}) 被隐藏，原因: " +
+                             ("无对应Emby实体" if not real_emby_collection_id else "库内无项目"))
                 continue
 
             db_id = coll['id']
             mimicked_id = to_mimicked_id(db_id)
             image_tags = {"Primary": f"{real_emby_collection_id}?timestamp={int(time.time())}"}
 
-            # ★★★ 核心修复：直接使用已经是字典的 definition_json 字段 ★★★
             definition = coll.get('definition_json') or {}
             
             merged_libraries = definition.get('merged_libraries', [])
@@ -93,7 +98,7 @@ def handle_get_views():
                 "Name": coll['name'] + name_suffix, 
                 "ServerId": real_server_id, 
                 "Id": mimicked_id,
-                "Guid": str(uuid.uuid4()), # 我们会用这个Guid
+                "Guid": str(uuid.uuid4()),
                 "Etag": f"{db_id}{int(time.time())}",
                 "DateCreated": "2025-01-01T00:00:00.0000000Z", 
                 "CanDelete": False, 
@@ -103,14 +108,14 @@ def handle_get_views():
                 "ProviderIds": {}, 
                 "IsFolder": True,
                 "ParentId": "2", 
-                "Type": "CollectionFolder",  # 1. 改为 CollectionFolder
-                "PresentationUniqueKey": str(uuid.uuid4()), # 2. 增加 PresentationUniqueKey
-                "DisplayPreferencesId": f"custom-{db_id}", # 3. DisplayPreferencesId 保持不变或改为Guid都可以
-                "ForcedSortName": coll['name'], # 4. 增加 ForcedSortName
-                "Taglines": [], # 5. 增加空的 Taglines
-                "RemoteTrailers": [], # 6. 增加空的 RemoteTrailers
+                "Type": "CollectionFolder",
+                "PresentationUniqueKey": str(uuid.uuid4()),
+                "DisplayPreferencesId": f"custom-{db_id}",
+                "ForcedSortName": coll['name'],
+                "Taglines": [],
+                "RemoteTrailers": [],
                 "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
-                "ChildCount": 1, 
+                "ChildCount": in_library_count, # ★★★ 优化：直接使用准确的计数值 ★★★
                 "PrimaryImageAspectRatio": 1.7777777777777777, 
                 "CollectionType": collection_type,
                 "ImageTags": image_tags, 
@@ -120,7 +125,7 @@ def handle_get_views():
             }
             fake_views_items.append(fake_view)
         
-        logger.debug(f"已生成 {len(fake_views_items)} 个虚拟库。")
+        logger.debug(f"已生成 {len(fake_views_items)} 个可见的虚拟库。")
 
         native_views_items = []
         should_merge_native = config_manager.APP_CONFIG.get('proxy_merge_native_libraries', True)
