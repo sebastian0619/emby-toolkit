@@ -14,11 +14,11 @@
           <span class="card-title">自动化任务链</span>
         </template>
         
-        <!-- --- 【【【 使用 Grid 组件实现两列布局 】】】 --- -->
-        <n-grid cols="1 l:2" :x-gap="24" :y-gap="16" responsive="screen">
+        <!-- --- 【【【 使用 Grid 组件实现两列布局 (宽度已调整) 】】】 --- -->
+        <n-grid cols="1 l:3" :x-gap="24" :y-gap="16" responsive="screen">
           
-          <!-- 左侧列：配置区域 -->
-          <n-gi>
+          <!-- 左侧列：配置区域 (占1/3) -->
+          <n-gi span="1">
             <n-space vertical>
               <n-space align="center" justify="space-between">
                 <n-text strong>启用自动化任务链</n-text>
@@ -59,8 +59,8 @@
             </n-space>
           </n-gi>
 
-          <!-- 右侧列：显示当前执行顺序 -->
-          <n-gi>
+          <!-- 右侧列：显示当前执行顺序 (占2/3) -->
+          <n-gi span="2">
             <n-text strong>当前执行流程</n-text>
             <div class="flowchart-wrapper">
               <div v-if="enabledTaskChain.length > 0" class="flowchart-container">
@@ -74,9 +74,7 @@
             </div>
           </n-gi>
 
-
         </n-grid>
-        <!-- --- 【【【 Grid 布局结束 】】】 --- -->
 
         <!-- "工作原理"提示信息，放在 Grid 下方，保持通栏显示 -->
         <n-alert title="任务详情" type="info" style="margin-top: 24px;">
