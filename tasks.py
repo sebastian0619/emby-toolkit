@@ -603,38 +603,39 @@ def task_reprocess_single_item(processor: MediaProcessor, item_id: str, item_nam
 # --- 翻译演员任务 ---
 def task_actor_translation_cleanup(processor):
     """
-    【V2 - 流式处理版】
-    - 逐批从Emby获取演员，翻译一批，写回一批。
-    - 确保任务可以随时被安全中止，并保留已完成的进度。
+    【V3 - 终极方案：先聚合再分批】
+    1.  第一阶段：完整扫描一次Emby，将所有需要翻译的演员名和信息聚合到内存中。
+    2.  第二阶段：将聚合好的列表按固定大小（50个）分批，依次进行“翻译 -> 写回”操作。
+    -   确保了AI翻译效率最大化，并且任务可以随时安全中断和恢复。
     """
-    task_name = "演员名中文化 (流式处理)"
+    task_name = "演员名中文化 (聚合分批版)"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
-        task_manager.update_status_from_thread(0, "正在从 Emby 逐批获取演员...")
+        # ======================================================================
+        # 阶段 1: 扫描并聚合所有需要翻译的演员
+        # ======================================================================
+        task_manager.update_status_from_thread(0, "阶段 1/2: 正在扫描 Emby，收集所有待翻译演员...")
         
-        # 1. 获取一个批次生成器，而不是一次性获取所有演员
+        names_to_translate = set()
+        name_to_persons_map = {}
+        
+        # ★★★ 核心修改：为翻译任务指定一个更小的批次，以提高中止任务的响应速度 ★★★
         person_generator = emby_handler.get_all_persons_from_emby(
             base_url=processor.emby_url,
             api_key=processor.emby_api_key,
             user_id=processor.emby_user_id,
-            stop_event=processor.get_stop_event()
+            stop_event=processor.get_stop_event(),
+            batch_size=500  # <-- 在这里传入小批次参数！
         )
 
-        total_processed_actors = 0
-        total_updated_actors = 0
-        batch_num = 0
-
-        # 2. 循环处理每一个批次
+        total_scanned = 0
         for person_batch in person_generator:
-            batch_num += 1
             if processor.is_stop_requested():
-                logger.info("演员翻译任务被用户中断。")
-                break
+                logger.info("任务在扫描阶段被用户中断。")
+                task_manager.update_status_from_thread(100, "任务已中止。")
+                return
 
-            # 3. 在当前批次内筛选需要翻译的演员
-            names_to_translate = set()
-            name_to_persons_map = {}
             for person in person_batch:
                 name = person.get("Name")
                 if name and not utils.contains_chinese(name):
@@ -643,31 +644,52 @@ def task_actor_translation_cleanup(processor):
                         name_to_persons_map[name] = []
                     name_to_persons_map[name].append(person)
             
-            total_processed_actors += len(person_batch)
+            total_scanned += len(person_batch)
+            task_manager.update_status_from_thread(5, f"阶段 1/2: 已扫描 {total_scanned} 名演员...")
 
-            if not names_to_translate:
-                logger.debug(f"批次 {batch_num} 中没有需要翻译的演员，跳过。")
-                continue
+        if not names_to_translate:
+            logger.info("扫描完成，没有发现需要翻译的演员名。")
+            task_manager.update_status_from_thread(100, "任务完成，所有演员名都无需翻译。")
+            return
 
-            # 4. 只翻译当前批次的名字
-            logger.info(f"  -> 批次 {batch_num}: 发现 {len(names_to_translate)} 个外文名，正在调用AI翻译...")
+        logger.info(f"扫描完成！共发现 {len(names_to_translate)} 个外文名需要翻译。")
+
+        # ======================================================================
+        # 阶段 2: 将聚合列表分批，依次进行“翻译 -> 写回” (此部分逻辑不变)
+        # ======================================================================
+        all_names_list = list(names_to_translate)
+        TRANSLATION_BATCH_SIZE = 50
+        total_names_to_process = len(all_names_list)
+        total_batches = (total_names_to_process + TRANSLATION_BATCH_SIZE - 1) // TRANSLATION_BATCH_SIZE
+        
+        total_updated_count = 0
+
+        for i in range(0, total_names_to_process, TRANSLATION_BATCH_SIZE):
+            if processor.is_stop_requested():
+                logger.info("任务在翻译阶段被用户中断。")
+                break
+
+            current_batch_names = all_names_list[i:i + TRANSLATION_BATCH_SIZE]
+            batch_num = (i // TRANSLATION_BATCH_SIZE) + 1
+            
+            progress = int(10 + (i / total_names_to_process) * 90)
             task_manager.update_status_from_thread(
-                5, f"已处理 {total_processed_actors} 名演员，正在翻译批次 {batch_num}..."
+                progress, 
+                f"阶段 2/2: 正在翻译批次 {batch_num}/{total_batches} (已成功 {total_updated_count} 个)"
             )
             
             try:
                 translation_map = processor.ai_translator.batch_translate(
-                    texts=list(names_to_translate), mode="fast"
+                    texts=current_batch_names, mode="fast"
                 )
             except Exception as e_trans:
-                logger.error(f"批次 {batch_num} 翻译时发生错误: {e_trans}，将跳过此批次。")
+                logger.error(f"翻译批次 {batch_num} 时发生错误: {e_trans}，将跳过此批次。")
                 continue
 
             if not translation_map:
-                logger.warning(f"批次 {batch_num} 翻译引擎未能返回任何结果。")
+                logger.warning(f"翻译批次 {batch_num} 未能返回任何结果。")
                 continue
 
-            # 5. 立即将当前批次的翻译结果写回 Emby
             for original_name, translated_name in translation_map.items():
                 if processor.is_stop_requested(): break
                 if not translated_name or original_name == translated_name: continue
@@ -682,16 +704,15 @@ def task_actor_translation_cleanup(processor):
                         user_id=processor.emby_user_id
                     )
                     if success:
-                        total_updated_actors += 1
-                        task_manager.update_status_from_thread(
-                            50, f"已处理 {total_processed_actors} 名演员，成功更新 {total_updated_actors} 个..."
-                        )
+                        total_updated_count += 1
                         time.sleep(0.2)
         
-        # 6. 任务结束
-        final_message = f"任务完成！共处理 {total_processed_actors} 名演员，成功更新了 {total_updated_actors} 个名字。"
+        # ======================================================================
+        # 阶段 3: 任务结束 (此部分逻辑不变)
+        # ======================================================================
+        final_message = f"任务完成！共成功翻译并更新了 {total_updated_count} 个演员名。"
         if processor.is_stop_requested():
-            final_message = f"任务已中断。共处理 {total_processed_actors} 名演员，成功更新了 {total_updated_actors} 个名字。"
+            final_message = f"任务已中断。本次运行成功翻译并更新了 {total_updated_count} 个演员名。"
         
         logger.info(final_message)
         task_manager.update_status_from_thread(100, final_message)
