@@ -16,6 +16,29 @@ def get_tmdb_api_base_url() -> str:
     """
     return config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_BASE_URL, "https://api.themoviedb.org/3")
 
+def get_tmdb_image_base_url() -> str:
+    """
+    从配置管理器获取TMDb Image基础URL，如果未配置则使用默认值
+    """
+    return config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_IMAGE_BASE_URL, "https://image.tmdb.org/t/p")
+
+def get_tmdb_image_url(image_path: str, size: str = "w300") -> str:
+    """
+    构建完整的TMDb图片URL
+    
+    Args:
+        image_path: TMDb返回的图片路径（以/开头）
+        size: 图片尺寸，如w300, w500, original等
+    
+    Returns:
+        完整的图片URL，如果image_path为空则返回空字符串
+    """
+    if not image_path:
+        return ""
+    
+    base_url = get_tmdb_image_base_url()
+    return f"{base_url}/{size}{image_path}"
+
 # 默认语言设置
 DEFAULT_LANGUAGE = "zh-CN"
 DEFAULT_REGION = "CN"

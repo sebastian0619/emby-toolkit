@@ -1750,7 +1750,8 @@ class MediaProcessor:
                         if actor_metadata and actor_metadata.get("profile_path"):
                             profile_path = actor_metadata["profile_path"]
                             # 拼接 TMDB 小尺寸头像 URL，加载速度飞快
-                            image_url = f"https://image.tmdb.org/t/p/w185{profile_path}"
+                            from tmdb_handler import get_tmdb_image_url
+                            image_url = get_tmdb_image_url(profile_path, "w185")
                     
                     # --- 核心优化 2: 清理角色名 ---
                     original_role = actor_data.get('character', '')

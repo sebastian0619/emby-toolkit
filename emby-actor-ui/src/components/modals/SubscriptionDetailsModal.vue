@@ -63,6 +63,8 @@ import { ref, watch, h } from 'vue';
 import { NModal, NSpin, NAlert, NTabs, NTabPane, NDataTable, NTag, NButton, NSpace, NPopconfirm, useMessage } from 'naive-ui';
 import axios from 'axios';
 import SubscriptionConfigForm from './SubscriptionConfigForm.vue';
+import { getTmdbImageUrl } from '../../utils/tmdbUtils.js';
+import { useConfig } from '../../composables/useConfig.js';
 
 const props = defineProps({
   show: Boolean,
@@ -71,6 +73,7 @@ const props = defineProps({
 const emit = defineEmits(['update:show', 'subscription-updated', 'subscription-deleted']);
 
 const message = useMessage();
+const { configModel } = useConfig();
 const loading = ref(false);
 const error = ref(null);
 const subscriptionData = ref(null);
@@ -82,7 +85,8 @@ const columns = [
     title: '海报',
     key: 'poster_path',
     render(row) {
-      const url = row.poster_path ? `https://image.tmdb.org/t/p/w92${row.poster_path}` : 'https://via.placeholder.com/92x138.png?text=N/A';
+      const baseUrl = configModel.value?.tmdb_image_base_url || 'https://image.tmdb.org/t/p';
+      const url = row.poster_path ? getTmdbImageUrl(row.poster_path, 'w92', baseUrl) : 'https://via.placeholder.com/92x138.png?text=N/A';
       return h('img', { src: url, style: 'width: 45px; height: 67px; object-fit: cover; border-radius: 3px;' });
     }
   },

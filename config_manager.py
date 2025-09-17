@@ -78,6 +78,7 @@ constants.CONFIG_OPTION_EMBY_ADMIN_PASS: (constants.CONFIG_SECTION_EMBY, 'passwo
     # [TMDB]
     constants.CONFIG_OPTION_TMDB_API_KEY: (constants.CONFIG_SECTION_TMDB, 'string', ""),
     constants.CONFIG_OPTION_TMDB_API_BASE_URL: (constants.CONFIG_SECTION_TMDB, 'string', "https://api.themoviedb.org/3"),
+    constants.CONFIG_OPTION_TMDB_IMAGE_BASE_URL: (constants.CONFIG_SECTION_TMDB, 'string', "https://image.tmdb.org/t/p"),
     constants.CONFIG_OPTION_GITHUB_TOKEN: (constants.CONFIG_SECTION_GITHUB, 'string', ""),
 
     # [DoubanAPI]
@@ -186,6 +187,7 @@ def load_config():
         constants.ENV_VAR_DB_PASSWORD: constants.CONFIG_OPTION_DB_PASSWORD,
         constants.ENV_VAR_DB_NAME: constants.CONFIG_OPTION_DB_NAME,
         constants.ENV_VAR_TMDB_API_BASE_URL: constants.CONFIG_OPTION_TMDB_API_BASE_URL,
+        constants.ENV_VAR_TMDB_IMAGE_BASE_URL: constants.CONFIG_OPTION_TMDB_IMAGE_BASE_URL,
     }
 
     for env_var, config_key in env_to_config_map.items():

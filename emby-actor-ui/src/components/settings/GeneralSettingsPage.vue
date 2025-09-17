@@ -63,6 +63,10 @@
                       <n-input v-model:value="configModel.tmdb_api_base_url" placeholder="https://api.themoviedb.org/3" />
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">TMDb API的基础URL，通常不需要修改。可通过环境变量 TMDB_API_BASE_URL 设置。</n-text></template>
                     </n-form-item>
+                    <n-form-item label="TMDB Image Base URL" path="tmdb_image_base_url">
+                      <n-input v-model:value="configModel.tmdb_image_base_url" placeholder="https://image.tmdb.org/t/p" />
+                      <template #feedback><n-text depth="3" style="font-size:0.8em;">TMDb图片服务的基础URL，通常不需要修改。可通过环境变量 TMDB_IMAGE_BASE_URL 设置。</n-text></template>
+                    </n-form-item>
                     <n-form-item label="GitHub 个人访问令牌" path="github_token">
                       <n-input type="password" show-password-on="mousedown" v-model:value="configModel.github_token" placeholder="可选，用于提高API请求频率限制"/>
                       <template #feedback><n-text depth="3" style="font-size:0.8em;"><a href="https://github.com/settings/tokens/new" target="_blank" style="font-size: 1.3em; margin-left: 8px; color: var(--n-primary-color); text-decoration: underline;">免费申请GithubTOKEN</a></n-text></template>

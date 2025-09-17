@@ -101,11 +101,14 @@ import axios from 'axios';
 import AddSubscriptionModal from './modals/AddSubscriptionModal.vue';
 import SubscriptionDetailsModal from './modals/SubscriptionDetailsModal.vue';
 import DefaultConfigModal from './modals/DefaultConfigModal.vue';
+import { getTmdbImageUrl } from '../utils/tmdbUtils.js';
+import { useConfig } from '../composables/useConfig.js';
 
 const loading = ref(true);
 const subscriptions = ref([]);
 const showAddModal = ref(false);
 const message = useMessage();
+const { configModel } = useConfig();
 const showDetailsModal = ref(false); 
 const selectedSubId = ref(null); 
 const showDefaultConfigModal = ref(false);
@@ -160,7 +163,8 @@ const getImageUrl = (path) => {
   if (!path) {
     return 'https://via.placeholder.com/185x278.png?text=No+Image';
   }
-  return `https://image.tmdb.org/t/p/w185${path}`;
+  const baseUrl = configModel.value?.tmdb_image_base_url || 'https://image.tmdb.org/t/p';
+  return getTmdbImageUrl(path, 'w185', baseUrl);
 };
 
 const handleAddSubscription = () => {

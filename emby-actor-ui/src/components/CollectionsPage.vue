@@ -138,7 +138,7 @@
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
               <n-gi v-for="movie in missingMoviesInModal" :key="movie.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
-                  <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster" /></template>
+                  <template #cover><img :src="getTmdbPosterUrl(movie.poster_path)" class="movie-poster" /></template>
                   <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
                   <template #action>
                     <n-button @click="subscribeMovie(movie)" type="primary" size="small" block :loading="subscribing[movie.tmdb_id]">
@@ -156,7 +156,7 @@
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
               <n-gi v-for="movie in inLibraryMoviesInModal" :key="movie.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
-                  <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster" /></template>
+                  <template #cover><img :src="getTmdbPosterUrl(movie.poster_path)" class="movie-poster" /></template>
                   <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
                    <template #action>
                     <n-tag type="success" size="small" style="width: 100%; justify-content: center;">
@@ -174,7 +174,7 @@
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
               <n-gi v-for="movie in unreleasedMoviesInModal" :key="movie.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
-                  <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster"></template>
+                  <template #cover><img :src="getTmdbPosterUrl(movie.poster_path)" class="movie-poster"></template>
                   <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
                 </n-card>
               </n-gi>
@@ -186,7 +186,7 @@
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
               <n-gi v-for="movie in subscribedMoviesInModal" :key="movie.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
-                  <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster" /></template>
+                  <template #cover><img :src="getTmdbPosterUrl(movie.poster_path)" class="movie-poster" /></template>
                   <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
                   <template #action>
                     <n-button @click="unsubscribeMovie(movie)" type="warning" size="small" block ghost>
@@ -211,6 +211,7 @@ import { NLayout, NPageHeader, NEmpty, NTag, NButton, NSpace, NIcon, useMessage,
 import { SyncOutline, AlbumsOutline as AlbumsIcon, EyeOutline as EyeIcon, CloudDownloadOutline as CloudDownloadIcon, CloseCircleOutline as CloseCircleIcon, CheckmarkCircleOutline as CheckmarkCircle, CaretDownOutline as CaretDownIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
+import { getTmdbImageUrl } from '../utils/tmdbUtils.js';
 
 const props = defineProps({ taskStatus: { type: Object, required: true } });
 const { configModel } = useConfig();
@@ -476,7 +477,11 @@ const formatTimestamp = (timestamp) => {
   catch (e) { return 'N/A'; }
 };
 const getCollectionPosterUrl = (posterPath) => posterPath ? `/image_proxy${posterPath}` : '/img/poster-placeholder.png';
-const getTmdbImageUrl = (posterPath) => posterPath ? `https://image.tmdb.org/t/p/w300${posterPath}` : '/img/poster-placeholder.png';
+const getTmdbPosterUrl = (posterPath) => {
+  if (!posterPath) return '/img/poster-placeholder.png';
+  const baseUrl = configModel.value?.tmdb_image_base_url || 'https://image.tmdb.org/t/p';
+  return getTmdbImageUrl(posterPath, 'w300', baseUrl);
+};
 
 const getStatusTagType = (collection) => {
   if (collection.status === 'unlinked' || collection.status === 'tmdb_error') return 'error';

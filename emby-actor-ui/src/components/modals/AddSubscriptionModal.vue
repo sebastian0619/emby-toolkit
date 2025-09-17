@@ -54,6 +54,8 @@ import { NModal, NInput, NIcon, NSpin, NList, NListItem, NThing, NAvatar, NText,
 import { SearchOutline as SearchIcon } from '@vicons/ionicons5';
 import axios from 'axios';
 import { useDebounceFn } from '@vueuse/core';
+import { getTmdbImageUrl } from '../../utils/tmdbUtils.js';
+import { useConfig } from '../../composables/useConfig.js';
 
 // <<< 核心修改点 1：明确 props 和 emits >>>
 const props = defineProps({
@@ -62,6 +64,7 @@ const props = defineProps({
 const emit = defineEmits(['update:show', 'subscription-added']);
 
 const message = useMessage();
+const { configModel } = useConfig();
 const searchQuery = ref('');
 const searching = ref(false);
 const searchResults = ref([]);
@@ -94,7 +97,9 @@ const searchActors = async () => {
 const debouncedSearch = useDebounceFn(searchActors, 300);
 
 const getImageUrl = (path) => {
-  return path ? `https://image.tmdb.org/t/p/w92${path}` : 'https://via.placeholder.com/92x138.png?text=N/A';
+  if (!path) return 'https://via.placeholder.com/92x138.png?text=N/A';
+  const baseUrl = configModel.value?.tmdb_image_base_url || 'https://image.tmdb.org/t/p';
+  return getTmdbImageUrl(path, 'w92', baseUrl);
 };
 
 const handleSelectPerson = async (person) => {
