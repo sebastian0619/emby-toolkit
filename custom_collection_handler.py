@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import json
 from datetime import datetime, timedelta, date
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from bs4 import BeautifulSoup
 
 # ★★★ 核心修正：再次回归 gevent.subprocess ★★★
 from gevent import subprocess, Timeout
@@ -149,15 +150,94 @@ class ListImporter:
             tmdb_id = tmdb_match.group(1)
         return imdb_id, tmdb_id
     
+    def _get_items_from_douban_doulist(self, url: str) -> List[Dict[str, str]]:
+        """专门用于解析和分页获取豆瓣豆列内容的函数"""
+        all_items = []
+        # 从URL中移除分页参数，得到基础URL
+        base_url = url.split('?')[0]
+        page_start = 0
+        # 设置一个最大页数限制，防止意外的无限循环
+        max_pages = 50 
+        items_per_page = 25
+
+        logger.info(f"  -> 检测到豆瓣豆列链接，开始分页获取: {base_url}")
+
+        for page in range(max_pages):
+            current_start = page * items_per_page
+            paginated_url = f"{base_url}?start={current_start}&sort=seq&playable=0&sub_type="
+            
+            try:
+                logger.debug(f"    -> 正在获取第 {page + 1} 页: {paginated_url}")
+                response = self.session.get(paginated_url, timeout=20)
+                response.raise_for_status()
+                
+                soup = BeautifulSoup(response.text, 'lxml')
+                
+                # 查找页面上所有的条目容器
+                doulist_items = soup.find_all('div', class_='doulist-item')
+
+                # 如果当前页没有找到任何条目，说明到达了最后一页
+                if not doulist_items:
+                    logger.info(f"  -> 在第 {page + 1} 页未发现更多项目，获取结束。")
+                    break
+
+                for item in doulist_items:
+                    title_div = item.find('div', class_='title')
+                    if not title_div: continue
+                    
+                    link_tag = title_div.find('a')
+                    if not link_tag: continue
+                    
+                    # 提取标题
+                    title = link_tag.get_text(strip=True)
+                    # 提取豆瓣链接
+                    douban_link = link_tag.get('href')
+                    
+                    # 尝试提取年份
+                    year = None
+                    abstract_div = item.find('div', class_='abstract')
+                    if abstract_div:
+                        # 年份通常在 abstract 内容中以 (YYYY) 或 YYYY-MM-DD 的形式出现
+                        year_match = re.search(r'\b(19\d{2}|20\d{2})\b', abstract_div.get_text())
+                        if year_match:
+                            year = year_match.group(1)
+                    
+                    if title:
+                        all_items.append({
+                            'title': title,
+                            'imdb_id': None, # 豆列页面不直接提供IMDb ID
+                            'year': year,
+                            'douban_link': douban_link # ✨ 关键信息：我们拿到了每个条目的豆瓣链接
+                        })
+
+            except Exception as e:
+                logger.error(f"获取或解析豆瓣豆列页面 '{paginated_url}' 时出错: {e}")
+                # 出现错误时，中断后续所有页面的获取
+                break
+        
+        logger.info(f"  -> 豆瓣豆列获取完成，从 {page} 个页面中总共解析出 {len(all_items)} 个项目。")
+        return all_items
+
     def _get_titles_and_imdbids_from_url(self, url: str) -> List[Dict[str, str]]:
+        # ★★★ 智能路由：根据URL判断使用哪种解析方式 ★★★
+        if 'douban.com/doulist' in url:
+            return self._get_items_from_douban_doulist(url)
+        
+        # --- 如果不是豆瓣豆列，则执行原有的RSS解析逻辑 ---
+        logger.info(f"  -> 开始获取标准RSS榜单: {url}")
         try:
             response = self.session.get(url, timeout=20)
             response.raise_for_status()
             content = response.text
+            # 兼容处理编码问题
+            if 'encoding="gb2312"' in content.lower():
+                 content = response.content.decode('gb2312', errors='ignore')
+            
             root = ET.fromstring(content)
             items = []
             channel = root.find('channel')
             if channel is None: return []
+
             for item in channel.findall('item'):
                 title_elem = item.find('title')
                 guid_elem = item.find('guid')
@@ -167,7 +247,6 @@ class ListImporter:
                 title = title_elem.text if title_elem is not None else None
                 description = description_elem.text if description_elem is not None else ''
                 
-                # ✨ 新增：获取豆瓣链接 ✨
                 douban_link = None
                 if link_elem is not None and link_elem.text and 'douban.com' in link_elem.text:
                     douban_link = link_elem.text
@@ -190,66 +269,136 @@ class ListImporter:
                     items.append({'title': title.strip(), 'imdb_id': imdb_id, 'year': year, 'douban_link': douban_link})
             return items
         except Exception as e:
-            logger.error(f"从URL '{url}' 获取榜单时出错: {e}")
+            logger.error(f"从RSS URL '{url}' 获取榜单时出错: {e}")
             return []
 
     def _parse_series_title(self, title: str) -> Tuple[str, Optional[int]]:
-        # 新增：支持 "Name Season 2" 格式的英文正则，忽略大小写
+        """
+        (V3 - 健壮版) 能够处理中英文季号混合的复杂标题。
+        采用分步清理的策略，确保无论顺序如何都能正确提取剧集名和季号。
+        """
+        show_name = title
+        season_number = None
+
+        # 定义英文和中文的季号模式
+        # 英文模式: "Name Season 2"
         SEASON_PATTERN_EN = re.compile(r'(.*?)\s+Season\s+(\d+)', re.IGNORECASE)
-        
-        # 优先尝试匹配英文格式
-        match_en = SEASON_PATTERN_EN.search(title)
+        # 中文模式: "名字 第一季" (使用类里已有的)
+        SEASON_PATTERN_CN = self.SEASON_PATTERN
+
+        # --- 步骤 1: 尝试解析并清理英文季号 ---
+        match_en = SEASON_PATTERN_EN.search(show_name)
         if match_en:
+            # 使用英文模式的结果来更新 show_name 和 season_number
             show_name = match_en.group(1).strip()
             season_number = int(match_en.group(2))
-            logger.debug(f"标题解析 (英文): '{title}' -> 名称='{show_name}', 季号='{season_number}'")
-            return show_name, season_number
+            logger.debug(f"标题解析 (英文部分): '{title}' -> 初步解析为名称='{show_name}', 季号='{season_number}'")
 
-        # 如果英文匹配失败，再尝试中文格式
-        match_cn = self.SEASON_PATTERN.search(title)
-        if not match_cn:
-            return title, None # 中英文都匹配不上，返回原标题
-        
-        show_name = match_cn.group(1).strip()
-        season_word = match_cn.group(2)
-        season_number = self.CHINESE_NUM_MAP.get(season_word)
-        if season_number is None:
+        # --- 步骤 2: 在上一步的结果上，继续尝试解析并清理中文季号 ---
+        # 无论步骤1是否成功，都执行这一步，以清理掉可能残留的中文季号
+        match_cn = SEASON_PATTERN_CN.search(show_name)
+        if match_cn:
+            # 用中文模式的结果进一步更新 show_name
+            show_name = match_cn.group(1).strip()
+            # 只有在之前没有从英文模式获得季号时，才采用中文的季号
+            if season_number is None:
+                season_word = match_cn.group(2)
+                season_number_from_cn = self.CHINESE_NUM_MAP.get(season_word)
+                if season_number_from_cn:
+                    season_number = season_number_from_cn
+            logger.debug(f"标题解析 (中文部分): 清理后名称='{show_name}', 最终季号='{season_number}'")
+
+        # 如果没有任何匹配，show_name就是原始标题, season_number是None, 直接返回
+        if show_name == title and season_number is None:
             return title, None
             
-        logger.debug(f"标题解析 (中文): '{title}' -> 名称='{show_name}', 季号='{season_number}'")
+        logger.debug(f"标题解析 (最终结果): '{title}' -> 名称='{show_name}', 季号='{season_number}'")
         return show_name, season_number
 
     def _match_title_to_tmdb(self, title: str, item_type: str, year: Optional[str] = None) -> Optional[str]:
+        
+        def normalize_string(s: str) -> str:
+            """一个强大的字符串规范化函数，用于模糊比较"""
+            if not s: return ""
+            # 移除所有标点和空格，并转为小写
+            return re.sub(r'[\s:：·\-*\'!,?.]+', '', s).lower()
+
         if item_type == 'Movie':
-            results = search_media(title, self.tmdb_api_key, 'Movie', year=year)
+            
+            # 1. 生成基础候选标题列表
+            titles_to_try = set([title.strip()])
+            match = re.match(r'([\u4e00-\u9fa5\s·0-9]+)[\s:：*]*(.*)', title.strip())
+            if match:
+                part1 = match.group(1).strip()
+                part2 = match.group(2).strip()
+                if part1: titles_to_try.add(part1)
+                if part2: titles_to_try.add(part2)
+
+            # ★★★ 核心改进 V4：通用数字转换规则，替代硬编码 ★★★
+            num_map = {'1': '一', '2': '二', '3': '三', '4': '四', '5': '五', '6': '六', '7': '七', '8': '八', '9': '九'}
+            # 创建一个副本进行迭代，以免在迭代时修改集合
+            current_titles = list(titles_to_try) 
+            for t in current_titles:
+                # 检查标题中是否包含任何需要转换的数字
+                if any(num in t for num in num_map.keys()):
+                    new_title = t
+                    for num, char in num_map.items():
+                        new_title = new_title.replace(num, char)
+                    titles_to_try.add(new_title) # 将转换后的新标题加入候选集合
+            
+            final_titles = list(titles_to_try)
+            logger.debug(f"为 '{title}' 生成的最终候选搜索标题: {final_titles}")
+
+            first_search_results = None
             year_info = f" (年份: {year})" if year else ""
 
-            if not results:
-                logger.warning(f"电影标题 '{title}'{year_info} 未能在TMDb上找到任何搜索结果。")
-                return None
+            # 2. 依次使用候选标题进行多级匹配 (这部分逻辑保持不变)
+            for title_variation in final_titles:
+                if not title_variation: continue
+                
+                results = search_media(title_variation, self.tmdb_api_key, 'Movie', year=year)
+                
+                if first_search_results is None:
+                    first_search_results = results
 
-            # ★★★ 核心修复：从“盲目相信第一个”改为“优先精确匹配” ★★★
+                if not results:
+                    continue
 
-            # 步骤 1: 优先寻找标题完全一致的精确匹配项
-            normalized_title = title.strip().lower()
-            for result in results:
-                result_title = result.get('title', '').strip().lower()
-                result_original_title = result.get('original_title', '').strip().lower()
+                norm_variation = normalize_string(title_variation)
 
-                if result_title == normalized_title or result_original_title == normalized_title:
-                    tmdb_id = str(result.get('id'))
-                    logger.debug(f"电影标题 '{title}'{year_info} 通过【精确匹配】成功匹配到: {result.get('title')} (ID: {tmdb_id})")
-                    return tmdb_id
+                # --- 匹配级别1：规范化后完全相等 ---
+                for result in results:
+                    norm_title = normalize_string(result.get('title'))
+                    norm_original_title = normalize_string(result.get('original_title'))
 
-            # 步骤 2: 如果没有找到精确匹配，则回退使用第一个最相关的结果，并发出警告
-            first_result = results[0]
-            tmdb_id = str(first_result.get('id'))
-            logger.warning(f"电影标题 '{title}'{year_info} 未找到精确匹配项。将【回退使用】最相关的搜索结果: {first_result.get('title')} (ID: {tmdb_id})")
-            return tmdb_id
+                    if norm_variation == norm_title or norm_variation == norm_original_title:
+                        tmdb_id = str(result.get('id'))
+                        logger.info(f"电影标题 '{title}'{year_info} 通过【精确规范匹配】(使用'{title_variation}') 成功匹配到: {result.get('title')} (ID: {tmdb_id})")
+                        return tmdb_id
+                
+                # --- 匹配级别2：规范化后被包含 ---
+                for result in results:
+                    norm_title = normalize_string(result.get('title'))
+                    norm_original_title = normalize_string(result.get('original_title'))
+
+                    if norm_variation in norm_title or norm_variation in norm_original_title:
+                        tmdb_id = str(result.get('id'))
+                        logger.info(f"电影标题 '{title}'{year_info} 通过【包含匹配】(使用'{title_variation}') 成功匹配到: {result.get('title')} (ID: {tmdb_id})")
+                        return tmdb_id
+
+            # 3. 如果所有尝试都失败，执行回退策略
+            if first_search_results:
+                first_result = first_search_results[0]
+                tmdb_id = str(first_result.get('id'))
+                logger.warning(f"电影标题 '{title}'{year_info} 所有精确匹配和包含匹配均失败。将【回退使用】最相关的搜索结果: {first_result.get('title')} (ID: {tmdb_id})")
+                return tmdb_id
+
+            logger.error(f"电影标题 '{title}'{year_info} 未能在TMDb上找到任何搜索结果。")
+            return None
         
         elif item_type == 'Series':
+            # 剧集的逻辑保持原样，因为它足够健壮
             show_name, season_number_to_validate = self._parse_series_title(title)
-            
             results = search_media(show_name, self.tmdb_api_key, 'Series', year=year)
 
             if not results and year and season_number_to_validate is not None:

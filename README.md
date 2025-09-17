@@ -76,7 +76,7 @@
           db:
             condition: service_healthy
       # --- 2. PostgreSQL 数据库服务 ---
-      postgres:
+      db:
         image: postgres:16-alpine
         container_name: emby-toolkit-db
         restart: unless-stopped

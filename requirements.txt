@@ -35,3 +35,7 @@ docker
 numpy
 PyYAML
 Pillow
+
+# --- 榜单分页 ---
+beautifulsoup4
+lxml
