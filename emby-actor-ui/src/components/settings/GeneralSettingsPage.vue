@@ -32,9 +32,9 @@
                       <n-input-number v-model:value="configModel.min_score_for_review" :min="0.0" :max="10" :step="0.1" placeholder="例如: 6.0"/>
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">处理质量评分低于此值的项目将进入待复核列表。</n-text></template>
                     </n-form-item-grid-item>
-                    <n-form-item-grid-item label="最大处理演员数" path="max_actors_to_process">
+                    <n-form-item-grid-item label="最大新增演员数" path="max_actors_to_process">
                       <n-input-number v-model:value="configModel.max_actors_to_process" :min="10" :step="10" placeholder="建议 30-100"/>
-                      <template #feedback><n-text depth="3" style="font-size:0.8em;">设置最终写入元数据的演员数量上限，避免列表过长。</n-text></template>
+                      <template #feedback><n-text depth="3" style="font-size:0.8em;">演员表人数超过此设置，停止从豆瓣新增。</n-text></template>
                     </n-form-item-grid-item>
                     <n-form-item-grid-item label="为角色名添加前缀" path="actor_role_add_prefix">
                       <n-switch v-model:value="configModel.actor_role_add_prefix" />
@@ -282,6 +282,16 @@
                     <n-form-item-grid-item label="启用智能订阅" path="autosub_enabled">
                       <n-switch v-model:value="configModel.autosub_enabled" :disabled="!isMoviePilotConfigured" />
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">总开关。开启后，智能订阅定时任务才会真正执行订阅操作。</n-text></template>
+                    </n-form-item-grid-item>
+
+                    <n-form-item-grid-item label="启用自定义洗版订阅" path="use_custom_resubscribe">
+                      <n-switch v-model:value="configModel.use_custom_resubscribe" :disabled="!isMoviePilotConfigured" />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          <b>开启：</b>根据“媒体洗版”页面的规则，发送带分辨率/质量等参数的精确订阅。<br>
+                          <b>关闭：</b>使用 MoviePilot 的全局洗版功能，忽略本地规则中的具体参数。
+                        </n-text>
+                      </template>
                     </n-form-item-grid-item>
 
                     <n-form-item-grid-item label="对缺集的已完结剧集触发洗版" path="resubscribe_completed_on_missing">
@@ -549,6 +559,7 @@ const tableInfo = {
   'media_metadata': { cn: '媒体元数据', isSharable: false },
   'resubscribe_rules': { cn: '媒体洗版规则', isSharable: false },
   'resubscribe_cache': { cn: '媒体洗版缓存', isSharable: false },
+  'media_cleanup_tasks': { cn: '媒体去重缓存', isSharable: false },
 };
 
 // ★★★ START: 新增的依赖关系自动勾选逻辑 ★★★

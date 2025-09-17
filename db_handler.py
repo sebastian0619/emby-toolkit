@@ -16,6 +16,383 @@ from utils import contains_chinese
 
 logger = logging.getLogger(__name__)
 
+# --- 初始化数据库 ---
+def init_db():
+    """
+    【PostgreSQL版】初始化数据库，创建所有表的最终结构。
+    """
+    logger.info("正在初始化 PostgreSQL 数据库，创建/验证所有表的结构...")
+    
+    # get_central_db_connection 应该就是 db_handler.get_db_connection
+    # 确保它现在调用的是无参数版本
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                logger.info("  -> 数据库连接成功，开始建表...")
+
+                # --- 1. 创建基础表 (日志、缓存、用户) ---
+                logger.trace("  -> 正在创建基础表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS processed_log (
+                        item_id TEXT PRIMARY KEY, 
+                        item_name TEXT, 
+                        processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(), 
+                        score REAL,
+                        assets_synced_at TIMESTAMP WITH TIME ZONE,
+                        last_emby_modified_at TIMESTAMP WITH TIME ZONE
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS failed_log (
+                        item_id TEXT PRIMARY KEY, 
+                        item_name TEXT, 
+                        reason TEXT, 
+                        failed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(), 
+                        error_message TEXT, 
+                        item_type TEXT, 
+                        score REAL
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        id SERIAL PRIMARY KEY, 
+                        username TEXT UNIQUE NOT NULL, 
+                        password_hash TEXT NOT NULL, 
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS translation_cache (
+                        original_text TEXT PRIMARY KEY, 
+                        translated_text TEXT, 
+                        engine_used TEXT, 
+                        last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS app_settings (
+                        setting_key TEXT PRIMARY KEY,
+                        value_json JSONB,
+                        last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+
+                # --- 2. 创建核心功能表 ---
+                logger.trace("  -> 正在创建 'collections_info' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS collections_info (
+                        emby_collection_id TEXT PRIMARY KEY,
+                        name TEXT,
+                        tmdb_collection_id TEXT,
+                        status TEXT,
+                        has_missing BOOLEAN, 
+                        missing_movies_json JSONB,
+                        last_checked_at TIMESTAMP WITH TIME ZONE,
+                        poster_path TEXT,
+                        item_type TEXT DEFAULT 'Movie' NOT NULL,
+                        in_library_count INTEGER DEFAULT 0
+                    )
+                """)
+
+                logger.trace("  -> 正在创建 'custom_collections' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS custom_collections (
+                        id SERIAL PRIMARY KEY,
+                        name TEXT NOT NULL UNIQUE,
+                        type TEXT NOT NULL,
+                        definition_json JSONB NOT NULL,
+                        status TEXT DEFAULT 'active',
+                        emby_collection_id TEXT,
+                        last_synced_at TIMESTAMP WITH TIME ZONE,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        health_status TEXT,
+                        item_type TEXT,
+                        in_library_count INTEGER DEFAULT 0,
+                        missing_count INTEGER DEFAULT 0,
+                        generated_media_info_json JSONB,
+                        poster_path TEXT,
+                        sort_order INTEGER NOT NULL DEFAULT 0
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_type ON custom_collections (type)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_status ON custom_collections (status)")
+
+                logger.trace("  -> 正在创建 'media_metadata' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS media_metadata (
+                        tmdb_id TEXT,
+                        item_type TEXT NOT NULL,
+                        title TEXT,
+                        original_title TEXT,
+                        release_year INTEGER,
+                        rating REAL,
+                        genres_json JSONB,
+                        actors_json JSONB,
+                        directors_json JSONB,
+                        studios_json JSONB,
+                        countries_json JSONB,
+                        last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        release_date DATE,
+                        date_added TIMESTAMP WITH TIME ZONE,
+                        tags_json JSONB,
+                        last_synced_at TIMESTAMP WITH TIME ZONE,
+                        PRIMARY KEY (tmdb_id, item_type)
+                    )
+                """)
+
+                logger.trace("  -> 正在创建 'watchlist' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS watchlist (
+                        item_id TEXT PRIMARY KEY,
+                        tmdb_id TEXT NOT NULL,
+                        item_name TEXT,
+                        item_type TEXT DEFAULT 'Series',
+                        status TEXT DEFAULT 'Watching',
+                        added_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        last_checked_at TIMESTAMP WITH TIME ZONE,
+                        tmdb_status TEXT,
+                        next_episode_to_air_json JSONB,
+                        missing_info_json JSONB,
+                        paused_until DATE DEFAULT NULL,
+                        force_ended BOOLEAN DEFAULT FALSE NOT NULL
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
+
+                logger.trace("  -> 正在创建 'person_identity_map' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS person_identity_map (
+                        map_id SERIAL PRIMARY KEY, 
+                        primary_name TEXT NOT NULL, 
+                        emby_person_id TEXT NOT NULL UNIQUE,
+                        tmdb_person_id INTEGER UNIQUE, 
+                        imdb_id TEXT UNIQUE, 
+                        douban_celebrity_id TEXT UNIQUE,
+                        last_synced_at TIMESTAMP WITH TIME ZONE, 
+                        last_updated_at TIMESTAMP WITH TIME ZONE
+                    )
+                """)
+
+                logger.trace("  -> 正在创建 'actor_metadata' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS actor_metadata (
+                        tmdb_id INTEGER PRIMARY KEY, 
+                        profile_path TEXT, 
+                        gender INTEGER, 
+                        adult BOOLEAN,
+                        popularity REAL, 
+                        original_name TEXT, 
+                        last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        FOREIGN KEY(tmdb_id) REFERENCES person_identity_map(tmdb_person_id) ON DELETE CASCADE
+                    )
+                """)
+
+                logger.trace("  -> 正在创建 'actor_subscriptions' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS actor_subscriptions (
+                        id SERIAL PRIMARY KEY,
+                        tmdb_person_id INTEGER NOT NULL UNIQUE,
+                        actor_name TEXT NOT NULL,
+                        profile_path TEXT,
+                        config_start_year INTEGER DEFAULT 1900,
+                        config_media_types TEXT DEFAULT 'Movie,TV',
+                        config_genres_include_json JSONB,
+                        config_genres_exclude_json JSONB,
+                        status TEXT DEFAULT 'active',
+                        last_checked_at TIMESTAMP WITH TIME ZONE,
+                        added_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        config_min_rating REAL DEFAULT 6.0
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_status ON actor_subscriptions (status)")
+
+                logger.trace("  -> 正在创建 'tracked_actor_media' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS tracked_actor_media (
+                        id SERIAL PRIMARY KEY,
+                        subscription_id INTEGER NOT NULL,
+                        tmdb_media_id INTEGER NOT NULL,
+                        media_type TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        release_date DATE,
+                        poster_path TEXT,
+                        status TEXT NOT NULL,
+                        emby_item_id TEXT,
+                        last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        FOREIGN KEY(subscription_id) REFERENCES actor_subscriptions(id) ON DELETE CASCADE,
+                        UNIQUE(subscription_id, tmdb_media_id)
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_subscription_id ON tracked_actor_media (subscription_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_status ON tracked_actor_media (status)")
+
+                logger.trace("  -> 正在创建 'resubscribe_rules' 表 (多规则洗版)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS resubscribe_rules (
+                        id SERIAL PRIMARY KEY,
+                        name TEXT NOT NULL UNIQUE,
+                        enabled BOOLEAN DEFAULT TRUE,
+                        
+                        -- ★ 新增：规则应用的目标媒体库ID列表
+                        target_library_ids JSONB, 
+                        
+                        -- ★ 新增：洗版成功后是否删除Emby媒体项
+                        delete_after_resubscribe BOOLEAN DEFAULT FALSE,
+                        
+                        -- ★ 新增：规则优先级，数字越小越优先
+                        sort_order INTEGER DEFAULT 0,
+
+                        -- ▼ 下面是原来 settings 表里的所有字段
+                        resubscribe_resolution_enabled BOOLEAN DEFAULT FALSE,
+                        resubscribe_resolution_threshold INT DEFAULT 1920,
+                        resubscribe_audio_enabled BOOLEAN DEFAULT FALSE,
+                        resubscribe_audio_missing_languages JSONB,
+                        resubscribe_subtitle_enabled BOOLEAN DEFAULT FALSE,
+                        resubscribe_subtitle_missing_languages JSONB,
+                        resubscribe_quality_enabled BOOLEAN DEFAULT FALSE,
+                        resubscribe_quality_include JSONB,
+                        resubscribe_effect_enabled BOOLEAN DEFAULT FALSE,
+                        resubscribe_effect_include JSONB
+                    )
+                """)
+
+                logger.trace("  -> 正在创建 'resubscribe_cache' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS resubscribe_cache (
+                        item_id TEXT PRIMARY KEY,
+                        item_name TEXT,
+                        tmdb_id TEXT,
+                        item_type TEXT,
+                        status TEXT DEFAULT 'unknown', -- 新增状态字段: 'ok', 'needed', 'subscribed'
+                        reason TEXT,
+                        resolution_display TEXT,
+                        quality_display TEXT,
+                        effect_display TEXT,
+                        audio_display TEXT,
+                        subtitle_display TEXT,
+                        audio_languages_raw JSONB,
+                        subtitle_languages_raw JSONB,
+                        last_checked_at TIMESTAMP WITH TIME ZONE,
+                        source_library_id TEXT
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_resubscribe_cache_status ON resubscribe_cache (status);")
+
+                logger.trace("  -> 正在创建 'media_cleanup_tasks' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS media_cleanup_tasks (
+                        id SERIAL PRIMARY KEY,
+                        task_type TEXT NOT NULL, -- 'multi_version' or 'duplicate'
+                        tmdb_id TEXT,
+                        item_name TEXT,
+                        versions_info_json JSONB,
+                        status TEXT DEFAULT 'pending', -- 'pending', 'processed', 'ignored'
+                        best_version_id TEXT,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_task_type ON media_cleanup_tasks (task_type);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_task_status ON media_cleanup_tasks (status);")
+                
+                # --- 2. 执行平滑升级检查 ---
+                logger.info("  -> 开始执行数据库表结构平滑升级检查...")
+                try:
+                    # --- 2.1 检查所有表的列 ---
+                    # 查询 information_schema 获取所有表的列信息
+                    cursor.execute("""
+                        SELECT table_name, column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = current_schema();
+                    """)
+                    
+                    # 将结果组织成一个字典，方便查询: {'table_name': {'col1', 'col2'}, ...}
+                    all_existing_columns = {}
+                    for row in cursor.fetchall():
+                        table = row['table_name']
+                        if table not in all_existing_columns:
+                            all_existing_columns[table] = set()
+                        all_existing_columns[table].add(row['column_name'])
+
+                    # --- 2.2 定义所有需要检查和添加的新列 ---
+                    # 格式: {'table_name': {'column_name': 'COLUMN_TYPE'}}
+                    schema_upgrades = {
+                        'media_metadata': {
+                            "official_rating": "TEXT",
+                            "unified_rating": "TEXT"
+                        },
+                        'watchlist': {
+                            "last_episode_to_air_json": "JSONB"
+                        },
+                        'resubscribe_cache': {
+                            "matched_rule_id": "INTEGER",
+                            "matched_rule_name": "TEXT",
+                            "source_library_id": "TEXT"
+                        },
+                        'resubscribe_rules': {
+                            "resubscribe_subtitle_effect_only": "BOOLEAN DEFAULT FALSE"
+                        },
+                        'custom_collections': {
+                            "generated_emby_ids_json": "JSONB DEFAULT '[]'::jsonb NOT NULL"
+                        }
+                    }
+
+                    # --- 2.3 遍历并执行升级 ---
+                    for table, columns_to_add in schema_upgrades.items():
+                        # 检查表是否存在于我们查询到的信息中
+                        if table in all_existing_columns:
+                            existing_cols_for_table = all_existing_columns[table]
+                            for col_name, col_type in columns_to_add.items():
+                                # 如果新列不存在，则添加它
+                                if col_name not in existing_cols_for_table:
+                                    logger.info(f"    -> [数据库升级] 检测到 '{table}' 表缺少 '{col_name}' 字段，正在添加...")
+                                    # 使用 ALTER TABLE ... ADD COLUMN ... IF NOT EXISTS 语法，双重保险
+                                    cursor.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type};")
+                                    logger.info(f"    -> [数据库升级] 字段 '{col_name}' 添加成功。")
+                                else:
+                                    logger.trace(f"    -> 字段 '{table}.{col_name}' 已存在，跳过。")
+                        else:
+                            # 这种情况理论上不会发生，因为前面的 CREATE TABLE IF NOT EXISTS 已经保证了表的存在
+                            logger.warning(f"    -> [数据库升级] 检查表 '{table}' 时发现该表不存在，跳过升级。")
+
+                except Exception as e_alter:
+                    logger.error(f"  -> [数据库升级] 检查或添加新字段时出错: {e_alter}", exc_info=True)
+                    # 即使升级失败，也继续执行，不中断主程序启动
+                
+                try:
+                    # 检查 resubscribe_cache 表上是否已存在名为 fk_matched_rule 的外键
+                    cursor.execute("""
+                        SELECT 1 FROM pg_constraint 
+                        WHERE conname = 'fk_matched_rule' AND conrelid = 'resubscribe_cache'::regclass;
+                    """)
+                    if cursor.fetchone() is None:
+                        logger.info("    -> [数据库升级] 检测到 'resubscribe_cache' 表缺少外键，正在添加...")
+                        # ON DELETE SET NULL: 如果规则被删除，缓存项的 matched_rule_id 会被设为 NULL，而不是删除缓存项
+                        cursor.execute("""
+                            ALTER TABLE resubscribe_cache 
+                            ADD CONSTRAINT fk_matched_rule 
+                            FOREIGN KEY (matched_rule_id) 
+                            REFERENCES resubscribe_rules(id) 
+                            ON DELETE SET NULL;
+                        """)
+                        logger.info("    -> [数据库升级] 外键 'fk_matched_rule' 添加成功。")
+                    else:
+                        logger.trace("    -> 外键 'fk_matched_rule' 已存在，跳过。")
+                except Exception as e_fk:
+                     logger.error(f"  -> [数据库升级] 检查或添加外键时出错: {e_fk}", exc_info=True)
+
+                logger.info("  -> 数据库平滑升级检查完成。")
+
+            conn.commit()
+            logger.info("✅ PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")
+
+    except psycopg2.Error as e_pg:
+        logger.error(f"数据库初始化时发生 PostgreSQL 错误: {e_pg}", exc_info=True)
+        raise
+    except Exception as e_global:
+        logger.error(f"数据库初始化时发生未知错误: {e_global}", exc_info=True)
+        raise
+
 # ======================================================================
 # 模块 1: 数据库管理器 (The Unified Data Access Layer)
 # ======================================================================
@@ -82,7 +459,7 @@ class ActorDBManager:
             
             if translated_text and not contains_chinese(translated_text):
                 original_text_key = row['original_text']
-                logger.warning(f"发现无效的历史翻译缓存: '{original_text_key}' -> '{translated_text}'。将自动销毁此记录。")
+                logger.warning(f"  -> 发现无效的历史翻译缓存: '{original_text_key}' -> '{translated_text}'。将自动销毁此记录。")
                 try:
                     cursor.execute("DELETE FROM translation_cache WHERE original_text = %s", (original_text_key,))
                 except Exception as e_delete:
@@ -137,115 +514,140 @@ class ActorDBManager:
                 logger.error(f"查询 person_identity_map 时出错 ({column}={value}): {e}")
         return None
 
+    def find_person_by_any_id(self, cursor: psycopg2.extensions.cursor, **kwargs) -> Optional[dict]:
+        search_criteria = [
+            ("tmdb_person_id", kwargs.get("tmdb_id")),
+            ("emby_person_id", kwargs.get("emby_id")),
+            ("imdb_id", kwargs.get("imdb_id")),
+            ("douban_celebrity_id", kwargs.get("douban_id")),
+        ]
+        for column, value in search_criteria:
+            if not value: continue
+            try:
+                cursor.execute(f"SELECT * FROM person_identity_map WHERE {column} = %s", (value,))
+                result = cursor.fetchone()
+                if result:
+                    logger.debug(f"通过 {column}='{value}' 找到了演员记录 (map_id: {result['map_id']})。")
+                    return result
+            except psycopg2.Error as e:
+                logger.error(f"查询 person_identity_map 时出错 ({column}={value}): {e}")
+        return None
+
     def upsert_person(
-    self, 
-    cursor: psycopg2.extensions.cursor, 
-    person_data: Dict[str, Any],
-    # ✨ 新增参数，用于实时清理Emby
-    emby_config: Dict[str, str] 
-) -> Tuple[int, str]:
+        self, 
+        cursor: psycopg2.extensions.cursor, 
+        person_data: Dict[str, Any],
+        emby_config: Dict[str, str] 
+    ) -> Tuple[int, str]:
         """
-        【V3 - 冲突根除版】
-        以 emby_person_id 为主进行更新或插入。
-        一旦检测到外部ID冲突，会立即清除所有相关方（数据库和Emby）的该冲突ID。
+        【V4.1 - 类型安全修复版】
+        - 修复了当 tmdb_id 为 'None' 字符串时导致的 int() 转换错误。
         """
-        # 定义数据库字段名与Emby ProviderIds键的映射关系
         id_field_map = {
             "tmdb_person_id": "Tmdb",
             "imdb_id": "Imdb",
             "douban_celebrity_id": "Douban"
         }
 
+        cursor.execute("SAVEPOINT actor_upsert")
+
         try:
-            # 1. 标准化输入数据 (逻辑不变)
+            # ★★★ 核心修复：更安全地处理 tmdb_id ★★★
+            tmdb_id_raw = person_data.get("tmdb_id")
+            tmdb_id_int = None
+            if tmdb_id_raw and str(tmdb_id_raw).isdigit():
+                try:
+                    tmdb_id_int = int(tmdb_id_raw)
+                except (ValueError, TypeError):
+                    pass # 如果转换失败，保持为 None
+            
             new_data = {
                 "primary_name": str(person_data.get("name") or '').strip(),
                 "emby_person_id": str(person_data.get("emby_id") or '').strip() or None,
-                "tmdb_person_id": int(person_data.get("tmdb_id")) if person_data.get("tmdb_id") else None,
+                "tmdb_person_id": tmdb_id_int,
                 "imdb_id": str(person_data.get("imdb_id") or '').strip() or None,
                 "douban_celebrity_id": str(person_data.get("douban_id") or '').strip() or None,
             }
 
             if not new_data["emby_person_id"]:
                 logger.warning("缺失 emby_person_id，无法执行 upsert")
+                cursor.execute("RELEASE SAVEPOINT actor_upsert")
                 return -1, "SKIPPED"
 
-            cursor.execute("SAVEPOINT actor_upsert")
-
-            # ======================================================================
-            # ✨ 核心修改：在处理前，主动检查并解决所有传入ID的冲突 ✨
-            # ======================================================================
+            # --- 冲突检查 (逻辑不变) ---
+            conflict_detected = False
             for db_column, emby_provider_key in id_field_map.items():
                 id_value = new_data.get(db_column)
                 if id_value is None:
                     continue
 
-                # 查找所有使用此ID的记录
                 cursor.execute(
                     f"SELECT emby_person_id FROM person_identity_map WHERE {db_column} = %s",
                     (id_value,)
                 )
                 conflicting_records = cursor.fetchall()
                 
-                # 如果发现超过一个记录（或一个不是当前记录的记录）使用此ID，则判定为冲突
-                # 为了简化逻辑，只要发现任何已存在的记录，就触发清理，确保ID的绝对唯一性
                 if conflicting_records:
                     conflicting_emby_pids = [rec['emby_person_id'] for rec in conflicting_records]
-                    
-                    # 检查当前处理的 emby_person_id 是否在冲突列表中，如果不在，也把它加进去
-                    # 这样可以确保新旧数据都被纳入清理范围
                     if new_data["emby_person_id"] not in conflicting_emby_pids:
                         conflicting_emby_pids.append(new_data["emby_person_id"])
                     
-                    # 只有当冲突涉及多个PID时，才执行清理
                     if len(conflicting_emby_pids) > 1:
                         logger.warning(
                             f"检测到ID冲突: {db_column} = '{id_value}' 被多个Emby PID共享: {conflicting_emby_pids}。"
-                            "将执行彻底清理..."
+                            "将执行智能合并..."
                         )
-
-                        # 1. 在更新父表之前，先安全地删除子表中的依赖记录
-                        if db_column == "tmdb_person_id":
-                            logger.info(f"  -> 正在从 'actor_metadata' 表中删除对 TMDB ID '{id_value}' 的依赖...")
-                            cursor.execute(
-                                "DELETE FROM actor_metadata WHERE tmdb_id = %s",
-                                (id_value,)
-                            )
-
-                        # 2. 清理数据库
-                        logger.info(f"  -> 正在从数据库中清除所有 '{id_value}'...")
-                        cursor.execute(
-                            f"UPDATE person_identity_map SET {db_column} = NULL, last_updated_at = NOW() WHERE {db_column} = %s",
-                            (id_value,)
-                        )
-
-                        # 3. 清理 Emby
-                        logger.info(f"  -> 正在从Emby中清除所有关联演员的 '{emby_provider_key}' ID...")
-                        for pid in conflicting_emby_pids:
-                            emby_handler.clear_emby_person_provider_id(
-                                person_id=pid,
-                                provider_key_to_clear=emby_provider_key,
-                                emby_server_url=emby_config['url'],
-                                emby_api_key=emby_config['api_key'],
-                                user_id=emby_config['user_id']
-                            )
                         
-                        # 清理后，将当前新数据中的这个ID也置空，因为它是“有争议”的
-                        new_data[db_column] = None
-                        logger.info(f"ID '{id_value}' 已被彻底清理，本次同步将不会使用它。")
+                        # 1. 找到目标记录 (通常是列表中第一个，或者最完善的那个)
+                        # 我们以第一个找到的记录作为合并的目标
+                        target_emby_pid = conflicting_emby_pids[0]
+                        cursor.execute("SELECT * FROM person_identity_map WHERE emby_person_id = %s", (target_emby_pid,))
+                        target_actor = cursor.fetchone()
+                        
+                        if not target_actor:
+                            logger.error(f"合并失败：无法找到目标演员记录 (Emby PID: {target_emby_pid})。")
+                            continue # 继续检查下一个ID字段
 
+                        target_map_id = target_actor['map_id']
+                        
+                        # 2. 遍历所有其他的冲突记录，将它们的信息合并到目标记录中，然后删除它们
+                        for source_emby_pid in conflicting_emby_pids[1:]:
+                            cursor.execute("SELECT * FROM person_identity_map WHERE emby_person_id = %s", (source_emby_pid,))
+                            source_actor = cursor.fetchone()
+                            
+                            if not source_actor or source_actor['map_id'] == target_map_id:
+                                continue # 如果源记录不存在或就是目标记录本身，则跳过
 
-            # --- 后续的 upsert 逻辑基本保持不变，但现在处理的是已经“干净”的数据 ---
+                            source_map_id = source_actor['map_id']
+                            logger.info(f"  -> 正在将源记录 (Emby PID: {source_emby_pid}, map_id: {source_map_id}) 合并到目标记录 (Emby PID: {target_emby_pid}, map_id: {target_map_id})")
 
+                            # 核心合并逻辑：如果目标记录的某个ID字段为空，就用源记录的来填充
+                            if source_actor.get('tmdb_person_id') and not target_actor.get('tmdb_person_id'):
+                                cursor.execute("UPDATE person_identity_map SET tmdb_person_id = %s WHERE map_id = %s", (source_actor['tmdb_person_id'], target_map_id))
+                            if source_actor.get('imdb_id') and not target_actor.get('imdb_id'):
+                                cursor.execute("UPDATE person_identity_map SET imdb_id = %s WHERE map_id = %s", (source_actor['imdb_id'], target_map_id))
+                            if source_actor.get('douban_celebrity_id') and not target_actor.get('douban_celebrity_id'):
+                                cursor.execute("UPDATE person_identity_map SET douban_celebrity_id = %s WHERE map_id = %s", (source_actor['douban_celebrity_id'], target_map_id))
+
+                            # 3. 删除现在已经多余的源记录
+                            cursor.execute("DELETE FROM person_identity_map WHERE map_id = %s", (source_map_id,))
+                            logger.info(f"  -> 合并完成，已删除多余的源记录 (map_id: {source_map_id})。")
+
+                        # 4. 在本次 upsert 操作中，确保 new_data 使用的是合并后的目标ID
+                        new_data["emby_person_id"] = target_emby_pid
+
+            if conflict_detected:
+                cursor.execute("RELEASE SAVEPOINT actor_upsert")
+                return -1, "SKIPPED"
+
+            # --- Upsert 逻辑 (逻辑不变) ---
             cursor.execute("SELECT * FROM person_identity_map WHERE emby_person_id = %s", (new_data["emby_person_id"],))
             existing_record = cursor.fetchone()
 
             if existing_record:
-                # 更新逻辑...
                 existing_record = dict(existing_record)
                 update_fields = {}
                 
-                # 只更新那些在新数据中仍然有效（未被清理）且在旧记录中缺失的字段
                 id_fields = id_field_map.keys()
                 for f in id_fields:
                     new_val = new_data.get(f)
@@ -268,9 +670,8 @@ class ActorDBManager:
                     cursor.execute("RELEASE SAVEPOINT actor_upsert")
                     return existing_record["map_id"], "UNCHANGED"
             else:
-                # 插入逻辑...
                 insert_fields = [k for k, v in new_data.items() if v is not None]
-                if not insert_fields: # 如果所有字段都无效了
+                if not insert_fields:
                     cursor.execute("RELEASE SAVEPOINT actor_upsert")
                     return -1, "SKIPPED"
 
@@ -287,13 +688,10 @@ class ActorDBManager:
                 cursor.execute("RELEASE SAVEPOINT actor_upsert")
                 return (result["map_id"], "INSERTED") if result else (-1, "ERROR")
 
-        except psycopg2.Error as e:
-            cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
-            logger.error(f"upsert_person 数据库异常，emby_person_id={person_data.get('emby_id')}: {e}", exc_info=True)
-            return -1, "ERROR"
         except Exception as e:
             cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
-            logger.error(f"upsert_person 未知异常，emby_person_id={person_data.get('emby_id')}: {e}", exc_info=True)
+            logger.error(f"upsert_person 发生异常，emby_person_id={person_data.get('emby_id')}: {e}", exc_info=True)
+            cursor.execute("RELEASE SAVEPOINT actor_upsert")
             return -1, "ERROR"
 
 # --- 演员映射表清理 ---
@@ -324,7 +722,7 @@ def delete_persons_by_emby_ids(emby_ids: list) -> int:
             cursor.execute(sql, (emby_ids,))
             deleted_count = cursor.rowcount
             conn.commit()
-            logger.info(f"DB: 成功从演员映射表中删除了 {deleted_count} 条陈旧记录。")
+            logger.info(f"  -> 从演员映射表中删除了 {deleted_count} 条陈旧记录。")
             return deleted_count
     except Exception as e:
         logger.error(f"DB: 批量删除陈旧演员映射时失败: {e}", exc_info=True)
@@ -1094,15 +1492,14 @@ def clear_table(table_name: str) -> int:
 # --- 一键矫正自增序列 ---
 def correct_all_sequences() -> list:
     """
+    【V2 - 最终修正版】
     自动查找所有使用 SERIAL/IDENTITY 列的表，并校准它们的序列。
-    这可以修复因手动导入数据或 TRUNCATE 操作导致的“取号机”失准问题。
-    返回一个包含已校准表名的列表。
+    通过使用 setval 的第三个参数 (is_called=false)，完美处理空表的情况。
     """
     corrected_tables = []
     with get_db_connection() as conn:
         cursor = conn.cursor()
         try:
-            # 1. 查找所有使用了序列作为默认值的列 (即 SERIAL, BIGSERIAL 等)
             cursor.execute("""
                 SELECT
                     c.table_name,
@@ -1120,17 +1517,19 @@ def correct_all_sequences() -> list:
 
             logger.info(f"开始校准 {len(tables_with_sequences)} 个表的自增序列...")
 
-            # 2. 遍历每个表并校准其序列
             for row in tables_with_sequences:
                 table_name = row['table_name']
                 column_name = row['column_name']
                 
-                # 使用 setval 将序列的下一个值设置为当前表ID的最大值 + 1
-                # COALESCE(MAX(...), 0) 确保即使表是空的，也能正常工作
+                # ★★★ 核心修正：改变 setval 的用法 ★★★
+                # 1. 我们计算出 (最大ID + 1)，这代表下一个应该被发出的ID。
+                # 2. 我们将 setval 的第三个参数设为 false，
+                #    这告诉数据库：“我给你的这个值，是下一个要用的值，而不是已经被用掉的值。”
                 query = sql.SQL("""
                     SELECT setval(
                         pg_get_serial_sequence({table}, {column}),
-                        COALESCE((SELECT MAX({id_col}) FROM {table_ident}), 0)
+                        COALESCE((SELECT MAX({id_col}) FROM {table_ident}), 0) + 1,
+                        false
                     )
                 """).format(
                     table=sql.Literal(table_name),
@@ -2280,3 +2679,108 @@ def decrement_subscription_quota() -> bool:
     except Exception as e:
         logger.error(f"减少订阅配额时发生严重错误: {e}", exc_info=True)
         return False
+# ======================================================================
+# 模块 10: 媒体去重模块数据访问 (Media Cleanup Data Access) - ★★★ 新增模块 ★★★
+# ======================================================================
+
+def get_all_cleanup_tasks() -> List[Dict[str, Any]]:
+    """获取所有待处理的媒体去重任务。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 只获取待处理的任务，并按名称排序
+            cursor.execute("SELECT * FROM media_cleanup_tasks WHERE status = 'pending' ORDER BY item_name")
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 获取媒体去重任务列表失败: {e}", exc_info=True)
+        return []
+
+def batch_insert_cleanup_tasks(tasks: List[Dict[str, Any]]):
+    """批量插入新的清理任务，插入前会清空旧表。"""
+    if not tasks:
+        logger.info("没有发现需要清理的媒体项，无需更新数据库。")
+        return
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 使用 TRUNCATE RESTART IDENTITY 清空表并重置ID序列
+            logger.warning("正在清空旧的媒体去重任务列表...")
+            cursor.execute("TRUNCATE TABLE media_cleanup_tasks RESTART IDENTITY;")
+
+            # 准备批量插入
+            from psycopg2.extras import execute_values
+            sql = """
+                INSERT INTO media_cleanup_tasks (
+                    task_type, tmdb_id, item_name, versions_info_json, 
+                    status, best_version_id, created_at
+                ) VALUES %s
+            """
+            
+            values_to_insert = [
+                (
+                    task.get('task_type'),
+                    task.get('tmdb_id'),
+                    task.get('item_name'),
+                    Json(task.get('versions_info_json')), # 使用Json适配器
+                    task.get('status', 'pending'),
+                    task.get('best_version_id'),
+                    datetime.now(timezone.utc)
+                ) for task in tasks
+            ]
+            
+            execute_values(cursor, sql, values_to_insert, page_size=500)
+            conn.commit()
+            logger.info(f"DB: 成功批量插入 {len(tasks)} 条新的媒体去重任务。")
+
+    except Exception as e:
+        logger.error(f"DB: 批量插入媒体去重任务时失败: {e}", exc_info=True)
+        raise
+
+def get_cleanup_tasks_by_ids(task_ids: List[int]) -> List[Dict[str, Any]]:
+    """根据任务ID列表获取清理任务详情。"""
+    if not task_ids:
+        return []
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = "SELECT * FROM media_cleanup_tasks WHERE id = ANY(%s)"
+            cursor.execute(sql, (task_ids,))
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 根据ID获取清理任务时失败: {e}", exc_info=True)
+        return []
+
+def batch_update_cleanup_task_status(task_ids: List[int], new_status: str) -> int:
+    """批量更新一组清理任务的状态。"""
+    if not task_ids:
+        return 0
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = "UPDATE media_cleanup_tasks SET status = %s WHERE id = ANY(%s)"
+            cursor.execute(sql, (new_status, task_ids))
+            updated_count = cursor.rowcount
+            conn.commit()
+            logger.info(f"DB: 成功将 {updated_count} 个清理任务的状态更新为 '{new_status}'。")
+            return updated_count
+    except Exception as e:
+        logger.error(f"DB: 批量更新清理任务状态时失败: {e}", exc_info=True)
+        return 0
+
+def batch_delete_cleanup_tasks(task_ids: List[int]) -> int:
+    """批量删除一组清理任务。"""
+    if not task_ids:
+        return 0
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = "DELETE FROM media_cleanup_tasks WHERE id = ANY(%s)"
+            cursor.execute(sql, (task_ids,))
+            deleted_count = cursor.rowcount
+            conn.commit()
+            logger.info(f"DB: 成功删除了 {deleted_count} 个清理任务。")
+            return deleted_count
+    except Exception as e:
+        logger.error(f"DB: 批量删除清理任务时失败: {e}", exc_info=True)
+        return 0

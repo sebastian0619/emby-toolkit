@@ -217,60 +217,184 @@ class ListImporter:
         
         logger.info(f"  -> 豆瓣豆列获取完成，从 {page} 个页面中总共解析出 {len(all_items)} 个项目。")
         return all_items
-
-    def _get_titles_and_imdbids_from_url(self, url: str) -> List[Dict[str, str]]:
-        # ★★★ 智能路由：根据URL判断使用哪种解析方式 ★★★
-        if 'douban.com/doulist' in url:
-            return self._get_items_from_douban_doulist(url)
-        
-        # --- 如果不是豆瓣豆列，则执行原有的RSS解析逻辑 ---
-        logger.info(f"  -> 开始获取标准RSS榜单: {url}")
-        try:
-            response = self.session.get(url, timeout=20)
-            response.raise_for_status()
-            content = response.text
-            # 兼容处理编码问题
-            if 'encoding="gb2312"' in content.lower():
-                 content = response.content.decode('gb2312', errors='ignore')
-            
-            root = ET.fromstring(content)
-            items = []
-            channel = root.find('channel')
-            if channel is None: return []
-
-            for item in channel.findall('item'):
-                title_elem = item.find('title')
-                guid_elem = item.find('guid')
-                link_elem = item.find('link')
-                description_elem = item.find('description')
-                
-                title = title_elem.text if title_elem is not None else None
-                description = description_elem.text if description_elem is not None else ''
-                
-                douban_link = None
-                if link_elem is not None and link_elem.text and 'douban.com' in link_elem.text:
-                    douban_link = link_elem.text
-                elif guid_elem is not None and guid_elem.text and 'douban.com' in guid_elem.text:
-                    douban_link = guid_elem.text
-
-                year = None
-                year_match = re.search(r'\b(20\d{2})\b', description)
-                if year_match: year = year_match.group(1)
-
-                imdb_id = None
-                if guid_elem is not None and guid_elem.text:
-                    match = re.search(r'tt\d{7,8}', guid_elem.text)
-                    if match: imdb_id = match.group(0)
-                if not imdb_id and link_elem is not None and link_elem.text:
-                    match = re.search(r'tt\d{7,8}', link_elem.text)
-                    if match: imdb_id = match.group(0)
-                
-                if title:
-                    items.append({'title': title.strip(), 'imdb_id': imdb_id, 'year': year, 'douban_link': douban_link})
-            return items
-        except Exception as e:
-            logger.error(f"从RSS URL '{url}' 获取榜单时出错: {e}")
+    
+    def _get_items_from_tmdb_list(self, url: str) -> List[Dict[str, str]]:
+        """【新】专门用于解析和分页获取TMDb片单内容的函数"""
+        match = re.search(r'themoviedb\.org/list/(\d+)', url)
+        if not match:
+            logger.error(f"无法从URL '{url}' 中解析出TMDb片单ID。")
             return []
+
+        list_id = int(match.group(1))
+        all_items = []
+        current_page = 1
+        total_pages = 1 # 先假设只有一页
+
+        logger.info(f"  -> 检测到TMDb片单链接，开始分页获取: {url}")
+
+        while current_page <= total_pages:
+            try:
+                logger.debug(f"    -> 正在获取第 {current_page} / {total_pages} 页...")
+                list_data = tmdb_handler.get_list_details_tmdb(list_id, self.tmdb_api_key, page=current_page)
+
+                if not list_data or not list_data.get('items'):
+                    logger.warning(f"  -> 在第 {current_page} 页未发现更多项目，获取结束。")
+                    break
+
+                # 从第一页的返回结果中更新总页数
+                if current_page == 1:
+                    total_pages = list_data.get('total_pages', 1)
+
+                for item in list_data['items']:
+                    media_type = item.get('media_type')
+                    tmdb_id = item.get('id')
+                    
+                    # 将TMDb的 'tv' 映射为我们系统内部的 'Series'
+                    item_type_mapped = 'Series' if media_type == 'tv' else 'Movie'
+
+                    if tmdb_id:
+                        # ★★★ 直接生成包含精确ID和类型的字典，无需后续匹配 ★★★
+                        all_items.append({'id': str(tmdb_id), 'type': item_type_mapped})
+
+                current_page += 1
+
+            except Exception as e:
+                logger.error(f"获取或解析TMDb片单页面 {current_page} 时出错: {e}")
+                break
+        
+        logger.info(f"  -> TMDb片单获取完成，从 {total_pages} 个页面中总共解析出 {len(all_items)} 个项目。")
+        return all_items
+    
+    def _get_items_from_tmdb_discover(self, url: str) -> List[Dict[str, str]]:
+        """【V4.1 - 最终确认版】专门用于解析TMDb Discover URL并获取结果的函数，支持自动分页获取所有项目"""
+        from urllib.parse import urlparse, parse_qs
+        from datetime import datetime, timedelta
+        import re
+
+        logger.info(f"  -> 检测到TMDb Discover链接，开始动态获取 (支持分页): {url}")
+        
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+        params = {k: v[0] for k, v in query_params.items()}
+
+        today = datetime.now()
+        date_pattern = re.compile(r'{today([+-]\d+)?}')
+
+        for key, value in params.items():
+            match = date_pattern.search(value)
+            if match:
+                offset_str = match.group(1) 
+                target_date = today
+                if offset_str:
+                    days = int(offset_str)
+                    target_date = today + timedelta(days=days)
+                params[key] = value.replace(match.group(0), target_date.strftime('%Y-%m-%d'))
+
+        all_items = []
+        current_page = 1
+        total_pages = 1
+        MAX_PAGES_TO_FETCH = 10
+
+        while current_page <= total_pages and current_page <= MAX_PAGES_TO_FETCH:
+            try:
+                params['page'] = current_page
+                logger.debug(f"    -> 正在获取第 {current_page} / {total_pages} 页...")
+
+                discover_data = None
+                item_type_for_result = None
+
+                # ★★★ 使用最健壮的判断逻辑 ★★★
+                if '/discover/movie' in url:
+                    discover_data = tmdb_handler.discover_movie_tmdb(self.tmdb_api_key, params)
+                    item_type_for_result = 'Movie'
+                elif '/discover/tv' in url:
+                    discover_data = tmdb_handler.discover_tv_tmdb(self.tmdb_api_key, params)
+                    item_type_for_result = 'Series'
+                else:
+                    # 如果URL格式意外，直接跳出循环
+                    logger.warning(f"无法从URL '{url}' 判断是电影还是电视剧，discover任务中止。")
+                    break
+
+                if not discover_data or not discover_data.get('results'):
+                    logger.info("    -> 在当前页未发现更多项目，获取结束。")
+                    break
+
+                if current_page == 1:
+                    total_pages = discover_data.get('total_pages', 1)
+
+                for item in discover_data['results']:
+                    tmdb_id = item.get('id')
+                    if tmdb_id and item_type_for_result:
+                        all_items.append({'id': str(tmdb_id), 'type': item_type_for_result})
+                
+                current_page += 1
+
+            except Exception as e:
+                logger.error(f"获取或解析TMDb Discover链接的第 {current_page} 页时出错: {e}")
+                break
+
+        logger.info(f"  -> TMDb Discover 获取完成，从 {total_pages} 个页面中总共解析出 {len(all_items)} 个项目。")
+        return all_items
+    
+    def _get_titles_and_imdbids_from_url(self, url: str) -> Tuple[List[Dict[str, str]], str]:
+        source_type = 'list_rss' 
+        items = []
+
+        if 'themoviedb.org/discover/' in url:
+            source_type = 'list_discover'
+            items = self._get_items_from_tmdb_discover(url)
+        elif 'themoviedb.org/list/' in url:
+            source_type = 'list_tmdb'
+            items = self._get_items_from_tmdb_list(url)
+        elif 'douban.com/doulist' in url:
+            source_type = 'list_douban'
+            items = self._get_items_from_douban_doulist(url)
+        else:
+            logger.info(f"  -> 开始获取标准RSS榜单: {url}")
+            try:
+                response = self.session.get(url, timeout=20)
+                response.raise_for_status()
+                content = response.text
+                if 'encoding="gb2312"' in content.lower():
+                     content = response.content.decode('gb2312', errors='ignore')
+                
+                root = ET.fromstring(content)
+                channel = root.find('channel')
+                if channel is None: return [], source_type
+
+                for item in channel.findall('item'):
+                    title_elem = item.find('title')
+                    guid_elem = item.find('guid')
+                    link_elem = item.find('link')
+                    description_elem = item.find('description')
+                    
+                    title = title_elem.text if title_elem is not None else None
+                    description = description_elem.text if description_elem is not None else ''
+                    
+                    douban_link = None
+                    if link_elem is not None and link_elem.text and 'douban.com' in link_elem.text:
+                        douban_link = link_elem.text
+                    elif guid_elem is not None and guid_elem.text and 'douban.com' in guid_elem.text:
+                        douban_link = guid_elem.text
+
+                    year = None
+                    year_match = re.search(r'\b(20\d{2})\b', description)
+                    if year_match: year = year_match.group(1)
+
+                    imdb_id = None
+                    if guid_elem is not None and guid_elem.text:
+                        match = re.search(r'tt\d{7,8}', guid_elem.text)
+                        if match: imdb_id = match.group(0)
+                    if not imdb_id and link_elem is not None and link_elem.text:
+                        match = re.search(r'tt\d{7,8}', link_elem.text)
+                        if match: imdb_id = match.group(0)
+                    
+                    if title:
+                        items.append({'title': title.strip(), 'imdb_id': imdb_id, 'year': year, 'douban_link': douban_link})
+            except Exception as e:
+                logger.error(f"从RSS URL '{url}' 获取榜单时出错: {e}")
+        
+        return items, source_type
 
     def _parse_series_title(self, title: str) -> Tuple[str, Optional[int]]:
         """
@@ -315,17 +439,16 @@ class ListImporter:
         logger.debug(f"标题解析 (最终结果): '{title}' -> 名称='{show_name}', 季号='{season_number}'")
         return show_name, season_number
 
-    def _match_title_to_tmdb(self, title: str, item_type: str, year: Optional[str] = None) -> Optional[str]:
-        
+    def _match_title_to_tmdb(self, title: str, item_type: str, year: Optional[str] = None) -> Optional[Tuple[str, str]]:
+        """
+        【V2 - 返回值修正版】
+        现在返回一个元组 (tmdb_id, item_type)，以保持接口统一。
+        """
         def normalize_string(s: str) -> str:
-            """一个强大的字符串规范化函数，用于模糊比较"""
             if not s: return ""
-            # 移除所有标点和空格，并转为小写
             return re.sub(r'[\s:：·\-*\'!,?.]+', '', s).lower()
 
         if item_type == 'Movie':
-            
-            # 1. 生成基础候选标题列表
             titles_to_try = set([title.strip()])
             match = re.match(r'([\u4e00-\u9fa5\s·0-9]+)[\s:：*]*(.*)', title.strip())
             if match:
@@ -334,17 +457,14 @@ class ListImporter:
                 if part1: titles_to_try.add(part1)
                 if part2: titles_to_try.add(part2)
 
-            # ★★★ 核心改进 V4：通用数字转换规则，替代硬编码 ★★★
             num_map = {'1': '一', '2': '二', '3': '三', '4': '四', '5': '五', '6': '六', '7': '七', '8': '八', '9': '九'}
-            # 创建一个副本进行迭代，以免在迭代时修改集合
             current_titles = list(titles_to_try) 
             for t in current_titles:
-                # 检查标题中是否包含任何需要转换的数字
                 if any(num in t for num in num_map.keys()):
                     new_title = t
                     for num, char in num_map.items():
                         new_title = new_title.replace(num, char)
-                    titles_to_try.add(new_title) # 将转换后的新标题加入候选集合
+                    titles_to_try.add(new_title)
             
             final_titles = list(titles_to_try)
             logger.debug(f"为 '{title}' 生成的最终候选搜索标题: {final_titles}")
@@ -352,7 +472,6 @@ class ListImporter:
             first_search_results = None
             year_info = f" (年份: {year})" if year else ""
 
-            # 2. 依次使用候选标题进行多级匹配 (这部分逻辑保持不变)
             for title_variation in final_titles:
                 if not title_variation: continue
                 
@@ -366,7 +485,6 @@ class ListImporter:
 
                 norm_variation = normalize_string(title_variation)
 
-                # --- 匹配级别1：规范化后完全相等 ---
                 for result in results:
                     norm_title = normalize_string(result.get('title'))
                     norm_original_title = normalize_string(result.get('original_title'))
@@ -374,9 +492,9 @@ class ListImporter:
                     if norm_variation == norm_title or norm_variation == norm_original_title:
                         tmdb_id = str(result.get('id'))
                         logger.info(f"电影标题 '{title}'{year_info} 通过【精确规范匹配】(使用'{title_variation}') 成功匹配到: {result.get('title')} (ID: {tmdb_id})")
-                        return tmdb_id
+                        # ★★★ 核心修复：返回元组 ★★★
+                        return tmdb_id, 'Movie'
                 
-                # --- 匹配级别2：规范化后被包含 ---
                 for result in results:
                     norm_title = normalize_string(result.get('title'))
                     norm_original_title = normalize_string(result.get('original_title'))
@@ -384,20 +502,20 @@ class ListImporter:
                     if norm_variation in norm_title or norm_variation in norm_original_title:
                         tmdb_id = str(result.get('id'))
                         logger.info(f"电影标题 '{title}'{year_info} 通过【包含匹配】(使用'{title_variation}') 成功匹配到: {result.get('title')} (ID: {tmdb_id})")
-                        return tmdb_id
+                        # ★★★ 核心修复：返回元组 ★★★
+                        return tmdb_id, 'Movie'
 
-            # 3. 如果所有尝试都失败，执行回退策略
             if first_search_results:
                 first_result = first_search_results[0]
                 tmdb_id = str(first_result.get('id'))
                 logger.warning(f"电影标题 '{title}'{year_info} 所有精确匹配和包含匹配均失败。将【回退使用】最相关的搜索结果: {first_result.get('title')} (ID: {tmdb_id})")
-                return tmdb_id
+                # ★★★ 核心修复：返回元组 ★★★
+                return tmdb_id, 'Movie'
 
             logger.error(f"电影标题 '{title}'{year_info} 未能在TMDb上找到任何搜索结果。")
             return None
         
         elif item_type == 'Series':
-            # 剧集的逻辑保持原样，因为它足够健壮
             show_name, season_number_to_validate = self._parse_series_title(title)
             results = search_media(show_name, self.tmdb_api_key, 'Series', year=year)
 
@@ -415,7 +533,8 @@ class ListImporter:
             
             if season_number_to_validate is None:
                 logger.debug(f"剧集标题 '{title}' 成功匹配到: {series_result.get('name')} (ID: {series_id})")
-                return series_id
+                # ★★★ 核心修复：返回元组 ★★★
+                return series_id, 'Series'
             
             logger.debug(f"剧集 '{show_name}' (ID: {series_id}) 已找到，正在验证是否存在第 {season_number_to_validate} 季...")
             series_details = get_tv_details_tmdb(int(series_id), self.tmdb_api_key, append_to_response="seasons")
@@ -423,24 +542,41 @@ class ListImporter:
                 for season in series_details['seasons']:
                     if season.get('season_number') == season_number_to_validate:
                         logger.info(f"  -> 剧集 '{show_name}' 存在第 {season_number_to_validate} 季。最终匹配ID为 {series_id}。")
-                        return series_id
+                        # ★★★ 核心修复：返回元组 ★★★
+                        return series_id, 'Series'
             
             logger.warning(f"验证失败！剧集 '{show_name}' (ID: {series_id}) 存在，但未找到第 {season_number_to_validate} 季。")
             return None
             
         return None
 
-    def process(self, definition: Dict) -> List[Dict[str, str]]:
+    def process(self, definition: Dict) -> Tuple[List[Dict[str, str]], str]:
         url = definition.get('url')
-        if not url or url.startswith('maoyan://'):
-            return []
+        # ★★★ 核心修改 1/2: 增加一个默认的 source_type ★★★
+        source_type = 'list_rss' # 默认是普通榜单
+        
+        if not url:
+            return [], source_type
+        if url.startswith('maoyan://'):
+            # 猫眼类型直接在 task 里处理了，这里返回特定标识
+            return [], 'list_maoyan'
+
         item_types = definition.get('item_type', ['Movie'])
         if isinstance(item_types, str): item_types = [item_types]
         limit = definition.get('limit')
-        items = self._get_titles_and_imdbids_from_url(url)
-        if not items: return []
+        
+        # ★★★ 核心修改 2/2: 接收 _get_titles_and_imdbids_from_url 返回的 source_type ★★★
+        items, source_type = self._get_titles_and_imdbids_from_url(url)
+        
+        if not items: return [], source_type
+        
+        if items and 'id' in items[0] and 'type' in items[0]:
+            logger.info(f"  -> 检测到来自TMDb源 ({source_type}) 的预匹配ID，将跳过标题匹配。")
+            if limit and isinstance(limit, int) and limit > 0:
+                items = items[:limit]
+            return items, source_type # 直接返回结果和类型
+
         if limit and isinstance(limit, int) and limit > 0:
-            logger.info(f"  -> RSS榜单已启用数量限制，将只处理前 {limit} 个项目。")
             items = items[:limit]
         
         tmdb_items = []
@@ -466,6 +602,7 @@ class ListImporter:
 
                 if rss_imdb_id:
                     for item_type in types_to_check:
+                        # _match_by_ids 只返回 tmdb_id，这部分逻辑正确
                         tmdb_id = self._match_by_ids(rss_imdb_id, None, item_type)
                         if tmdb_id:
                             logger.info(f"  -> 成功通过RSS自带的IMDb ID '{rss_imdb_id}' 匹配到 '{title}'。")
@@ -474,9 +611,11 @@ class ListImporter:
                 cleaned_title = re.sub(r'^\s*\d+\.\s*', '', title)
                 cleaned_title = re.sub(r'\s*\(\d{4}\)$', '', cleaned_title).strip()
                 for item_type in types_to_check:
-                    tmdb_id = self._match_title_to_tmdb(cleaned_title, item_type, year=year)
-                    if tmdb_id:
-                        return create_result(tmdb_id, item_type)
+                    # _match_title_to_tmdb 现在返回 (tmdb_id, item_type) 或 None
+                    match_result = self._match_title_to_tmdb(cleaned_title, item_type, year=year)
+                    if match_result:
+                        tmdb_id, matched_type = match_result
+                        return create_result(tmdb_id, matched_type)
                 
                 if douban_link:
                     logger.info(f"  -> 片名+年份匹配 '{title}' 失败，启动备用方案：通过豆瓣链接获取更多信息...")
@@ -500,33 +639,31 @@ class ListImporter:
                         original_title = douban_details.get("original_title")
                         if original_title:
                             for item_type in types_to_check:
-                                tmdb_id = self._match_title_to_tmdb(original_title, item_type, year=year)
-                                if tmdb_id:
+                                match_result = self._match_title_to_tmdb(original_title, item_type, year=year)
+                                if match_result:
+                                    tmdb_id, matched_type = match_result
                                     logger.info(f"  -> 豆瓣备用方案(3b)成功！通过 original_title '{original_title}' 匹配成功。")
-                                    return create_result(tmdb_id, item_type)
+                                    return create_result(tmdb_id, matched_type)
 
                 logger.debug(f"  -> 所有优先方案均失败，尝试不带年份进行最后的回退搜索: '{title}'")
                 for item_type in types_to_check:
-                    tmdb_id = self._match_title_to_tmdb(cleaned_title, item_type, year=None)
-                    if tmdb_id:
+                    match_result = self._match_title_to_tmdb(cleaned_title, item_type, year=None)
+                    if match_result:
+                        tmdb_id, matched_type = match_result
                         logger.warning(f"  -> 注意：'{title}' 在最后的回退搜索中匹配成功，但年份可能不准。")
-                        return create_result(tmdb_id, item_type)
+                        return create_result(tmdb_id, matched_type)
 
                 logger.error(f"  -> 彻底失败：所有方案都无法为 '{title}' 找到匹配项。")
                 return None
 
-            # ★★★ 核心修复：使用 executor.map 替换 as_completed 来保证顺序 ★★★
-            # executor.map 会并发处理，但会按照输入 `items` 的原始顺序返回结果。
             results_in_order = executor.map(lambda item: find_first_match(item, item_types), items)
-            
-            # 过滤掉那些匹配失败返回 None 的结果
             tmdb_items = [result for result in results_in_order if result is not None]
         
         douban_api.close()
         logger.info(f"  -> RSS匹配完成，成功获得 {len(tmdb_items)} 个TMDb项目。")
         
         unique_items = list({f"{item['type']}-{item['id']}-{item.get('season')}": item for item in tmdb_items}.values())
-        return unique_items
+        return unique_items, source_type
 
 class FilterEngine:
     """
@@ -738,7 +875,7 @@ class FilterEngine:
         logger.info(f"  -> 筛选完成！共找到 {len(unique_items)} 部匹配的媒体项目。")
         return unique_items
     
-    def find_matching_collections(self, item_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def find_matching_collections(self, item_metadata: Dict[str, Any], media_library_id: Optional[str] = None) -> List[Dict[str, Any]]:
         media_item_type = item_metadata.get('item_type')
         media_type_cn = "剧集" if media_item_type == "Series" else "影片"
         logger.info(f"  -> 正在为{media_type_cn}《{item_metadata.get('title')}》实时匹配自定义合集...")
@@ -753,6 +890,10 @@ class FilterEngine:
         for collection_def in all_filter_collections:
             try:
                 definition = collection_def['definition_json']
+                defined_library_ids = definition.get('library_ids')
+                if defined_library_ids and media_library_id and media_library_id not in defined_library_ids:
+                    logger.debug(f"  -> 跳过合集《{collection_def['name']}》，因为媒体库不匹配 (合集要求: {defined_library_ids}, 实际来自: '{media_library_id}')。")
+                    continue 
                 collection_item_types = definition.get('item_type', ['Movie'])
                 if isinstance(collection_item_types, str):
                     collection_item_types = [collection_item_types]

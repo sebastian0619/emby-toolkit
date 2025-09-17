@@ -93,6 +93,7 @@ constants.CONFIG_OPTION_EMBY_ADMIN_PASS: (constants.CONFIG_SECTION_EMBY, 'passwo
     constants.CONFIG_OPTION_RESUBSCRIBE_COMPLETED_ON_MISSING: (constants.CONFIG_SECTION_MOVIEPILOT, 'boolean', False),
     constants.CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP: (constants.CONFIG_SECTION_MOVIEPILOT, 'int', 200),
     constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS: (constants.CONFIG_SECTION_MOVIEPILOT, 'float', 1.5),
+    constants.CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE: (constants.CONFIG_SECTION_MOVIEPILOT, 'boolean', False),
     
     # [LocalDataSource]
     constants.CONFIG_OPTION_LOCAL_DATA_PATH: (constants.CONFIG_SECTION_LOCAL_DATA, 'string', ""),
@@ -121,6 +122,7 @@ constants.CONFIG_OPTION_EMBY_ADMIN_PASS: (constants.CONFIG_SECTION_EMBY, 'passwo
     constants.CONFIG_OPTION_TASK_CHAIN_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
     constants.CONFIG_OPTION_TASK_CHAIN_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "0 2 * * *"),
     constants.CONFIG_OPTION_TASK_CHAIN_SEQUENCE: (constants.CONFIG_SECTION_SCHEDULER, 'list', []),
+    constants.CONFIG_OPTION_TASK_CHAIN_MAX_RUNTIME_MINUTES: (constants.CONFIG_SECTION_SCHEDULER, 'int', 0),
     
     # [Actor]
     constants.CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX: (constants.CONFIG_SECTION_ACTOR, 'boolean', False),

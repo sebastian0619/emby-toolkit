@@ -1,4 +1,3 @@
-<!-- src/components/settings/ResubscribeSettingsPage.vue (多规则改造最终版) -->
 <template>
   <n-spin :show="loading">
     <n-space vertical :size="24">
@@ -88,7 +87,23 @@
               @update:value="handleDeleteSwitchChange"
             />
           </n-form-item>
-          
+          <n-form-item>
+            <template #label>
+              <n-space align="center">
+                <span>特效字幕</span>
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-icon :component="AlertIcon" style="color: var(--n-info-color);" />
+                  </template>
+                  勾选后，订阅时将要求字幕包含“特效”关键字，需开启自定义洗版订阅。<br>
+                  注意：此选项仅影响订阅参数，不影响筛选逻辑。
+                </n-tooltip>
+              </n-space>
+            </template>
+            <n-switch 
+              v-model:value="currentRule.resubscribe_subtitle_effect_only"
+            />
+          </n-form-item>
           <n-divider />
 
           <!-- 洗版条件 -->
@@ -124,10 +139,11 @@
                <template #header-extra>
                 <n-switch v-model:value="currentRule.resubscribe_effect_enabled" @click.stop />
               </template>
-              <n-form-item label="当文件名【不包含】以下任一关键词时洗版" label-placement="top">
+              <!-- ★★★ 核心修改 1/3: 更新提示文本 ★★★ -->
+              <n-form-item label="当媒体特效【低于】所选最高等级时洗版" label-placement="top">
                 <n-select
                   v-model:value="currentRule.resubscribe_effect_include"
-                  multiple tag filterable placeholder="可选择或自由输入"
+                  multiple tag filterable placeholder="选择期望的特效等级"
                   :options="effectOptions"
                   :disabled="!currentRule.resubscribe_effect_enabled"
                 />
@@ -174,11 +190,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, computed, nextTick } from 'vue';
 import axios from 'axios';
 import { 
   NCard, NSpace, NSwitch, NButton, useMessage, NSpin, NIcon, NPopconfirm, NModal, NForm, 
-  NFormItem, NInput, NSelect, NDivider, NCollapse, NCollapseItem, NTag, NEmpty
+  NFormItem, NInput, NSelect, NDivider, NCollapse, NCollapseItem, NTag, NEmpty, NTooltip
 } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { 
@@ -186,10 +202,10 @@ import {
 } from '@vicons/ionicons5';
 
 const message = useMessage();
+const emit = defineEmits(['saved']);
 const embyAdminUser = ref('');
 const embyAdminPass = ref('');
 
-// 计算属性，实时判断管理员账密是否已配置
 const isEmbyAdminConfigured = computed(() => {
   return embyAdminUser.value && embyAdminPass.value;
 });
@@ -210,21 +226,29 @@ const formRules = {
   target_library_ids: { type: 'array', required: true, message: '请至少选择一个媒体库', trigger: 'change' },
 };
 
-// --- Options for Selects ---
 const resolutionOptions = ref([
   { label: '低于 4K (3840px)', value: 3840 },
   { label: '低于 1080p (1920px)', value: 1920 },
   { label: '低于 720p (1280px)', value: 1280 },
 ]);
+
 const qualityOptions = ref([
-  { label: 'Remux', value: 'remux' }, { label: 'BluRay / 蓝光', value: 'bluray' },
-  { label: 'WEB-DL', value: 'web-dl' }, { label: 'UHD', value: 'uhd' },
-  { label: 'BDRip', value: 'bdrip' }, { label: 'HDTV', value: 'hdtv' },
+  { label: 'Remux', value: 'Remux' },
+  { label: 'BluRay', value: 'BluRay' },
+  { label: 'WEB-DL', value: 'WEB-DL' },
+  { label: 'HDTV', value: 'HDTV' },
 ]);
+
+// ★★★ 核心修改 2/3: 更新特效选项列表 ★★★
 const effectOptions = ref([
-  { label: 'HDR', value: 'hdr' }, { label: 'Dolby Vision / DoVi', value: 'dovi' },
-  { label: 'HDR10+', value: 'hdr10+' }, { label: 'HLG', value: 'hlg' },
+  { label: 'DoVi Profile 8 (HDR10 兼容)', value: 'dovi_p8' },
+  { label: 'DoVi Profile 7 (蓝光标准)', value: 'dovi_p7' },
+  { label: 'DoVi Profile 5 (SDR 兼容)', value: 'dovi_p5' },
+  { label: 'DoVi (其他)', value: 'dovi_other' },
+  { label: 'HDR10+', value: 'hdr10+' },
+  { label: 'HDR', value: 'hdr' },
 ]);
+
 const languageOptions = ref([
     { label: '国语 (chi)', value: 'chi' }, { label: '粤语 (yue)', value: 'yue' },
     { label: '英语 (eng)', value: 'eng' }, { label: '日语 (jpn)', value: 'jpn' },
@@ -233,11 +257,9 @@ const subtitleLanguageOptions = ref([
     { label: '中字 (chi)', value: 'chi' }, { label: '英字 (eng)', value: 'eng' },
 ]);
 
-// --- API Calls ---
 const loadData = async () => {
   loading.value = true;
   try {
-    // ▼▼▼ 把 Promise.all 改成这样，不再请求 libraries ▼▼▼
     const [rulesRes, configRes] = await Promise.all([
       axios.get('/api/resubscribe/rules'),
       axios.get('/api/config')
@@ -256,9 +278,7 @@ const loadData = async () => {
 
 const handleDeleteSwitchChange = (value) => {
   if (value && !isEmbyAdminConfigured.value) {
-    // 如果用户尝试打开开关，但配置不完整
     message.warning('请先在 设置 -> Emby & 虚拟库 标签页中，配置“管理员登录凭证”，否则删除功能无法生效。');
-    // 阻止开关被打开
     nextTick(() => {
       currentRule.value.delete_after_resubscribe = false;
     });
@@ -266,22 +286,19 @@ const handleDeleteSwitchChange = (value) => {
 };
 
 const openRuleModal = async (rule = null) => {
-  // 1. 显示加载状态
   saving.value = true; 
   
   try {
-    // 2. 每次打开弹窗时，都重新获取最新的媒体库列表
     const libsRes = await axios.get('/api/resubscribe/libraries');
     allEmbyLibraries.value = libsRes.data;
   } catch (error) {
     message.error('获取媒体库列表失败！');
     saving.value = false;
-    return; // 获取失败则不打开弹窗
+    return;
   } finally {
     saving.value = false;
   }
 
-  // 3. 准备当前要编辑的规则数据
   if (rule) {
     currentRule.value = JSON.parse(JSON.stringify(rule));
   } else {
@@ -293,10 +310,18 @@ const openRuleModal = async (rule = null) => {
       resubscribe_subtitle_missing_languages: [], resubscribe_quality_enabled: false,
       resubscribe_quality_include: [], resubscribe_effect_enabled: false,
       resubscribe_effect_include: [],
+      resubscribe_subtitle_effect_only: false,
     };
   }
 
-  // 4. 显示弹窗
+  // ★★★ 核心修改 3/3: 兼容旧的 '杜比视界' 和 'HDR' 值 ★★★
+  if (currentRule.value.resubscribe_effect_include) {
+    const legacyMap = { '杜比视界': 'dovi_other', 'HDR': 'hdr' };
+    currentRule.value.resubscribe_effect_include = currentRule.value.resubscribe_effect_include.map(
+      val => legacyMap[val] || val
+    );
+  }
+
   showModal.value = true;
 };
 
@@ -319,6 +344,7 @@ const saveRule = async () => {
     if (!errors) {
       saving.value = true;
       try {
+        // 保存时数据已经是 'dovi_p8' 格式，无需转换
         if (isEditing.value) {
           await axios.put(`/api/resubscribe/rules/${currentRule.value.id}`, currentRule.value);
           message.success('规则已更新！');
@@ -327,7 +353,8 @@ const saveRule = async () => {
           message.success('规则已创建！');
         }
         showModal.value = false;
-        loadData(); // Reload all rules
+        loadData();
+        emit('saved', { needsRefresh: false });
       } catch (error) {
         message.error(error.response?.data?.error || '保存失败，请检查后端日志。');
       } finally {
@@ -342,6 +369,7 @@ const deleteRule = async (ruleId) => {
     await axios.delete(`/api/resubscribe/rules/${ruleId}`);
     message.success('规则已删除！');
     loadData();
+    emit('saved', { needsRefresh: true });
   } catch (error) {
     message.error('删除失败，请检查后端日志。');
   }
@@ -351,9 +379,10 @@ const toggleRuleStatus = async (rule) => {
   try {
     await axios.put(`/api/resubscribe/rules/${rule.id}`, { enabled: rule.enabled });
     message.success(`规则 “${rule.name}” 已${rule.enabled ? '启用' : '禁用'}`);
+    emit('saved', { needsRefresh: false });
   } catch (error) {
     message.error('状态更新失败');
-    rule.enabled = !rule.enabled; // Revert on failure
+    rule.enabled = !rule.enabled;
   }
 };
 
@@ -362,13 +391,13 @@ const onDragEnd = async () => {
   try {
     await axios.post('/api/resubscribe/rules/order', orderedIds);
     message.success('规则优先级已更新！');
+    emit('saved', { needsRefresh: false });
   } catch (error) {
     message.error('顺序保存失败，将刷新列表。');
-    loadData(); // Revert to server order on failure
+    loadData();
   }
 };
 
-// --- UI Helpers ---
 const getLibraryCountText = (libs) => {
   if (!libs || libs.length === 0) return '未指定媒体库';
   return `应用于 ${libs.length} 个媒体库`;

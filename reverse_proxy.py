@@ -7,7 +7,8 @@ import json
 from flask import Flask, request, Response
 from urllib.parse import urlparse, urlunparse
 import time
-import uuid # <-- 确保导入
+import uuid 
+from datetime import datetime, timezone
 from gevent import spawn
 from geventwebsocket.websocket import WebSocket
 from websocket import create_connection
@@ -55,90 +56,103 @@ def _get_real_emby_url_and_key():
 
 def handle_get_views():
     """
-    【V2 - PG JSON 兼容版】
-    - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
+    【V8 - 实时权限隐藏最终版】
+    - 终极解决方案：在返回虚拟库列表时，为每个库和当前用户执行一次“快速权限探测”。
+    - 调用一个新的、超快速的API检查，判断当前用户是否能在该虚拟库中看到至少一个媒体项。
+    - 只有用户有权看到内容时，虚拟库才会在主页显示，完美解决了管理员和受限用户视野不一致的问题。
     """
     real_server_id = extensions.EMBY_SERVER_ID
     if not real_server_id:
         return "Proxy is not ready", 503
 
     try:
+        user_id_match = re.search(r'/emby/Users/([^/]+)/Views', request.path)
+        if not user_id_match:
+            return "Could not determine user from request path", 400
+        user_id = user_id_match.group(1)
+
+        # 获取用户可见的原生库，这个后续会用到
+        user_visible_native_libs = emby_handler.get_emby_libraries(
+            config_manager.APP_CONFIG.get("emby_server_url", ""),
+            config_manager.APP_CONFIG.get("emby_api_key", ""),
+            user_id
+        )
+        if user_visible_native_libs is None: user_visible_native_libs = []
+
         collections = db_handler.get_all_active_custom_collections()
         fake_views_items = []
         for coll in collections:
+            # 1. 物理检查 (依然保留)
             real_emby_collection_id = coll.get('emby_collection_id')
             if not real_emby_collection_id:
-                logger.debug(f"  -> 虚拟库 '{coll['name']}' (ID: {coll['id']}) 因无对应的真实Emby合集而被隐藏。")
+                logger.debug(f"  -> 虚拟库 '{coll['name']}' 被隐藏，原因: 无对应Emby实体")
                 continue
 
+            # ★★★ 核心修复：执行实时、动态的权限检查 ★★★
+            # a. 从数据库获取这个库包含的所有Emby ID
+            db_media_list = coll.get('generated_media_info_json') or []
+            ordered_emby_ids = [item.get('emby_id') for item in db_media_list if item.get('emby_id')]
+
+            if not ordered_emby_ids:
+                logger.debug(f"  -> 虚拟库 '{coll['name']}' 被隐藏，原因: 库内无项目 (物理)")
+                continue
+
+            # b. 调用我们的新式武器进行“快速权限探测”
+            user_can_see_content = emby_handler.check_user_has_visible_items_in_id_list(
+                user_id=user_id,
+                item_ids=ordered_emby_ids,
+                base_url=config_manager.APP_CONFIG.get("emby_server_url", ""),
+                api_key=config_manager.APP_CONFIG.get("emby_api_key", "")
+            )
+
+            if not user_can_see_content:
+                logger.debug(f"  -> 虚拟库 '{coll['name']}' 被隐藏，原因: 库内无【用户可见】项目 (权限)")
+                continue
+            
+            # --- 所有检查通过，生成虚拟库 ---
             db_id = coll['id']
             mimicked_id = to_mimicked_id(db_id)
             image_tags = {"Primary": f"{real_emby_collection_id}?timestamp={int(time.time())}"}
-
-            # ★★★ 核心修复：直接使用已经是字典的 definition_json 字段 ★★★
             definition = coll.get('definition_json') or {}
             
             merged_libraries = definition.get('merged_libraries', [])
             name_suffix = f" (合并库: {len(merged_libraries)}个)" if merged_libraries else ""
             
             item_type_from_db = definition.get('item_type', 'Movie')
-            if isinstance(item_type_from_db, list) and len(item_type_from_db) > 1:
-                collection_type = "mixed"
-            else:
-                authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
-                collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
+            collection_type = "mixed"
+            if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
+                 authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
+                 collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
             fake_view = {
-                "Name": coll['name'] + name_suffix, 
-                "ServerId": real_server_id, 
-                "Id": mimicked_id,
-                "Guid": str(uuid.uuid4()), # 我们会用这个Guid
-                "Etag": f"{db_id}{int(time.time())}",
-                "DateCreated": "2025-01-01T00:00:00.0000000Z", 
-                "CanDelete": False, 
-                "CanDownload": False,
-                "SortName": coll['name'], 
-                "ExternalUrls": [], 
-                "ProviderIds": {}, 
-                "IsFolder": True,
-                "ParentId": "2", 
-                "Type": "CollectionFolder",  # 1. 改为 CollectionFolder
-                "PresentationUniqueKey": str(uuid.uuid4()), # 2. 增加 PresentationUniqueKey
-                "DisplayPreferencesId": f"custom-{db_id}", # 3. DisplayPreferencesId 保持不变或改为Guid都可以
-                "ForcedSortName": coll['name'], # 4. 增加 ForcedSortName
-                "Taglines": [], # 5. 增加空的 Taglines
-                "RemoteTrailers": [], # 6. 增加空的 RemoteTrailers
+                "Name": coll['name'] + name_suffix, "ServerId": real_server_id, "Id": mimicked_id,
+                "Guid": str(uuid.uuid4()), "Etag": f"{db_id}{int(time.time())}",
+                "DateCreated": "2025-01-01T00:00:00.0000000Z", "CanDelete": False, "CanDownload": False,
+                "SortName": coll['name'], "ExternalUrls": [], "ProviderIds": {}, "IsFolder": True,
+                "ParentId": "2", "Type": "CollectionFolder", "PresentationUniqueKey": str(uuid.uuid4()),
+                "DisplayPreferencesId": f"custom-{db_id}", "ForcedSortName": coll['name'],
+                "Taglines": [], "RemoteTrailers": [],
                 "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
-                "ChildCount": 1, 
+                "ChildCount": len(ordered_emby_ids), # 使用更准确的计数
                 "PrimaryImageAspectRatio": 1.7777777777777777, 
-                "CollectionType": collection_type,
-                "ImageTags": image_tags, 
-                "BackdropImageTags": [], 
-                "LockedFields": [], 
-                "LockData": False
+                "CollectionType": collection_type, "ImageTags": image_tags, "BackdropImageTags": [], 
+                "LockedFields": [], "LockData": False
             }
             fake_views_items.append(fake_view)
         
-        logger.debug(f"已生成 {len(fake_views_items)} 个虚拟库。")
+        logger.debug(f"已为用户 {user_id} 生成 {len(fake_views_items)} 个可见的虚拟库。")
 
+        # --- 原生库合并逻辑 (保持不变) ---
         native_views_items = []
         should_merge_native = config_manager.APP_CONFIG.get('proxy_merge_native_libraries', True)
         if should_merge_native:
-            user_id_match = re.search(r'/emby/Users/([^/]+)/Views', request.path)
-            if user_id_match:
-                user_id = user_id_match.group(1)
-                all_native_views = emby_handler.get_emby_libraries(
-                    config_manager.APP_CONFIG.get("emby_server_url", ""),
-                    config_manager.APP_CONFIG.get("emby_api_key", ""),
-                    user_id
-                )
-                if all_native_views is None: all_native_views = []
-                raw_selection = config_manager.APP_CONFIG.get('proxy_native_view_selection', '')
-                selected_native_view_ids = [x.strip() for x in raw_selection.split(',') if x.strip()] if isinstance(raw_selection, str) else raw_selection
-                if not selected_native_view_ids:
-                    native_views_items = all_native_views
-                else:
-                    native_views_items = [view for view in all_native_views if view.get("Id") in selected_native_view_ids]
+            all_native_views = user_visible_native_libs
+            raw_selection = config_manager.APP_CONFIG.get('proxy_native_view_selection', '')
+            selected_native_view_ids = [x.strip() for x in raw_selection.split(',') if x.strip()] if isinstance(raw_selection, str) else raw_selection
+            if not selected_native_view_ids:
+                native_views_items = all_native_views
+            else:
+                native_views_items = [view for view in all_native_views if view.get("Id") in selected_native_view_ids]
         
         final_items = []
         native_order = config_manager.APP_CONFIG.get('proxy_native_view_order', 'before')
@@ -204,12 +218,27 @@ def handle_get_mimicked_library_image(path):
     except Exception as e:
         return "Internal Proxy Error", 500
 
+UNSUPPORTED_METADATA_ENDPOINTS = [
+        '/Items/Prefixes', # A-Z 首字母索引
+        '/Genres',         # 类型筛选
+        '/Studios',        # 工作室筛选
+        '/Tags',           # 标签筛选
+        '/OfficialRatings',# 官方评级筛选
+        '/Years'           # 年份筛选
+    ]
+
 # --- ★★★ 核心修复 #1：用下面这个通用的“万能翻译”函数，替换掉旧的 a_prefixes 函数 ★★★ ---
 def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     """
     【V3 - URL修正版】
     智能处理所有针对虚拟库的元数据类请求。
     """
+    # 检查当前请求的路径是否在我们定义的“不支持列表”中
+    if any(path.endswith(endpoint) for endpoint in UNSUPPORTED_METADATA_ENDPOINTS):
+        logger.trace(f"检测到对虚拟库的不支持的元数据请求 '{path}'，将直接返回空列表以避免后端错误。")
+        # 直接返回一个空的JSON数组，客户端会优雅地处理它（不显示相关筛选器）
+        return Response(json.dumps([]), mimetype='application/json')
+
     try:
         real_db_id = from_mimicked_id(mimicked_id)
         collection_info = db_handler.get_custom_collection_by_id(real_db_id)
@@ -304,23 +333,72 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         # --- 阶段四：处理最终排序 ---
         sort_by_field = definition.get('default_sort_by')
         
+        # ▼▼▼ 2. 替换整个排序逻辑块 ▼▼▼
         if sort_by_field and sort_by_field not in ['original', 'none']:
             sort_order = definition.get('default_sort_order', 'Ascending')
             is_descending = (sort_order == 'Descending')
             logger.trace(f"执行虚拟库排序劫持: '{sort_by_field}' ({sort_order})")
             
-            default_sort_value = 0 if sort_by_field in ['CommunityRating', 'ProductionYear'] else "0"
-            try:
+            # ★★★ 新增：处理“最后更新”排序 (类型安全版) ★★★
+            if sort_by_field == 'last_synced_at':
+                movie_tmdb_ids = []
+                series_tmdb_ids = []
+                
+                # 1. 按类型分离TMDb ID
+                for item in final_items:
+                    tmdb_id = item.get('ProviderIds', {}).get('Tmdb')
+                    if not tmdb_id: continue
+                    
+                    item_type = item.get('Type')
+                    if item_type == 'Movie':
+                        movie_tmdb_ids.append(tmdb_id)
+                    elif item_type == 'Series':
+                        series_tmdb_ids.append(tmdb_id)
+                
+                logger.trace(f"  -> 分离出 {len(movie_tmdb_ids)} 个电影和 {len(series_tmdb_ids)} 个剧集的TMDb ID用于查询时间戳。")
+
+                timestamp_map = {}
+                default_timestamp = datetime.min.replace(tzinfo=timezone.utc)
+                
+                # 2. 分别查询电影和剧集的时间戳
+                if movie_tmdb_ids:
+                    movie_metadata = db_handler.get_media_metadata_by_tmdb_ids(movie_tmdb_ids, 'Movie')
+                    for meta in movie_metadata:
+                        # 1. 优先用 last_synced_at
+                        # 2. 如果没有，则用 date_added
+                        # 3. 如果连 date_added 都没有，用我们最终的 default_timestamp
+                        timestamp = meta.get('last_synced_at') or meta.get('date_added') or default_timestamp
+                        timestamp_map[f"{meta['tmdb_id']}-Movie"] = timestamp
+                
+                if series_tmdb_ids:
+                    series_metadata = db_handler.get_media_metadata_by_tmdb_ids(series_tmdb_ids, 'Series')
+                    for meta in series_metadata:
+                        timestamp = meta.get('last_synced_at') or meta.get('date_added') or default_timestamp
+                        timestamp_map[f"{meta['tmdb_id']}-Series"] = timestamp
+
+                # 3. 使用复合键进行安全排序
                 final_items.sort(
-                    key=lambda item: item.get(sort_by_field, default_sort_value),
+                    key=lambda item: timestamp_map.get(
+                        f"{item.get('ProviderIds', {}).get('Tmdb')}-{item.get('Type')}", 
+                        default_timestamp
+                    ),
                     reverse=is_descending
                 )
-            except TypeError:
-                final_items.sort(key=lambda item: item.get('SortName', ''))
+            # ★★★ 原有排序逻辑 ★★★
+            else:
+                default_sort_value = 0 if sort_by_field in ['CommunityRating', 'ProductionYear'] else "0"
+                try:
+                    final_items.sort(
+                        key=lambda item: item.get(sort_by_field, default_sort_value),
+                        reverse=is_descending
+                    )
+                except TypeError:
+                    final_items.sort(key=lambda item: item.get('SortName', ''))
         elif sort_by_field == 'original':
              logger.trace("已应用 'original' (榜单原始顺序) 排序。")
         else:
             logger.trace("未设置或禁用虚拟库排序，将保持榜单原始顺序。")
+        # ▲▲▲ 替换结束 ▲▲▲
 
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')
@@ -385,6 +463,77 @@ proxy_app = Flask(__name__)
 @proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
 def proxy_all(path):
+    # --- ★★★ 新增：PlaybackInfo 智能劫持逻辑 (最终简化版) ★★★ ---
+    # 这个逻辑块专门处理对“虚拟库内真实媒体项”的播放前问询
+    if 'PlaybackInfo' in path and '/Items/' in path:
+        # 1. 从路径中提取媒体项的ID。根据您的描述，这已经是“真实ID”。
+        item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path) # 注意：正则表达式改为了 \d+，只匹配纯数字的真实ID
+        
+        # 我们还需要检查这个请求是否来自一个虚拟库的上下文。
+        # Emby客户端在请求PlaybackInfo时，通常会带上ParentId或类似的参数。
+        # 但更可靠的方法是检查Referer头，或者依赖Nginx路由。
+        # 既然Nginx已经把所有虚拟库的请求都发过来了，我们可以假设在这里处理是安全的。
+        
+        if item_id_match:
+            real_emby_id = item_id_match.group(1)
+            logger.info(f"截获到针对真实项目 '{real_emby_id}' 的 PlaybackInfo 请求（可能来自虚拟库上下文）。")
+            
+            try:
+                # 2. 幕后请求：用这个真实ID向Emby索要完整的PlaybackInfo
+                base_url, api_key = _get_real_emby_url_and_key()
+                user_id_match = re.search(r'/Users/([^/]+)/', path)
+                user_id = user_id_match.group(1) if user_id_match else ''
+                
+                real_playback_info_url = f"{base_url}/Items/{real_emby_id}/PlaybackInfo"
+                
+                # 转发原始请求的参数和部分头
+                forward_params = request.args.copy()
+                forward_params['api_key'] = api_key
+                forward_params['UserId'] = user_id
+
+                headers = {'Accept': 'application/json'}
+                
+                logger.debug(f"正在向真实Emby请求PlaybackInfo: {real_playback_info_url} with params {forward_params}")
+                resp = requests.get(real_playback_info_url, params=forward_params, headers=headers)
+                resp.raise_for_status()
+                
+                playback_info_data = resp.json()
+                
+                # 3. 偷梁换柱：修改Path，指向我们的302重定向服务
+                if 'MediaSources' in playback_info_data and len(playback_info_data['MediaSources']) > 0:
+                    logger.info("成功获取真实PlaybackInfo，正在修改播放路径...")
+                    
+                    original_path = playback_info_data['MediaSources'][0].get('Path')
+                    file_name = original_path.split('/')[-1] if original_path else f"stream.mkv"
+                    
+                    # ★★★ 核心修改点 ★★★
+                    # 将路径指向一个能被Nginx的“直接播放拦截规则”捕获的URL格式。
+                    # 这个URL需要包含真实ID，以便302服务知道要为哪个项目获取直链。
+                    # 格式: /emby/videos/{real_emby_id}/{filename}?....
+                    # 我们的Nginx规则 `~* (?i)(/videos/.*stream|(\.strm|\.mkv...))` 会匹配到这个。
+                    playback_info_data['MediaSources'][0]['Path'] = f"/emby/videos/{real_emby_id}/{file_name}"
+                    
+                    # 强制协议为Http，因为这是Emby内部识别的协议类型
+                    playback_info_data['MediaSources'][0]['Protocol'] = 'Http' 
+                    
+                    # 清理掉可能引起问题的字段，让Emby客户端只认我们给的Path
+                    playback_info_data['MediaSources'][0].pop('PathType', None)
+                    playback_info_data['MediaSources'][0].pop('SupportsDirectStream', None)
+                    playback_info_data['MediaSources'][0].pop('SupportsTranscoding', None)
+
+                    logger.debug(f"修改后的PlaybackInfo: {json.dumps(playback_info_data, indent=2)}")
+                    
+                    # 4. 返回修改后的完整信息
+                    return Response(json.dumps(playback_info_data), mimetype='application/json')
+                else:
+                    # 如果原始PlaybackInfo没有MediaSources，我们也无能为力，直接转发
+                    logger.warning(f"获取到的PlaybackInfo中不包含MediaSources，无法修改路径。")
+                    return Response(json.dumps(playback_info_data), mimetype='application/json')
+
+            except Exception as e:
+                logger.error(f"处理PlaybackInfo劫持时出错: {e}", exc_info=True)
+                # 如果出错，返回一个错误，让客户端走标准流程
+                return Response("Proxy error during PlaybackInfo handling.", status=500, mimetype='text/plain')
     # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
         logger.info("--- 收到一个新的 WebSocket 连接请求 ---")

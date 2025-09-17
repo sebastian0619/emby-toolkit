@@ -14,11 +14,11 @@
           <span class="card-title">自动化任务链</span>
         </template>
         
-        <!-- --- 【【【 使用 Grid 组件实现两列布局 】】】 --- -->
-        <n-grid cols="1 l:2" :x-gap="24" :y-gap="16" responsive="screen">
+        <!-- --- 【【【 使用 Grid 组件实现两列布局 (宽度已调整) 】】】 --- -->
+        <n-grid cols="1 l:3" :x-gap="24" :y-gap="16" responsive="screen">
           
-          <!-- 左侧列：配置区域 -->
-          <n-gi>
+          <!-- 左侧列：配置区域 (占1/3) -->
+          <n-gi span="1">
             <n-space vertical>
               <n-space align="center" justify="space-between">
                 <n-text strong>启用自动化任务链</n-text>
@@ -27,6 +27,21 @@
               <n-form :model="configModel" label-placement="left" label-width="auto" class="mt-3" :show-feedback="false">
                 <n-form-item label="定时执行 (CRON)">
                   <n-input v-model:value="configModel.task_chain_cron" :disabled="!configModel.task_chain_enabled" placeholder="例如: 0 2 * * *" />
+                </n-form-item>
+                <n-form-item label="最大运行时长 (分钟)">
+                  <n-input-number 
+                    v-model:value="configModel.task_chain_max_runtime_minutes" 
+                    :min="0" 
+                    :step="10" 
+                    :disabled="!configModel.task_chain_enabled"
+                    placeholder="0 代表不限制"
+                    style="width: 100%;"
+                  />
+                  <template #feedback>
+                    <n-text depth="3" style="font-size:0.8em;">
+                      设置任务链的最长运行时间。到达时限后，会自动停止当前任务以及后续任务，填 0 表示不限制。
+                    </n-text>
+                  </template>
                 </n-form-item>
                 <n-form-item label="任务序列">
                   <n-button-group>
@@ -44,8 +59,8 @@
             </n-space>
           </n-gi>
 
-          <!-- 右侧列：显示当前执行顺序 -->
-          <n-gi>
+          <!-- 右侧列：显示当前执行顺序 (占2/3) -->
+          <n-gi span="2">
             <n-text strong>当前执行流程</n-text>
             <div class="flowchart-wrapper">
               <div v-if="enabledTaskChain.length > 0" class="flowchart-container">
@@ -59,14 +74,12 @@
             </div>
           </n-gi>
 
-
         </n-grid>
-        <!-- --- 【【【 Grid 布局结束 】】】 --- -->
 
         <!-- "工作原理"提示信息，放在 Grid 下方，保持通栏显示 -->
         <n-alert title="任务详情" type="info" style="margin-top: 24px;">
           启用后，系统将只在指定时间执行一个总任务。该任务会严格按照“配置任务链”中设定好的顺序，一个接一个地执行选中的子任务，无需再为每个任务单独设置时间，彻底避免了任务冲突。<br />
-          建议顺序：[同步演员映射->同步媒体数据->演员数据补充->中文化角色名],其他任务随意。<br />
+          建议顺序：[同步演员数据->同步媒体数据->演员数据补充->中文化角色名],其他任务随意。<br />
           处理模式：快速模式是增量处理，会跳过已处理过的媒体项；深度模式是无视已处理记录全量重新处理一遍。自动化任务链默认采用快速模式，手动立即执行才可以选择深度模式。
         </n-alert>
       </n-card>
